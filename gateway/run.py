@@ -8420,6 +8420,30 @@ class GatewayRunner:
 
     async def _handle_project_command(self, event: MessageEvent) -> Optional[str]:
         """Handle /project — render the gateway-owned project-intake prompt when supported."""
+        import asyncio
+        import re
+        import shlex
+        from hermes_cli.kanban import run_slash
+
+        # Board tokens from _PROJECT_INTAKE_CHOICES in telegram.py:
+        #   "control" → hermes-kanban-control (direct board)
+        #   "triage"  → default board with TRIAGE: prefix (operator routes in triage)
+        #   "new"     → default board with BOARD-NEEDED: prefix (operator creates board later)
+        _BOARD_TOKEN_MAP = {
+            "control": ("hermes-kanban-control", None),
+            "triage": ("default", "TRIAGE: "),
+            "new": ("default", "BOARD-NEEDED: "),
+        }
+        # Risk tokens from _PROJECT_INTAKE_CHOICES in telegram.py:
+        #   "safe"   → no source/config/gateway changes without approval → priority 50
+        #   "normal" → source changes allowed after preflight + tests → priority 60
+        #   "manual" → human review before any dispatch → priority 70
+        _RISK_PRIORITY_MAP = {
+            "safe": 50,
+            "normal": 60,
+            "manual": 70,
+        }
+
         source = event.source
         adapter = self.adapters.get(source.platform) if source is not None else None
         prompt = getattr(adapter, "send_project_intake_prompt", None) if adapter else None
@@ -8433,12 +8457,82 @@ class GatewayRunner:
         ) if source is not None else None
         session_key = self._session_key_for_source(source) if source is not None else ""
 
-        async def _preview_only_project_intake(payload: Dict[str, Any]) -> str:
+        async def _create_kanban_card_from_intake(payload: Dict[str, Any]) -> str:
             payload_title = str(payload.get("title") or title).strip() or "Project intake"
+            answers = dict(payload.get("answers") or {})
+            description = str(payload.get("description") or "").strip()
+            payload_source = dict(payload.get("source") or {})
+
+            board_token = answers.get("board") or "control"
+            board_slug, title_prefix = _BOARD_TOKEN_MAP.get(
+                board_token, ("default", f"{board_token.upper()}: ")
+            )
+            final_title = (title_prefix or "") + payload_title
+
+            body_lines = []
+            if description:
+                body_lines.append(description)
+                body_lines.append("")
+                body_lines.append("---")
+            body_lines.append("Project-intake answers:")
+            for key in ("kind", "scope", "risk", "board"):
+                if key in answers:
+                    body_lines.append(f"- {key}: {answers[key]}")
+            chat_id = payload_source.get("chat_id")
+            thread_id = payload_source.get("thread_id")
+            if chat_id:
+                src_line = f"telegram chat {chat_id}"
+                if thread_id:
+                    src_line += f" / thread {thread_id}"
+                body_lines.append(f"- source: {src_line}")
+            body = "\n".join(body_lines)
+
+            priority = _RISK_PRIORITY_MAP.get(answers.get("risk") or "", 50)
+
+            cmd_parts = [
+                "create",
+                "--board", board_slug,
+                "--triage",
+                "--priority", str(priority),
+                "--title", final_title,
+                "--body", body,
+            ]
+            command = " ".join(shlex.quote(p) for p in cmd_parts)
+
+            try:
+                output = await asyncio.to_thread(run_slash, command)
+            except Exception as exc:  # pragma: no cover - defensive
+                return f"❌ Project intake failed: {exc}"
+
+            m = re.search(r"Created\s+(t_[0-9a-f]+)\b", output or "")
+            if not m:
+                # CLI returned error/non-match — surface verbatim
+                return (output or "Project intake: no output from kanban CLI.").rstrip()
+
+            task_id = m.group(1)
+            try:
+                platform_str = str(payload_source.get("platform") or "telegram").lower()
+                if platform_str and chat_id:
+                    def _sub():
+                        from hermes_cli import kanban_db as _kb
+                        conn = _kb.connect(board=board_slug)
+                        try:
+                            _kb.add_notify_sub(
+                                conn, task_id=task_id,
+                                platform=platform_str, chat_id=str(chat_id),
+                                thread_id=str(thread_id) if thread_id else None,
+                                user_id=None,
+                                notifier_profile=getattr(self, "_kanban_notifier_profile", None) or self._active_profile_name(),
+                            )
+                        finally:
+                            conn.close()
+                    await asyncio.to_thread(_sub)
+            except Exception as exc:
+                logger.warning("project-intake auto-subscribe failed: %s", exc)
+
             return (
-                f"Project intake preview saved for: {payload_title}\n\n"
-                "Card creation is not enabled from this button yet. "
-                "Reply with /kanban create when you are ready to create a board card."
+                f"✅ Created `{task_id}` on `{board_slug}` (priority {priority}).\n"
+                f"You'll get a Telegram message when the worker completes or blocks."
             )
 
         fallback = (
@@ -8455,7 +8549,7 @@ class GatewayRunner:
                 title=title,
                 state={"description": description},
                 session_key=session_key,
-                on_intake_selected=_preview_only_project_intake,
+                on_intake_selected=_create_kanban_card_from_intake,
                 metadata=metadata,
             )
         except Exception as exc:
