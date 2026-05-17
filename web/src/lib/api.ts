@@ -353,6 +353,31 @@ export const api = {
   getLatestDream: () => fetchJSON<{ dream: string | null; date: string | null }>("/api/dashboard/dreams/latest"),
   getQueueHistory: (range: "1d" | "7d" | "30d" = "7d") =>
     fetchJSON<import("@/components/mission/types").QueueHistory>(`/api/dashboard/queue?range=${range}`),
+  // Personas (Hive B — Pantheon)
+  getPersonas: () => fetchJSON<Persona[]>("/api/personas"),
+  createPersona: (body: PersonaCreate) =>
+    fetchJSON<Persona>("/api/personas", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }),
+  getPersona: (slug: string) =>
+    fetchJSON<Persona>(`/api/personas/${encodeURIComponent(slug)}`),
+  updatePersona: (slug: string, body: Partial<PersonaCreate>) =>
+    fetchJSON<Persona>(`/api/personas/${encodeURIComponent(slug)}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }),
+  deletePersona: (slug: string) =>
+    fetchJSON<{ ok: boolean }>(`/api/personas/${encodeURIComponent(slug)}`, {
+      method: "DELETE",
+    }),
+  summonPersona: (slug: string) =>
+    fetchJSON<{ session_id: string; persona_slug: string }>(
+      `/api/personas/${encodeURIComponent(slug)}/summon`,
+      { method: "POST" },
+    ),
 };
 
 export interface ActionResponse {
@@ -825,4 +850,34 @@ export interface AgentPluginUpdateResponse {
 export interface PluginProvidersPutRequest {
   memory_provider?: string;
   context_engine?: string;
+}
+
+// ── Persona types (Hive B — Pantheon) ────────────────────────────────────
+
+export interface PersonaModelSpec {
+  provider: string;
+  model: string;
+}
+
+export interface Persona {
+  name: string;
+  slug: string;
+  role_one_liner: string;
+  soul_md: string;
+  planner: PersonaModelSpec;
+  executor: PersonaModelSpec;
+  critic: PersonaModelSpec;
+  avatar_variant: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface PersonaCreate {
+  name: string;
+  role_one_liner: string;
+  soul_md: string;
+  planner: PersonaModelSpec;
+  executor: PersonaModelSpec;
+  critic: PersonaModelSpec;
+  avatar_variant?: string;
 }

@@ -29,6 +29,7 @@ import {
   Heart,
   KeyRound,
   LayoutDashboard,
+  Landmark,
   Menu,
   MessageSquare,
   Network,
@@ -70,6 +71,7 @@ import SkillsPage from "@/pages/SkillsPage";
 import PluginsPage from "@/pages/PluginsPage";
 import MissionControlPage from "@/pages/MissionControlPage";
 import ExplorerPage from "@/pages/ExplorerPage";
+import PantheonPage from "@/pages/PantheonPage";
 import ChatPage from "@/pages/ChatPage";
 import { LanguageSwitcher } from "@/components/LanguageSwitcher";
 import { ThemeSwitcher } from "@/components/ThemeSwitcher";
@@ -124,6 +126,7 @@ const BUILTIN_ROUTES_CORE: Record<string, ComponentType> = {
   "/env": EnvPage,
   "/docs": DocsPage,
   "/cockpit": MissionControlPage,
+  "/pantheon": PantheonPage,
 };
 
 // Route placeholder for /chat.  The persistent ChatPage host (rendered
@@ -172,6 +175,10 @@ const BUILTIN_NAV_REST: NavItem[] = [
     labelKey: "cockpit",
     label: "Cockpit",
     icon: LayoutDashboard,
+    path: "/pantheon",
+    labelKey: "pantheon",
+    label: "Pantheon",
+    icon: Landmark,
   },
 ];
 
@@ -183,6 +190,7 @@ const ICON_MAP: Record<string, ComponentType<{ className?: string }>> = {
   FileText,
   KeyRound,
   LayoutDashboard,
+  Landmark,
   MessageSquare,
   Package,
   Settings,
