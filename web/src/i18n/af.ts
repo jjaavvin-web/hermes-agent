@@ -72,6 +72,7 @@ export const af: Translations = {
       config: "Konfigurasie",
       cron: "Cron",
       documentation: "Dokumentasie",
+      explorer: "Verkenner",
       keys: "Sleutels",
       logs: "Logs",
       cockpit: "Cockpit",
@@ -534,6 +535,10 @@ export const af: Translations = {
       tweet_text: "Just unlocked {tier_part}\"{name}\" in Hermes Agent ☤",
     },
   },
+  explorer: {
+    title: "Kode Verkenner",
+  },
+
   kanban: {
     loading: "Kanban-bord word gelaai…",
     loadFailed: "Kon nie Kanban-bord laai nie: ",

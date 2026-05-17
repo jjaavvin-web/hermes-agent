@@ -71,6 +71,7 @@ export const zh: Translations = {
       config: "配置",
       cron: "定时任务",
       documentation: "文档",
+      explorer: "代码探索",
       keys: "密钥",
       logs: "日志",
       cockpit: "Cockpit",
@@ -528,6 +529,10 @@ export const zh: Translations = {
         "此浏览器不支持复制剪贴板图片 —— 请改用「下载」。",
       tweet_text: "Just unlocked {tier_part}\"{name}\" in Hermes Agent ☤",
     },
+  },
+
+  explorer: {
+    title: "代码探索器",
   },
 
   kanban: {

@@ -72,6 +72,7 @@ export const ga: Translations = {
       config: "Cumraíocht",
       cron: "Cron",
       documentation: "Doiciméadú",
+      explorer: "Brabhsálaí",
       keys: "Eochracha",
       logs: "Logaí",
       cockpit: "Cockpit",
@@ -534,6 +535,10 @@ export const ga: Translations = {
       tweet_text: "Just unlocked {tier_part}\"{name}\" in Hermes Agent ☤",
     },
   },
+  explorer: {
+    title: "Brabhsálaí Cóid",
+  },
+
   kanban: {
     loading: "Clár Kanban á luchtú…",
     loadFailed: "Theip ar luchtú an chláir Kanban: ",

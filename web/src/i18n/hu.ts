@@ -72,6 +72,7 @@ export const hu: Translations = {
       config: "Beállítások",
       cron: "Cron",
       documentation: "Dokumentáció",
+      explorer: "Böngésző",
       keys: "Kulcsok",
       logs: "Naplók",
       cockpit: "Cockpit",
@@ -534,6 +535,10 @@ export const hu: Translations = {
       tweet_text: "Just unlocked {tier_part}\"{name}\" in Hermes Agent ☤",
     },
   },
+  explorer: {
+    title: "Kód Böngésző",
+  },
+
   kanban: {
     loading: "Kanban tábla betöltése…",
     loadFailed: "Nem sikerült betölteni a Kanban táblát: ",

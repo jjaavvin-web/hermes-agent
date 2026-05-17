@@ -72,6 +72,7 @@ export const de: Translations = {
       config: "Konfiguration",
       cron: "Cron",
       documentation: "Dokumentation",
+      explorer: "Explorer",
       keys: "Schlüssel",
       logs: "Protokolle",
       cockpit: "Cockpit",
@@ -533,6 +534,10 @@ export const de: Translations = {
       tweet_text: "Just unlocked {tier_part}\"{name}\" in Hermes Agent ☤",
     },
   },
+  explorer: {
+    title: "Code-Explorer",
+  },
+
   kanban: {
     loading: "Kanban-Board wird geladen…",
     loadFailed: "Laden des Kanban-Boards fehlgeschlagen: ",
