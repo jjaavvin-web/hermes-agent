@@ -2,6 +2,7 @@ import {
   useCallback,
   useEffect,
   useMemo,
+  useRef,
   useState,
   type ComponentType,
   type ReactNode,
@@ -72,6 +73,7 @@ import PluginsPage from "@/pages/PluginsPage";
 import MissionControlPage from "@/pages/MissionControlPage";
 import ExplorerPage from "@/pages/ExplorerPage";
 import PantheonPage from "@/pages/PantheonPage";
+import WelcomePage from "@/pages/WelcomePage";
 import ChatPage from "@/pages/ChatPage";
 import { LanguageSwitcher } from "@/components/LanguageSwitcher";
 import { ThemeSwitcher } from "@/components/ThemeSwitcher";
@@ -81,10 +83,22 @@ import { PluginPage, PluginSlot, usePlugins } from "@/plugins";
 import type { PluginManifest } from "@/plugins";
 import { useTheme } from "@/themes";
 import { isDashboardEmbeddedChatEnabled } from "@/lib/dashboard-flags";
-import { api } from "@/lib/api";
+import { api, fetchJSON } from "@/lib/api";
 
 function RootRedirect() {
-  return <Navigate to="/sessions" replace />;
+  const [target, setTarget] = useState<string | null>(null);
+  const fetched = useRef(false);
+
+  useEffect(() => {
+    if (fetched.current) return;
+    fetched.current = true;
+    fetchJSON<{ soul_exists: boolean }>("/api/welcome/first-run-status")
+      .then((data) => setTarget(data.soul_exists ? "/cockpit" : "/welcome"))
+      .catch(() => setTarget("/cockpit"));
+  }, []);
+
+  if (!target) return null;
+  return <Navigate to={target} replace />;
 }
 
 function UnknownRouteFallback({ pluginsLoading }: { pluginsLoading: boolean }) {
@@ -127,6 +141,7 @@ const BUILTIN_ROUTES_CORE: Record<string, ComponentType> = {
   "/docs": DocsPage,
   "/cockpit": MissionControlPage,
   "/pantheon": PantheonPage,
+  "/welcome": WelcomePage,
 };
 
 // Route placeholder for /chat.  The persistent ChatPage host (rendered
@@ -175,6 +190,8 @@ const BUILTIN_NAV_REST: NavItem[] = [
     labelKey: "cockpit",
     label: "Cockpit",
     icon: LayoutDashboard,
+  },
+  {
     path: "/pantheon",
     labelKey: "pantheon",
     label: "Pantheon",

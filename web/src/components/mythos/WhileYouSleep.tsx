@@ -1,17 +1,20 @@
+import type React from "react";
 import { mythos } from "../../themes/hermes-mythos";
 import { useTheme } from "../../themes/context";
 
 interface Props {
   className?: string;
+  style?: React.CSSProperties;
 }
 
-export default function WhileYouSleep({ className }: Props) {
+export default function WhileYouSleep({ className, style }: Props) {
   // useTheme accessed for potential future dark-mode adaptations
   useTheme();
 
   return (
     <svg
       className={className}
+      style={style}
       viewBox="0 0 140 100"
       xmlns="http://www.w3.org/2000/svg"
       aria-label="Hermes working while you sleep"
