@@ -4373,6 +4373,30 @@ try:
     _log.info("Mounted mission control dashboard API routes at /api/dashboard/")
 except Exception as _exc:
     _log.warning("Failed to load dashboard_health routes: %s", _exc)
+# ---------------------------------------------------------------------------
+# GitNexus Explorer — serve the production web UI under /_gitnexus-app/.
+# Mounted at a non-React path so the dashboard React route `/explorer`
+# remains free to render the iframe wrapper (ExplorerPage). The iframe's
+# src points at /_gitnexus-app/ so the GitNexus shell loads inside the
+# dashboard chrome. Direct browser navigation to /explorer now reaches
+# the React SPA via the catch-all, NOT the raw GitNexus shell.
+# ---------------------------------------------------------------------------
+_GITNEXUS_DIST = Path.home() / ".local/share/gitnexus/gitnexus-web/dist"
+
+if _GITNEXUS_DIST.exists():
+    _gitnexus_index = _GITNEXUS_DIST / "index.html"
+
+    @app.get("/_gitnexus-app/{full_path:path}")
+    async def _gitnexus_explorer_page(full_path: str, request: Request):
+        """Serve the GitNexus web UI. Falls back to index.html for SPA routing."""
+        file_path = _GITNEXUS_DIST / full_path
+        if (
+            full_path
+            and file_path.resolve().is_relative_to(_GITNEXUS_DIST.resolve())
+            and file_path.is_file()
+        ):
+            return FileResponse(file_path)
+        return FileResponse(_gitnexus_index)
 
 mount_spa(app)
 

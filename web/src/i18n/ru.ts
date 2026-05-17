@@ -72,6 +72,7 @@ export const ru: Translations = {
       config: "Конфигурация",
       cron: "Cron",
       documentation: "Документация",
+      explorer: "Проводник",
       keys: "Ключи",
       logs: "Журналы",
       cockpit: "Cockpit",
@@ -534,6 +535,10 @@ export const ru: Translations = {
       tweet_text: "Just unlocked {tier_part}\"{name}\" in Hermes Agent ☤",
     },
   },
+  explorer: {
+    title: "Проводник кода",
+  },
+
   kanban: {
     loading: "Загрузка доски Kanban…",
     loadFailed: "Не удалось загрузить доску Kanban: ",

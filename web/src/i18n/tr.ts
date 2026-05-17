@@ -72,6 +72,7 @@ export const tr: Translations = {
       config: "Yapılandırma",
       cron: "Cron",
       documentation: "Dokümantasyon",
+      explorer: "Gezgin",
       keys: "Anahtarlar",
       logs: "Günlükler",
       cockpit: "Cockpit",
@@ -534,6 +535,10 @@ export const tr: Translations = {
       tweet_text: "Just unlocked {tier_part}\"{name}\" in Hermes Agent ☤",
     },
   },
+  explorer: {
+    title: "Kod Gezgini",
+  },
+
   kanban: {
     loading: "Kanban panosu yükleniyor…",
     loadFailed: "Kanban panosu yüklenemedi: ",
