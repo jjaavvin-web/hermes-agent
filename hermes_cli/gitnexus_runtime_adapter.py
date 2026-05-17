@@ -10,7 +10,9 @@ Atomic write:   write to RUNTIME_REPO_PATH.tmp, rename, then analyze.
 """
 from __future__ import annotations
 
+import fcntl
 import json
+import os
 import re
 import shutil
 import time
@@ -23,6 +25,7 @@ from hermes_cli.gitnexus_runtime_collector import RuntimeSnapshot, snapshot
 
 RUNTIME_REPO_PATH = Path("/tmp/hermes-runtime")
 RUNTIME_REPO_TMP = Path("/tmp/hermes-runtime.tmp")
+RUNTIME_LOCK_PATH = Path("/tmp/hermes-runtime.lock")
 GITNEXUS_API = "http://127.0.0.1:4747"
 REPO_NAME = "hermes-runtime"
 ANALYZE_TIMEOUT = 60  # seconds to wait for analyze job
@@ -262,35 +265,53 @@ def ingest(snap: RuntimeSnapshot) -> dict:
     Write the runtime snapshot into GitNexus as synthetic repo 'hermes-runtime'.
 
     Atomic:
-      1. Generate code into RUNTIME_REPO_TMP
-      2. Rename TMP → RUNTIME_REPO_PATH
-      3. DELETE old GitNexus index (if present)
-      4. POST /api/analyze → wait (retries on 409 conflict)
+      1. Acquire non-blocking exclusive lock (skip this run if another is
+         already in flight — prevents rmtree/rename racing the analyze job)
+      2. Generate code into RUNTIME_REPO_TMP
+      3. Rename TMP → RUNTIME_REPO_PATH
+      4. DELETE old GitNexus index (if present)
+      5. POST /api/analyze → wait (retries on 409 conflict)
     """
-    # 1. Generate code into tmp dir
-    if RUNTIME_REPO_TMP.exists():
-        shutil.rmtree(RUNTIME_REPO_TMP)
-    generate_code(snap, RUNTIME_REPO_TMP)
+    lock_fd = os.open(str(RUNTIME_LOCK_PATH), os.O_CREAT | os.O_WRONLY, 0o644)
+    try:
+        try:
+            fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            raise RuntimeError(
+                f"Another runtime adapter run is in progress "
+                f"(lock {RUNTIME_LOCK_PATH}); skipping this fire"
+            )
 
-    # 2. Atomic rename (readers always see either old or new, never partial)
-    if RUNTIME_REPO_PATH.exists():
-        shutil.rmtree(RUNTIME_REPO_PATH)
-    RUNTIME_REPO_TMP.rename(RUNTIME_REPO_PATH)
+        # 1. Generate code into tmp dir
+        if RUNTIME_REPO_TMP.exists():
+            shutil.rmtree(RUNTIME_REPO_TMP)
+        generate_code(snap, RUNTIME_REPO_TMP)
 
-    # 3. Delete old GitNexus index so the re-analyze produces a clean graph
-    #    (GitNexus does incremental updates; stale nodes persist otherwise)
-    _delete_repo_if_exists(REPO_NAME)
+        # 2. Atomic rename (readers always see either old or new, never partial)
+        if RUNTIME_REPO_PATH.exists():
+            shutil.rmtree(RUNTIME_REPO_PATH)
+        RUNTIME_REPO_TMP.rename(RUNTIME_REPO_PATH)
 
-    # 4. Trigger re-analysis
-    job = _api("POST", "/api/analyze", {"path": str(RUNTIME_REPO_PATH)})
-    job_id = job["jobId"]
+        # 3. Delete old GitNexus index so the re-analyze produces a clean graph
+        #    (GitNexus does incremental updates; stale nodes persist otherwise)
+        _delete_repo_if_exists(REPO_NAME)
 
-    # 5. Wait for completion
-    result = _wait_for_job(job_id)
-    if result.get("status") != "complete":
-        raise RuntimeError(f"GitNexus analyze failed: {result}")
+        # 4. Trigger re-analysis
+        job = _api("POST", "/api/analyze", {"path": str(RUNTIME_REPO_PATH)})
+        job_id = job["jobId"]
 
-    return result
+        # 5. Wait for completion
+        result = _wait_for_job(job_id)
+        if result.get("status") != "complete":
+            raise RuntimeError(f"GitNexus analyze failed: {result}")
+
+        return result
+    finally:
+        try:
+            fcntl.flock(lock_fd, fcntl.LOCK_UN)
+        except OSError:
+            pass
+        os.close(lock_fd)
 
 
 # ---------------------------------------------------------------------------

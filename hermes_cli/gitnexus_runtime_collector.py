@@ -9,14 +9,31 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
 import subprocess
 from pathlib import Path
 from typing import TypedDict
 
-# Absolute paths for CLI tools (required when running under systemd with minimal PATH)
-_HERMES = "/home/josep/.local/bin/hermes"
-_TMUX = "/usr/bin/tmux"
-_CRONTAB = "/usr/bin/crontab"
+
+def _resolve_tool(env_var: str, name: str, fallback: str) -> str:
+    """Resolve a CLI tool path. Honors env override, then $PATH, then fallback.
+
+    Required under systemd which strips $PATH; the unit file passes a minimal
+    PATH so shutil.which() still works for /usr/bin tools, but for hermes
+    (installed under ~/.local/bin) we accept HERMES_CLI as an override.
+    """
+    override = os.environ.get(env_var)
+    if override and Path(override).exists():
+        return override
+    found = shutil.which(name)
+    if found:
+        return found
+    return fallback
+
+
+_HERMES = _resolve_tool("HERMES_CLI", "hermes", "/home/josep/.local/bin/hermes")
+_TMUX = _resolve_tool("TMUX_BIN", "tmux", "/usr/bin/tmux")
+_CRONTAB = _resolve_tool("CRONTAB_BIN", "crontab", "/usr/bin/crontab")
 
 
 class RuntimeSnapshot(TypedDict):
