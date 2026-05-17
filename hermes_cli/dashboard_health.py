@@ -231,7 +231,7 @@ def _compute_spend_points(days: int) -> list[dict]:
             continue
         for jsonl_file in project_dir.glob("*.jsonl"):
             try:
-                with open(jsonl_file, errors="replace") as fh:
+                with open(jsonl_file, encoding="utf-8", errors="replace") as fh:
                     for raw in fh:
                         try:
                             obj = json.loads(raw)
