@@ -128,13 +128,11 @@ def _probe_hermes() -> dict:
         latency = round((time.monotonic() - t0) * 1000, 1)
         gw_state = data.get("gateway_state", "unknown")
         pid = data.get("pid")
-        # Verify PID is actually alive
-        if pid:
-            try:
-                os.kill(int(pid), 0)
-                status = "online" if gw_state == "running" else "degraded"
-            except (ProcessLookupError, PermissionError):
-                status = "offline"
+        # Verify PID is actually alive (psutil works on Windows; os.kill(pid, 0) doesn't)
+        from gateway.status import _pid_exists
+
+        if pid and _pid_exists(int(pid)):
+            status = "online" if gw_state == "running" else "degraded"
         else:
             status = "offline"
         platforms = data.get("platforms", {})
