@@ -277,11 +277,15 @@ def ingest(snap: RuntimeSnapshot) -> dict:
         shutil.rmtree(RUNTIME_REPO_PATH)
     RUNTIME_REPO_TMP.rename(RUNTIME_REPO_PATH)
 
-    # 3. Trigger re-analysis
+    # 3. Delete old GitNexus index so the re-analyze produces a clean graph
+    #    (GitNexus does incremental updates; stale nodes persist otherwise)
+    _delete_repo_if_exists(REPO_NAME)
+
+    # 4. Trigger re-analysis
     job = _api("POST", "/api/analyze", {"path": str(RUNTIME_REPO_PATH)})
     job_id = job["jobId"]
 
-    # 4. Wait for completion
+    # 5. Wait for completion
     result = _wait_for_job(job_id)
     if result.get("status") != "complete":
         raise RuntimeError(f"GitNexus analyze failed: {result}")
