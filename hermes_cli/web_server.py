@@ -4365,6 +4365,46 @@ def _mount_plugin_api_routes():
             _log.warning("Failed to load plugin %s API routes: %s", plugin["name"], exc)
 
 
+# ---------------------------------------------------------------------------
+# GitNexus reverse proxy — /api/gitnexus/* → http://127.0.0.1:4747/api/*
+# Session-token auth is enforced automatically by auth_middleware above.
+# ---------------------------------------------------------------------------
+_GITNEXUS_BACKEND = "http://127.0.0.1:4747"
+
+
+async def _gitnexus_proxy(path: str, request: Request) -> Response:
+    """Forward request to the GitNexus backend and stream the response back."""
+    import httpx
+
+    url = f"{_GITNEXUS_BACKEND}/api/{path}"
+    params = dict(request.query_params)
+    body = await request.body()
+    skip_req = {"host", "content-length", "transfer-encoding"}
+    forward_headers = {k: v for k, v in request.headers.items() if k.lower() not in skip_req}
+
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            upstream = await client.request(
+                method=request.method,
+                url=url,
+                params=params,
+                content=body,
+                headers=forward_headers,
+            )
+    except httpx.ConnectError:
+        raise HTTPException(status_code=502, detail="GitNexus backend unavailable")
+
+    skip_resp = {"transfer-encoding", "connection", "keep-alive"}
+    resp_headers = {k: v for k, v in upstream.headers.items() if k.lower() not in skip_resp}
+    return Response(content=upstream.content, status_code=upstream.status_code, headers=resp_headers)
+
+
+app.add_api_route(
+    "/api/gitnexus/{path:path}",
+    _gitnexus_proxy,
+    methods=["GET", "POST", "PUT", "DELETE", "PATCH"],
+)
+
 # Mount plugin API routes before the SPA catch-all.
 _mount_plugin_api_routes()
 
