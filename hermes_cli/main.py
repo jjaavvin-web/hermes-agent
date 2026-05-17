@@ -102,8 +102,41 @@ def _require_tty(command_name: str) -> None:
         sys.exit(1)
 
 
-# Add project root to path
-PROJECT_ROOT = Path(__file__).parent.parent.resolve()
+# Add project root to path.
+#
+# When ``hermes`` is installed non-editable (uv silently dropped ``-e`` from
+# install, or the user ran ``pip install hermes-agent``), ``__file__`` points
+# at the site-packages copy of this module. Later ``from hermes_cli.X import
+# Y`` statements then resolve to the stale snapshot bundled at install time —
+# missing every route, plugin, and asset added since. Detect that case and
+# prefer the source checkout if one exists at a recognizable layout.
+def _resolve_project_root() -> Path:
+    here = Path(__file__).resolve()
+    if "site-packages" in here.parts:
+        for candidate in here.parents:
+            if (
+                (candidate / "pyproject.toml").is_file()
+                and (candidate / "hermes_cli" / "main.py").is_file()
+                and (candidate / "hermes_cli" / "main.py").resolve() != here
+            ):
+                # Redirect the partially-loaded hermes_cli package's submodule
+                # search path so subsequent ``from hermes_cli.X import Y``
+                # resolves to source rather than the stale site-packages snapshot.
+                pkg = sys.modules.get("hermes_cli")
+                if pkg is not None and hasattr(pkg, "__path__"):
+                    pkg.__path__ = [str(candidate / "hermes_cli")]
+                # Purge any already-imported hermes_cli submodules. Skip the
+                # currently-loading hermes_cli.main and the parent package
+                # itself — deleting those mid-import breaks Python's import
+                # bookkeeping with KeyError at finalization.
+                for _mod in list(sys.modules):
+                    if _mod.startswith("hermes_cli.") and _mod != "hermes_cli.main":
+                        del sys.modules[_mod]
+                return candidate
+    return here.parent.parent
+
+
+PROJECT_ROOT = _resolve_project_root()
 sys.path.insert(0, str(PROJECT_ROOT))
 
 
@@ -7071,6 +7104,38 @@ def _refresh_active_lazy_features() -> None:
         print("  `hermes update` once the upstream issue is resolved.")
 
 
+def _verify_editable_install(
+    install_cmd_prefix: list[str], *, env: dict[str, str] | None = None
+) -> None:
+    """Force an editable re-install if pip/uv silently produced a wheel install.
+
+    uv occasionally drops the ``-e`` flag in some resolver paths, leaving
+    hermes-agent installed as a regular wheel. That copies hermes_cli/ into
+    site-packages, freezing the snapshot — subsequent ``npm run build`` output
+    and any source edits become invisible until the user reinstalls or
+    symlinks the package back to source. Detect that case and force-reinstall
+    editable so future updates and rebuilds are picked up.
+    """
+    try:
+        import importlib.metadata as md
+
+        direct_url = md.distribution("hermes-agent").read_text("direct_url.json") or ""
+    except Exception:
+        return  # missing metadata is not actionable from here
+
+    if '"editable": true' in direct_url or '"editable":true' in direct_url:
+        return
+
+    print("  ⚠ Install resolved to non-editable wheel; forcing editable re-install...")
+    try:
+        _run_install_with_heartbeat(
+            install_cmd_prefix + ["install", "--force-reinstall", "--no-deps", "-e", "."],
+            env=env,
+        )
+    except subprocess.CalledProcessError as exc:
+        print(f"  ⚠ Editable re-install failed: {exc}; continuing with wheel install")
+
+
 def _install_python_dependencies_with_optional_fallback(
     install_cmd_prefix: list[str],
     *,
@@ -7104,6 +7169,7 @@ def _install_python_dependencies_with_optional_fallback(
 
     try:
         _install(["install", "-e", f".[{group}]"])
+        _verify_editable_install(install_cmd_prefix, env=env)
         return
     except subprocess.CalledProcessError:
         print(
@@ -7111,6 +7177,7 @@ def _install_python_dependencies_with_optional_fallback(
         )
 
     _install(["install", "-e", "."])
+    _verify_editable_install(install_cmd_prefix, env=env)
 
     failed_extras: list[str] = []
     installed_extras: list[str] = []
