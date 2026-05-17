@@ -72,6 +72,7 @@ export const ko: Translations = {
       config: "설정",
       cron: "Cron",
       documentation: "문서",
+      explorer: "탐색기",
       keys: "키",
       logs: "로그",
       cockpit: "Cockpit",
@@ -534,6 +535,10 @@ export const ko: Translations = {
       tweet_text: "Just unlocked {tier_part}\"{name}\" in Hermes Agent ☤",
     },
   },
+  explorer: {
+    title: "코드 탐색기",
+  },
+
   kanban: {
     loading: "Kanban 보드를 불러오는 중입니다…",
     loadFailed: "Kanban 보드를 불러오지 못했습니다: ",

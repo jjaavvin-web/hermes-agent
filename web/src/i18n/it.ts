@@ -72,6 +72,7 @@ export const it: Translations = {
       config: "Configurazione",
       cron: "Cron",
       documentation: "Documentazione",
+      explorer: "Esploratore",
       keys: "Chiavi",
       logs: "Log",
       cockpit: "Cockpit",
@@ -533,6 +534,10 @@ export const it: Translations = {
       tweet_text: "Just unlocked {tier_part}\"{name}\" in Hermes Agent ☤",
     },
   },
+  explorer: {
+    title: "Esploratore di codice",
+  },
+
   kanban: {
     loading: "Caricamento bacheca Kanban…",
     loadFailed: "Caricamento della bacheca Kanban non riuscito: ",

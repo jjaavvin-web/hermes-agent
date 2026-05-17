@@ -31,6 +31,7 @@ import {
   LayoutDashboard,
   Menu,
   MessageSquare,
+  Network,
   Package,
   Puzzle,
   RotateCw,
@@ -68,6 +69,7 @@ import ProfilesPage from "@/pages/ProfilesPage";
 import SkillsPage from "@/pages/SkillsPage";
 import PluginsPage from "@/pages/PluginsPage";
 import MissionControlPage from "@/pages/MissionControlPage";
+import ExplorerPage from "@/pages/ExplorerPage";
 import ChatPage from "@/pages/ChatPage";
 import { LanguageSwitcher } from "@/components/LanguageSwitcher";
 import { ThemeSwitcher } from "@/components/ThemeSwitcher";
@@ -116,6 +118,7 @@ const BUILTIN_ROUTES_CORE: Record<string, ComponentType> = {
   "/cron": CronPage,
   "/skills": SkillsPage,
   "/plugins": PluginsPage,
+  "/explorer": ExplorerPage,
   "/profiles": ProfilesPage,
   "/config": ConfigPage,
   "/env": EnvPage,
@@ -153,6 +156,7 @@ const BUILTIN_NAV_REST: NavItem[] = [
   { path: "/logs", labelKey: "logs", label: "Logs", icon: FileText },
   { path: "/cron", labelKey: "cron", label: "Cron", icon: Clock },
   { path: "/skills", labelKey: "skills", label: "Skills", icon: Package },
+  { path: "/explorer", labelKey: "explorer", label: "Explorer", icon: Network },
   { path: "/plugins", labelKey: "plugins", label: "Plugins", icon: Puzzle },
   { path: "/profiles", labelKey: "profiles", label: "Profiles", icon: Users },
   { path: "/config", labelKey: "config", label: "Config", icon: Settings },
@@ -195,6 +199,7 @@ const ICON_MAP: Record<string, ComponentType<{ className?: string }>> = {
   Star,
   Code,
   Eye,
+  Network,
 };
 
 function resolveIcon(name: string): ComponentType<{ className?: string }> {
@@ -324,6 +329,7 @@ export default function App() {
   const closeMobile = useCallback(() => setMobileOpen(false), []);
   const isDocsRoute = pathname === "/docs" || pathname === "/docs/";
   const normalizedPath = pathname.replace(/\/$/, "") || "/";
+  const isExplorerRoute = normalizedPath === "/explorer";
   const isChatRoute = normalizedPath === "/chat";
   const embeddedChat = isDashboardEmbeddedChatEnabled();
 
@@ -596,18 +602,20 @@ export default function App() {
             <div
               className={cn(
                 "relative z-2 flex min-w-0 min-h-0 flex-1 flex-col",
-                "px-3 sm:px-6",
-                isChatRoute
-                  ? "pb-3 pt-1 sm:pb-4 sm:pt-2 lg:pt-4"
-                  : "pt-2 sm:pt-4 lg:pt-6 pb-4 sm:pb-8",
-                isDocsRoute && "min-h-0 flex-1",
+                !isExplorerRoute && "px-3 sm:px-6",
+                isExplorerRoute
+                  ? "p-0"
+                  : isChatRoute
+                    ? "pb-3 pt-1 sm:pb-4 sm:pt-2 lg:pt-4"
+                    : "pt-2 sm:pt-4 lg:pt-6 pb-4 sm:pb-8",
+                (isDocsRoute || isExplorerRoute) && "min-h-0 flex-1",
               )}
             >
               <PluginSlot name="pre-main" />
               <div
                 className={cn(
                   "w-full min-w-0",
-                  (isDocsRoute || isChatRoute) &&
+                  (isDocsRoute || isChatRoute || isExplorerRoute) &&
                     "min-h-0 flex flex-1 flex-col",
                 )}
               >

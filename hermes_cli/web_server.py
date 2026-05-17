@@ -4373,6 +4373,32 @@ try:
     _log.info("Mounted mission control dashboard API routes at /api/dashboard/")
 except Exception as _exc:
     _log.warning("Failed to load dashboard_health routes: %s", _exc)
+# ---------------------------------------------------------------------------
+# GitNexus Explorer — serve the production web UI under /explorer/.
+# Placed before mount_spa() so /explorer/* routes are not captured by the
+# dashboard SPA catch-all (/{full_path:path}).
+# ---------------------------------------------------------------------------
+_GITNEXUS_DIST = Path.home() / ".local/share/gitnexus/gitnexus-web/dist"
+
+if _GITNEXUS_DIST.exists():
+    _gitnexus_index = _GITNEXUS_DIST / "index.html"
+
+    @app.get("/explorer")
+    async def _gitnexus_explorer_root(request: Request):
+        """Redirect bare /explorer to /explorer/ for SPA base-path correctness."""
+        return Response(status_code=302, headers={"Location": "/explorer/"})
+
+    @app.get("/explorer/{full_path:path}")
+    async def _gitnexus_explorer_page(full_path: str, request: Request):
+        """Serve the GitNexus web UI. Falls back to index.html for SPA routing."""
+        file_path = _GITNEXUS_DIST / full_path
+        if (
+            full_path
+            and file_path.resolve().is_relative_to(_GITNEXUS_DIST.resolve())
+            and file_path.is_file()
+        ):
+            return FileResponse(file_path)
+        return FileResponse(_gitnexus_index)
 
 mount_spa(app)
 
