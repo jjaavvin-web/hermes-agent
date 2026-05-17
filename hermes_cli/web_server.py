@@ -4397,6 +4397,13 @@ if _GITNEXUS_DIST.exists():
         ):
             return FileResponse(file_path)
         return FileResponse(_gitnexus_index)
+# Mount personas routes (Hive B — Pantheon).
+try:
+    from hermes_cli.personas import router as _personas_router
+    app.include_router(_personas_router)
+    _log.info("Mounted personas API routes at /api/personas/")
+except Exception as _exc:
+    _log.warning("Failed to load personas routes: %s", _exc)
 
 mount_spa(app)
 
