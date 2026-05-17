@@ -90,6 +90,7 @@ export interface Translations {
       documentation: string;
       keys: string;
       logs: string;
+      cockpit: string;
       models: string;
       profiles: string;
       plugins: string;
