@@ -50,7 +50,7 @@ export default function ExplorerPage() {
       )}
       <iframe
         ref={iframeRef}
-        src="/explorer/"
+        src="/_gitnexus-app/"
         sandbox="allow-scripts allow-same-origin allow-forms"
         onLoad={handleLoad}
         onError={handleError}
