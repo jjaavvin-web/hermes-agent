@@ -74,6 +74,7 @@ export const af: Translations = {
       documentation: "Dokumentasie",
       keys: "Sleutels",
       logs: "Logs",
+      cockpit: "Cockpit",
       models: "Modelle",
       profiles: "profiele : multi-agente",
       plugins: "Inproppe",

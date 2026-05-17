@@ -74,6 +74,7 @@ export const ga: Translations = {
       documentation: "Doiciméadú",
       keys: "Eochracha",
       logs: "Logaí",
+      cockpit: "Cockpit",
       models: "Samhlacha",
       profiles: "próifílí : il-agents",
       plugins: "Plugins",

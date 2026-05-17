@@ -3616,6 +3616,7 @@ _BUILTIN_DASHBOARD_THEMES = [
     {"name": "mono",      "label": "Mono",           "description": "Clean grayscale — minimal and focused"},
     {"name": "cyberpunk", "label": "Cyberpunk",      "description": "Neon green on black — matrix terminal"},
     {"name": "rose",      "label": "Rosé",           "description": "Soft pink and warm ivory — easy on the eyes"},
+    {"name": "hermes-command-noir", "label": "Command Noir", "description": "Dark navy terminal — multi-layer operational status theme"},
 ]
 
 
@@ -4364,6 +4365,14 @@ def _mount_plugin_api_routes():
 
 # Mount plugin API routes before the SPA catch-all.
 _mount_plugin_api_routes()
+
+# Mount mission control dashboard routes (Hive 2 live data layer).
+try:
+    from hermes_cli.dashboard_health import router as _mission_router
+    app.include_router(_mission_router)
+    _log.info("Mounted mission control dashboard API routes at /api/dashboard/")
+except Exception as _exc:
+    _log.warning("Failed to load dashboard_health routes: %s", _exc)
 
 mount_spa(app)
 
