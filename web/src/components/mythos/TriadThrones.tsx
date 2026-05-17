@@ -1,11 +1,13 @@
+import type React from "react";
 import { mythos } from "../../themes/hermes-mythos";
 import { useTheme } from "../../themes/context";
 
 interface Props {
   className?: string;
+  style?: React.CSSProperties;
 }
 
-export default function TriadThrones({ className }: Props) {
+export default function TriadThrones({ className, style }: Props) {
   const { theme } = useTheme();
   const isDark = theme.palette.background.hex.toLowerCase() < "#888888";
   const labelColor = isDark ? mythos.color.marble : mythos.color.night;
@@ -79,6 +81,7 @@ export default function TriadThrones({ className }: Props) {
   return (
     <svg
       className={className}
+      style={style}
       viewBox="0 0 140 120"
       xmlns="http://www.w3.org/2000/svg"
       aria-label="Triad of thrones: Planner, Executor, Critic"

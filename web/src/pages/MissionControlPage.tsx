@@ -8,6 +8,7 @@ import {
   QueueSparkline,
   TopStrip,
 } from "../components/mission";
+import { NowCard } from "../components/mission/NowCard";
 import {
   useMissionStream,
   useMissionSnapshot,
@@ -49,6 +50,7 @@ const MissionControlPage: FC = () => {
 
   return (
     <div className="flex flex-col h-full gap-2 p-3 bg-background">
+      <NowCard />
       <TopStrip snapshot={mergedSnapshot} />
       {/* Cockpit layout: 3-col on desktop, single column on mobile (≤768px) */}
       <div className="flex flex-col md:flex-row flex-1 gap-2 min-h-0">

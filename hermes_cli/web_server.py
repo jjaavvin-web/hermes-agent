@@ -119,6 +119,7 @@ _PUBLIC_API_PATHS: frozenset = frozenset({
     "/api/dashboard/themes",
     "/api/dashboard/plugins",
     "/api/dashboard/plugins/rescan",
+    "/api/welcome/first-run-status",
 })
 
 
@@ -4404,6 +4405,16 @@ try:
     _log.info("Mounted personas API routes at /api/personas/")
 except Exception as _exc:
     _log.warning("Failed to load personas routes: %s", _exc)
+
+# ---------------------------------------------------------------------------
+# Welcome / first-run status (Hive C)
+# ---------------------------------------------------------------------------
+
+@app.get("/api/welcome/first-run-status")
+def welcome_first_run():
+    """Returns whether ~/.hermes/soul.md exists (used for first-run redirect)."""
+    return {"soul_exists": (Path.home() / ".hermes" / "soul.md").exists()}
+
 
 mount_spa(app)
 
