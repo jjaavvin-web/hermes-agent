@@ -1,0 +1,29 @@
+# hermes-gateway-watchdog.timer — fire the watchdog every 5 minutes.
+#
+# Cadence rationale (vs the FAILURE-RUNBOOK-V2 §F01 prevention note's
+# "*/10 * * * *" cron):
+#   - 5 min keeps median detection latency under 3 minutes (vs ~7 with cron)
+#   - Card lifecycles can complete inside 10 minutes; a 10-min lag means a
+#     full hive can fail before the watchdog notices
+#   - systemd timer (vs cron) gives us: journal logging, Persistent=true
+#     missed-run recovery after laptop suspend, AccuracySec deduplication,
+#     and `systemctl list-timers` for 3am-friendly observability
+#
+# Tuning: change OnUnitActiveSec here, or set env vars on the .service.
+# All script tunables are env-var driven (see gateway-watchdog.sh header).
+
+[Unit]
+Description=Run hermes-gateway-watchdog every 5 minutes (3 min after boot)
+Requires=hermes-gateway-watchdog.service
+
+[Timer]
+OnBootSec=3min
+OnUnitActiveSec=5min
+AccuracySec=30s
+# Persistent=true: if the laptop was suspended past a scheduled tick, fire
+# once on resume so we don't miss the wake-up health check.
+Persistent=true
+Unit=hermes-gateway-watchdog.service
+
+[Install]
+WantedBy=timers.target

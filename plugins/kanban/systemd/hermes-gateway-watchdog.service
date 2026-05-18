@@ -1,0 +1,27 @@
+# hermes-gateway-watchdog.service — dead-man health check for the gateway.
+#
+# Source-of-truth for this unit lives here in the repo. To install:
+#   cp plugins/kanban/systemd/hermes-gateway-watchdog.service ~/.config/systemd/user/
+#   cp plugins/kanban/systemd/hermes-gateway-watchdog.timer   ~/.config/systemd/user/
+#   systemctl --user daemon-reload
+# Then see audit dir ACTIVATION-GUIDE.md for enabling the timer.
+#
+# This unit only runs the probe script. It DOES NOT restart the gateway on
+# failure — recovery is manual per FAILURE-RUNBOOK-V2 §F01. The script
+# notifies via Telegram and writes alerts to ~/.hermes/state/gateway-watchdog/.
+
+[Unit]
+Description=Hermes Gateway watchdog — probes gateway/dashboard/dispatcher; Telegram-alerts on outage (no restart)
+Documentation=https://hermes-agent.nousresearch.com/docs/user-guide/features/kanban
+After=default.target
+
+[Service]
+Type=oneshot
+ExecStart=/home/josep/.hermes/scripts/gateway-watchdog.sh
+# Probe failure is non-fatal to the *unit* — systemd journal already records
+# stderr; the script handles notification itself.
+SuccessExitStatus=0 1
+StandardOutput=journal
+StandardError=journal
+# Cap individual probe wall time so a hung curl/CLI can't pin the timer slot.
+TimeoutStartSec=60
