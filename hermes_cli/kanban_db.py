@@ -1966,7 +1966,12 @@ def claim_task(
         )
         _append_event(
             conn, task_id, "claimed",
-            {"lock": lock, "expires": expires, "run_id": run_id},
+            {
+                "lock": lock,
+                "expires": expires,
+                "run_id": run_id,
+                "assignee": trow["assignee"] if (trow and trow["assignee"]) else lock,
+            },
             run_id=run_id,
         )
         return get_task(conn, task_id)

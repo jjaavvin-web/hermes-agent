@@ -4246,6 +4246,8 @@ class GatewayRunner:
             return
 
         TERMINAL_KINDS = ("completed", "blocked", "gave_up", "crashed", "timed_out")
+        INFORMATIONAL_KINDS = ("created", "claimed")
+        DELIVERED_KINDS = TERMINAL_KINDS + INFORMATIONAL_KINDS
         # Subscriptions are removed only when the task reaches a truly final
         # status (done / archived). We used to also unsub on any terminal
         # event kind (gave_up / crashed / timed_out / blocked), but that
@@ -4258,6 +4260,32 @@ class GatewayRunner:
         # task is genuinely done lets the cursor (advanced atomically by
         # claim_unseen_events_for_sub) handle dedup, and any retry-loop
         # event reaches the user.
+        # Default-subscriber fallback: deliver events for tasks that have no
+        # subscription row to a configured default chat. Reads env vars at
+        # watcher init so they're resolved once per watcher lifetime.
+        import os as _os
+        _default_chat_id: str | None = _os.environ.get("HERMES_DEFAULT_NOTIFY_CHAT_ID") or None
+        _default_platform_str: str = (
+            _os.environ.get("HERMES_DEFAULT_NOTIFY_PLATFORM") or "telegram"
+        ).lower()
+        if not _default_chat_id:
+            _allowed = _os.environ.get("TELEGRAM_ALLOWED_USERS") or ""
+            _first = _allowed.split(",")[0].strip()
+            if _first:
+                _default_chat_id = _first
+                _default_platform_str = "telegram"
+        if _default_chat_id and not getattr(self, "_kanban_default_log_emitted", False):
+            logger.info(
+                "kanban notifier: default-subscriber fallback enabled → %s/%s",
+                _default_platform_str, _default_chat_id,
+            )
+            self._kanban_default_log_emitted = True
+        # Per-board cursor for default-subscriber event scanning. Keyed by
+        # resolved DB path so multi-board setups track independently.
+        _default_cursors: dict[str, int] = getattr(
+            self, "_kanban_default_cursors", {}
+        )
+        self._kanban_default_cursors = _default_cursors
         # Per-subscription send-failure counter. Adapter.send raising
         # means the chat is dead (deleted, bot kicked, etc.) — after N
         # consecutive send failures the sub is dropped so we don't spin
@@ -4353,7 +4381,7 @@ class GatewayRunner:
                                     platform=sub["platform"],
                                     chat_id=sub["chat_id"],
                                     thread_id=sub.get("thread_id") or "",
-                                    kinds=TERMINAL_KINDS,
+                                    kinds=DELIVERED_KINDS,
                                 )
                                 if not events:
                                     continue
@@ -4370,6 +4398,95 @@ class GatewayRunner:
                                     "task": task,
                                     "board": slug,
                                 })
+                            # Default-subscriber fallback: scan for events on
+                            # tasks that have no subscription row and deliver
+                            # them to the configured default chat.
+                            if _default_chat_id and _default_platform_str in active_platforms:
+                                subscribed_task_ids = {s["task_id"] for s in subs}
+                                if resolved_db_path not in _default_cursors:
+                                    # Cold start: seed to current MAX(id) so we
+                                    # don't replay the entire event history.
+                                    # Only events written after gateway start
+                                    # are actionable.
+                                    seed_row = conn.execute(
+                                        "SELECT COALESCE(MAX(id), 0) AS max_id FROM task_events"
+                                    ).fetchone()
+                                    seed_id = int(seed_row["max_id"]) if seed_row else 0
+                                    _default_cursors[resolved_db_path] = seed_id
+                                    logger.info(
+                                        "kanban notifier: default-subscriber seeded board %s to event id %d",
+                                        resolved_db_path, seed_id,
+                                    )
+                                board_cursor = _default_cursors[resolved_db_path]
+                                try:
+                                    import json as _json
+                                    kind_ph = ",".join("?" * len(DELIVERED_KINDS))
+                                    rows = conn.execute(
+                                        f"SELECT * FROM task_events "
+                                        f"WHERE id > ? AND kind IN ({kind_ph}) "
+                                        f"ORDER BY id ASC",
+                                        [board_cursor, *DELIVERED_KINDS],
+                                    ).fetchall()
+                                    for r in rows:
+                                        ev_task_id = r["task_id"]
+                                        ev_id = int(r["id"])
+                                        if ev_task_id in subscribed_task_ids:
+                                            # Already covered by the sub-based
+                                            # path; don't double-deliver.
+                                            # Advance the default cursor past
+                                            # this event immediately — it will
+                                            # never be a default-delivery event
+                                            # so there is nothing to retry.
+                                            _default_cursors[resolved_db_path] = max(
+                                                _default_cursors.get(resolved_db_path, 0), ev_id,
+                                            )
+                                            continue
+                                        try:
+                                            payload = _json.loads(r["payload"]) if r["payload"] else None
+                                        except Exception:
+                                            payload = None
+                                        from hermes_cli.kanban_db import Event as _Event
+                                        ev = _Event(
+                                            id=r["id"],
+                                            task_id=ev_task_id,
+                                            kind=r["kind"],
+                                            payload=payload,
+                                            created_at=r["created_at"],
+                                            run_id=(int(r["run_id"]) if "run_id" in r.keys() and r["run_id"] is not None else None),
+                                        )
+                                        fallback_task = _kb.get_task(conn, ev_task_id)
+                                        fallback_sub = {
+                                            "task_id": ev_task_id,
+                                            "platform": _default_platform_str,
+                                            "chat_id": _default_chat_id,
+                                            "thread_id": "",
+                                        }
+                                        logger.info(
+                                            "kanban notifier: default-subscriber delivery for %s "
+                                            "event %s on board %s to %s/%s",
+                                            ev.kind, ev_task_id, slug,
+                                            _default_platform_str, _default_chat_id,
+                                        )
+                                        deliveries.append({
+                                            "sub": fallback_sub,
+                                            "old_cursor": _default_cursors.get(resolved_db_path, 0),
+                                            "cursor": ev_id,
+                                            "events": [ev],
+                                            "task": fallback_task,
+                                            "board": slug,
+                                            "default_delivery": True,
+                                            # Cursor is advanced ONLY after a
+                                            # successful adapter.send so a
+                                            # transient failure does not
+                                            # silently lose the event.
+                                            "_default_advance_to": ev_id,
+                                            "_default_db_path": resolved_db_path,
+                                        })
+                                except Exception as _exc:
+                                    logger.debug(
+                                        "kanban notifier: default-subscriber scan failed for board %s: %s",
+                                        slug, _exc,
+                                    )
                         finally:
                             conn.close()
                     return deliveries
@@ -4457,6 +4574,15 @@ class GatewayRunner:
                                 f"⏱ {tag}Kanban {sub['task_id']} timed out "
                                 f"(max_runtime={limit}s); will retry"
                             )
+                        elif kind == "created":
+                            msg = f"📥 {sub['task_id']} created: {title}"
+                        elif kind == "claimed":
+                            assignee = (
+                                (ev.payload.get("assignee") if ev.payload else None)
+                                or (task.assignee if task else None)
+                                or "unknown"
+                            )
+                            msg = f"🤖 {sub['task_id']} claimed by {assignee}"
                         else:
                             continue
                         metadata: dict[str, Any] = {}
@@ -4476,6 +4602,17 @@ class GatewayRunner:
                             )
                             # Reset the failure counter on success.
                             sub_fail_counts.pop(sub_key, None)
+                            # For default-delivery entries advance the
+                            # in-memory cursor NOW — after confirmed send —
+                            # so a failure on a later event does not lose
+                            # this one (no DB row to rewind against).
+                            if d.get("default_delivery"):
+                                _adv = d.get("_default_advance_to")
+                                _dpath = d.get("_default_db_path")
+                                if _adv is not None and _dpath is not None:
+                                    self._kanban_default_cursors[_dpath] = max(
+                                        self._kanban_default_cursors.get(_dpath, 0), _adv,
+                                    )
                         except Exception as exc:
                             fails = sub_fail_counts.get(sub_key, 0) + 1
                             sub_fail_counts[sub_key] = fails
@@ -4509,9 +4646,13 @@ class GatewayRunner:
                         # All events delivered; advance cursor. The cursor
                         # is the dedup mechanism — it prevents re-delivery
                         # of the same event on subsequent ticks.
-                        await asyncio.to_thread(
-                            self._kanban_advance, sub, d["cursor"], board_slug,
-                        )
+                        # Default-delivery entries use the in-memory cursor
+                        # (already advanced per-event above on send success)
+                        # and have no kanban_notify_subs row to advance.
+                        if not d.get("default_delivery"):
+                            await asyncio.to_thread(
+                                self._kanban_advance, sub, d["cursor"], board_slug,
+                            )
                         # Unsubscribe only when the task has reached a truly
                         # final status (done / archived). For blocked /
                         # gave_up / crashed / timed_out the subscription is
@@ -4519,11 +4660,12 @@ class GatewayRunner:
                         # dispatcher respawns the task and it cycles into the
                         # same state. See the longer comment on TERMINAL_KINDS
                         # above for the failure mode this prevents.
-                        task_terminal = task and task.status in {"done", "archived"}
-                        if task_terminal:
-                            await asyncio.to_thread(
-                                self._kanban_unsub, sub, board_slug,
-                            )
+                        if not d.get("default_delivery"):
+                            task_terminal = task and task.status in {"done", "archived"}
+                            if task_terminal:
+                                await asyncio.to_thread(
+                                    self._kanban_unsub, sub, board_slug,
+                                )
             except Exception as exc:
                 logger.warning("kanban notifier tick failed: %s", exc)
             # Sleep with cancellation checks.
