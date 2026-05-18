@@ -4381,16 +4381,32 @@ def add_notify_sub(
     notifier_profile: Optional[str] = None,
 ) -> None:
     """Register a gateway source that wants terminal-state notifications
-    for ``task_id``. Idempotent on (task, platform, chat, thread)."""
+    for ``task_id``. Idempotent on (task, platform, chat, thread).
+
+    The cursor (``last_event_id``) for a new subscription is seeded to
+    ``MAX(task_events.id)`` for the task — not 0 — so a chat that subscribes
+    AFTER the default-subscriber path already delivered events does not
+    cause the gateway watcher to re-deliver every prior event on the next
+    tick. ``INSERT OR IGNORE`` keeps the operation idempotent: an existing
+    subscription's cursor is left untouched.
+    """
     now = int(time.time())
     with write_txn(conn):
+        max_row = conn.execute(
+            "SELECT COALESCE(MAX(id), 0) AS max_id "
+            "FROM task_events WHERE task_id = ?",
+            (task_id,),
+        ).fetchone()
+        seed = int(max_row["max_id"]) if max_row else 0
         conn.execute(
             """
             INSERT OR IGNORE INTO kanban_notify_subs
-                (task_id, platform, chat_id, thread_id, user_id, notifier_profile, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+                (task_id, platform, chat_id, thread_id, user_id,
+                 notifier_profile, created_at, last_event_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            (task_id, platform, chat_id, thread_id or "", user_id, notifier_profile, now),
+            (task_id, platform, chat_id, thread_id or "", user_id,
+             notifier_profile, now, seed),
         )
 
 

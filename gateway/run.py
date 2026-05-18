@@ -789,6 +789,38 @@ def _dequeue_pending_event(adapter, session_key: str) -> MessageEvent | None:
     return adapter.get_pending_message(session_key)
 
 
+def _md_safe_text(s: Any) -> str:
+    """Neutralize MarkdownV2-active characters in user-supplied placeholder text.
+
+    The kanban notifier builds messages like
+        f"📥 {sub['task_id']} created: {title}"
+    that are then passed through ``TelegramAdapter.format_message``. Bare user
+    input containing ``*``, ``[`` / ``]``, or `` ` `` gets *interpreted* by
+    format_message as italic, link, or code-span — no parse error is raised,
+    so the adapter's plain-text fallback never fires. A title like
+    ``[click](https://evil.example)`` would become a live clickable link.
+
+    Replace the four actively-interpreted characters with visually-similar
+    glyphs that ``format_message`` ignores. ``_`` is left alone because the
+    format_message italic conversion only matches single ``*`` (not ``_``);
+    bare underscores survive into step-10 escaping and render as literal
+    ``\\_`` in MarkdownV2, which is the desired behavior for IDs like
+    ``my_task_id``.
+
+    Apply this to every user-supplied placeholder embedded in notifier
+    messages (title, assignee, summary, reason, error, etc.).
+    """
+    if s is None:
+        return ""
+    return (
+        str(s)
+        .replace("*", "∗")   # U+2217 ASTERISK OPERATOR — not markdown-active
+        .replace("`", "'")   # apostrophe — backtick starts a code span
+        .replace("[", "(")   # paren — left bracket starts a markdown link
+        .replace("]", ")")   # paren — right bracket closes a markdown link
+    )
+
+
 _INTERRUPT_REASON_STOP = "Stop requested"
 _INTERRUPT_REASON_RESET = "Session reset requested"
 _INTERRUPT_REASON_TIMEOUT = "Execution timed out (inactivity)"
@@ -4520,13 +4552,24 @@ class GatewayRunner:
                             board_slug,
                         )
                         continue
-                    title = (task.title if task else sub["task_id"])[:120]
+                    # User-supplied placeholders (title, assignee, task_id,
+                    # payload fields) are sanitized via _md_safe_text so that
+                    # TelegramAdapter.format_message doesn't interpret content
+                    # like ``*foo*`` as italic or ``[x](y)`` as a clickable
+                    # link. See _md_safe_text docstring for the threat model.
+                    # task_id is sanitized once and bound to safe_task_id;
+                    # every f-string in the loop uses safe_task_id rather
+                    # than sub['task_id'] directly.
+                    safe_task_id = _md_safe_text(sub["task_id"])
+                    title_raw = (task.title if task else sub["task_id"])[:120]
+                    title = _md_safe_text(title_raw)
                     for ev in d["events"]:
                         kind = ev.kind
                         # Identity prefix: attribute terminal pings to the
                         # worker that did the work. Makes fleets (where one
                         # chat subscribes to many tasks) legible at a glance.
-                        who = (task.assignee if task and task.assignee else None)
+                        who_raw = (task.assignee if task and task.assignee else None)
+                        who = _md_safe_text(who_raw) if who_raw else None
                         tag = f"@{who} " if who else ""
                         if kind == "completed":
                             # Prefer the run's summary (the worker's
@@ -4540,30 +4583,30 @@ class GatewayRunner:
                                 payload_summary = str(ev.payload["summary"])
                             if payload_summary:
                                 h = payload_summary.strip().splitlines()[0][:200]
-                                handoff = f"\n{h}"
+                                handoff = f"\n{_md_safe_text(h)}"
                             elif task and task.result:
                                 r = task.result.strip().splitlines()[0][:160]
-                                handoff = f"\n{r}"
+                                handoff = f"\n{_md_safe_text(r)}"
                             msg = (
-                                f"✔ {tag}Kanban {sub['task_id']} done"
+                                f"✔ {tag}Kanban {safe_task_id} done"
                                 f" — {title}{handoff}"
                             )
                         elif kind == "blocked":
                             reason = ""
                             if ev.payload and ev.payload.get("reason"):
-                                reason = f": {str(ev.payload['reason'])[:160]}"
-                            msg = f"⏸ {tag}Kanban {sub['task_id']} blocked{reason}"
+                                reason = f": {_md_safe_text(str(ev.payload['reason'])[:160])}"
+                            msg = f"⏸ {tag}Kanban {safe_task_id} blocked{reason}"
                         elif kind == "gave_up":
                             err = ""
                             if ev.payload and ev.payload.get("error"):
-                                err = f"\n{str(ev.payload['error'])[:200]}"
+                                err = f"\n{_md_safe_text(str(ev.payload['error'])[:200])}"
                             msg = (
-                                f"✖ {tag}Kanban {sub['task_id']} gave up "
+                                f"✖ {tag}Kanban {safe_task_id} gave up "
                                 f"after repeated spawn failures{err}"
                             )
                         elif kind == "crashed":
                             msg = (
-                                f"✖ {tag}Kanban {sub['task_id']} worker crashed "
+                                f"✖ {tag}Kanban {safe_task_id} worker crashed "
                                 f"(pid gone); dispatcher will retry"
                             )
                         elif kind == "timed_out":
@@ -4571,18 +4614,19 @@ class GatewayRunner:
                             if ev.payload and ev.payload.get("limit_seconds"):
                                 limit = int(ev.payload["limit_seconds"])
                             msg = (
-                                f"⏱ {tag}Kanban {sub['task_id']} timed out "
+                                f"⏱ {tag}Kanban {safe_task_id} timed out "
                                 f"(max_runtime={limit}s); will retry"
                             )
                         elif kind == "created":
-                            msg = f"📥 {sub['task_id']} created: {title}"
+                            msg = f"📥 {safe_task_id} created: {title}"
                         elif kind == "claimed":
-                            assignee = (
+                            assignee_raw = (
                                 (ev.payload.get("assignee") if ev.payload else None)
                                 or (task.assignee if task else None)
                                 or "unknown"
                             )
-                            msg = f"🤖 {sub['task_id']} claimed by {assignee}"
+                            assignee = _md_safe_text(assignee_raw)
+                            msg = f"🤖 {safe_task_id} claimed by {assignee}"
                         else:
                             continue
                         metadata: dict[str, Any] = {}
