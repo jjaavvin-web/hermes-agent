@@ -338,6 +338,29 @@ class TestWebServerEndpoints:
             # Should be the SPA fallback, not the system file
             assert "root:" not in resp.text
 
+    def test_gitnexus_app_prefix_does_not_fall_through_to_hermes_spa(self, tmp_path, monkeypatch):
+        """/_gitnexus-app/ must serve GitNexus, not the Hermes SPA fallback."""
+        import hermes_cli.web_server as web_server
+
+        dist = tmp_path / "gitnexus-dist"
+        assets = dist / "assets"
+        assets.mkdir(parents=True)
+        (dist / "index.html").write_text(
+            "<!doctype html><title>GitNexus</title><div id='root'></div>",
+            encoding="utf-8",
+        )
+        (assets / "probe.js").write_text("window.__gitnexus_probe = true;", encoding="utf-8")
+        monkeypatch.setattr(web_server, "_GITNEXUS_DIST", dist)
+
+        resp = self.client.get("/_gitnexus-app/")
+        assert resp.status_code == 200
+        assert "GitNexus" in resp.text
+        assert "Hermes Agent" not in resp.text
+
+        asset_resp = self.client.get("/_gitnexus-app/assets/probe.js")
+        assert asset_resp.status_code == 200
+        assert "__gitnexus_probe" in asset_resp.text
+
     def test_path_traversal_dotdot_blocked(self):
         """Direct .. path traversal via encoded sequences."""
         resp = self.client.get("/%2e%2e/hermes_cli/web_server.py")

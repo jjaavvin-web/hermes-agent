@@ -30,7 +30,7 @@ describe("ExplorerPage", () => {
     );
   });
 
-  it("renders an iframe with src /explorer/", () => {
+  it("renders an iframe with src /_gitnexus-app/", () => {
     const { container } = render(
       <MemoryRouter>
         <ExplorerPage />
@@ -38,7 +38,7 @@ describe("ExplorerPage", () => {
     );
     const iframe = container.querySelector("iframe");
     expect(iframe).not.toBeNull();
-    expect(iframe?.getAttribute("src")).toBe("/explorer/");
+    expect(iframe?.getAttribute("src")).toBe("/_gitnexus-app/");
   });
 
   it("iframe has sandbox attribute", () => {
