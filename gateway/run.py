@@ -6398,6 +6398,13 @@ class GatewayRunner:
             if _cmd_def_inner and _cmd_def_inner.name == "kanban":
                 return await self._handle_kanban_command(event)
 
+            # /task must also bypass — same rationale as /kanban; it writes
+            # to the profile-agnostic kanban DB and the whole UX premise is
+            # that the user can log a follow-up task without interrupting
+            # the current conversation.
+            if _cmd_def_inner and _cmd_def_inner.name == "task":
+                return await self._handle_task_command(event)
+
             # /goal is safe mid-run for status/pause/clear (inspection and
             # control-plane only — doesn't interrupt the running turn).
             # Setting a new goal text mid-run is rejected with the same
@@ -6724,6 +6731,9 @@ class GatewayRunner:
 
         if canonical == "project":
             return await self._handle_project_command(event)
+
+        if canonical == "task":
+            return await self._handle_task_command(event)
 
         if canonical == "retry":
             return await self._handle_retry_command(event)
@@ -8806,6 +8816,113 @@ class GatewayRunner:
         if result and getattr(result, "success", False):
             return None
         return fallback
+
+    async def _handle_task_command(self, event: MessageEvent) -> str:
+        """Handle /task — parse grammar and create a kanban task directly."""
+        import asyncio
+        import time
+        from gateway.telegram_grammar import (
+            parse_task_command, normalize_title, build_idempotency_key,
+            format_syntax_error, format_ack, format_conflict,
+        )
+
+        text = (event.text or "").strip()
+        parsed = parse_task_command(text)
+
+        if not parsed["ok"]:
+            return format_syntax_error(parsed)
+
+        source = event.source
+        platform = getattr(source, "platform", None)
+        platform_str = (
+            platform.value if hasattr(platform, "value") else str(platform or "")
+        ).lower()
+        chat_id = str(getattr(source, "chat_id", "") or "").strip()
+        thread_id = str(getattr(source, "thread_id", "") or "").strip()
+        user_id = str(getattr(source, "user_id", "") or "").strip() or None
+
+        now_epoch = int(time.time())
+        normalized = normalize_title(parsed["description"])
+        idempotency_key = build_idempotency_key(
+            normalized_title=normalized,
+            chat_id=chat_id,
+            now_epoch=now_epoch,
+        )
+
+        # Race-free dedup marker: a unique-per-call token in created_by
+        # lets us check the returned row's created_by to tell a fresh
+        # insert from an idempotency-key hit, without the TOCTOU window
+        # of a pre-SELECT (two concurrent /task calls would both pass a
+        # pre-SELECT then both call create_task, the second silently
+        # returning the first's id via the inner idempotency check and
+        # both threads emitting a fresh-ack chip).
+        created_by_marker = f"telegram:{user_id or chat_id}:{time.time_ns()}"
+
+        try:
+            def _do_create():
+                from hermes_cli import kanban_db as _kb
+                conn = _kb.connect()
+                try:
+                    task_id = _kb.create_task(
+                        conn,
+                        title=parsed["description"],
+                        assignee=parsed["assignee"],
+                        priority=parsed["priority"],
+                        idempotency_key=idempotency_key,
+                        created_by=created_by_marker,
+                    )
+                    row = conn.execute(
+                        "SELECT created_by FROM tasks WHERE id = ?",
+                        (task_id,),
+                    ).fetchone()
+                    stored_marker = row["created_by"] if row else None
+                    is_duplicate = (stored_marker != created_by_marker)
+                    if not is_duplicate and platform_str and chat_id:
+                        try:
+                            _kb.add_notify_sub(
+                                conn, task_id=task_id,
+                                platform=platform_str, chat_id=chat_id,
+                                thread_id=thread_id or None,
+                                user_id=user_id,
+                                notifier_profile=getattr(self, "_kanban_notifier_profile", None) or self._active_profile_name(),
+                            )
+                            # Seed the subscription cursor above the
+                            # `created` event we just acked synchronously.
+                            # Otherwise the watcher would re-deliver it
+                            # on the next tick (cursor defaults to 0,
+                            # `created` is in DELIVERED_KINDS) and the
+                            # user would receive two `📥 created` pings
+                            # per /task invocation.
+                            max_row = conn.execute(
+                                "SELECT COALESCE(MAX(id), 0) AS m "
+                                "FROM task_events WHERE task_id = ?",
+                                (task_id,),
+                            ).fetchone()
+                            seed_id = int(max_row["m"]) if max_row else 0
+                            if seed_id > 0:
+                                with _kb.write_txn(conn):
+                                    conn.execute(
+                                        "UPDATE kanban_notify_subs "
+                                        "SET last_event_id = ? "
+                                        "WHERE task_id = ? AND platform = ? "
+                                        "AND chat_id = ? AND thread_id = ?",
+                                        (seed_id, task_id, platform_str,
+                                         chat_id, thread_id or ""),
+                                    )
+                        except Exception as exc:
+                            logger.warning("task auto-subscribe failed: %s", exc)
+                    return task_id, is_duplicate
+                finally:
+                    conn.close()
+
+            task_id, is_duplicate = await asyncio.to_thread(_do_create)
+        except Exception as exc:
+            logger.warning("_handle_task_command: task creation failed: %s", exc)
+            return "⚠️ INTERNAL — task creation failed (see logs)"
+
+        if is_duplicate:
+            return format_conflict(existing_task_id=task_id, parsed=parsed)
+        return format_ack(task_id=task_id, parsed=parsed)
 
     async def _handle_kanban_command(self, event: MessageEvent) -> str:
         """Handle /kanban — delegate to the shared kanban CLI.
