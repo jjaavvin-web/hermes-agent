@@ -344,6 +344,8 @@ export const api = {
   // Mission Control endpoints (Hive 2)
   getMissionSnapshot: () =>
     fetchJSON<import("@/components/mission/types").MissionSnapshot>("/api/dashboard/mission"),
+  getNexusHealth: () =>
+    fetchJSON<NexusHealthResponse>("/api/dashboard/nexus-health"),
   getRuntimeHealth: (name: string) =>
     fetchJSON<import("@/components/mission/types").HealthChip>(`/api/dashboard/health/runtime/${encodeURIComponent(name)}`),
   getSpendHistory: (range: "1d" | "7d" | "30d" = "7d") =>
@@ -792,6 +794,63 @@ export interface PluginManifestResponse {
   css?: string | null;
   has_api: boolean;
   source: string;
+}
+
+export type NexusHealthPosture = "safe" | "caution" | "stop";
+export type NexusHealthStatus = "ok" | "warn" | "error" | "unknown" | "auth_gated";
+
+export interface NexusHealthProvenance {
+  source: string;
+  detail: string;
+}
+
+export interface NexusHealthNode {
+  id: string;
+  label: string;
+  kind: string;
+  status: NexusHealthStatus;
+  summary: string;
+  details: string;
+  metrics: Record<string, unknown>;
+  provenance: NexusHealthProvenance[];
+  safe_next_check: string;
+  needs_joseph: boolean;
+}
+
+export interface NexusHealthEdge {
+  id: string;
+  source: string;
+  target: string;
+  label: string;
+  status: "ok" | "warn" | "error" | "unknown";
+  summary: string;
+  provenance: NexusHealthProvenance[];
+}
+
+export interface NexusHealthGate {
+  id: string;
+  label: string;
+  reason: string;
+  gate: string;
+}
+
+export interface NexusHealthAction {
+  id: string;
+  label: string;
+  kind: "copy" | "open" | "read";
+  payload: string;
+}
+
+export interface NexusHealthResponse {
+  generated_at: string;
+  posture: NexusHealthPosture;
+  summary: string;
+  nodes: NexusHealthNode[];
+  edges: NexusHealthEdge[];
+  needs_joseph: NexusHealthGate[];
+  safe_actions: NexusHealthAction[];
+  locked_actions: NexusHealthGate[];
+  evidence: NexusHealthProvenance[];
 }
 
 export interface HubAgentPluginRow {
