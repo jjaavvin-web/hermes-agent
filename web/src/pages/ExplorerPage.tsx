@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { useI18n } from "@/i18n";
 import { usePageHeader } from "@/contexts/usePageHeader";
 import { useTheme } from "@/themes";
+import { HERMES_BASE_PATH } from "@/lib/api";
 import { Spinner } from "@nous-research/ui/ui/components/spinner";
 
 export default function ExplorerPage() {
@@ -50,7 +51,7 @@ export default function ExplorerPage() {
       )}
       <iframe
         ref={iframeRef}
-        src="/_gitnexus-app/"
+        src={`${HERMES_BASE_PATH}/_gitnexus-app/`}
         sandbox="allow-scripts allow-same-origin allow-forms"
         onLoad={handleLoad}
         onError={handleError}

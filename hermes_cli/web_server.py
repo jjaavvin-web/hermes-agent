@@ -4425,20 +4425,36 @@ except Exception as _exc:
 # ---------------------------------------------------------------------------
 _GITNEXUS_DIST = Path.home() / ".local/share/gitnexus/gitnexus-web/dist"
 
-if _GITNEXUS_DIST.exists():
-    _gitnexus_index = _GITNEXUS_DIST / "index.html"
 
-    @app.get("/_gitnexus-app/{full_path:path}")
-    async def _gitnexus_explorer_page(full_path: str, request: Request):
-        """Serve the GitNexus web UI. Falls back to index.html for SPA routing."""
-        file_path = _GITNEXUS_DIST / full_path
-        if (
-            full_path
-            and file_path.resolve().is_relative_to(_GITNEXUS_DIST.resolve())
-            and file_path.is_file()
-        ):
-            return FileResponse(file_path)
-        return FileResponse(_gitnexus_index)
+@app.get("/_gitnexus-app/{full_path:path}")
+async def _gitnexus_explorer_page(full_path: str, request: Request):
+    """Serve the GitNexus web UI without falling through to Hermes' SPA.
+
+    This route is intentionally registered unconditionally.  The GitNexus
+    dist directory can be built after the dashboard process starts; if the
+    route only exists when the directory is present at import time, requests
+    to ``/_gitnexus-app/`` fall through to ``mount_spa`` and iframe a second
+    copy of the Hermes dashboard inside Explorer.
+    """
+    gitnexus_dist = _GITNEXUS_DIST
+    gitnexus_index = gitnexus_dist / "index.html"
+    if not gitnexus_index.is_file():
+        return JSONResponse(
+            {
+                "error": "GitNexus frontend not built",
+                "detail": "Expected GitNexus dist at ~/.local/share/gitnexus/gitnexus-web/dist",
+            },
+            status_code=503,
+        )
+
+    file_path = gitnexus_dist / full_path
+    if (
+        full_path
+        and file_path.resolve().is_relative_to(gitnexus_dist.resolve())
+        and file_path.is_file()
+    ):
+        return FileResponse(file_path)
+    return FileResponse(gitnexus_index)
 # Mount personas routes (Hive B — Pantheon).
 try:
     from hermes_cli.personas import router as _personas_router
