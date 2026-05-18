@@ -581,6 +581,346 @@ def _get_snapshot() -> dict:
 
 
 # ---------------------------------------------------------------------------
+# Nexus Health graph
+# ---------------------------------------------------------------------------
+
+def _get_gitnexus_runtime_snapshot() -> dict:
+    """Read GitNexus topology from the read-only runtime collector."""
+    try:
+        from hermes_cli.gitnexus_runtime_collector import snapshot
+
+        return dict(snapshot())
+    except Exception as exc:
+        return {
+            "agents": [],
+            "swarms": [],
+            "hives": [],
+            "mcp": [],
+            "gateways": [],
+            "cron": [],
+            "edges": [],
+            "_error": str(exc),
+        }
+
+
+def _runtime_by_name(mission: dict) -> dict[str, dict]:
+    return {
+        str(item.get("name")): item
+        for item in mission.get("runtimes", [])
+        if isinstance(item, dict) and item.get("name")
+    }
+
+
+def _nexus_status(runtime_status: Any) -> str:
+    return {
+        "online": "ok",
+        "running": "ok",
+        "active": "ok",
+        "enabled": "ok",
+        "degraded": "warn",
+        "stopped": "warn",
+        "offline": "error",
+        "error": "error",
+        "auth_gated": "auth_gated",
+    }.get(str(runtime_status or "unknown").lower(), "unknown")
+
+
+def _provenance(source: str, detail: str) -> list[dict[str, str]]:
+    return [{"source": source, "detail": detail}]
+
+
+def _nexus_node(
+    *,
+    node_id: str,
+    label: str,
+    kind: str,
+    status: str,
+    summary: str,
+    details: str,
+    metrics: Optional[dict] = None,
+    provenance: Optional[list[dict[str, str]]] = None,
+    safe_next_check: str,
+    needs_joseph: bool = False,
+) -> dict:
+    return {
+        "id": node_id,
+        "label": label,
+        "kind": kind,
+        "status": status,
+        "summary": summary,
+        "details": details,
+        "metrics": metrics or {},
+        "provenance": provenance or [],
+        "safe_next_check": safe_next_check,
+        "needs_joseph": needs_joseph,
+    }
+
+
+def _nexus_edge(
+    edge_id: str,
+    source: str,
+    target: str,
+    label: str,
+    status: str,
+    summary: str,
+    provenance: Optional[list[dict[str, str]]] = None,
+) -> dict:
+    return {
+        "id": edge_id,
+        "source": source,
+        "target": target,
+        "label": label,
+        "status": status,
+        "summary": summary,
+        "provenance": provenance or [],
+    }
+
+
+def _build_nexus_health() -> dict:
+    generated_at = _now()
+    mission = _get_snapshot()
+    topology = _get_gitnexus_runtime_snapshot()
+    runtimes = _runtime_by_name(mission)
+
+    hermes_rt = runtimes.get("hermes", {})
+    kanban_rt = runtimes.get("kanban", {})
+    cron_rt = runtimes.get("cron", {})
+    codex_rt = runtimes.get("codex", {})
+    ruflo_rt = runtimes.get("ruflo", {})
+    claude_rt = runtimes.get("claude-code", {})
+
+    gateways = topology.get("gateways", []) if isinstance(topology, dict) else []
+    agents = topology.get("agents", []) if isinstance(topology, dict) else []
+    mcp = topology.get("mcp", []) if isinstance(topology, dict) else []
+    cron = topology.get("cron", []) if isinstance(topology, dict) else []
+    topo_edges = topology.get("edges", []) if isinstance(topology, dict) else []
+
+    source_root = Path(__file__).resolve().parents[1]
+    audit_root = source_root
+    if ".hermes/audits/" in str(source_root):
+        audit_root = source_root
+
+    gateway_status = _nexus_status(
+        gateways[0].get("status") if gateways else hermes_rt.get("status")
+    )
+    agent_lane_statuses = [
+        _nexus_status(codex_rt.get("status")),
+        _nexus_status(ruflo_rt.get("status")),
+        _nexus_status(claude_rt.get("status")),
+    ]
+    if "error" in agent_lane_statuses:
+        lane_status = "error"
+    elif "warn" in agent_lane_statuses or "unknown" in agent_lane_statuses:
+        lane_status = "warn"
+    else:
+        lane_status = "ok"
+
+    nodes = [
+        _nexus_node(
+            node_id="hermes",
+            label="Hermes Core",
+            kind="runtime",
+            status=_nexus_status(hermes_rt.get("status")),
+            summary=hermes_rt.get("label", "Core agent runtime"),
+            details=hermes_rt.get("detail") or "Mission Control runtime probe.",
+            metrics={"model": mission.get("model"), "recent_sessions": len(mission.get("recentSessions", []))},
+            provenance=_provenance("mission-control", "Runtime probe from /api/dashboard/mission."),
+            safe_next_check="Open logs or read the Mission Control runtime chip.",
+        ),
+        _nexus_node(
+            node_id="dashboard",
+            label="Dashboard",
+            kind="dashboard",
+            status="ok",
+            summary="Dashboard API is serving this read-only health map.",
+            details="This endpoint was reached through the dashboard FastAPI router.",
+            metrics={},
+            provenance=_provenance("dashboard-health", "GET /api/dashboard/nexus-health returned this document."),
+            safe_next_check="Refresh this page or open the browser console for fetch errors.",
+        ),
+        _nexus_node(
+            node_id="gateway",
+            label="Gateway",
+            kind="gateway",
+            status=gateway_status,
+            summary="Messaging gateway state from runtime topology.",
+            details=f"{len(gateways)} gateway record(s), platforms: "
+            f"{', '.join(gateways[0].get('platforms', [])) if gateways else 'unknown'}.",
+            metrics={"gateways": len(gateways)},
+            provenance=_provenance("gitnexus-runtime-collector", "Read gateway_state.json without mutating indexes."),
+            safe_next_check="Read gateway logs or gateway_state.json; do not restart from this page.",
+            needs_joseph=gateway_status in {"error", "auth_gated"},
+        ),
+        _nexus_node(
+            node_id="kanban",
+            label="Kanban",
+            kind="kanban",
+            status=_nexus_status(kanban_rt.get("status")),
+            summary="Dispatcher and board state visibility.",
+            details=kanban_rt.get("detail") or "Kanban runtime probe is unknown or unavailable.",
+            metrics={"active_tasks": kanban_rt.get("active_tasks"), "queue_port": kanban_rt.get("port")},
+            provenance=_provenance("mission-control", "Kanban probe uses status endpoint or read-only DB fallback."),
+            safe_next_check="Open the Kanban dashboard or inspect board status; do not dispatch or reclaim here.",
+            needs_joseph=_nexus_status(kanban_rt.get("status")) == "error",
+        ),
+        _nexus_node(
+            node_id="cron-watchdogs",
+            label="Cron / Watchdogs",
+            kind="control-plane",
+            status=_nexus_status(cron_rt.get("status")),
+            summary="Scheduled jobs and watchdog posture.",
+            details=cron_rt.get("detail") or "Cron job state is unknown.",
+            metrics={"collector_jobs": len(cron), "next_cron": mission.get("nextCron")},
+            provenance=_provenance("mission-control", "Cron probe and read-only runtime collector cron list."),
+            safe_next_check="Read cron job listings and last run status before changing schedules.",
+        ),
+        _nexus_node(
+            node_id="gitnexus-explorer",
+            label="GitNexus / Explorer",
+            kind="gitnexus",
+            status="warn" if topology.get("_error") else "ok",
+            summary="Topology collector available without index ingestion.",
+            details=topology.get("_error") or "Read-only collector returned runtime graph ingredients.",
+            metrics={"agents": len(agents), "mcp": len(mcp), "edges": len(topo_edges)},
+            provenance=_provenance("gitnexus-runtime-collector", "Used snapshot(); ingest/index mutation path is not imported."),
+            safe_next_check="Open Explorer read-only; avoid any ingest or rebuild operation.",
+        ),
+        _nexus_node(
+            node_id="mcp-memory",
+            label="MCP / Memory",
+            kind="memory",
+            status="ok" if mcp else "unknown",
+            summary="MCP and memory-adjacent tool surface.",
+            details=f"{len(mcp)} MCP server record(s) visible to the collector.",
+            metrics={"servers": len(mcp)},
+            provenance=_provenance("gitnexus-runtime-collector", "Parsed hermes mcp list or ~/.hermes/mcp directory names."),
+            safe_next_check="Read MCP server list and auth status; do not change provider or MCP config here.",
+            needs_joseph=any(_nexus_status(item.get("status")) == "auth_gated" for item in mcp if isinstance(item, dict)),
+        ),
+        _nexus_node(
+            node_id="agent-lanes",
+            label="Codex / Ruflo / Claude Lanes",
+            kind="agent-lane",
+            status=lane_status,
+            summary="Implementation lane readiness across local agent surfaces.",
+            details=(
+                f"Codex={codex_rt.get('status', 'unknown')}, "
+                f"Ruflo={ruflo_rt.get('status', 'unknown')}, "
+                f"Claude={claude_rt.get('status', 'unknown')}."
+            ),
+            metrics={"collector_agents": len(agents)},
+            provenance=_provenance("mission-control", "Process probes for codex, ruflo, and claude-code."),
+            safe_next_check="Read lane status and logs; do not launch workers or mutate Kanban from this page.",
+            needs_joseph=lane_status == "error",
+        ),
+        _nexus_node(
+            node_id="audit-store",
+            label="Audit Store",
+            kind="audit",
+            status="ok" if audit_root.exists() else "unknown",
+            summary="Current audit worktree is readable.",
+            details=str(audit_root),
+            metrics={},
+            provenance=_provenance("filesystem", "Resolved current dashboard_health.py repository root."),
+            safe_next_check="Read files in this worktree only.",
+        ),
+        _nexus_node(
+            node_id="source-tree",
+            label="Source Tree",
+            kind="source",
+            status="ok" if source_root.exists() else "unknown",
+            summary="Hermes source tree is available for read-only inspection.",
+            details=str(source_root),
+            metrics={},
+            provenance=_provenance("filesystem", "Resolved from hermes_cli/dashboard_health.py."),
+            safe_next_check="Use local tests and static inspection before changing shared runtime state.",
+        ),
+    ]
+
+    edges = [
+        _nexus_edge("dashboard->mission-api", "dashboard", "hermes", "GET /api/dashboard/mission", "ok", "Mission Control snapshot feeds core runtime claims.", _provenance("dashboard-health", "Composed from _get_snapshot().")),
+        _nexus_edge("dashboard->nexus-health-api", "dashboard", "gitnexus-explorer", "GET /api/dashboard/nexus-health", "ok", "This page renders the read-only graph document.", _provenance("dashboard-health", generated_at)),
+        _nexus_edge("hermes->gateway", "hermes", "gateway", "gateway_state.json", gateway_status, "Hermes core communicates with messaging platform adapters.", _provenance("gitnexus-runtime-collector", "Gateway records and inferred topology.")),
+        _nexus_edge("hermes->kanban", "hermes", "kanban", "task queue", _nexus_status(kanban_rt.get("status")), "Hermes uses Kanban for work coordination.", _provenance("mission-control", "Kanban runtime probe.")),
+        _nexus_edge("cron->hermes", "cron-watchdogs", "hermes", "scheduled prompts", _nexus_status(cron_rt.get("status")), "Cron and watchdog jobs can invoke Hermes workflows.", _provenance("mission-control", "Cron runtime probe.")),
+        _nexus_edge("hermes->mcp-memory", "hermes", "mcp-memory", "tool context", "ok" if mcp else "unknown", "MCP and memory providers extend runtime context.", _provenance("gitnexus-runtime-collector", "MCP server list.")),
+        _nexus_edge("agent-lanes->source-tree", "agent-lanes", "source-tree", "workspace", lane_status, "Agent lanes operate on the source worktree.", _provenance("mission-control", "Lane process probes.")),
+        _nexus_edge("source-tree->audit-store", "source-tree", "audit-store", "verification trail", "ok", "Local tests and artifacts stay in the audit worktree.", _provenance("filesystem", str(source_root))),
+    ]
+    for idx, edge in enumerate(topo_edges[:12]):
+        if not isinstance(edge, dict):
+            continue
+        edges.append(
+            _nexus_edge(
+                f"collector-edge-{idx}",
+                "gitnexus-explorer",
+                "mcp-memory" if "MCP" in str(edge.get("type", "")) else "gateway",
+                str(edge.get("type", "runtime edge")),
+                "ok",
+                f"{edge.get('source', '?')} -> {edge.get('target', '?')}",
+                _provenance("gitnexus-runtime-collector", "Inferred read-only topology edge."),
+            )
+        )
+
+    needs_joseph = [
+        {
+            "id": node["id"],
+            "label": node["label"],
+            "reason": node["summary"],
+            "gate": "Human review required before state-changing recovery.",
+        }
+        for node in nodes
+        if node["needs_joseph"] or node["status"] in {"error", "auth_gated"}
+    ]
+
+    safe_actions = [
+        {"id": "copy-summary", "label": "Copy health summary", "kind": "copy", "payload": "Hermes Nexus Health is read-only; inspect degraded nodes before changing runtime state."},
+        {"id": "open-cockpit", "label": "Open Cockpit", "kind": "open", "payload": "/cockpit"},
+        {"id": "open-explorer", "label": "Open Explorer", "kind": "open", "payload": "/explorer"},
+        {"id": "read-logs", "label": "Read logs", "kind": "read", "payload": "/logs"},
+    ]
+    locked_actions = [
+        {"id": "restart-gateway", "label": "Restart gateway", "gate": "disabled", "reason": "State-changing service control is intentionally unavailable here."},
+        {"id": "kanban-dispatch", "label": "Dispatch / reclaim Kanban work", "gate": "copy-only", "reason": "Requires explicit operator intent outside Nexus Health."},
+        {"id": "gitnexus-ingest", "label": "Rebuild GitNexus indexes", "gate": "disabled", "reason": "This endpoint only uses the read-only runtime collector."},
+        {"id": "provider-auth", "label": "Change provider or MCP auth", "gate": "disabled", "reason": "Auth and billing configuration stay outside this page."},
+    ]
+
+    node_statuses = {node["status"] for node in nodes}
+    if needs_joseph:
+        posture = "stop"
+    elif node_statuses & {"warn", "unknown", "auth_gated"}:
+        posture = "caution"
+    else:
+        posture = "safe"
+
+    degraded = [node["label"] for node in nodes if node["status"] in {"warn", "error", "unknown", "auth_gated"}]
+    summary = (
+        "All observed Nexus systems are safe for read-only inspection."
+        if posture == "safe"
+        else f"{len(degraded)} node(s) need attention: {', '.join(degraded[:4])}."
+    )
+
+    evidence = [
+        {"source": "mission-control", "detail": "Existing dashboard probes feed runtime status."},
+        {"source": "gitnexus-runtime-collector", "detail": "Read-only topology snapshot; no ingest or index rebuild."},
+        {"source": "filesystem", "detail": "Source and audit paths are resolved from this worktree."},
+    ]
+
+    return {
+        "generated_at": generated_at,
+        "posture": posture,
+        "summary": summary,
+        "nodes": nodes,
+        "edges": edges,
+        "needs_joseph": needs_joseph,
+        "safe_actions": safe_actions,
+        "locked_actions": locked_actions,
+        "evidence": evidence,
+    }
+
+
+# ---------------------------------------------------------------------------
 # Endpoints
 # ---------------------------------------------------------------------------
 
@@ -588,6 +928,12 @@ def _get_snapshot() -> dict:
 async def get_mission_snapshot() -> dict:
     """Combined MissionSnapshot with real live data. 30 s server-side cache."""
     return await asyncio.get_event_loop().run_in_executor(None, _get_snapshot)
+
+
+@router.get("/nexus-health", summary="Nexus Health read-only graph")
+async def get_nexus_health() -> dict:
+    """Read-only command-center health map for Hermes dashboard topology."""
+    return _build_nexus_health()
 
 
 @router.get("/health/runtime/{name}", summary="Single runtime health probe")

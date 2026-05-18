@@ -71,6 +71,7 @@ import ProfilesPage from "@/pages/ProfilesPage";
 import SkillsPage from "@/pages/SkillsPage";
 import PluginsPage from "@/pages/PluginsPage";
 import MissionControlPage from "@/pages/MissionControlPage";
+import NexusHealthPage from "@/pages/NexusHealthPage";
 import ExplorerPage from "@/pages/ExplorerPage";
 import PantheonPage from "@/pages/PantheonPage";
 import WelcomePage from "@/pages/WelcomePage";
@@ -135,6 +136,7 @@ const BUILTIN_ROUTES_CORE: Record<string, ComponentType> = {
   "/skills": SkillsPage,
   "/plugins": PluginsPage,
   "/explorer": ExplorerPage,
+  "/nexus-health": NexusHealthPage,
   "/profiles": ProfilesPage,
   "/config": ConfigPage,
   "/env": EnvPage,
@@ -175,6 +177,7 @@ const BUILTIN_NAV_REST: NavItem[] = [
   { path: "/cron", labelKey: "cron", label: "Cron", icon: Clock },
   { path: "/skills", labelKey: "skills", label: "Skills", icon: Package },
   { path: "/explorer", labelKey: "explorer", label: "Explorer", icon: Network },
+  { path: "/nexus-health", label: "Nexus Health", icon: Shield },
   { path: "/plugins", labelKey: "plugins", label: "Plugins", icon: Puzzle },
   { path: "/profiles", labelKey: "profiles", label: "Profiles", icon: Users },
   { path: "/config", labelKey: "config", label: "Config", icon: Settings },
