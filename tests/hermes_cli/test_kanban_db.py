@@ -1014,6 +1014,68 @@ def test_dispatch_skips_nonspawnable_into_separate_bucket(kanban_home, monkeypat
     assert not res.spawned
 
 
+def test_default_spawn_uses_profile_dispatch_command_override(
+    kanban_home, monkeypatch
+):
+    """Profiles may opt out of native ``hermes -p`` spawning and provide
+    an argv template for external runtimes such as Claude Code CLI.
+
+    The dispatcher must expand the template with the same pinned Kanban env it
+    gives native workers, run it without a shell, and keep the task log wiring.
+    """
+    profile_dir = kanban_home / "profiles" / "claude-code-bridge"
+    profile_dir.mkdir(parents=True)
+    (profile_dir / "config.yaml").write_text(
+        "\n".join(
+            [
+                "model:",
+                "  provider: claude-cli-subprocess",
+                "  default: claude-via-cli",
+                "dispatch_command_override: >-",
+                "  python3 ${HERMES_REPO_ROOT}/scripts/claude_kanban_bridge.py --task ${HERMES_KANBAN_TASK} --board ${HERMES_KANBAN_BOARD}",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HERMES_REPO_ROOT", "/repo/hermes-agent")
+
+    popen_calls = []
+
+    class FakePopen:
+        pid = 4242
+
+        def __init__(self, cmd, **kwargs):
+            popen_calls.append((cmd, kwargs))
+
+    monkeypatch.setattr(kb.subprocess, "Popen", FakePopen)
+
+    with kb.connect() as conn:
+        task_id = kb.create_task(conn, title="bridge me", assignee="claude-code-bridge")
+        task = kb.claim_task(conn, task_id)
+    assert task is not None
+
+    pid = kb._default_spawn(task, str(kanban_home / "workspace"), board="ouzy-kb-backend")
+
+    assert pid == 4242
+    assert len(popen_calls) == 1
+    cmd, kwargs = popen_calls[0]
+    assert cmd == [
+        "python3",
+        "/repo/hermes-agent/scripts/claude_kanban_bridge.py",
+        "--task",
+        task_id,
+        "--board",
+        "ouzy-kb-backend",
+    ]
+    assert kwargs["env"]["HERMES_KANBAN_TASK"] == task_id
+    assert kwargs["env"]["HERMES_KANBAN_BOARD"] == "ouzy-kb-backend"
+    assert kwargs["env"]["HERMES_PROFILE"] == "claude-code-bridge"
+    assert kwargs["env"]["HERMES_HOME"] == str(profile_dir)
+    assert kwargs["stdin"] is kb.subprocess.DEVNULL
+    assert kwargs["shell"] is not True if "shell" in kwargs else True
+
+
 def test_has_spawnable_ready_false_when_only_terminal_lanes(kanban_home, monkeypatch):
     """``has_spawnable_ready`` returns False when every ready task is
     assigned to a control-plane lane — used by gateway/CLI dispatchers

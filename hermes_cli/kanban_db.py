@@ -5157,6 +5157,56 @@ def _worker_terminal_timeout_env(
     return str(desired)
 
 
+def _dispatch_repo_root() -> str:
+    """Return the Hermes source root for dispatcher command templates."""
+    return str(Path(__file__).resolve().parents[1])
+
+
+def _profile_dispatch_command_override(profile_home: Optional[str]) -> Optional[str]:
+    """Read a profile's optional external dispatch command template.
+
+    ``dispatch_command_override`` is intentionally profile-scoped: normal
+    workers still spawn via ``hermes -p <assignee>``, while explicitly opted-in
+    profiles can route through an external runtime such as Claude Code CLI.
+    """
+    if not profile_home:
+        return None
+    config_path = Path(profile_home) / "config.yaml"
+    if not config_path.is_file():
+        return None
+    try:
+        import yaml  # type: ignore[import-untyped]  # noqa: PLC0415
+
+        data = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
+    except Exception:
+        return None
+    if not isinstance(data, dict):
+        return None
+    value = data.get("dispatch_command_override")
+    if not isinstance(value, str):
+        return None
+    value = value.strip()
+    return value or None
+
+
+def _dispatch_command_override_argv(template: str, env: dict[str, str]) -> list[str]:
+    """Expand a dispatch override template into an argv list without a shell."""
+    import shlex  # noqa: PLC0415
+    from string import Template  # noqa: PLC0415
+
+    try:
+        rendered = Template(template).substitute(env)
+    except KeyError as exc:
+        missing = str(exc).strip("'")
+        raise ValueError(
+            f"dispatch_command_override references unset variable {missing!r}"
+        ) from exc
+    argv = shlex.split(rendered)
+    if not argv:
+        raise ValueError("dispatch_command_override rendered to an empty command")
+    return argv
+
+
 def _default_spawn(
     task: Task,
     workspace: str,
@@ -5196,8 +5246,10 @@ def _default_spawn(
     # profile-specific config entirely.  Fixes profile-scoped fallback_providers
     # being invisible to kanban workers.
     from hermes_cli.profiles import resolve_profile_env
+    profile_home: Optional[str] = None
     try:
-        env["HERMES_HOME"] = resolve_profile_env(profile_arg)
+        profile_home = str(resolve_profile_env(profile_arg))
+        env["HERMES_HOME"] = profile_home
     except FileNotFoundError:
         # Profile dir doesn't exist — defer resolution to the CLI's
         # _apply_profile_override() via HERMES_PROFILE (set below).
@@ -5244,49 +5296,58 @@ def _default_spawn(
     # what the tool reads — set it explicitly here so comments are
     # attributed correctly regardless of how the child loads config.
     env["HERMES_PROFILE"] = profile_arg
+    # External dispatch templates (used for Claude Code CLI/Max-plan lanes)
+    # get the same pinned Kanban env as native Hermes workers.  HERMES_REPO_ROOT
+    # defaults to this installed Hermes checkout but can be overridden by the
+    # operator for staged bridge rollouts.
+    env.setdefault("HERMES_REPO_ROOT", _dispatch_repo_root())
 
-    cmd = [
-        *_resolve_hermes_argv(),
-        "-p", profile_arg,
-        # Worker subprocesses switch to a profile-scoped HERMES_HOME above,
-        # so they see that profile's shell-hook allowlist instead of the
-        # dispatcher's root allowlist. Pass --accept-hooks explicitly so
-        # profile-local worker sessions still register configured hooks.
-        "--accept-hooks",
-    ]
-    # Auto-load the kanban-worker skill so every dispatched worker
-    # has the pattern library (good summary/metadata shapes, retry
-    # diagnostics, block-reason examples) in its context, even if
-    # the profile hasn't wired it into skills config. The MANDATORY
-    # lifecycle is already in the system prompt via KANBAN_GUIDANCE;
-    # this skill is the deeper reference. Users can point a profile
-    # at a different/additional skill via config if they want —
-    # --skills is additive to the profile's default skill set.
-    #
-    # Only add the flag when the skill actually resolves for the home
-    # the worker runs under: the bundled skill is absent from many
-    # profile-scoped skills dirs, and preloading a missing skill is
-    # fatal at CLI startup. Omitting it is safe — the lifecycle
-    # contract still ships via KANBAN_GUIDANCE.
-    if _kanban_worker_skill_available(env.get("HERMES_HOME")):
-        cmd.extend(["--skills", "kanban-worker"])
-    # Per-task force-loaded skills. Each name goes in its own
-    # `--skills X` pair rather than a single comma-joined arg: the CLI
-    # accepts both forms (action='append' + comma-split), but
-    # per-name pairs are easier to read in `ps` output and avoid any
-    # quoting ambiguity if a skill name ever contains unusual chars.
-    # Dedupe against the built-in so we don't double-load kanban-worker
-    # if a task author asks for it explicitly.
-    if task.skills:
-        for sk in task.skills:
-            if sk and sk != "kanban-worker":
-                cmd.extend(["--skills", sk])
-    if task.model_override:
-        cmd.extend(["-m", task.model_override])
-    cmd.extend([
-        "chat",
-        "-q", prompt,
-    ])
+    dispatch_override = _profile_dispatch_command_override(profile_home)
+    if dispatch_override:
+        cmd = _dispatch_command_override_argv(dispatch_override, env)
+    else:
+        cmd = [
+            *_resolve_hermes_argv(),
+            "-p", profile_arg,
+            # Worker subprocesses switch to a profile-scoped HERMES_HOME above,
+            # so they see that profile's shell-hook allowlist instead of the
+            # dispatcher's root allowlist. Pass --accept-hooks explicitly so
+            # profile-local worker sessions still register configured hooks.
+            "--accept-hooks",
+        ]
+        # Auto-load the kanban-worker skill so every dispatched worker
+        # has the pattern library (good summary/metadata shapes, retry
+        # diagnostics, block-reason examples) in its context, even if
+        # the profile hasn't wired it into skills config. The MANDATORY
+        # lifecycle is already in the system prompt via KANBAN_GUIDANCE;
+        # this skill is the deeper reference. Users can point a profile
+        # at a different/additional skill via config if they want —
+        # --skills is additive to the profile's default skill set.
+        #
+        # Only add the flag when the skill actually resolves for the home
+        # the worker runs under: the bundled skill is absent from many
+        # profile-scoped skills dirs, and preloading a missing skill is
+        # fatal at CLI startup. Omitting it is safe — the lifecycle
+        # contract still ships via KANBAN_GUIDANCE.
+        if _kanban_worker_skill_available(env.get("HERMES_HOME")):
+            cmd.extend(["--skills", "kanban-worker"])
+        # Per-task force-loaded skills. Each name goes in its own
+        # `--skills X` pair rather than a single comma-joined arg: the CLI
+        # accepts both forms (action='append' + comma-split), but
+        # per-name pairs are easier to read in `ps` output and avoid any
+        # quoting ambiguity if a skill name ever contains unusual chars.
+        # Dedupe against the built-in so we don't double-load kanban-worker
+        # if a task author asks for it explicitly.
+        if task.skills:
+            for sk in task.skills:
+                if sk and sk != "kanban-worker":
+                    cmd.extend(["--skills", sk])
+        if task.model_override:
+            cmd.extend(["-m", task.model_override])
+        cmd.extend([
+            "chat",
+            "-q", prompt,
+        ])
     # Redirect output to a per-task log under <board-root>/logs/.
     # Anchored at the board root (not the shared kanban root), so
     # `hermes kanban log` on a specific board reads its own file and
@@ -5312,9 +5373,10 @@ def _default_spawn(
         )
     except FileNotFoundError:
         log_f.close()
+        executable = cmd[0] if cmd else "worker"
         raise RuntimeError(
-            "`hermes` executable not found on PATH. "
-            "Install Hermes Agent or activate its venv before running the kanban dispatcher."
+            f"`{executable}` executable not found while spawning kanban worker. "
+            "Install the configured worker runtime or adjust dispatch_command_override."
         )
     # NOTE: we intentionally do NOT close log_f here — we want Popen's
     # child process to keep writing after this function returns.  The
