@@ -43,12 +43,16 @@ def lint(isa_or_path) -> LintResult:
     All checks are run; failures are accumulated (never stop-at-first).
     Returns a LintResult with ok=True iff no failures were found.
     """
-    if isinstance(isa_or_path, isa_common.Isa):
-        isa = isa_or_path
-        isa_path = str(isa.path) if isa.path is not None else "<text>"
-    else:
+    # Discriminate by duck-typing, not isinstance: an already-parsed Isa can
+    # reach here from a different import identity of isa_common (e.g. the
+    # Kanban bridge builds one and hands it over), so an isinstance check
+    # against isa_common.Isa is fragile across module-load boundaries.
+    if isinstance(isa_or_path, (str, Path)):
         isa = isa_common.parse_isa(isa_or_path)
         isa_path = str(isa_or_path)
+    else:
+        isa = isa_or_path  # an already-parsed Isa
+        isa_path = str(getattr(isa, "path", None) or "<isa>")
 
     failures: list[str] = []
 
