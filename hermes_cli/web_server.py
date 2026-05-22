@@ -78,12 +78,52 @@ _log = logging.getLogger(__name__)
 
 app = FastAPI(title="Hermes Agent", version=__version__)
 
+
 # ---------------------------------------------------------------------------
 # Session token for protecting sensitive endpoints (reveal).
-# Generated fresh on every server start — dies when the process exits.
+# Persisted to ``<hermes_home>/.dashboard-token`` (mode 0600) so it survives a
+# server restart and keeps active dashboard sessions valid.  Falls back to an
+# ephemeral per-process token if that file cannot be read or written.
 # Injected into the SPA HTML so only the legitimate web UI can use it.
 # ---------------------------------------------------------------------------
-_SESSION_TOKEN = secrets.token_urlsafe(32)
+def _load_or_create_session_token() -> str:
+    """Return the dashboard session token, persisted across restarts.
+
+    Reads ``<hermes_home>/.dashboard-token`` when it holds a non-empty value;
+    otherwise generates a fresh token and writes it there with ``0600``
+    permissions.  Any read/write failure is non-fatal: the dashboard falls
+    back to an ephemeral in-process token so the server still starts.
+    """
+    try:
+        token_path = Path(get_hermes_home()) / ".dashboard-token"
+    except Exception:  # pragma: no cover - get_hermes_home is itself defensive
+        return secrets.token_urlsafe(32)
+
+    try:
+        if token_path.is_file():
+            existing = token_path.read_text(encoding="utf-8").strip()
+            if existing:
+                return existing
+    except OSError as exc:
+        _log.warning("dashboard token unreadable (%s); using ephemeral token", exc)
+        return secrets.token_urlsafe(32)
+
+    token = secrets.token_urlsafe(32)
+    try:
+        token_path.parent.mkdir(parents=True, exist_ok=True)
+        # Create with 0600 so the token is never briefly world-readable.
+        fd = os.open(str(token_path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        try:
+            os.write(fd, token.encode("utf-8"))
+        finally:
+            os.close(fd)
+        os.chmod(token_path, 0o600)  # enforce 0600 regardless of umask
+    except OSError as exc:
+        _log.warning("dashboard token unwritable (%s); using ephemeral token", exc)
+    return token
+
+
+_SESSION_TOKEN = _load_or_create_session_token()
 _SESSION_HEADER_NAME = "X-Hermes-Session-Token"
 
 # In-browser Chat tab (/chat, /api/pty, …).  Off unless ``hermes dashboard --tui``
@@ -143,7 +183,7 @@ def _has_valid_session_token(request: Request) -> bool:
 
 
 def _require_token(request: Request) -> None:
-    """Validate the ephemeral session token.  Raises 401 on mismatch."""
+    """Validate the dashboard session token.  Raises 401 on mismatch."""
     if not _has_valid_session_token(request):
         raise HTTPException(status_code=401, detail="Unauthorized")
 
@@ -1246,7 +1286,7 @@ async def reveal_env_var(body: EnvVarReveal, request: Request):
     """Return the real (unredacted) value of a single env var.
 
     Protected by:
-    - Ephemeral session token (generated per server start, injected into SPA)
+    - Persistent session token (loaded from disk or generated, injected into SPA)
     - Rate limiting (max 5 reveals per 30s window)
     - Audit logging
     """
@@ -3264,7 +3304,7 @@ async def get_models_analytics(days: int = 30):
 # web/src/pages/ChatPage.tsx).
 #
 # Auth: ``?token=<session_token>`` query param (browsers can't set
-# Authorization on the WS upgrade).  Same ephemeral ``_SESSION_TOKEN`` as
+# Authorization on the WS upgrade).  Same persisted ``_SESSION_TOKEN`` as
 # REST.  Localhost-only — we defensively reject non-loopback clients even
 # though uvicorn binds to 127.0.0.1.
 # ---------------------------------------------------------------------------
