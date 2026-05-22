@@ -1,0 +1,13 @@
+# CODEOWNERS — auto-requests a review on the merge-conflict hot files.
+# Phase 1 safety rail (workflow-optimization, 2026-05-22).
+# Replace @jjaavvin-web with the correct GitHub handle/team if it differs.
+# Format: <path-pattern>  <owner>
+
+gateway/run.py             @jjaavvin-web
+gateway/platforms/base.py  @jjaavvin-web
+hermes_cli/kanban_db.py    @jjaavvin-web
+hermes_cli/config.py       @jjaavvin-web
+hermes_cli/commands.py     @jjaavvin-web
+hermes_cli/web_server.py   @jjaavvin-web
+pyproject.toml             @jjaavvin-web
+uv.lock                    @jjaavvin-web

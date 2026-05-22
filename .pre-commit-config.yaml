@@ -1,0 +1,57 @@
+# .pre-commit-config.yaml — local pre-merge gate (Phase 1 safety rail, 2026-05-22).
+#
+# One-time setup:
+#   pip install pre-commit
+#   pre-commit install                      # commit-time hooks
+#   pre-commit install --hook-type commit-msg
+#   pre-commit install --hook-type pre-push
+#   pre-commit autoupdate                   # sync the rev pins below to current releases
+#
+# Never bypass with --no-verify. If a hook is broken, fix the hook.
+
+repos:
+  # ── ruff: lint + format (pre-commit manages its own isolated tool env) ──
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.11.12
+    hooks:
+      - id: ruff
+        args: [--fix]
+      - id: ruff-format
+
+  # ── generic hygiene + guards ──
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: check-merge-conflict        # block <<<<<<< conflict markers
+      - id: no-commit-to-branch         # never commit straight to main
+        args: [--branch, main]
+      - id: check-added-large-files
+        args: [--maxkb=1024]
+      - id: check-yaml
+      - id: check-toml
+      - id: end-of-file-fixer
+      - id: trailing-whitespace
+
+  # ── conventional commit messages (feat/fix/chore/docs/...) ──
+  - repo: https://github.com/compilerla/conventional-pre-commit
+    rev: v4.0.0
+    hooks:
+      - id: conventional-pre-commit
+        stages: [commit-msg]
+
+  # ── heavier checks: pre-push only (not every commit) ──
+  - repo: local
+    hooks:
+      - id: uv-lock-check
+        name: uv lock --check (lockfile in sync with pyproject.toml)
+        language: system
+        entry: uv lock --check
+        pass_filenames: false
+        files: ^pyproject\.toml$
+        stages: [pre-push]
+      - id: pytest-smoke
+        name: pytest smoke (fast unit subset)
+        language: system
+        entry: python -m pytest tests/ -q -x --tb=short --ignore=tests/integration --ignore=tests/e2e
+        pass_filenames: false
+        stages: [pre-push]
