@@ -289,6 +289,9 @@ export function HealthGraph({
       maxZoom={1.9}
       nodesDraggable={false}
       nodesConnectable={false}
+      // Fix 2: disable the browser-focus scroll that would pan/zoom to the
+      // clicked node, preserving the user's current pan/zoom state.
+      nodesFocusable={false}
       proOptions={{ hideAttribution: false }}
       colorMode="dark"
     >
