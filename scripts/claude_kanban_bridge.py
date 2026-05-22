@@ -12,6 +12,14 @@ bucket, which requires separate API credits. The ``claude`` CLI uses the
 logged-in Claude Code / claude.ai session bucket for Max-plan users. This
 bridge lets selected Kanban workers run on Max-plan session quota with no
 Anthropic API-key fallback.
+
+ISA completion gate
+-------------------
+If the dispatched task is linked to an ISA (Ideal State Artifact — see
+``~/.hermes/ISA-SPEC.md``), the bridge marks the task complete only once that
+ISA has reached ``phase: complete`` and passes ``isa_lint``. The gate is
+fail-open: a task with no linked ISA — or any error evaluating one — completes
+exactly as before. See ``_isa_gate``.
 """
 
 from __future__ import annotations
@@ -139,6 +147,52 @@ def _block(conn, task_id: str, reason: str) -> None:
 
 
 # ---------------------------------------------------------------------------
+# ISA completion gate
+# ---------------------------------------------------------------------------
+
+
+def _isa_gate(task_id: str) -> tuple[bool, str]:
+    """Decide whether ``task_id`` may be marked complete, per its linked ISA.
+
+    Returns ``(allowed, reason)``. The gate is **inert by default and
+    fail-open** (ISA-SPEC §10): a task with no linked ISA — and any unexpected
+    error while evaluating one — yields ``(True, "")``. Only a task whose
+    linked ISA exists but has not reached ``phase: complete`` and passed
+    ``isa_lint`` is blocked.
+    """
+    try:
+        scripts_dir = Path(__file__).resolve().parent
+        if str(scripts_dir) not in sys.path:
+            sys.path.insert(0, str(scripts_dir))
+        import isa_common  # noqa: PLC0415
+        import isa_lint  # noqa: PLC0415
+
+        isa_path = isa_common.find_isa_for_card(task_id)
+        if isa_path is None:
+            return True, ""  # no ISA linked — gate is inert
+
+        isa = isa_common.parse_isa(isa_path)
+        if isa.phase != "complete":
+            return False, (
+                f"linked ISA {isa_path} is at phase '{isa.phase}', not 'complete'"
+            )
+
+        result = isa_lint.lint(isa)
+        if not result.ok:
+            return False, (
+                f"linked ISA {isa_path} is phase: complete but fails isa_lint "
+                f"with {len(result.failures)} failure(s): {result.failures}"
+            )
+        return True, ""
+    except Exception as exc:  # gate is fail-open by design
+        _log_error(
+            f"ISA gate evaluation errored for task {task_id}: {exc!r} "
+            f"— proceeding (fail-open)"
+        )
+        return True, ""
+
+
+# ---------------------------------------------------------------------------
 # Main logic
 # ---------------------------------------------------------------------------
 
@@ -238,6 +292,13 @@ def run(
         "board": effective_board,
         "assignee": task.assignee,
     }
+
+    allowed, gate_reason = _isa_gate(task_id)
+    if not allowed:
+        _log_error(f"ISA gate blocked completion of task {task_id}: {gate_reason}")
+        with contextlib.closing(_connect_board(board)) as conn:
+            _block(conn, task_id, reason=f"isa-gate: {gate_reason}")
+        return 1
 
     with contextlib.closing(_connect_board(board)) as conn:
         _complete(conn, task_id, summary=summary, metadata=metadata)
