@@ -276,7 +276,7 @@ export default function NexusHealthPage() {
   );
 
   const graphEl = (
-    <div className="relative min-h-0 overflow-hidden bg-[#070a0f]">
+    <div className="relative min-h-0 flex-1 overflow-hidden bg-[#070a0f]">
       {visibleIds.size === 0 ? (
         <div className="flex h-full items-center justify-center text-sm text-white/45">
           No nodes match the current filters.
@@ -295,7 +295,7 @@ export default function NexusHealthPage() {
   // ------------------------------------------------------------------ Mobile
   if (isMobile) {
     return (
-      <div className="flex h-full flex-col bg-[#070b11] text-white">
+      <div className="flex flex-col bg-[#070b11] text-white">
         {headerEl}
 
         {/* Collapsible filter bar */}
@@ -334,8 +334,10 @@ export default function NexusHealthPage() {
           )}
         </div>
 
-        {/* Full-width graph — primary view on mobile */}
-        <div className="min-h-0 flex-1">
+        {/* Full-width graph — primary view on mobile. Explicit viewport
+            height: the dashboard shell's page wrapper is flex-grow:0, so an
+            h-full chain collapses to 0 here. */}
+        <div className="flex h-[72dvh] flex-col">
           {graphEl}
         </div>
 

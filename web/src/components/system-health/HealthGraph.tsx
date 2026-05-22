@@ -244,16 +244,24 @@ export function buildFlow(
   return { nodes, edges };
 }
 
-/** Fits the viewport to the graph once the custom nodes have been measured. */
+/** Fits the viewport to the graph once nodes are measured. Robust against
+ *  layout-timing races: the flow container can settle (e.g. a dvh-sized
+ *  mobile container) after the first nodes-initialized signal, which would
+ *  make an early fitView() no-op at scale(1). */
 function FitView() {
-  const initialized = useNodesInitialized();
   const { fitView } = useReactFlow();
+  const initialized = useNodesInitialized();
   const fitted = useRef(false);
   useEffect(() => {
-    if (initialized && !fitted.current) {
+    if (fitted.current) return;
+    const fit = () => {
+      if (fitted.current) return;
       fitted.current = true;
-      void fitView({ padding: 0.16, duration: 260 });
-    }
+      void fitView({ padding: 0.16, duration: 240 });
+    };
+    if (initialized) requestAnimationFrame(fit);
+    const fallback = setTimeout(fit, 500);
+    return () => clearTimeout(fallback);
   }, [initialized, fitView]);
   return null;
 }
