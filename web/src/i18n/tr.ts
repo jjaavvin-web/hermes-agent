@@ -81,6 +81,7 @@ export const tr: Translations = {
       plugins: "Eklentiler",
       sessions: "Oturumlar",
       skills: "Yetenekler",
+      system_health: "Sistem Sağlığı",
     },
     modelToolsSheetSubtitle: "& araçlar",
     modelToolsSheetTitle: "Model",

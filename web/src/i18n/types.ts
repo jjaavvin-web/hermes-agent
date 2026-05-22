@@ -97,6 +97,7 @@ export interface Translations {
       plugins: string;
       sessions: string;
       skills: string;
+      system_health: string;
     };
     modelToolsSheetSubtitle: string;
     modelToolsSheetTitle: string;

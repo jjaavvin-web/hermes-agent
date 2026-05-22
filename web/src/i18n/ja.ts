@@ -81,6 +81,7 @@ export const ja: Translations = {
       plugins: "プラグイン",
       sessions: "セッション",
       skills: "スキル",
+      system_health: "システム健全性",
     },
     modelToolsSheetSubtitle: "とツール",
     modelToolsSheetTitle: "モデル",

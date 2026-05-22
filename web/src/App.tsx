@@ -70,7 +70,6 @@ import CronPage from "@/pages/CronPage";
 import ProfilesPage from "@/pages/ProfilesPage";
 import SkillsPage from "@/pages/SkillsPage";
 import PluginsPage from "@/pages/PluginsPage";
-import MissionControlPage from "@/pages/MissionControlPage";
 import NexusHealthPage from "@/pages/NexusHealthPage";
 import ExplorerPage from "@/pages/ExplorerPage";
 import PantheonPage from "@/pages/PantheonPage";
@@ -94,8 +93,8 @@ function RootRedirect() {
     if (fetched.current) return;
     fetched.current = true;
     fetchJSON<{ soul_exists: boolean }>("/api/welcome/first-run-status")
-      .then((data) => setTarget(data.soul_exists ? "/cockpit" : "/welcome"))
-      .catch(() => setTarget("/cockpit"));
+      .then((data) => setTarget(data.soul_exists ? "/nexus-health" : "/welcome"))
+      .catch(() => setTarget("/nexus-health"));
   }, []);
 
   if (!target) return null;
@@ -141,7 +140,6 @@ const BUILTIN_ROUTES_CORE: Record<string, ComponentType> = {
   "/config": ConfigPage,
   "/env": EnvPage,
   "/docs": DocsPage,
-  "/cockpit": MissionControlPage,
   "/pantheon": PantheonPage,
   "/welcome": WelcomePage,
 };
@@ -177,7 +175,7 @@ const BUILTIN_NAV_REST: NavItem[] = [
   { path: "/cron", labelKey: "cron", label: "Cron", icon: Clock },
   { path: "/skills", labelKey: "skills", label: "Skills", icon: Package },
   { path: "/explorer", labelKey: "explorer", label: "Explorer", icon: Network },
-  { path: "/nexus-health", label: "Nexus Health", icon: Shield },
+  { path: "/nexus-health", labelKey: "system_health", label: "System Health", icon: Shield },
   { path: "/plugins", labelKey: "plugins", label: "Plugins", icon: Puzzle },
   { path: "/profiles", labelKey: "profiles", label: "Profiles", icon: Users },
   { path: "/config", labelKey: "config", label: "Config", icon: Settings },
@@ -187,12 +185,6 @@ const BUILTIN_NAV_REST: NavItem[] = [
     labelKey: "documentation",
     label: "Documentation",
     icon: BookOpen,
-  },
-  {
-    path: "/cockpit",
-    labelKey: "cockpit",
-    label: "Cockpit",
-    icon: LayoutDashboard,
   },
   {
     path: "/pantheon",

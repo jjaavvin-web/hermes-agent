@@ -81,6 +81,7 @@ export const fr: Translations = {
       plugins: "Plugins",
       sessions: "Sessions",
       skills: "Compétences",
+      system_health: "Santé du système",
     },
     modelToolsSheetSubtitle: "& outils",
     modelToolsSheetTitle: "Modèle",

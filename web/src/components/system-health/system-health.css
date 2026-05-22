@@ -1,0 +1,47 @@
+/* Dark-theme overrides for the React Flow canvas on the System Health tab. */
+
+.sh-flow .react-flow__attribution {
+  background: transparent;
+  font-size: 9px;
+}
+.sh-flow .react-flow__attribution a {
+  color: rgba(168, 192, 214, 0.35);
+}
+
+.sh-flow .react-flow__controls {
+  border-radius: 10px;
+  overflow: hidden;
+  box-shadow: 0 10px 30px -12px rgba(0, 0, 0, 0.9);
+  border: 1px solid rgba(168, 192, 214, 0.14);
+}
+.sh-flow .react-flow__controls-button {
+  background: rgba(15, 22, 32, 0.96);
+  border-bottom: 1px solid rgba(168, 192, 214, 0.1);
+  color: #a8c0d6;
+  width: 26px;
+  height: 26px;
+}
+.sh-flow .react-flow__controls-button:hover {
+  background: rgba(28, 40, 54, 0.98);
+}
+.sh-flow .react-flow__controls-button svg {
+  fill: currentColor;
+  max-width: 12px;
+  max-height: 12px;
+}
+
+.sh-flow .react-flow__node-health {
+  font-family: inherit;
+}
+
+.sh-flow .react-flow__handle {
+  border: none;
+}
+
+@keyframes sh-pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.45; transform: scale(0.78); }
+}
+.sh-pulse {
+  animation: sh-pulse 1.8s ease-in-out infinite;
+}

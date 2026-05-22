@@ -81,6 +81,7 @@ export const ru: Translations = {
       plugins: "Плагины",
       sessions: "Сессии",
       skills: "Навыки",
+      system_health: "Состояние системы",
     },
     modelToolsSheetSubtitle: "и инструменты",
     modelToolsSheetTitle: "Модель",

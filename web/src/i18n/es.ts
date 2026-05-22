@@ -81,6 +81,7 @@ export const es: Translations = {
       plugins: "Complementos",
       sessions: "Sesiones",
       skills: "Habilidades",
+      system_health: "Estado del sistema",
     },
     modelToolsSheetSubtitle: "y herramientas",
     modelToolsSheetTitle: "Modelo",
