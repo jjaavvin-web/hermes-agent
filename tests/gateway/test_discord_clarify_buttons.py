@@ -130,6 +130,19 @@ class TestClarifyChoiceViewConstruction:
         # Final label total <= 80 (Discord cap on button labels)
         assert len(first_label) <= 80
 
+    def test_timeout_matches_clarify_wait_window(self):
+        """The view timeout tracks agent.clarify_timeout, so the buttons stay
+        clickable as long as the agent waits for the answer."""
+        from tools.clarify_gateway import get_clarify_timeout
+
+        view = ClarifyChoiceView(
+            choices=["continue"],
+            clarify_id="cidTimeout",
+            allowed_user_ids=set(),
+        )
+
+        assert view.timeout == get_clarify_timeout()
+
 
 # ===========================================================================
 # Choice callback → resolve_gateway_clarify
