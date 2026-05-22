@@ -81,6 +81,7 @@ export const ga: Translations = {
       plugins: "Plugins",
       sessions: "Seisiúin",
       skills: "Scileanna",
+      system_health: "Sláinte an Chórais",
     },
     modelToolsSheetSubtitle: "agus uirlisí",
     modelToolsSheetTitle: "Samhail",

@@ -285,8 +285,6 @@ export function HealthGraph({
       nodeTypes={NODE_TYPES}
       onNodeClick={(_, node) => onSelect(node.id)}
       onPaneClick={() => onSelect(null)}
-      fitView
-      fitViewOptions={{ padding: 0.16 }}
       minZoom={0.2}
       maxZoom={1.9}
       nodesDraggable={false}

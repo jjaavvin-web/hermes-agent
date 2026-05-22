@@ -81,6 +81,7 @@ export const zhHant: Translations = {
       plugins: "外掛管理",
       sessions: "工作階段",
       skills: "技能",
+      system_health: "系統健康",
     },
     modelToolsSheetSubtitle: "與工具",
     modelToolsSheetTitle: "模型",

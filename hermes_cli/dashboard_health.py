@@ -9,10 +9,12 @@ All endpoints require X-Hermes-Session-Token validated by existing middleware.
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import json
 import os
 import socket
 import subprocess
+import threading
 import time
 from datetime import datetime, timezone, timedelta
 from functools import lru_cache
@@ -49,6 +51,11 @@ _NEXUS_CACHE: tuple[dict, float] | None = None
 _NEXUS_TTL = 30.0
 _INFRA_CACHE: tuple[dict, float] | None = None
 _INFRA_TTL = 30.0
+
+# Single-flight locks — prevent cache stampedes on cold start.
+_SNAPSHOT_LOCK = threading.Lock()
+_NEXUS_LOCK = threading.Lock()
+_INFRA_LOCK = threading.Lock()
 
 
 def _now() -> str:
@@ -150,34 +157,58 @@ def _probe_hermes() -> dict:
 
 
 def _probe_kanban() -> dict:
-    """Check kanban plugin status via dashboard HTTP (same process)."""
-    try:
-        import urllib.request
-        t0 = time.monotonic()
-        # Read session token from the running app module if available
-        try:
-            from hermes_cli import web_server as _ws
-            token = getattr(_ws, "_SESSION_TOKEN", None)
-        except Exception:
-            token = None
+    """Check kanban state by reading the kanban DB directly.
 
-        req = urllib.request.Request(
-            "http://127.0.0.1:9119/api/plugins/kanban/status",
-            headers={"X-Hermes-Session-Token": token or ""} if token else {}
-        )
-        with urllib.request.urlopen(req, timeout=2) as resp:
-            data = json.loads(resp.read())
-        latency = round((time.monotonic() - t0) * 1000, 1)
-        active = data.get("active_tasks", data.get("queue_depth", 0))
-        status = "online"
-        detail = f"{active} active task{'s' if active != 1 else ''}"
-    except Exception:
-        # Fall back to checking if kanban DB exists and is accessible
+    The previous implementation called back into our own HTTP server
+    (http://127.0.0.1:9119/...) which always self-diagnoses as healthy.  We
+    now read the SQLite database directly — the same path the HTTP handler uses
+    — so the probe is independent of whether the event-loop is healthy.
+    """
+    import glob, sqlite3
+    t0 = time.monotonic()
+    open_total = 0
+    found_db = False
+
+    # Try the new-style per-board DBs first.
+    for path in glob.glob(str(HERMES_HOME / "kanban/boards/*/kanban.db")):
+        found_db = True
+        try:
+            conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=1.0)
+            c = conn.cursor()
+            c.execute(
+                "SELECT count(*) FROM tasks "
+                "WHERE status NOT IN ('done','archived','complete')"
+            )
+            open_total += c.fetchone()[0]
+            conn.close()
+        except Exception:
+            continue
+
+    # Legacy single-file DB fallback.
+    if not found_db:
         kanban_db = HERMES_HOME / "kanban.db"
         if kanban_db.exists():
-            status, latency, detail = "online", None, "DB reachable"
-        else:
-            status, latency, detail = "unknown", None, None
+            found_db = True
+            try:
+                conn = sqlite3.connect(f"file:{kanban_db}?mode=ro", uri=True, timeout=1.0)
+                c = conn.cursor()
+                c.execute(
+                    "SELECT count(*) FROM tasks "
+                    "WHERE status NOT IN ('done','archived','complete')"
+                )
+                open_total += c.fetchone()[0]
+                conn.close()
+            except Exception:
+                pass
+
+    latency = round((time.monotonic() - t0) * 1000, 1)
+    if found_db:
+        status = "online"
+        detail = f"{open_total} open task{'s' if open_total != 1 else ''}"
+    else:
+        status = "unknown"
+        detail = None
+
     return {"name": "kanban", "label": "Kanban Dispatcher", "status": status,
             "latencyMs": latency, "port": 9119, "detail": detail,
             "lastChecked": _now()}
@@ -250,7 +281,8 @@ def _probe_systemd_units() -> list[dict]:
     """List `systemctl --user` hermes-* units (services + timers). Read-only."""
     rc, out = _run_capture(
         ["systemctl", "--user", "list-units", "hermes-*",
-         "--all", "--no-legend", "--no-pager", "--plain"]
+         "--all", "--no-legend", "--no-pager", "--plain"],
+        timeout=2.0,
     )
     units: list[dict] = []
     if rc != 0 and not out.strip():
@@ -293,7 +325,7 @@ def _probe_docker_containers() -> list[dict]:
     rc, out = _run_capture(
         ["docker", "ps", "-a", "--no-trunc",
          "--format", "{{.Names}}\t{{.State}}\t{{.Status}}\t{{.Image}}\t{{.Ports}}"],
-        timeout=6.0,
+        timeout=2.0,
     )
     containers: list[dict] = []
     if rc != 0:
@@ -328,13 +360,49 @@ _KNOWN_PORTS: list[tuple[int, str, str]] = [
 ]
 
 
+def _probe_port_9119_http() -> tuple[str, float | None]:
+    """Application-level liveness check for port 9119 (Dashboard API).
+
+    A raw TCP connect to the port we are serving from always succeeds while the
+    process is running, even if the event-loop is hung.  Instead, issue a fast
+    HTTP GET to a lightweight ping-style route so we actually exercise the
+    request path.  The URL uses the auth-bypass flag (local loopback only).
+    Falls back to TCP if the HTTP probe itself fails for environmental reasons.
+    """
+    import urllib.request
+    t0 = time.monotonic()
+    try:
+        req = urllib.request.Request(
+            "http://127.0.0.1:9119/api/dashboard/ping",
+            method="GET",
+        )
+        with urllib.request.urlopen(req, timeout=1.0) as resp:
+            _ = resp.read(64)
+        return "online", round((time.monotonic() - t0) * 1000, 1)
+    except Exception:
+        pass
+    # Fallback to TCP; note in the description that this is less reliable.
+    return _tcp_latency("127.0.0.1", 9119, timeout=0.4)
+
+
 def _probe_ports() -> list[dict]:
-    """TCP-latency probe a curated set of infrastructure ports. Read-only."""
+    """Probe a curated set of infrastructure ports. Read-only.
+
+    Port 9119 (Dashboard API) uses an application-level HTTP GET so the probe
+    catches event-loop hangs that a raw TCP connect would mask.  All other
+    ports use TCP-only probes since they have no common application-level route.
+    """
     results: list[dict] = []
     for port, label, description in _KNOWN_PORTS:
-        state, latency = _tcp_latency("127.0.0.1", port, timeout=0.8)
+        if port == 9119:
+            state, latency = _probe_port_9119_http()
+            detail_extra = " (application-level HTTP ping)"
+        else:
+            state, latency = _tcp_latency("127.0.0.1", port, timeout=0.4)
+            detail_extra = ""
         results.append({
-            "port": port, "label": label, "description": description,
+            "port": port, "label": label,
+            "description": description + detail_extra,
             "online": state == "online", "latencyMs": latency,
             "status": "ok" if state == "online" else "error",
         })
@@ -355,8 +423,13 @@ def _get_infra_snapshot() -> dict:
     now = time.monotonic()
     if _INFRA_CACHE and now < _INFRA_CACHE[1]:
         return _INFRA_CACHE[0]
-    snapshot = _build_infra_snapshot()
-    _INFRA_CACHE = (snapshot, now + _INFRA_TTL)
+    with _INFRA_LOCK:
+        # Re-check after acquiring lock (another thread may have rebuilt it).
+        now = time.monotonic()
+        if _INFRA_CACHE and now < _INFRA_CACHE[1]:
+            return _INFRA_CACHE[0]
+        snapshot = _build_infra_snapshot()
+        _INFRA_CACHE = (snapshot, now + _INFRA_TTL)
     return snapshot
 
 
@@ -723,8 +796,13 @@ def _get_snapshot() -> dict:
     now = time.monotonic()
     if _SNAPSHOT_CACHE and now < _SNAPSHOT_CACHE[1]:
         return _SNAPSHOT_CACHE[0]
-    snapshot = _build_snapshot()
-    _SNAPSHOT_CACHE = (snapshot, now + _SNAPSHOT_TTL)
+    with _SNAPSHOT_LOCK:
+        # Re-check after acquiring lock (another thread may have rebuilt it).
+        now = time.monotonic()
+        if _SNAPSHOT_CACHE and now < _SNAPSHOT_CACHE[1]:
+            return _SNAPSHOT_CACHE[0]
+        snapshot = _build_snapshot()
+        _SNAPSHOT_CACHE = (snapshot, now + _SNAPSHOT_TTL)
     return snapshot
 
 
@@ -849,9 +927,15 @@ def _build_nexus_health() -> dict:
     individual MCP server. Every input comes from a read-only probe.
     """
     generated_at = _now()
-    mission = _get_snapshot()
-    topology = _get_gitnexus_runtime_snapshot()
-    infra = _get_infra_snapshot()
+    # Fan-out the three independent snapshot builders concurrently so cold time ≈
+    # max(single-group latency) rather than the sum of all three groups.
+    with concurrent.futures.ThreadPoolExecutor(max_workers=3) as pool:
+        fut_mission  = pool.submit(_get_snapshot)
+        fut_topology = pool.submit(_get_gitnexus_runtime_snapshot)
+        fut_infra    = pool.submit(_get_infra_snapshot)
+        mission  = fut_mission.result()
+        topology = fut_topology.result()
+        infra    = fut_infra.result()
     runtimes = _runtime_by_name(mission)
 
     hermes_rt = runtimes.get("hermes", {})
@@ -1254,8 +1338,13 @@ def _get_nexus_health() -> dict:
     now = time.monotonic()
     if _NEXUS_CACHE and now < _NEXUS_CACHE[1]:
         return _NEXUS_CACHE[0]
-    data = _build_nexus_health()
-    _NEXUS_CACHE = (data, now + _NEXUS_TTL)
+    with _NEXUS_LOCK:
+        # Re-check after acquiring lock (another thread may have rebuilt it).
+        now = time.monotonic()
+        if _NEXUS_CACHE and now < _NEXUS_CACHE[1]:
+            return _NEXUS_CACHE[0]
+        data = _build_nexus_health()
+        _NEXUS_CACHE = (data, now + _NEXUS_TTL)
     return data
 
 
@@ -1424,23 +1513,36 @@ def _build_node_detail(node_id: str) -> Optional[dict]:
 # Endpoints
 # ---------------------------------------------------------------------------
 
+# Hard timeout (seconds) for the nexus-health cold-build path.
+_NEXUS_HEALTH_TIMEOUT = 12.0
+
+
 @router.get("/mission", summary="Mission Control snapshot")
 async def get_mission_snapshot() -> dict:
     """Combined MissionSnapshot with real live data. 30 s server-side cache."""
-    return await asyncio.get_event_loop().run_in_executor(None, _get_snapshot)
+    return await asyncio.get_running_loop().run_in_executor(None, _get_snapshot)
 
 
 @router.get("/nexus-health", summary="System Health read-only graph")
 async def get_nexus_health() -> dict:
     """Read-only command-center health map for the whole Hermes infrastructure."""
-    return await asyncio.get_event_loop().run_in_executor(None, _get_nexus_health)
+    try:
+        return await asyncio.wait_for(
+            asyncio.get_running_loop().run_in_executor(None, _get_nexus_health),
+            timeout=_NEXUS_HEALTH_TIMEOUT,
+        )
+    except asyncio.TimeoutError:
+        raise HTTPException(
+            status_code=503,
+            detail="System Health build timed out — try again in a moment.",
+        )
 
 
 @router.get("/nexus-health/node/{node_id}", summary="Per-node System Health detail")
 async def get_nexus_health_node(node_id: str) -> dict:
     """Summary, metrics, history sparklines and fix/optimization recommendations
     for a single node in the System Health graph. Read-only."""
-    detail = await asyncio.get_event_loop().run_in_executor(
+    detail = await asyncio.get_running_loop().run_in_executor(
         None, _build_node_detail, node_id
     )
     if detail is None:
@@ -1454,7 +1556,7 @@ async def get_runtime_health(name: str) -> dict:
     probe = _PROBE_MAP.get(name)
     if probe is None:
         return {"name": name, "label": name, "status": "unknown", "lastChecked": _now()}
-    return await asyncio.get_event_loop().run_in_executor(None, probe)
+    return await asyncio.get_running_loop().run_in_executor(None, probe)
 
 
 @router.get("/spend", summary="Spend history sparkline")
@@ -1462,7 +1564,7 @@ async def get_spend(range: str = "7d") -> dict:
     """Spend history from claude session JSONL files. range=1d|7d|30d."""
     if range not in ("1d", "7d", "30d"):
         range = "7d"
-    return await asyncio.get_event_loop().run_in_executor(None, _get_spend, range)
+    return await asyncio.get_running_loop().run_in_executor(None, _get_spend, range)
 
 
 def _get_queue_depth(range_str: str) -> dict:
@@ -1503,13 +1605,13 @@ async def get_queue(range: str = "7d") -> dict:
     """Daily task creation across all kanban boards + current open count."""
     if range not in ("1d", "7d", "30d"):
         range = "7d"
-    return await asyncio.get_event_loop().run_in_executor(None, _get_queue_depth, range)
+    return await asyncio.get_running_loop().run_in_executor(None, _get_queue_depth, range)
 
 
 @router.get("/swarm", summary="Swarm status")
 async def get_swarm() -> dict:
     """Ruflo + Hermes subagents + Kanban dispatcher swarm status."""
-    swarm = await asyncio.get_event_loop().run_in_executor(None, _get_swarm_status)
+    swarm = await asyncio.get_running_loop().run_in_executor(None, _get_swarm_status)
     if swarm is None:
         return {"active": False, "message": "No active swarm detected"}
     return {"active": True, **swarm}
@@ -1518,7 +1620,7 @@ async def get_swarm() -> dict:
 @router.get("/cron", summary="Cron jobs — next firings and last runs")
 async def get_cron() -> dict:
     """All cron jobs with next firing times and last run status."""
-    jobs = await asyncio.get_event_loop().run_in_executor(None, _get_all_cron_jobs)
+    jobs = await asyncio.get_running_loop().run_in_executor(None, _get_all_cron_jobs)
     return {"jobs": jobs, "count": len(jobs)}
 
 
@@ -1549,7 +1651,7 @@ async def stream_health() -> StreamingResponse:
     """
     async def _generate():
         event_id = 0
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         last_heartbeat = time.monotonic()
 
         while True:

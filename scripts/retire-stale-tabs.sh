@@ -66,6 +66,10 @@ if [[ ${#baks[@]} -eq 0 ]]; then
   echo "SKIP     no ruflo-goap-control.bak.* directories found"
 else
   for bak in "${baks[@]}"; do
+    if [[ ! -d "$bak" ]]; then
+      echo "WARN: $bak is not a directory, skipping to avoid deleting unexpected files"
+      continue
+    fi
     rm -rf "$bak"
     echo "DELETED  $(basename "$bak")"
   done

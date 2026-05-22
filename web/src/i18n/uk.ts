@@ -81,6 +81,7 @@ export const uk: Translations = {
       plugins: "Плагіни",
       sessions: "Сесії",
       skills: "Навички",
+      system_health: "Стан системи",
     },
     modelToolsSheetSubtitle: "та інструменти",
     modelToolsSheetTitle: "Модель",
