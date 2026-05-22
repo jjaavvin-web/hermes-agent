@@ -346,6 +346,10 @@ export const api = {
     fetchJSON<import("@/components/mission/types").MissionSnapshot>("/api/dashboard/mission"),
   getNexusHealth: () =>
     fetchJSON<NexusHealthResponse>("/api/dashboard/nexus-health"),
+  getNexusHealthNode: (id: string) =>
+    fetchJSON<NexusHealthNodeDetail>(
+      `/api/dashboard/nexus-health/node/${encodeURIComponent(id)}`,
+    ),
   getRuntimeHealth: (name: string) =>
     fetchJSON<import("@/components/mission/types").HealthChip>(`/api/dashboard/health/runtime/${encodeURIComponent(name)}`),
   getSpendHistory: (range: "1d" | "7d" | "30d" = "7d") =>
@@ -808,6 +812,7 @@ export interface NexusHealthNode {
   id: string;
   label: string;
   kind: string;
+  group: string;
   status: NexusHealthStatus;
   summary: string;
   details: string;
@@ -845,12 +850,48 @@ export interface NexusHealthResponse {
   generated_at: string;
   posture: NexusHealthPosture;
   summary: string;
+  counts?: Record<NexusHealthStatus, number>;
   nodes: NexusHealthNode[];
   edges: NexusHealthEdge[];
   needs_joseph: NexusHealthGate[];
   safe_actions: NexusHealthAction[];
   locked_actions: NexusHealthGate[];
   evidence: NexusHealthProvenance[];
+}
+
+export interface NexusHealthMetricCard {
+  label: string;
+  value: string;
+}
+
+export interface NexusHealthRecommendation {
+  kind: "fix" | "optimization";
+  title: string;
+  detail: string;
+  command: string | null;
+}
+
+export interface NexusHealthHistory {
+  label: string;
+  kind: "queue" | "spend";
+  openNow?: number;
+  points: Array<Record<string, unknown>>;
+}
+
+export interface NexusHealthConnection {
+  id: string;
+  label: string;
+  status: NexusHealthEdge["status"];
+  direction: "in" | "out";
+  peer: string;
+}
+
+export interface NexusHealthNodeDetail extends NexusHealthNode {
+  generated_at: string;
+  metric_cards: NexusHealthMetricCard[];
+  history: NexusHealthHistory[];
+  recommendations: NexusHealthRecommendation[];
+  connections: NexusHealthConnection[];
 }
 
 export interface HubAgentPluginRow {
