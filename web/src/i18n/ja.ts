@@ -73,6 +73,7 @@ export const ja: Translations = {
       cron: "Cron",
       documentation: "ドキュメント",
       explorer: "エクスプローラー",
+      hives: "Hives",
       keys: "キー",
       logs: "ログ",
       cockpit: "Cockpit",

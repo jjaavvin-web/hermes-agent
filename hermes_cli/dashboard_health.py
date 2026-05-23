@@ -51,11 +51,15 @@ _NEXUS_CACHE: tuple[dict, float] | None = None
 _NEXUS_TTL = 30.0
 _INFRA_CACHE: tuple[dict, float] | None = None
 _INFRA_TTL = 30.0
+# Hives snapshot cache (15 s cadence — matches the frontend poll interval).
+_HIVES_CACHE: tuple[dict, float] | None = None
+_HIVES_TTL = 15.0
 
 # Single-flight locks — prevent cache stampedes on cold start.
 _SNAPSHOT_LOCK = threading.Lock()
 _NEXUS_LOCK = threading.Lock()
 _INFRA_LOCK = threading.Lock()
+_HIVES_LOCK = threading.Lock()
 
 
 def _now() -> str:
@@ -431,6 +435,307 @@ def _get_infra_snapshot() -> dict:
         snapshot = _build_infra_snapshot()
         _INFRA_CACHE = (snapshot, now + _INFRA_TTL)
     return snapshot
+
+
+# ---------------------------------------------------------------------------
+# Hives snapshot — Ruflo hive run discovery and status
+# ---------------------------------------------------------------------------
+
+RUFLO_WORK_DIR = HERMES_HOME / "ruflo-work"
+
+
+def _tmux_sessions() -> set[str]:
+    """Return set of live tmux session names. Empty if tmux is unavailable."""
+    try:
+        result = subprocess.run(
+            ["tmux", "ls", "-F", "#{session_name}"],
+            capture_output=True, text=True, timeout=2,
+        )
+        if result.returncode == 0:
+            return {line.strip() for line in result.stdout.splitlines() if line.strip()}
+    except Exception:
+        pass
+    return set()
+
+
+def _iso(ts: float) -> str:
+    """Convert a POSIX timestamp to an ISO-8601 string."""
+    return datetime.fromtimestamp(ts, tz=timezone.utc).isoformat()
+
+
+def _probe_hive(workdir: Path, tmux_alive_sessions: set[str]) -> dict:
+    """Build one hive snapshot entry from a workdir. Read-only."""
+    hive_id = workdir.name
+
+    # --- Read .ruflo-status.json if present ---
+    status_path = workdir / ".ruflo-status.json"
+    status_data: dict = {}
+    if status_path.exists():
+        try:
+            status_data = json.loads(status_path.read_text())
+        except Exception:
+            pass
+
+    session_name: Optional[str] = status_data.get("session")
+    tracking_card: Optional[str] = status_data.get("tracking_card")
+    updated_at: Optional[str] = status_data.get("updated_at")
+
+    # --- LAUNCH.sh mtime as started_at; also grep TRACK_TITLE ---
+    launch_path = workdir / "LAUNCH.sh"
+    started_at: Optional[str] = None
+    track_title: Optional[str] = None
+    if launch_path.exists():
+        try:
+            started_at = _iso(launch_path.stat().st_mtime)
+        except Exception:
+            pass
+        try:
+            text = launch_path.read_text(errors="replace")
+            for line in text.splitlines():
+                if line.strip().startswith("TRACK_TITLE="):
+                    raw = line.split("=", 1)[1].strip().strip('"').strip("'")
+                    if raw:
+                        track_title = raw
+                    break
+        except Exception:
+            pass
+
+    # Fall back: use status_path mtime if no LAUNCH.sh
+    if started_at is None and status_path.exists():
+        try:
+            started_at = _iso(status_path.stat().st_mtime)
+        except Exception:
+            pass
+
+    # --- Objective summary (first ~200 chars of objective.md, single line) ---
+    objective_summary: Optional[str] = None
+    obj_path = workdir / "objective.md"
+    if obj_path.exists():
+        try:
+            raw_obj = obj_path.read_text(errors="replace")
+            lines = [ln.strip() for ln in raw_obj.splitlines() if ln.strip() and not ln.strip().startswith("#")]
+            if lines:
+                objective_summary = " ".join(lines)[:200]
+        except Exception:
+            pass
+
+    # --- FINAL-REPORT.md ---
+    final_report_path: Optional[str] = None
+    final_report_status: Optional[str] = None
+    report_file = workdir / "FINAL-REPORT.md"
+    if report_file.exists():
+        final_report_path = str(report_file)
+        try:
+            first_lines = report_file.read_text(errors="replace")[:500]
+            for ln in first_lines.splitlines():
+                ln = ln.strip()
+                if ln.startswith("Status:"):
+                    val = ln.split(":", 1)[1].strip().upper()
+                    if "BLOCKED" in val:
+                        final_report_status = "BLOCKED"
+                    elif "COMPLETE" in val:
+                        final_report_status = "COMPLETE"
+                    break
+                # Also accept **Status:** markdown style
+                if "**Status:**" in ln or "**status:**" in ln.lower():
+                    if "BLOCKED" in ln.upper():
+                        final_report_status = "BLOCKED"
+                    elif "COMPLETE" in ln.upper():
+                        final_report_status = "COMPLETE"
+                    break
+        except Exception:
+            pass
+
+    # --- Log file ---
+    log_path: Optional[str] = None
+    log_size: int = 0
+    log_mtime: Optional[str] = None
+    log_file = workdir / "hive-mind.log"
+    if log_file.exists():
+        log_path = str(log_file)
+        try:
+            st = log_file.stat()
+            log_size = st.st_size
+            log_mtime = _iso(st.st_mtime)
+        except Exception:
+            pass
+
+    # --- tmux alive: check session name from status.json; also fallback search ---
+    tmux_alive = False
+    if session_name and session_name in tmux_alive_sessions:
+        tmux_alive = True
+    elif not session_name:
+        # Heuristic: workdir name slug may match a tmux session
+        slug = hive_id.split("-")[0]  # crude first-word match
+        for sess in tmux_alive_sessions:
+            if sess.startswith(slug):
+                tmux_alive = True
+                session_name = sess
+                break
+
+    # --- Status classification ---
+    if final_report_path is not None:
+        hive_status = "blocked" if final_report_status == "BLOCKED" else "completed"
+    elif tmux_alive:
+        hive_status = "running"
+    else:
+        hive_status = "stale"
+
+    # --- Elapsed seconds ---
+    elapsed_seconds: int = 0
+    try:
+        if started_at:
+            start_dt = datetime.fromisoformat(started_at.replace("Z", "+00:00"))
+            now_dt = datetime.now(timezone.utc)
+            elapsed_seconds = int((now_dt - start_dt).total_seconds())
+    except Exception:
+        pass
+
+    return {
+        "id": hive_id,
+        "workdir": str(workdir),
+        "session": session_name,
+        "status": hive_status,
+        "tracking_card": tracking_card,
+        "started_at": started_at,
+        "updated_at": updated_at,
+        "elapsed_seconds": elapsed_seconds,
+        "final_report_status": final_report_status,
+        "final_report_path": final_report_path,
+        "log_path": log_path,
+        "log_size_bytes": log_size,
+        "log_mtime": log_mtime,
+        "tmux_alive": tmux_alive,
+        "track_title": track_title,
+        "objective_summary": objective_summary,
+    }
+
+
+def _is_valid_hive_dir(workdir: Path) -> bool:
+    """Return True if this looks like a real hive workdir (not junk)."""
+    if workdir.name.startswith("."):
+        return False
+    has_launch = (workdir / "LAUNCH.sh").exists()
+    has_objective = (workdir / "objective.md").exists()
+    has_status = (workdir / ".ruflo-status.json").exists()
+    return has_launch or has_objective or has_status
+
+
+def _build_hives_snapshot() -> dict:
+    """Scan ~/.hermes/ruflo-work for hive runs. Read-only. Thread-safe."""
+    from itertools import groupby as _groupby
+
+    scanned_at = _now()
+
+    if not RUFLO_WORK_DIR.exists():
+        return {
+            "hives": [],
+            "scanned_at": scanned_at,
+            "active_count": 0,
+            "completed_count": 0,
+            "stale_count": 0,
+        }
+
+    workdirs = [d for d in RUFLO_WORK_DIR.iterdir() if d.is_dir() and _is_valid_hive_dir(d)]
+
+    # Fan-out: get tmux sessions once (shared) then probe each hive in the pool.
+    tmux_sessions = _tmux_sessions()
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
+        futures = {pool.submit(_probe_hive, wd, tmux_sessions): wd for wd in workdirs}
+        hives: list[dict] = []
+        for fut in concurrent.futures.as_completed(futures):
+            try:
+                hives.append(fut.result())
+            except Exception:
+                pass
+
+    def _rank(h: dict) -> int:
+        return {"running": 0, "completed": 1, "blocked": 1, "stale": 2}.get(h["status"], 2)
+
+    # Sort all by rank asc, then within rank by updated_at/started_at desc.
+    hives.sort(key=lambda h: (_rank(h), ""))
+
+    sorted_hives: list[dict] = []
+    for _, group in _groupby(hives, key=_rank):
+        bucket = sorted(
+            list(group),
+            key=lambda h: h.get("updated_at") or h.get("started_at") or "",
+            reverse=True,
+        )
+        sorted_hives.extend(bucket)
+
+    active_count = sum(1 for h in sorted_hives if h["status"] == "running")
+    completed_count = sum(1 for h in sorted_hives if h["status"] in {"completed", "blocked"})
+    stale_count = sum(1 for h in sorted_hives if h["status"] == "stale")
+
+    return {
+        "hives": sorted_hives,
+        "scanned_at": scanned_at,
+        "active_count": active_count,
+        "completed_count": completed_count,
+        "stale_count": stale_count,
+    }
+
+
+def _get_hives_snapshot() -> dict:
+    """15 s-cached hive runs snapshot. Thread-safe."""
+    global _HIVES_CACHE
+    now = time.monotonic()
+    if _HIVES_CACHE and now < _HIVES_CACHE[1]:
+        return _HIVES_CACHE[0]
+    with _HIVES_LOCK:
+        now = time.monotonic()
+        if _HIVES_CACHE and now < _HIVES_CACHE[1]:
+            return _HIVES_CACHE[0]
+        data = _build_hives_snapshot()
+        _HIVES_CACHE = (data, now + _HIVES_TTL)
+    return data
+
+
+def _get_hive_log_tail(hive_id: str, tail: int = 200) -> Optional[dict]:
+    """Return last N lines of a hive's hive-mind.log. Read-only.
+
+    Validates hive_id against the current snapshot whitelist to prevent
+    path traversal. Hard cap: N <= 1000.
+    """
+    tail = max(1, min(tail, 1000))
+
+    snapshot = _get_hives_snapshot()
+    known = {h["id"]: h for h in snapshot["hives"]}
+    if hive_id not in known:
+        return None
+
+    hive = known[hive_id]
+    log_path_str = hive.get("log_path")
+    if not log_path_str:
+        return {
+            "lines": [],
+            "path": None,
+            "mtime": None,
+            "truncated_to": tail,
+        }
+
+    log_path = Path(log_path_str)
+    try:
+        mtime_val = _iso(log_path.stat().st_mtime)
+        text = log_path.read_text(errors="replace")
+        lines = text.splitlines()
+        result_lines = lines[-tail:] if len(lines) > tail else lines
+        return {
+            "lines": result_lines,
+            "path": log_path_str,
+            "mtime": mtime_val,
+            "truncated_to": tail,
+        }
+    except Exception as exc:
+        return {
+            "lines": [],
+            "path": log_path_str,
+            "mtime": None,
+            "truncated_to": tail,
+            "error": str(exc),
+        }
 
 
 # ---------------------------------------------------------------------------
@@ -1680,3 +1985,45 @@ async def stream_health() -> StreamingResponse:
             "X-Accel-Buffering": "no",
         },
     )
+
+
+# ---------------------------------------------------------------------------
+# Hives endpoints — read-only observability for Ruflo hive runs
+# ---------------------------------------------------------------------------
+
+_HIVES_TIMEOUT = 10.0
+
+
+@router.get("/hives", summary="Read-only snapshot of all Ruflo hive runs")
+async def get_hives_snapshot() -> dict:
+    """Scans ~/.hermes/ruflo-work for hive run directories.
+
+    Returns a cached (15 s TTL) snapshot sorted active-first.  Strictly
+    read-only — no subprocess that mutates state.
+    """
+    try:
+        return await asyncio.wait_for(
+            asyncio.get_running_loop().run_in_executor(None, _get_hives_snapshot),
+            timeout=_HIVES_TIMEOUT,
+        )
+    except asyncio.TimeoutError:
+        raise HTTPException(
+            status_code=503,
+            detail="Hives snapshot build timed out — try again in a moment.",
+        )
+
+
+@router.get("/hives/{hive_id}/log", summary="Tail hive-mind.log for one hive run")
+async def get_hive_log(hive_id: str, tail: int = 200) -> dict:
+    """Return the last N lines (default 200, max 1000) of hive-mind.log.
+
+    hive_id is validated against the live snapshot whitelist — no path
+    traversal is possible.  Read-only.
+    """
+    tail = max(1, min(tail, 1000))
+    result = await asyncio.get_running_loop().run_in_executor(
+        None, _get_hive_log_tail, hive_id, tail,
+    )
+    if result is None:
+        raise HTTPException(status_code=404, detail=f"Unknown hive id: {hive_id}")
+    return result
