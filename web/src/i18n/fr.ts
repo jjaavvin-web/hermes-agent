@@ -131,6 +131,7 @@ export const fr: Translations = {
 
   sessions: {
     title: "Sessions",
+    overview: "Aperçu",
     searchPlaceholder: "Rechercher dans les messages...",
     noSessions: "Aucune session pour l'instant",
     noMatch: "Aucune session ne correspond à votre recherche",
@@ -273,7 +274,7 @@ export const fr: Translations = {
       "Découvrez, installez, activez et mettez à jour les plugins Hermes (parité avec `hermes plugins`).",
     identifierLabel: "URL Git ou owner/repo",
     inactive: "inactif",
-    installBtn: "Installer depuis Git",
+    installBtn: "Installer",
     installHeading: "Installer depuis GitHub / URL Git",
     installHint: "Utilisez le raccourci owner/repo ou une URL de clonage complète https:// ou git@.",
     memoryProviderLabel: "Fournisseur de mémoire",
@@ -371,6 +372,8 @@ export const fr: Translations = {
     description: "Gérer les clés API et les secrets stockés dans",
     hideAdvanced: "Masquer les options avancées",
     showAdvanced: "Afficher les options avancées",
+    showLess: "Afficher moins",
+    showMore: "Afficher plus",
     llmProviders: "Fournisseurs LLM",
     providersConfigured: "{configured} sur {total} fournisseurs configurés",
     getKey: "Obtenir la clé",
@@ -396,7 +399,7 @@ export const fr: Translations = {
     disconnect: "Déconnecter",
     managedExternally: "Géré en externe",
     copied: "Copié ✓",
-    cli: "CLI",
+    cli: "Copier",
     copyCliCommand: "Copier la commande CLI (pour externe / repli)",
     connect: "Connecter",
     sessionExpires: "La session expire dans {time}",
@@ -661,6 +664,7 @@ export const fr: Translations = {
     columnLabels: {
       triage: "Triage",
       todo: "À faire",
+      scheduled: "Planifié",
       ready: "Prêt",
       running: "En cours",
       blocked: "Bloqué",
@@ -670,6 +674,7 @@ export const fr: Translations = {
     columnHelp: {
       triage: "Idées brutes — un specifier rédigera la spécification",
       todo: "En attente de dépendances ou non assigné",
+      scheduled: "En attente d'un délai connu ou d'un suivi planifié",
       ready: "Dépendances satisfaites ; assignez un profil pour dispatch",
       running: "Réclamé par un worker — en cours d'exécution",
       blocked: "Le worker a demandé une intervention humaine",

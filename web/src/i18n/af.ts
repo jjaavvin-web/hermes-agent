@@ -131,6 +131,7 @@ export const af: Translations = {
 
   sessions: {
     title: "Sessies",
+    overview: "Oorsig",
     searchPlaceholder: "Soek boodskap-inhoud...",
     noSessions: "Nog geen sessies nie",
     noMatch: "Geen sessies stem ooreen met jou soektog nie",
@@ -273,7 +274,7 @@ export const af: Translations = {
       "Ontdek, installeer, aktiveer en werk Hermes-inproppe op (`hermes plugins` ekwivalent).",
     identifierLabel: "Git-URL of owner/repo",
     inactive: "onaktief",
-    installBtn: "Installeer vanaf Git",
+    installBtn: "Installeer",
     installHeading: "Installeer vanaf GitHub / Git-URL",
     installHint: "Gebruik owner/repo-kortvorm of 'n volledige https:// of git@ kloon-URL.",
     memoryProviderLabel: "Geheueverskaffer",
@@ -371,6 +372,8 @@ export const af: Translations = {
     description: "Bestuur API-sleutels en geheime gestoor in",
     hideAdvanced: "Versteek Gevorderd",
     showAdvanced: "Wys Gevorderd",
+    showLess: "Wys minder",
+    showMore: "Wys meer",
     llmProviders: "LLM-verskaffers",
     providersConfigured: "{configured} van {total} verskaffers gekonfigureer",
     getKey: "Kry sleutel",
@@ -396,7 +399,7 @@ export const af: Translations = {
     disconnect: "Ontkoppel",
     managedExternally: "Ekstern bestuur",
     copied: "Gekopieer ✓",
-    cli: "CLI",
+    cli: "Kopieer",
     copyCliCommand: "Kopieer CLI-opdrag (vir ekstern / terugval)",
     connect: "Koppel",
     sessionExpires: "Sessie verval oor {time}",
@@ -662,6 +665,7 @@ export const af: Translations = {
     columnLabels: {
       triage: "Triage",
       todo: "Te doen",
+      scheduled: "Geskeduleerd",
       ready: "Gereed",
       running: "Aan die gang",
       blocked: "Geblokkeer",
@@ -671,6 +675,7 @@ export const af: Translations = {
     columnHelp: {
       triage: "Rou idees — 'n spesifiseerder sal die spesifikasie uitwerk",
       todo: "Wag op afhanklikhede of nie toegewys nie",
+      scheduled: "Wag op 'n bekende tydvertraging of geskeduleerde opvolg",
       ready: "Afhanklikhede is bevredig; wys 'n profiel toe om te versend",
       running: "Deur 'n werker geëis — in vlug",
       blocked: "Werker het mensinvoer aangevra",
