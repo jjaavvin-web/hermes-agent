@@ -379,7 +379,7 @@ export default function NexusHealthPage() {
 
   // ----------------------------------------------------------------- Desktop
   return (
-    <div className="flex h-full flex-col bg-[#070b11] text-white">
+    <div className="flex h-[calc(100dvh-96px)] flex-col overflow-hidden bg-[#070b11] text-white">
       {headerEl}
 
       <div className="grid min-h-0 flex-1 grid-cols-[236px_1fr_368px]">
@@ -395,15 +395,17 @@ export default function NexusHealthPage() {
 
         {graphEl}
 
-        <DetailPanel
-          data={snapshot}
-          selectedId={selectedId}
-          detail={detail}
-          detailLoading={detailLoading}
-          detailError={detailError}
-          onClose={() => void selectNode(null)}
-          onNavigate={(path) => navigate(path)}
-        />
+        <div className="min-h-0 overflow-y-auto">
+          <DetailPanel
+            data={snapshot}
+            selectedId={selectedId}
+            detail={detail}
+            detailLoading={detailLoading}
+            detailError={detailError}
+            onClose={() => void selectNode(null)}
+            onNavigate={(path) => navigate(path)}
+          />
+        </div>
       </div>
     </div>
   );
