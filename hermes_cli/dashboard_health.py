@@ -719,7 +719,7 @@ def _get_hive_log_tail(hive_id: str, tail: int = 200) -> Optional[dict]:
     log_path = Path(log_path_str)
     try:
         mtime_val = _iso(log_path.stat().st_mtime)
-        text = log_path.read_text(errors="replace")
+        text = log_path.read_text(encoding="utf-8", errors="replace")
         lines = text.splitlines()
         result_lines = lines[-tail:] if len(lines) > tail else lines
         return {
