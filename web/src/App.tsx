@@ -74,7 +74,6 @@ import PluginsPage from "@/pages/PluginsPage";
 import NexusHealthPage from "@/pages/NexusHealthPage";
 import HivesPage from "@/pages/HivesPage";
 import ExplorerPage from "@/pages/ExplorerPage";
-import PantheonPage from "@/pages/PantheonPage";
 import WelcomePage from "@/pages/WelcomePage";
 import ChatPage from "@/pages/ChatPage";
 import { LanguageSwitcher } from "@/components/LanguageSwitcher";
@@ -143,7 +142,6 @@ const BUILTIN_ROUTES_CORE: Record<string, ComponentType> = {
   "/config": ConfigPage,
   "/env": EnvPage,
   "/docs": DocsPage,
-  "/pantheon": PantheonPage,
   "/welcome": WelcomePage,
 };
 
@@ -189,12 +187,6 @@ const BUILTIN_NAV_REST: NavItem[] = [
     labelKey: "documentation",
     label: "Documentation",
     icon: BookOpen,
-  },
-  {
-    path: "/pantheon",
-    labelKey: "pantheon",
-    label: "Pantheon",
-    icon: Landmark,
   },
 ];
 
