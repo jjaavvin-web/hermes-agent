@@ -2917,6 +2917,100 @@ class DispatchResult:
     """Task ids auto-blocked by the spawn-failure circuit breaker."""
     timed_out: list[str] = field(default_factory=list)
     """Task ids whose workers exceeded ``max_runtime_seconds``."""
+    blocked_guardrail: list[str] = field(default_factory=list)
+    """Ready task ids blocked by the Phase 2 dispatch guardrail because
+    their branch collides with a live run in ``~/.hermes/run-registry``.
+    Operator-actionable: a duplicate-dispatch race the launcher's slug
+    lock would also have refused."""
+
+
+# ---------------------------------------------------------------------------
+# Dispatch guardrail (Phase 2 safety rail)
+# ---------------------------------------------------------------------------
+# The kanban dispatcher must not auto-dispatch a ready card whose branch
+# is already claimed by a live run. The Phase 1 launcher writes one
+# ``<slug>.lock`` JSON file per run into ``~/.hermes/run-registry``; this
+# guardrail reads those locks and refuses a colliding dispatch. It is the
+# kanban-side belt to the launcher's slug-lock braces.
+
+
+def _task_attr(task: Any, name: str) -> Optional[Any]:
+    """Read field ``name`` from a Task, a ``sqlite3.Row``, or a mapping.
+
+    Returns ``None`` when the field is absent on whatever shape ``task``
+    is — the guardrail accepts both the pre-claim ``ready_rows`` row
+    (only ``id``/``assignee``) and a fully-built :class:`Task`.
+    """
+    try:
+        val = getattr(task, name)
+        if val is not None:
+            return val
+    except AttributeError:
+        pass
+    try:
+        return task[name]
+    except (KeyError, IndexError, TypeError):
+        return None
+
+
+def _hive_registry_conflict(
+    task: Any, *, registry_dir: Optional[Path] = None
+) -> Optional[str]:
+    """Return the conflicting run's card id if ``task`` collides with a
+    live run-registry entry, else ``None``.
+
+    A collision is a ready card whose ``branch_name`` (or, failing that,
+    whose card id) already appears in a ``~/.hermes/run-registry/*.lock``
+    written by a launcher. Reading is best-effort — a missing or garbled
+    registry is treated as "no conflict" so the guardrail can never wedge
+    the dispatcher.
+    """
+    if registry_dir is None:
+        home = os.environ.get("HERMES_HOME") or str(Path.home() / ".hermes")
+        registry_dir = Path(home) / "run-registry"
+    try:
+        if not registry_dir.is_dir():
+            return None
+        locks = sorted(registry_dir.glob("*.lock"))
+    except OSError:
+        return None
+
+    branch = _task_attr(task, "branch_name") or _task_attr(task, "branch")
+    card_id = _task_attr(task, "id")
+    for lock in locks:
+        try:
+            data = json.loads(lock.read_text())
+        except (OSError, ValueError):
+            continue
+        if not isinstance(data, dict):
+            continue
+        lock_branch = data.get("branch")
+        lock_card = data.get("tracking_card")
+        if (branch and lock_branch and branch == lock_branch) or (
+            card_id and lock_card and card_id == lock_card
+        ):
+            return lock_card or data.get("slug") or lock_branch or lock.stem
+    return None
+
+
+def _notify_guardrail_block(task_id: str, conflict: str) -> None:
+    """Best-effort Discord ping that the guardrail blocked a card.
+
+    Never raises — a notification failure must not affect dispatch.
+    """
+    try:
+        home = os.environ.get("HERMES_HOME") or str(Path.home() / ".hermes")
+        script = Path(home) / "scripts" / "discord-notify.sh"
+        if not script.exists():
+            return
+        subprocess.run(
+            [str(script),
+             f"⛔ dispatch guardrail blocked {task_id} "
+             f"(branch conflict with live run {conflict})"],
+            capture_output=True, check=False, timeout=10,
+        )
+    except Exception:
+        pass
 
 
 # Bounded registry of recently-reaped worker child exits, populated by the
@@ -3797,6 +3891,24 @@ def dispatch_once(
             # of human-pulled work.
             result.skipped_nonspawnable.append(row["id"])
             continue
+        # ── Dispatch guardrail (Phase 2 safety rail) ─────────────────────
+        # Refuse to auto-dispatch a ready card whose branch collides with a
+        # live run recorded in ~/.hermes/run-registry. Belt-and-braces with
+        # the launcher-side slug lock — this closes the kanban auto-dispatch
+        # path. dry_run is observation-only, so it skips the block.
+        if not dry_run:
+            _conflict = _hive_registry_conflict(row)
+            if _conflict:
+                block_task(
+                    conn, row["id"],
+                    reason=(
+                        "DISPATCH_GUARDRAIL: branch conflict with live "
+                        f"run {_conflict}"
+                    ),
+                )
+                result.blocked_guardrail.append(row["id"])
+                _notify_guardrail_block(row["id"], _conflict)
+                continue
         if dry_run:
             result.spawned.append((row["id"], row["assignee"], ""))
             continue

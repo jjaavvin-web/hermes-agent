@@ -5576,6 +5576,13 @@ def cmd_kanban(args):
     return kanban_command(args)
 
 
+def cmd_git_health(args):
+    """Git worktree/branch hygiene: janitor, merge-ready, install-hooks."""
+    from hermes_cli.git_janitor import git_health_command
+
+    return git_health_command(args)
+
+
 def cmd_hooks(args):
     """Shell-hook inspection and management."""
     from hermes_cli.hooks import hooks_command
@@ -9676,7 +9683,7 @@ _BUILTIN_SUBCOMMANDS = frozenset(
         "acp", "auth", "backup", "checkpoints", "claw", "completion",
         "computer-use",
         "config", "cron", "curator", "dashboard", "debug", "doctor",
-        "dump", "fallback", "gateway", "hooks", "import", "insights",
+        "dump", "fallback", "gateway", "git-health", "hooks", "import", "insights",
         "kanban", "login", "logout", "logs", "lsp", "mcp", "memory",
         "model", "pairing", "plugins", "postinstall", "profile", "proxy", "sessions", "setup",
         "skills", "slack", "status", "tools", "uninstall", "update",
@@ -10355,6 +10362,68 @@ def main():
         "--deep", action="store_true", help="Run deep checks (may take longer)"
     )
     status_parser.set_defaults(func=cmd_status)
+
+    # =========================================================================
+    # git-health command
+    # =========================================================================
+    git_health_parser = subparsers.add_parser(
+        "git-health",
+        help="Git worktree/branch hygiene tooling",
+        description=(
+            "Inventory and reap git worktrees, check branch "
+            "merge-readiness, and install pre-commit hooks."
+        ),
+    )
+    git_health_parser.set_defaults(func=cmd_git_health)
+    git_health_sub = git_health_parser.add_subparsers(dest="git_health_command")
+
+    # git-health janitor
+    gh_janitor = git_health_sub.add_parser(
+        "janitor",
+        help="Classify worktrees (ACTIVE/MERGED/STALE/ORPHANED); reap with --confirm",
+    )
+    gh_janitor.add_argument(
+        "--repo", default=None,
+        help="Repository path to inventory (default: current directory)",
+    )
+    gh_janitor.add_argument(
+        "--stale-days", dest="stale_days", type=int, default=7,
+        help="Age threshold in days for the STALE class (default: 7)",
+    )
+    gh_janitor.add_argument(
+        "--dry-run", dest="dry_run", action="store_true", default=True,
+        help="Classify only, mutate nothing (default behaviour)",
+    )
+    gh_janitor.add_argument(
+        "--confirm", choices=["MERGED", "STALE", "ORPHANED"], default=None,
+        help="Reap exactly this worktree class (never ACTIVE, never main)",
+    )
+
+    # git-health merge-ready
+    gh_merge_ready = git_health_sub.add_parser(
+        "merge-ready", help="Report a branch's merge-readiness against the base",
+    )
+    gh_merge_ready.add_argument("branch", help="Branch to assess")
+    gh_merge_ready.add_argument(
+        "--repo", default=None,
+        help="Repository path (default: current directory)",
+    )
+    gh_merge_ready.add_argument(
+        "--base", default="fork/main", help="Base ref (default: fork/main)",
+    )
+
+    # git-health install-hooks
+    gh_install_hooks = git_health_sub.add_parser(
+        "install-hooks", help="Install pre-commit hooks into a repo",
+    )
+    gh_install_hooks.add_argument(
+        "--repo", default=None,
+        help="Repository path (default: current directory)",
+    )
+    gh_install_hooks.add_argument(
+        "--all-worktrees", dest="all_worktrees", action="store_true",
+        help="Install into every active worktree of the repo",
+    )
 
     # =========================================================================
     # cron command
