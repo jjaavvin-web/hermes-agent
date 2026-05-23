@@ -205,7 +205,10 @@ export function buildFlow(
       kind: node.kind,
       status: node.status,
       summary: node.summary,
-      dim: selectedId !== null && !neighbors.has(node.id),
+      // Keep all nodes fully opaque on selection — the selected-node glow
+      // and the brightened related-edges already convey focus; dimming
+      // everything else made the graph look "cropped" to non-related nodes.
+      dim: false,
     },
   }));
 
@@ -216,7 +219,6 @@ export function buildFlow(
     const onSelected =
       selectedId !== null &&
       (edge.source === selectedId || edge.target === selectedId);
-    const dimmed = selectedId !== null && !onSelected;
     const meta = statusMeta(edge.status);
     return {
       id: edge.id,
@@ -230,7 +232,7 @@ export function buildFlow(
       style: {
         stroke: meta.color,
         strokeWidth: onSelected ? 2.1 : 1.2,
-        opacity: dimmed ? 0.1 : onSelected ? 0.95 : 0.42,
+        opacity: onSelected ? 0.95 : 0.42,
       },
       markerEnd: {
         type: MarkerType.ArrowClosed,
