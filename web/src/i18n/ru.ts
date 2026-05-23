@@ -73,6 +73,7 @@ export const ru: Translations = {
       cron: "Cron",
       documentation: "Документация",
       explorer: "Проводник",
+      hives: "Hives",
       keys: "Ключи",
       logs: "Журналы",
       cockpit: "Cockpit",

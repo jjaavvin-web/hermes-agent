@@ -43,6 +43,7 @@ import {
   Star,
   Terminal,
   Users,
+  Workflow,
   Wrench,
   X,
   Zap,
@@ -71,6 +72,7 @@ import ProfilesPage from "@/pages/ProfilesPage";
 import SkillsPage from "@/pages/SkillsPage";
 import PluginsPage from "@/pages/PluginsPage";
 import NexusHealthPage from "@/pages/NexusHealthPage";
+import HivesPage from "@/pages/HivesPage";
 import ExplorerPage from "@/pages/ExplorerPage";
 import PantheonPage from "@/pages/PantheonPage";
 import WelcomePage from "@/pages/WelcomePage";
@@ -136,6 +138,7 @@ const BUILTIN_ROUTES_CORE: Record<string, ComponentType> = {
   "/plugins": PluginsPage,
   "/explorer": ExplorerPage,
   "/nexus-health": NexusHealthPage,
+  "/hives": HivesPage,
   "/profiles": ProfilesPage,
   "/config": ConfigPage,
   "/env": EnvPage,
@@ -176,6 +179,7 @@ const BUILTIN_NAV_REST: NavItem[] = [
   { path: "/skills", labelKey: "skills", label: "Skills", icon: Package },
   { path: "/explorer", labelKey: "explorer", label: "Explorer", icon: Network },
   { path: "/nexus-health", labelKey: "system_health", label: "System Health", icon: Shield },
+  { path: "/hives", labelKey: "hives", label: "Hives", icon: Workflow },
   { path: "/plugins", labelKey: "plugins", label: "Plugins", icon: Puzzle },
   { path: "/profiles", labelKey: "profiles", label: "Profiles", icon: Users },
   { path: "/config", labelKey: "config", label: "Config", icon: Settings },
@@ -213,6 +217,7 @@ const ICON_MAP: Record<string, ComponentType<{ className?: string }>> = {
   Database,
   Shield,
   Users,
+  Workflow,
   Wrench,
   Zap,
   Heart,

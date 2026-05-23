@@ -73,6 +73,7 @@ export const uk: Translations = {
       cron: "Cron",
       documentation: "Документація",
       explorer: "Провідник",
+      hives: "Hives",
       keys: "Ключі",
       logs: "Журнали",
       cockpit: "Cockpit",

@@ -73,6 +73,7 @@ export const es: Translations = {
       cron: "Cron",
       documentation: "Documentación",
       explorer: "Explorador",
+      hives: "Hives",
       keys: "Claves",
       logs: "Registros",
       cockpit: "Cockpit",

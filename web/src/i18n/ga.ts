@@ -73,6 +73,7 @@ export const ga: Translations = {
       cron: "Cron",
       documentation: "Doiciméadú",
       explorer: "Brabhsálaí",
+      hives: "Hives",
       keys: "Eochracha",
       logs: "Logaí",
       cockpit: "Cockpit",

@@ -73,6 +73,7 @@ export const tr: Translations = {
       cron: "Cron",
       documentation: "Dokümantasyon",
       explorer: "Gezgin",
+      hives: "Hives",
       keys: "Anahtarlar",
       logs: "Günlükler",
       cockpit: "Cockpit",

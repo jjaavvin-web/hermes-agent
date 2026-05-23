@@ -89,6 +89,7 @@ export interface Translations {
       cron: string;
       documentation: string;
       explorer: string;
+      hives: string;
       keys: string;
       logs: string;
       cockpit: string;

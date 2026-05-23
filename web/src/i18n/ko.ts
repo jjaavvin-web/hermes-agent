@@ -73,6 +73,7 @@ export const ko: Translations = {
       cron: "Cron",
       documentation: "문서",
       explorer: "탐색기",
+      hives: "Hives",
       keys: "키",
       logs: "로그",
       cockpit: "Cockpit",

@@ -72,6 +72,7 @@ export const zh: Translations = {
       cron: "定时任务",
       documentation: "文档",
       explorer: "代码探索",
+      hives: "Hives",
       keys: "密钥",
       logs: "日志",
       cockpit: "Cockpit",
