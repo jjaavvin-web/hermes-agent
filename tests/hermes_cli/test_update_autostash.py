@@ -348,6 +348,7 @@ def test_cmd_update_retries_optional_extras_individually_when_all_fails(monkeypa
     assert install_cmds == [
         ["/usr/bin/uv", "pip", "install", "-e", ".[all]"],
         ["/usr/bin/uv", "pip", "install", "-e", "."],
+        ["/usr/bin/uv", "pip", "install", "--force-reinstall", "--no-deps", "-e", "."],
         ["/usr/bin/uv", "pip", "install", "-e", ".[matrix]"],
         ["/usr/bin/uv", "pip", "install", "-e", ".[mcp]"],
     ]
@@ -383,8 +384,11 @@ def test_cmd_update_succeeds_with_extras(monkeypatch, tmp_path):
     hermes_main.cmd_update(SimpleNamespace())
 
     install_cmds = [c for c in recorded if "pip" in c and "install" in c]
-    assert len(install_cmds) == 1
+    assert len(install_cmds) == 2
     assert ".[all]" in install_cmds[0]
+    assert install_cmds[1] == [
+        "/usr/bin/uv", "pip", "install", "--force-reinstall", "--no-deps", "-e", "."
+    ]
 
 
 def test_install_with_optional_fallback_honors_custom_group(monkeypatch):
@@ -412,6 +416,7 @@ def test_install_with_optional_fallback_honors_custom_group(monkeypatch):
     assert calls == [
         ["/usr/bin/uv", "pip", "install", "-e", ".[termux-all]"],
         ["/usr/bin/uv", "pip", "install", "-e", "."],
+        ["/usr/bin/uv", "pip", "install", "--force-reinstall", "--no-deps", "-e", "."],
         ["/usr/bin/uv", "pip", "install", "-e", ".[termux]"],
         ["/usr/bin/uv", "pip", "install", "-e", ".[mcp]"],
     ]
