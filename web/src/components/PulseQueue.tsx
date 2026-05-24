@@ -54,19 +54,30 @@ function openKanbanFor(card: PulseQueueCard, setToast: (s: string | null) => voi
   // 1st choice: in-app /kanban/<board>/<id> — no such route currently exists
   //             in BUILTIN_ROUTES_CORE, so we skip.
   // 2nd choice: open the standalone kanban server in a new tab.
-  // 3rd choice: clipboard fallback if the popup is blocked.
+  // 3rd choice: clipboard fallback if the popup is blocked. Clipboard writes
+  // are async; attach a rejection handler so browser-denied permissions do not
+  // surface as unhandled page errors during stress tests.
   try {
     const win = window.open(KANBAN_FALLBACK_URL, "_blank", "noopener,noreferrer");
     if (win) return;
   } catch {
     // fall through to clipboard
   }
+
+  const blockedMessage = `Open blocked · ${card.id}`;
   try {
-    void navigator.clipboard.writeText(card.id);
-    setToast(`Copied ${card.id}`);
+    const writeText = navigator.clipboard?.writeText;
+    if (typeof writeText === "function") {
+      void writeText
+        .call(navigator.clipboard, card.id)
+        .then(() => setToast(`Copied ${card.id}`))
+        .catch(() => setToast(blockedMessage));
+      return;
+    }
   } catch {
-    setToast(`Open blocked · ${card.id}`);
+    // fall through to blocked toast
   }
+  setToast(blockedMessage);
 }
 
 export default function PulseQueue() {
