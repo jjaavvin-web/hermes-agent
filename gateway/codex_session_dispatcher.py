@@ -119,6 +119,7 @@ class CodexSessionDispatcher(_CommandsMixin):
         merge_broker: Any,
         discord_send: Callable[[str, str], Awaitable[None]],
         kanban_complete: Callable[[str], Any] | None = None,
+        base_branch: str = "origin/main",
     ) -> None:
         """
         Pre-conditions: hermes_home exists and is writable.
@@ -131,6 +132,7 @@ class CodexSessionDispatcher(_CommandsMixin):
         self._merge_broker = merge_broker              # P3+ — stored, not called in P1
         self._discord_send = discord_send
         self._kanban_complete = kanban_complete
+        self._base_branch = base_branch
 
         self._sessions_path = self._hermes_home / "codex_sessions.json"
 
@@ -164,7 +166,7 @@ class CodexSessionDispatcher(_CommandsMixin):
         isa_slug = getattr(event, "isa_slug", None) or "task"
 
         try:
-            wt = self._broker.allocate(sid, isa_slug=isa_slug, base_branch="origin/main")
+            wt = self._broker.allocate(sid, isa_slug=isa_slug, base_branch=self._base_branch)
         except Exception as exc:
             log.error("on_thread_create: allocation failed for thread %s: %s", thread_id, exc)
             await self._discord_send(thread_id, f"Could not allocate session — reason: {exc}")
