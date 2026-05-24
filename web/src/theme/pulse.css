@@ -77,6 +77,7 @@
   align-items: center;
   padding: 6px 10px;
   height: 100%;
+  min-width: 0;
 }
 
 .pulse-root .pulse-chip {
@@ -92,6 +93,25 @@
   line-height: 1;
   white-space: nowrap;
   transition: transform 120ms ease, border-color 120ms ease;
+  /* Reset native <button> styling — H6 promoted chips to <button> so
+   * keyboard users can Tab to them (see DEFECTS.md MAJ-2). */
+  font-family: inherit;
+  color: inherit;
+  cursor: default;
+}
+
+.pulse-root .pulse-chip:focus-visible {
+  outline: 2px solid currentColor;
+  outline-offset: 2px;
+}
+
+/* MIN-1: ensure label and value don't read as a single concatenated token
+ * for screen readers / copy-paste. The flex `gap: 10px` already spaces them
+ * visually; a thin-space inside ::after exposes the boundary in textContent. */
+.pulse-root .pulse-chip__label::after {
+  content: " ";
+  white-space: pre;
+  width: 0;
 }
 
 .pulse-root .pulse-chip:hover {
@@ -746,4 +766,83 @@
   border-radius: 4px;
   box-shadow: 0 4px 14px rgba(0, 0, 0, 0.6);
   pointer-events: none;
+}
+
+/* -------------------------------------------------------------------------
+ * Mobile layout — narrow viewport (CRIT-2 + CRIT-3 from H5 DEFECTS.md)
+ *
+ * Under ~860px the original two-column grid collapses the constellation
+ * column to width=0 because the right rail (360px fixed) wins. Stack the
+ * zones vertically and let the constellation own a sensible min-height.
+ * The chip row also re-flows: chips were overlapping on a 390-wide phone
+ * because rows shared the same y-coordinate band; here we let the row grow
+ * to fit and bump the chip-row padding so wrap rows clear each other.
+ * ------------------------------------------------------------------------- */
+@media (max-width: 860px) {
+  .pulse-root .pulse-grid {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto minmax(280px, 60vh) auto auto;
+    grid-template-areas:
+      "top"
+      "center"
+      "right"
+      "bottom";
+  }
+
+  .pulse-root .pulse-zone-top    { height: auto; min-height: 0; }
+  .pulse-root .pulse-zone-center { min-height: 280px; }
+  .pulse-root .pulse-zone-right  { min-height: 260px; max-height: 50vh; }
+  .pulse-root .pulse-zone-bottom { min-height: 92px; }
+
+  .pulse-root .pulse-chips {
+    height: auto;
+    row-gap: 8px;
+    padding: 8px 10px;
+  }
+
+  /* Drop the sparkline on narrow phones so each chip can shrink to fit.
+   * The chip's accessible label still announces the value and suffix. */
+  .pulse-root .pulse-chip {
+    height: 32px;
+    font-size: 11px;
+  }
+  .pulse-root .pulse-chip__spark {
+    display: none;
+  }
+
+  /* H5 saw the transcript's "Reconnecting…" status pill render at the same
+   * y-band as the chip row when the layout collapsed. The vertical stack
+   * above already separates them; this z-index pin guarantees the chip row
+   * stays visually above any right-rail content if a chip wraps over. */
+  .pulse-root .pulse-zone-top { z-index: 30; }
+}
+
+/* -------------------------------------------------------------------------
+ * Reduced-motion preference — MIN-3 from H5 DEFECTS.md
+ *
+ * Respect users who set `prefers-reduced-motion: reduce` by disabling the
+ * decorative animations (chip hover lift, reconnect pulse dot, queue chip
+ * shimmer). The constellation's force-graph simulation can't be paused
+ * cleanly mid-frame so we leave its layout cooldown alone — but the most
+ * visible motion (the pulsing reconnect dot, the shimmer, the hover lift)
+ * is silenced.
+ * ------------------------------------------------------------------------- */
+@media (prefers-reduced-motion: reduce) {
+  .pulse-root .pulse-chip,
+  .pulse-root .pulse-queue__chip,
+  .pulse-root .pulse-transcript__status-pill {
+    transition: none !important;
+  }
+  .pulse-root .pulse-chip:hover {
+    transform: none !important;
+  }
+  .pulse-root .pulse-queue__chip--skeleton {
+    animation: none !important;
+    background: rgba(255, 255, 255, 0.04);
+  }
+  .pulse-root .pulse-transcript__status-dot,
+  .pulse-root .pulse-transcript__status-pill--reconnecting .pulse-transcript__status-dot,
+  .pulse-root .pulse-transcript__status-pill--connecting .pulse-transcript__status-dot {
+    animation: none !important;
+  }
 }

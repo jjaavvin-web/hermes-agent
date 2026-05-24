@@ -464,6 +464,21 @@ export default function App() {
       data-layout-variant={layoutVariant}
       className="font-mondwest flex h-dvh max-h-dvh min-h-0 flex-col overflow-hidden bg-black uppercase text-midground antialiased"
     >
+      {/* Skip-to-content link — WCAG 2.4.1 (Bypass Blocks). Keyboard users
+          land here as the first focusable element so they can jump past
+          the 17 sidebar nav links into the page body. Visible only on focus. */}
+      <a
+        href="#main"
+        className={cn(
+          "sr-only focus:not-sr-only",
+          "focus:fixed focus:top-2 focus:left-2 focus:z-[100]",
+          "focus:bg-midground focus:text-background focus:px-3 focus:py-2",
+          "focus:rounded focus:font-mondwest focus:text-[0.75rem]",
+          "focus:outline focus:outline-2 focus:outline-current",
+        )}
+      >
+        Skip to main content
+      </a>
       <SelectionSwitcher />
       <Backdrop />
       <PluginSlot name="backdrop" />
@@ -629,7 +644,9 @@ export default function App() {
           </aside>
 
           <PageHeaderProvider pluginTabs={pluginTabMeta}>
-            <div
+            <main
+              id="main"
+              tabIndex={-1}
               className={cn(
                 "relative z-2 flex min-w-0 min-h-0 flex-1 flex-col",
                 !isExplorerRoute && "px-3 sm:px-6",
@@ -639,6 +656,7 @@ export default function App() {
                     ? "pb-3 pt-1 sm:pb-4 sm:pt-2 lg:pt-4"
                     : "pt-2 sm:pt-4 lg:pt-6 pb-4 sm:pb-8",
                 (isDocsRoute || isExplorerRoute || isPulseRoute) && "min-h-0 flex-1",
+                "focus:outline-none",
               )}
             >
               <PluginSlot name="pre-main" />
@@ -690,7 +708,7 @@ export default function App() {
                   ))}
               </div>
               <PluginSlot name="post-main" />
-            </div>
+            </main>
           </PageHeaderProvider>
         </div>
       </div>
@@ -740,8 +758,13 @@ function SidebarNavLink({ closeMobile, item, t }: SidebarNavLinkProps) {
             {isActive && (
               <span
                 aria-hidden
-                className="absolute left-0 top-0 bottom-0 w-px bg-midground"
-                style={{ mixBlendMode: "plus-lighter" }}
+                className="absolute left-0 top-0 bottom-0 w-1 bg-midground"
+              />
+            )}
+            {isActive && (
+              <span
+                aria-hidden
+                className="absolute inset-y-0.5 left-1.5 right-1.5 bg-midground/10 pointer-events-none"
               />
             )}
           </>
