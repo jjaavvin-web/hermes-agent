@@ -100,7 +100,7 @@ def _read_cards(statuses: frozenset[str]) -> tuple[list[tuple[str, sqlite3.Row]]
             try:
                 for row in conn.execute(
                     f"SELECT id,title,status,priority,assignee,created_at"
-                    f" FROM cards WHERE status IN ({ph})",
+                    f" FROM tasks WHERE status IN ({ph})",
                     tuple(statuses),
                 ).fetchall():
                     try:

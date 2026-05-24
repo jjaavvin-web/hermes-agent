@@ -48,11 +48,11 @@ def _patch_dashboard_helpers(monkeypatch, *,
     monkeypatch.setattr(dh, "_get_active_model", lambda: active_model)
 
 
-def _create_cards_table(db_path: Path) -> None:
-    """Create the minimal `cards` table that pulse_data queries."""
+def _create_tasks_table(db_path: Path) -> None:
+    """Create the minimal `tasks` table that pulse_data queries."""
     conn = sqlite3.connect(str(db_path))
     conn.execute(
-        "CREATE TABLE IF NOT EXISTS cards ("
+        "CREATE TABLE IF NOT EXISTS tasks ("
         "  id TEXT PRIMARY KEY,"
         "  title TEXT NOT NULL,"
         "  status TEXT NOT NULL,"
@@ -66,7 +66,7 @@ def _create_cards_table(db_path: Path) -> None:
 
 
 def _insert_card(db_path: Path, **kwargs) -> None:
-    """Insert a single row into the cards table."""
+    """Insert a single row into the tasks table."""
     defaults = {
         "id": "card-x",
         "title": "Test card",
@@ -78,7 +78,7 @@ def _insert_card(db_path: Path, **kwargs) -> None:
     defaults.update(kwargs)
     conn = sqlite3.connect(str(db_path))
     conn.execute(
-        "INSERT INTO cards(id,title,status,priority,assignee,created_at)"
+        "INSERT INTO tasks(id,title,status,priority,assignee,created_at)"
         " VALUES (:id,:title,:status,:priority,:assignee,:created_at)",
         defaults,
     )
@@ -92,12 +92,12 @@ def _setup_kanban_home(tmp_path: Path, monkeypatch) -> Path:
     hermes_home.mkdir(parents=True, exist_ok=True)
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     db_path = hermes_home / "kanban.db"
-    _create_cards_table(db_path)
+    _create_tasks_table(db_path)
     return db_path
 
 
 # ---------------------------------------------------------------------------
-# Scenario 1: empty state — no hives, no cards
+# Scenario 1: empty state — no hives, no tasks
 # ---------------------------------------------------------------------------
 
 def test_build_pulse_graph_empty_state_returns_empty_nodes(monkeypatch, tmp_path):
@@ -311,7 +311,7 @@ def test_build_pulse_queue_malformed_row_logs_warning(monkeypatch, tmp_path, cap
     # Malformed card: priority is a non-numeric string (sqlite is loose-typed)
     conn = sqlite3.connect(str(db_path))
     conn.execute(
-        "INSERT INTO cards(id,title,status,priority,assignee,created_at)"
+        "INSERT INTO tasks(id,title,status,priority,assignee,created_at)"
         " VALUES (?,?,?,?,?,?)",
         ("card-bad", "Bad card", "ready", "NOT_A_NUMBER", "bob",
          int(time.time()) - 60),
@@ -339,7 +339,7 @@ def test_build_pulse_queue_malformed_row_valid_card_still_appears(
     # Malformed card: non-numeric priority
     conn = sqlite3.connect(str(db_path))
     conn.execute(
-        "INSERT INTO cards(id,title,status,priority,assignee,created_at)"
+        "INSERT INTO tasks(id,title,status,priority,assignee,created_at)"
         " VALUES (?,?,?,?,?,?)",
         ("card-bad", "Bad card", "ready", "NOT_A_NUMBER", "bob",
          int(time.time()) - 60),
