@@ -593,6 +593,62 @@ class DiscordAdapter(BasePlatformAdapter):
         # history backfill to skip the full scan on hot paths.  Falls back to
         # scanning channel.history() on cache miss (cold start / restart).
         self._last_self_message_id: Dict[str, str] = {}
+        # Codex Parallel Workflow P1 — opt-in via HERMES_CODEX_DISPATCHER=1.
+        # Constructed in connect() before the event handlers are registered.
+        self._codex_dispatcher: Any = None
+
+    def _maybe_init_codex_dispatcher(self) -> Any:
+        """Construct CodexSessionDispatcher when HERMES_CODEX_DISPATCHER is set.
+
+        Returns None when the env var is unset / "0" / "false" so the
+        Codex thread-dispatcher is fully inert in the default configuration
+        (no behaviour change for adapters that don't opt in). Returns the
+        live dispatcher otherwise, ready to receive event-hook calls.
+        """
+        flag = os.getenv("HERMES_CODEX_DISPATCHER", "").strip().lower()
+        if flag in ("", "0", "false", "no", "off"):
+            return None
+        try:
+            from hermes_constants import get_hermes_home  # noqa: PLC0415
+            from agent.worktree_broker import WorktreeBroker  # noqa: PLC0415
+            from gateway.codex_session_dispatcher import (  # noqa: PLC0415
+                CodexSessionDispatcher,
+            )
+        except Exception as exc:
+            logger.warning(
+                "[%s] HERMES_CODEX_DISPATCHER set but dependencies missing: %s",
+                self.name,
+                exc,
+            )
+            return None
+
+        hermes_home = get_hermes_home()
+        repo_root = os.environ.get(
+            "HERMES_REPO_ROOT",
+            str(_Path(__file__).resolve().parents[2]),
+        )
+        broker = WorktreeBroker(repo_root=repo_root, hermes_home=hermes_home)
+
+        adapter_self = self
+
+        async def _discord_send(thread_id: str, text: str) -> None:
+            try:
+                await adapter_self.send(thread_id, text)
+            except Exception:
+                logger.exception(
+                    "[%s] codex dispatcher discord_send failed for %s",
+                    adapter_self.name,
+                    thread_id,
+                )
+
+        return CodexSessionDispatcher(
+            hermes_home=hermes_home,
+            worktree_broker=broker,
+            peer_review_orchestrator=None,  # P2
+            merge_broker=None,               # P3
+            discord_send=_discord_send,
+            kanban_complete=None,            # wired by operator path
+        )
 
     async def connect(self) -> bool:
         """Connect to Discord and start receiving events."""
@@ -700,6 +756,12 @@ class DiscordAdapter(BasePlatformAdapter):
             )
             adapter_self = self  # capture for closure
 
+            # Construct the Codex session dispatcher (P1; inert unless the
+            # HERMES_CODEX_DISPATCHER env var is set). Built BEFORE event
+            # handler registration so the on_thread_create / on_message
+            # closures below capture a stable reference.
+            self._codex_dispatcher = self._maybe_init_codex_dispatcher()
+
             # Register event handlers
             @self._client.event
             async def on_ready():
@@ -714,6 +776,16 @@ class DiscordAdapter(BasePlatformAdapter):
                 adapter_self._post_connect_task = asyncio.create_task(
                     adapter_self._run_post_connect_initialization()
                 )
+
+                # Codex P1: reattach known sessions on every (re)connect.
+                if adapter_self._codex_dispatcher is not None:
+                    try:
+                        await adapter_self._codex_dispatcher.on_bot_restart()
+                    except Exception:
+                        logger.exception(
+                            "[%s] codex_dispatcher.on_bot_restart failed",
+                            adapter_self.name,
+                        )
 
             @self._client.event
             async def on_message(message: DiscordMessage):
@@ -810,7 +882,76 @@ class DiscordAdapter(BasePlatformAdapter):
                         if "*" not in _free_channels and not (_channel_ids & _free_channels):
                             return
 
+                # Codex P1: route messages in tracked codex-session threads
+                # to the dispatcher and skip the normal _handle_message path.
+                # Default (no dispatcher) is unchanged — falls straight through.
+                if adapter_self._codex_dispatcher is not None:
+                    try:
+                        _ch_id = str(message.channel.id)
+                        if adapter_self._codex_dispatcher.is_tracked(_ch_id):
+                            from gateway.codex_session_dispatcher import ThreadEvent  # noqa: PLC0415
+                            await adapter_self._codex_dispatcher.on_thread_message(
+                                ThreadEvent(
+                                    thread_id=_ch_id,
+                                    channel_id=_ch_id,
+                                    message_id=str(message.id),
+                                    text=message.content or "",
+                                    author_id=str(message.author.id),
+                                )
+                            )
+                            return
+                    except Exception:
+                        logger.exception(
+                            "[%s] codex_dispatcher.on_thread_message failed for %s",
+                            adapter_self.name,
+                            getattr(message, "id", "?"),
+                        )
+
                 await self._handle_message(message)
+
+            @self._client.event
+            async def on_thread_create(thread):
+                """Codex P1 hook — allocate a session for new threads."""
+                if adapter_self._codex_dispatcher is None:
+                    return
+                try:
+                    from gateway.codex_session_dispatcher import ThreadEvent  # noqa: PLC0415
+                    await adapter_self._codex_dispatcher.on_thread_create(
+                        ThreadEvent(
+                            thread_id=str(thread.id),
+                            channel_id=str(getattr(thread, "parent_id", "") or ""),
+                            isa_slug=getattr(thread, "name", "task") or "task",
+                        )
+                    )
+                except Exception:
+                    logger.exception(
+                        "[%s] codex_dispatcher.on_thread_create failed for %s",
+                        adapter_self.name,
+                        getattr(thread, "id", "?"),
+                    )
+
+            @self._client.event
+            async def on_thread_update(before, after):
+                """Codex P1 hook — release a session on thread archive."""
+                if adapter_self._codex_dispatcher is None:
+                    return
+                # Only fire on the archived transition (False -> True).
+                if not (getattr(after, "archived", False) and not getattr(before, "archived", False)):
+                    return
+                try:
+                    from gateway.codex_session_dispatcher import ThreadEvent  # noqa: PLC0415
+                    await adapter_self._codex_dispatcher.on_thread_archive(
+                        ThreadEvent(
+                            thread_id=str(after.id),
+                            channel_id=str(getattr(after, "parent_id", "") or ""),
+                        )
+                    )
+                except Exception:
+                    logger.exception(
+                        "[%s] codex_dispatcher.on_thread_archive failed for %s",
+                        adapter_self.name,
+                        getattr(after, "id", "?"),
+                    )
 
             @self._client.event
             async def on_voice_state_update(member, before, after):
