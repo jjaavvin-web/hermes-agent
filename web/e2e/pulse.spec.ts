@@ -34,16 +34,23 @@ test('page loads with all four zones', async ({ page }) => {
 
 test('KPI chips fetch fires and renders 5 chips', async ({ page }) => {
   await gotoPulse(page);
-  // Wait for networkidle so the /api/pulse/kpis fetch has time to resolve.
-  await page.waitForLoadState('networkidle');
   // PulseChips always renders exactly 5 Chip elements — one per KPI — whether
-  // data is loaded, error, or loading-placeholder.
-  await expect(page.locator('.pulse-chip')).toHaveCount(5);
+  // data is loaded, error, or loading-placeholder. We can't use
+  // `networkidle` here because H6's CRIT-1 fix opens a long-lived SSE
+  // connection on /api/pulse/stream that keeps the network busy forever.
+  await expect(page.locator('.pulse-chip')).toHaveCount(5, { timeout: 10_000 });
 });
 
 test('queue strip renders chips when cards exist', async ({ page }) => {
   await gotoPulse(page);
-  await page.waitForLoadState('networkidle');
+
+  // Wait for either the queue chips to render or the empty/error placeholder
+  // to settle. Cannot use `networkidle` — the SSE pulse stream is
+  // perpetually open (see H6 CRIT-1 fix); networkidle would never resolve.
+  const queueRoot = page.locator('[data-testid="pulse-queue"], .pulse-zone-bottom').first();
+  await expect(queueRoot).toBeVisible({ timeout: 10_000 });
+  // Settle on the queue load — chip nodes appear within ~3s of mount.
+  await page.waitForTimeout(3_000);
 
   const chips = page.locator('.pulse-queue__chip');
   const count = await chips.count();
@@ -74,7 +81,9 @@ test('constellation canvas mounts', async ({ page }) => {
 
 test('clicking a queue chip triggers window.open with kanban URL', async ({ page }) => {
   await gotoPulse(page);
-  await page.waitForLoadState('networkidle');
+  // Settle on the queue load (~3s) rather than `networkidle` — the SSE
+  // stream is perpetually open after the H6 CRIT-1 fix.
+  await page.waitForTimeout(3_000);
 
   const chips = page.locator('.pulse-queue__chip');
   const count = await chips.count();
@@ -139,4 +148,48 @@ test('hive switcher dropdown is interactable', async ({ page }) => {
   // not throw and should leave the element in a valid state.
   await switcher.selectOption({ index: 0 });
   await expect(switcher).toHaveValue('__all__');
+});
+
+// H6 regression — H5 DEFECTS.md CRIT-1: the SSE pulse stream returned 401
+// in any real browser because EventSource cannot send headers and the
+// dashboard auth middleware ignored the ?token= query param. After H6's
+// query-param auth fallback, the transcript should NEVER show "Reconnecting"
+// for longer than the initial connect handshake when the server is healthy.
+test('transcript SSE connects (no perpetual reconnect loop)', async ({ page }) => {
+  await gotoPulse(page);
+  // Cannot use `networkidle` — the SSE stream stays open by design.
+  // Wait for the transcript shell to render, then sample the status pill.
+  const status = page.locator('[data-testid="pulse-transcript-status"]');
+  await expect(status).toBeVisible({ timeout: 10_000 });
+  // Give the EventSource up to 8 s to either move into "open" or settle.
+  // If CRIT-1 has regressed, the status pill will read "Reconnecting in Xs…"
+  // continuously and this assertion fails.
+  await expect(status).not.toContainText(/Reconnecting/, { timeout: 8_000 });
+});
+
+// H6 regression — H5 DEFECTS.md MAJ-2: KPI chips were <div> without
+// tabindex so keyboard users could not Tab to them. After H6's promotion to
+// <button>, every chip should be a focusable button element with an
+// accessible name.
+test('KPI chips are keyboard-focusable buttons with accessible names', async ({ page }) => {
+  await gotoPulse(page);
+  // Cannot use `networkidle` — see CRIT-1 fix note above.
+  const chips = page.locator('.pulse-chip');
+  await expect(chips).toHaveCount(5, { timeout: 10_000 });
+
+  const audit = await chips.evaluateAll((els) =>
+    els.map((el) => ({
+      tag: el.tagName.toLowerCase(),
+      ariaLabel: el.getAttribute('aria-label') ?? '',
+      focusable:
+        el.tagName.toLowerCase() === 'button' ||
+        el.hasAttribute('tabindex'),
+    })),
+  );
+  for (const row of audit) {
+    expect(row.tag).toBe('button');
+    expect(row.focusable).toBe(true);
+    // aria-label must contain the chip label word (lowercased) at minimum.
+    expect(row.ariaLabel.length).toBeGreaterThan(0);
+  }
 });
