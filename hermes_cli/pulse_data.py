@@ -256,7 +256,7 @@ def build_pulse_graph(*, now: float | None = None) -> dict:
             if not rp_str or not Path(rp_str).exists():
                 continue
             try:
-                text = Path(rp_str).read_text(errors="replace")[:4096]
+                text = Path(rp_str).read_text(encoding="utf-8", errors="replace")[:4096]
             except Exception as exc:
                 logger.warning("could not read final_report %s: %s", rp_str, exc)
                 continue
@@ -356,7 +356,7 @@ def build_pulse_kpis(*, now: float | None = None) -> dict:
             try:
                 rp = best.get("final_report_path")
                 if rp and Path(rp).exists():
-                    summary = Path(rp).read_text(errors="replace")[:200].strip()
+                    summary = Path(rp).read_text(encoding="utf-8", errors="replace")[:200].strip()
             except Exception as exc:
                 logger.warning("reading final_report for last_completion: %s", exc)
             if not summary:
