@@ -1,0 +1,138 @@
+/* Pulse tab theme — cyberpunk mission-control palette.
+ * All rules scoped under .pulse-root so they do not bleed into other tabs.
+ * H3 reuses --pulse-* accent vars for constellation node coloring. */
+
+.pulse-root {
+  --pulse-purple: #b794f4;
+  --pulse-cyan:   #76e4f7;
+  --pulse-pink:   #f687b3;
+  --pulse-yellow: #f6e05e;
+  --pulse-red:    #fc8181;
+  --pulse-green:  #68d391;
+  --pulse-gray:   #4a5568;
+
+  background-color: #000;
+  background-image: radial-gradient(ellipse at center, #0a0a0a 0%, #000 70%);
+  color: #e5e5e5;
+  font-family: ui-monospace, "JetBrains Mono", "Fira Code", monospace;
+  text-transform: none;
+  letter-spacing: 0;
+}
+
+.pulse-root,
+.pulse-root * {
+  box-sizing: border-box;
+}
+
+.pulse-root .pulse-grid {
+  display: grid;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  gap: 8px;
+  padding: 8px;
+  grid-template-rows: 64px 1fr 96px;
+  grid-template-columns: 1fr 360px;
+  grid-template-areas:
+    "top    top"
+    "center right"
+    "bottom bottom";
+}
+
+.pulse-root .pulse-zone-top    { grid-area: top; }
+.pulse-root .pulse-zone-center { grid-area: center; }
+.pulse-root .pulse-zone-right  { grid-area: right; }
+.pulse-root .pulse-zone-bottom { grid-area: bottom; }
+
+.pulse-root .pulse-zone-placeholder {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px dashed rgba(229, 229, 229, 0.18);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.015);
+  color: rgba(229, 229, 229, 0.5);
+  font-size: 12px;
+  letter-spacing: 0.08em;
+  text-align: center;
+  padding: 12px;
+}
+
+/* Chip row -------------------------------------------------------------- */
+
+.pulse-root .pulse-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+  padding: 6px 10px;
+  height: 100%;
+}
+
+.pulse-root .pulse-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  height: 36px;
+  padding: 0 12px 0 14px;
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.65);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  font-size: 11.5px;
+  line-height: 1;
+  white-space: nowrap;
+  transition: transform 120ms ease, border-color 120ms ease;
+}
+
+.pulse-root .pulse-chip:hover {
+  transform: translateY(-1px);
+  border-color: rgba(255, 255, 255, 0.18);
+}
+
+.pulse-root .pulse-chip__label {
+  color: rgba(229, 229, 229, 0.55);
+  font-size: 9.5px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
+.pulse-root .pulse-chip__value {
+  font-weight: 600;
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+}
+
+.pulse-root .pulse-chip__suffix {
+  color: rgba(229, 229, 229, 0.45);
+  font-size: 10.5px;
+  margin-left: 2px;
+}
+
+.pulse-root .pulse-chip__spark {
+  width: 60px;
+  height: 20px;
+  flex-shrink: 0;
+  border-left: 1px solid rgba(255, 255, 255, 0.06);
+  margin-left: 4px;
+}
+
+.pulse-root .pulse-chip__retry {
+  color: rgba(252, 129, 129, 0.7);
+  font-size: 9.5px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  margin-left: 4px;
+}
+
+/* Per-accent variants — color drives both the value text and the glow ring.
+ * Glow uses an offset-less box-shadow so the chip itself appears illuminated;
+ * contrast against the black backdrop stays comfortably above WCAG AA for
+ * the value/label text, which is the readable foreground. */
+
+.pulse-root .pulse-chip--purple { color: var(--pulse-purple); box-shadow: 0 0 8px rgba(183, 148, 244, 0.45); border-color: rgba(183, 148, 244, 0.35); }
+.pulse-root .pulse-chip--cyan   { color: var(--pulse-cyan);   box-shadow: 0 0 8px rgba(118, 228, 247, 0.45); border-color: rgba(118, 228, 247, 0.35); }
+.pulse-root .pulse-chip--pink   { color: var(--pulse-pink);   box-shadow: 0 0 8px rgba(246, 135, 179, 0.45); border-color: rgba(246, 135, 179, 0.35); }
+.pulse-root .pulse-chip--yellow { color: var(--pulse-yellow); box-shadow: 0 0 8px rgba(246, 224, 94, 0.45);  border-color: rgba(246, 224, 94, 0.35); }
+.pulse-root .pulse-chip--red    { color: var(--pulse-red);    box-shadow: 0 0 8px rgba(252, 129, 129, 0.45); border-color: rgba(252, 129, 129, 0.35); }
+.pulse-root .pulse-chip--green  { color: var(--pulse-green);  box-shadow: 0 0 8px rgba(104, 211, 145, 0.45); border-color: rgba(104, 211, 145, 0.35); }
+.pulse-root .pulse-chip--gray   { color: rgba(229, 229, 229, 0.7); box-shadow: 0 0 8px rgba(74, 85, 104, 0.35); border-color: rgba(74, 85, 104, 0.35); }

@@ -74,6 +74,7 @@ import PluginsPage from "@/pages/PluginsPage";
 import NexusHealthPage from "@/pages/NexusHealthPage";
 import HivesPage from "@/pages/HivesPage";
 import ExplorerPage from "@/pages/ExplorerPage";
+import PulsePage from "@/pages/PulsePage";
 import WelcomePage from "@/pages/WelcomePage";
 import ChatPage from "@/pages/ChatPage";
 import { LanguageSwitcher } from "@/components/LanguageSwitcher";
@@ -128,6 +129,7 @@ const CHAT_NAV_ITEM: NavItem = {
  */
 const BUILTIN_ROUTES_CORE: Record<string, ComponentType> = {
   "/": RootRedirect,
+  "/pulse": PulsePage,
   "/sessions": SessionsPage,
   "/analytics": AnalyticsPage,
   "/models": ModelsPage,
@@ -154,6 +156,12 @@ function ChatRouteSink() {
 }
 
 const BUILTIN_NAV_REST: NavItem[] = [
+  {
+    path: "/pulse",
+    labelKey: "pulse",
+    label: "Pulse",
+    icon: Activity,
+  },
   {
     path: "/sessions",
     labelKey: "sessions",
