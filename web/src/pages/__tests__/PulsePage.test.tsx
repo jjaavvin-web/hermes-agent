@@ -34,6 +34,22 @@ describe("PulsePage", () => {
     ) as unknown as typeof fetch;
     (globalThis as { window?: unknown }).window =
       (globalThis as { window?: unknown }).window ?? {};
+    // jsdom doesn't ship EventSource — PulseTranscript constructs one on
+    // mount. A no-op stub is enough; the page-level test doesn't exercise
+    // stream behaviour.
+    class StubEventSource {
+      url: string;
+      onerror: ((e?: unknown) => void) | null = null;
+      onmessage: ((e?: unknown) => void) | null = null;
+      onopen: ((e?: unknown) => void) | null = null;
+      constructor(url: string) {
+        this.url = url;
+      }
+      addEventListener() { /* no-op */ }
+      removeEventListener() { /* no-op */ }
+      close() { /* no-op */ }
+    }
+    (globalThis as { EventSource?: unknown }).EventSource = StubEventSource as unknown;
   });
 
   afterEach(() => {
@@ -65,8 +81,8 @@ describe("PulsePage", () => {
     ).toBe(true);
   });
 
-  it("renders all four zones with H3 constellation + H4 placeholders", () => {
-    const { container, getByText } = render(
+  it("renders all four zones with H3 constellation + H4 transcript + queue", () => {
+    const { container } = render(
       <MemoryRouter>
         <PulsePage />
       </MemoryRouter>,
@@ -76,10 +92,13 @@ describe("PulsePage", () => {
     // Top zone is the chips container — covered by the fetch assertion above
     // but we also assert its grid area is present.
     expect(container.querySelector(".pulse-zone-top")).not.toBeNull();
-    // H3: center zone now hosts the live constellation component (not a placeholder).
+    // H3: center zone hosts the live constellation component.
     expect(container.querySelector(".pulse-zone-center .pulse-constellation"))
       .not.toBeNull();
-    expect(getByText(/Live agent transcript — coming in H4/)).toBeTruthy();
-    expect(getByText(/Task queue strip — coming in H4/)).toBeTruthy();
+    // H4: right rail hosts the SSE transcript, bottom strip hosts the queue.
+    expect(container.querySelector(".pulse-zone-right .pulse-transcript"))
+      .not.toBeNull();
+    expect(container.querySelector(".pulse-zone-bottom .pulse-queue"))
+      .not.toBeNull();
   });
 });

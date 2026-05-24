@@ -2,6 +2,8 @@ import { useEffect } from "react";
 import { usePageHeader } from "@/contexts/usePageHeader";
 import PulseChips from "@/components/PulseChips";
 import PulseConstellation from "@/components/PulseConstellation";
+import PulseQueue from "@/components/PulseQueue";
+import PulseTranscript from "@/components/PulseTranscript";
 import "@/theme/pulse.css";
 
 export default function PulsePage() {
@@ -11,6 +13,10 @@ export default function PulsePage() {
     setTitle("Pulse");
   }, [setTitle]);
 
+  // Z-index ladder (resolved by H4 — see pulse.css for the same values):
+  //   canvas (0) < tooltip (8) < right rail (10) < constellation panel (20) < chips (30)
+  // The constellation's slide-in detail panel must overlay the right rail when
+  // active; the KPI chip row must remain visible above the panel.
   return (
     <div className="pulse-root min-h-0 flex-1 flex flex-col">
       <div className="pulse-grid">
@@ -20,15 +26,11 @@ export default function PulsePage() {
         <div className="pulse-zone-center">
           <PulseConstellation />
         </div>
-        {/* H4: replace this placeholder with <PulseTranscript />.
-            The constellation's detail panel renders inside .pulse-zone-center
-            with z-index 10; if your right-rail content needs to overlay on
-            top of that panel, use z-index ≥ 12 (see pulse.css). */}
-        <div className="pulse-zone-right pulse-zone-placeholder">
-          Live agent transcript — coming in H4
+        <div className="pulse-zone-right">
+          <PulseTranscript />
         </div>
-        <div className="pulse-zone-bottom pulse-zone-placeholder">
-          Task queue strip — coming in H4
+        <div className="pulse-zone-bottom">
+          <PulseQueue />
         </div>
       </div>
     </div>
