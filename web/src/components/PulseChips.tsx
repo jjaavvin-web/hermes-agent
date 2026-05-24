@@ -35,6 +35,7 @@ interface ChipProps {
   suffix?: string;
   retry?: boolean;
   title?: string;
+  onClick?: () => void;
 }
 
 // Strip a raw markdown summary down to a single human-readable line for use
@@ -52,15 +53,15 @@ function summarizeForTooltip(raw: string | undefined): string | undefined {
   return trimmed.length > 140 ? `${trimmed.slice(0, 137)}…` : trimmed;
 }
 
-function Chip({ accent, label, value, suffix, retry, title }: ChipProps) {
+function Chip({ accent, label, value, suffix, retry, title, onClick }: ChipProps) {
   // Rendered as a <button> so keyboard users can Tab to each KPI and the
   // accessible name (label + value + optional context) is announced once.
-  // The chip is informational only — onClick is a no-op — so we don't need a
-  // role override. Aria-label combines fields in a sentence so screen readers
-  // don't read "hives0" as one token (see H5 DEFECTS.md MIN-1).
+  // Clicking performs a safe on-demand refresh of the KPI endpoint; that keeps
+  // the controls meaningful instead of focusable-but-inert.
   const ariaParts = [label, value];
   if (suffix) ariaParts.push(suffix);
   if (retry) ariaParts.push("(retry)");
+  if (onClick) ariaParts.push("refresh");
   const ariaLabel = ariaParts.join(" ");
   return (
     <button
@@ -68,6 +69,7 @@ function Chip({ accent, label, value, suffix, retry, title }: ChipProps) {
       className={`pulse-chip pulse-chip--${accent}`}
       title={title}
       aria-label={ariaLabel}
+      onClick={onClick}
     >
       <span className="pulse-chip__label">{label}</span>
       <span className="pulse-chip__value">{value}</span>
@@ -109,6 +111,10 @@ export default function PulseChips() {
     }
   }, []);
 
+  const refreshKpis = useCallback(() => {
+    void load();
+  }, [load]);
+
   useEffect(() => {
     // Polling pattern mirrors HivesPage: fire-and-forget the async loader
     // then re-fire every KPI_POLL_MS. The set-state-in-effect lint rule
@@ -132,11 +138,11 @@ export default function PulseChips() {
   if (error && !kpis) {
     return (
       <div className="pulse-chips" role="status" aria-live="polite">
-        <Chip accent="purple" label="hives" value="?" retry title={error} />
-        <Chip accent="yellow" label="pending" value="?" retry title={error} />
-        <Chip accent="cyan" label="spend" value="?" retry title={error} />
-        <Chip accent="pink" label="merges" value="?" retry title={error} />
-        <Chip accent="gray" label="last" value="?" retry title={error} />
+        <Chip accent="purple" label="hives" value="?" retry title={error} onClick={refreshKpis} />
+        <Chip accent="yellow" label="pending" value="?" retry title={error} onClick={refreshKpis} />
+        <Chip accent="cyan" label="spend" value="?" retry title={error} onClick={refreshKpis} />
+        <Chip accent="pink" label="merges" value="?" retry title={error} onClick={refreshKpis} />
+        <Chip accent="gray" label="last" value="?" retry title={error} onClick={refreshKpis} />
       </div>
     );
   }
@@ -144,11 +150,11 @@ export default function PulseChips() {
   if (!kpis) {
     return (
       <div className="pulse-chips" aria-busy="true">
-        <Chip accent="purple" label="hives" value="—" />
-        <Chip accent="yellow" label="pending" value="—" />
-        <Chip accent="cyan" label="spend" value="—" />
-        <Chip accent="pink" label="merges" value="—" />
-        <Chip accent="gray" label="last" value="—" />
+        <Chip accent="purple" label="hives" value="—" onClick={refreshKpis} />
+        <Chip accent="yellow" label="pending" value="—" onClick={refreshKpis} />
+        <Chip accent="cyan" label="spend" value="—" onClick={refreshKpis} />
+        <Chip accent="pink" label="merges" value="—" onClick={refreshKpis} />
+        <Chip accent="gray" label="last" value="—" onClick={refreshKpis} />
       </div>
     );
   }
@@ -171,24 +177,28 @@ export default function PulseChips() {
         accent="purple"
         label="hives"
         value={String(kpis.active_hives)}
+        onClick={refreshKpis}
       />
       <Chip
         accent="yellow"
         label="pending"
         value={String(kpis.pending_cards)}
+        onClick={refreshKpis}
       />
-      <Chip accent="cyan" label="spend" value={spend} />
+      <Chip accent="cyan" label="spend" value={spend} onClick={refreshKpis} />
       <Chip
         accent="pink"
         label="merges"
         value={String(kpis.today_pr_merges)}
         suffix="merged"
+        onClick={refreshKpis}
       />
       <Chip
         accent={lcAccent}
         label="last"
         value={lcValue}
         title={summarizeForTooltip(lc?.summary)}
+        onClick={refreshKpis}
       />
     </div>
   );
