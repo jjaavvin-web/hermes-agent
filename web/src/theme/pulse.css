@@ -1,0 +1,848 @@
+/* Pulse tab theme — cyberpunk mission-control palette.
+ * All rules scoped under .pulse-root so they do not bleed into other tabs.
+ * H3 reuses --pulse-* accent vars for constellation node coloring. */
+
+.pulse-root {
+  --pulse-purple: #b794f4;
+  --pulse-cyan:   #76e4f7;
+  --pulse-pink:   #f687b3;
+  --pulse-yellow: #f6e05e;
+  --pulse-red:    #fc8181;
+  --pulse-green:  #68d391;
+  --pulse-gray:   #4a5568;
+
+  background-color: #000;
+  background-image: radial-gradient(ellipse at center, #0a0a0a 0%, #000 70%);
+  color: #e5e5e5;
+  font-family: ui-monospace, "JetBrains Mono", "Fira Code", monospace;
+  text-transform: none;
+  letter-spacing: 0;
+}
+
+.pulse-root,
+.pulse-root * {
+  box-sizing: border-box;
+}
+
+.pulse-root .pulse-grid {
+  display: grid;
+  width: 100%;
+  /* H3: anchor against the parent flex column so the 1fr center row
+   * actually gets a determinate height. `height: 100%` on a grid inside
+   * a flex column doesn't resolve unless we give the grid `flex: 1`
+   * itself — without this the center row collapses to its intrinsic
+   * content (≈ 44px) and the constellation canvas degenerates to a
+   * thin horizontal strip. */
+  flex: 1 1 auto;
+  min-height: 0;
+  gap: 8px;
+  padding: 8px;
+  grid-template-rows: 64px minmax(0, 1fr) 96px;
+  grid-template-columns: minmax(0, 1fr) 360px;
+  grid-template-areas:
+    "top    top"
+    "center right"
+    "bottom bottom";
+}
+
+/* Z-index ladder (resolved in H4):
+ *   canvas (0) < tooltip (8) < right rail (10) < constellation panel (20) < chips (30)
+ * Constellation's slide-in detail panel must overlay the right rail when
+ * active; the KPI chip row must remain visible above the panel. */
+.pulse-root .pulse-zone-top    { grid-area: top; min-width: 0; position: relative; z-index: 30; }
+.pulse-root .pulse-zone-center { grid-area: center; min-width: 0; min-height: 0; position: relative; }
+.pulse-root .pulse-zone-right  { grid-area: right; min-width: 0; min-height: 0; position: relative; z-index: 10; }
+.pulse-root .pulse-zone-bottom { grid-area: bottom; min-width: 0; position: relative; }
+
+.pulse-root .pulse-zone-placeholder {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px dashed rgba(229, 229, 229, 0.18);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.015);
+  color: rgba(229, 229, 229, 0.5);
+  font-size: 12px;
+  letter-spacing: 0.08em;
+  text-align: center;
+  padding: 12px;
+}
+
+/* Chip row -------------------------------------------------------------- */
+
+.pulse-root .pulse-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+  padding: 6px 10px;
+  height: 100%;
+  min-width: 0;
+}
+
+.pulse-root .pulse-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  height: 36px;
+  padding: 0 12px 0 14px;
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.65);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  font-size: 11.5px;
+  line-height: 1;
+  white-space: nowrap;
+  transition: transform 120ms ease, border-color 120ms ease;
+  /* Reset native <button> styling — H6 promoted chips to <button> so
+   * keyboard users can Tab to them (see DEFECTS.md MAJ-2). */
+  font-family: inherit;
+  color: inherit;
+  cursor: default;
+}
+
+.pulse-root .pulse-chip:focus-visible {
+  outline: 2px solid currentColor;
+  outline-offset: 2px;
+}
+
+/* MIN-1: ensure label and value don't read as a single concatenated token
+ * for screen readers / copy-paste. The flex `gap: 10px` already spaces them
+ * visually; a thin-space inside ::after exposes the boundary in textContent. */
+.pulse-root .pulse-chip__label::after {
+  content: " ";
+  white-space: pre;
+  width: 0;
+}
+
+.pulse-root .pulse-chip:hover {
+  transform: translateY(-1px);
+  border-color: rgba(255, 255, 255, 0.18);
+}
+
+.pulse-root .pulse-chip__label {
+  color: rgba(229, 229, 229, 0.55);
+  font-size: 9.5px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
+.pulse-root .pulse-chip__value {
+  font-weight: 600;
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+}
+
+.pulse-root .pulse-chip__suffix {
+  color: rgba(229, 229, 229, 0.45);
+  font-size: 10.5px;
+  margin-left: 2px;
+}
+
+.pulse-root .pulse-chip__spark {
+  width: 60px;
+  height: 20px;
+  flex-shrink: 0;
+  border-left: 1px solid rgba(255, 255, 255, 0.06);
+  margin-left: 4px;
+}
+
+.pulse-root .pulse-chip__retry {
+  color: rgba(252, 129, 129, 0.7);
+  font-size: 9.5px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  margin-left: 4px;
+}
+
+/* Per-accent variants — color drives both the value text and the glow ring.
+ * Glow uses an offset-less box-shadow so the chip itself appears illuminated;
+ * contrast against the black backdrop stays comfortably above WCAG AA for
+ * the value/label text, which is the readable foreground. */
+
+.pulse-root .pulse-chip--purple { color: var(--pulse-purple); box-shadow: 0 0 8px rgba(183, 148, 244, 0.45); border-color: rgba(183, 148, 244, 0.35); }
+.pulse-root .pulse-chip--cyan   { color: var(--pulse-cyan);   box-shadow: 0 0 8px rgba(118, 228, 247, 0.45); border-color: rgba(118, 228, 247, 0.35); }
+.pulse-root .pulse-chip--pink   { color: var(--pulse-pink);   box-shadow: 0 0 8px rgba(246, 135, 179, 0.45); border-color: rgba(246, 135, 179, 0.35); }
+.pulse-root .pulse-chip--yellow { color: var(--pulse-yellow); box-shadow: 0 0 8px rgba(246, 224, 94, 0.45);  border-color: rgba(246, 224, 94, 0.35); }
+.pulse-root .pulse-chip--red    { color: var(--pulse-red);    box-shadow: 0 0 8px rgba(252, 129, 129, 0.45); border-color: rgba(252, 129, 129, 0.35); }
+.pulse-root .pulse-chip--green  { color: var(--pulse-green);  box-shadow: 0 0 8px rgba(104, 211, 145, 0.45); border-color: rgba(104, 211, 145, 0.35); }
+.pulse-root .pulse-chip--gray   { color: rgba(229, 229, 229, 0.7); box-shadow: 0 0 8px rgba(74, 85, 104, 0.35); border-color: rgba(74, 85, 104, 0.35); }
+
+/* Constellation graph ---------------------------------------------------- */
+
+.pulse-root .pulse-constellation {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+  border-radius: 8px;
+  background:
+    radial-gradient(ellipse at center, rgba(20, 20, 30, 0.65) 0%, rgba(0, 0, 0, 0.9) 80%);
+  border: 1px solid rgba(255, 255, 255, 0.04);
+}
+
+/* ForceGraph2D injects an absolutely positioned canvas — make sure it fills
+ * the container and sits beneath overlays/tooltips/panels. */
+.pulse-root .pulse-constellation > .force-graph-container,
+.pulse-root .pulse-constellation > div:not([class*="pulse-"]) {
+  position: absolute !important;
+  inset: 0;
+}
+
+.pulse-root .pulse-constellation__overlay {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  pointer-events: none;
+}
+
+.pulse-root .pulse-constellation__overlay-text {
+  font-size: 12px;
+  color: rgba(229, 229, 229, 0.8);
+  text-align: center;
+  letter-spacing: 0.04em;
+}
+
+.pulse-root .pulse-constellation__overlay-text--dim {
+  color: rgba(229, 229, 229, 0.5);
+}
+
+.pulse-root .pulse-constellation__overlay-text code {
+  background: rgba(255, 255, 255, 0.06);
+  border-radius: 4px;
+  padding: 2px 6px;
+  color: var(--pulse-cyan);
+}
+
+.pulse-root .pulse-constellation__overlay-meta {
+  font-size: 10px;
+  color: rgba(229, 229, 229, 0.35);
+  letter-spacing: 0.08em;
+}
+
+.pulse-root .pulse-constellation__pulse-dot {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: var(--pulse-purple);
+  box-shadow: 0 0 18px var(--pulse-purple);
+  animation: pulse-constellation-throb 1.4s ease-in-out infinite;
+}
+
+@keyframes pulse-constellation-throb {
+  0%, 100% { transform: scale(0.85); opacity: 0.65; }
+  50%      { transform: scale(1.25); opacity: 1; }
+}
+
+.pulse-root .pulse-constellation__banner {
+  position: absolute;
+  top: 8px;
+  left: 8px;
+  z-index: 6;
+  background: rgba(252, 129, 129, 0.12);
+  border: 1px solid rgba(252, 129, 129, 0.35);
+  color: var(--pulse-red);
+  font-size: 10.5px;
+  letter-spacing: 0.08em;
+  padding: 4px 10px;
+  border-radius: 999px;
+  pointer-events: none;
+}
+
+.pulse-root .pulse-constellation__tooltip {
+  position: absolute;
+  z-index: 8;
+  pointer-events: none;
+  background: rgba(10, 10, 12, 0.92);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 6px;
+  padding: 6px 10px;
+  font-size: 11px;
+  max-width: 240px;
+  color: #e5e5e5;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.6);
+}
+
+.pulse-root .pulse-constellation__tooltip-label {
+  font-weight: 600;
+  margin-bottom: 2px;
+}
+
+.pulse-root .pulse-constellation__tooltip-meta {
+  color: rgba(229, 229, 229, 0.55);
+  font-size: 10px;
+  letter-spacing: 0.04em;
+}
+
+/* Detail panel — slides in from the right edge of the constellation zone.
+ * H4 resolved the z-index coordination: panel sits at 20 so it overlays the
+ * right-rail transcript (z-index 10) when a node is clicked; the top KPI
+ * chip row (z-index 30) stays visible above the panel.
+ * The panel is `position: absolute` relative to .pulse-constellation, so its
+ * overlay still doesn't bleed into the right zone unless we expand it past
+ * the constellation bounds — see the pulse-detail-panel--overlay-right
+ * variant below for the H4-spec layered overlay.
+ */
+.pulse-root .pulse-detail-panel {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  bottom: 8px;
+  width: 50%;
+  max-width: 360px;
+  z-index: 20;
+  background: rgba(8, 8, 10, 0.96);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 8px;
+  display: flex;
+  flex-direction: column;
+  animation: pulse-detail-slide-in 220ms ease-out;
+  box-shadow: -8px 0 28px rgba(0, 0, 0, 0.7);
+}
+
+@keyframes pulse-detail-slide-in {
+  from { transform: translateX(20%); opacity: 0; }
+  to   { transform: translateX(0);   opacity: 1; }
+}
+
+.pulse-root .pulse-detail-panel__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 10px 12px 8px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.pulse-root .pulse-detail-panel__title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--pulse-cyan);
+  letter-spacing: 0.04em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
+}
+
+.pulse-root .pulse-detail-panel__close {
+  background: transparent;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  color: rgba(229, 229, 229, 0.7);
+  width: 24px;
+  height: 24px;
+  border-radius: 4px;
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0;
+}
+
+.pulse-root .pulse-detail-panel__close:hover {
+  background: rgba(255, 255, 255, 0.08);
+  color: #fff;
+}
+
+.pulse-root .pulse-detail-panel__body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 8px 12px 12px;
+  font-size: 11px;
+}
+
+.pulse-root .pulse-detail-panel__divider {
+  height: 1px;
+  background: rgba(255, 255, 255, 0.06);
+  margin: 8px 0;
+}
+
+.pulse-root .pulse-detail-panel__row {
+  display: grid;
+  grid-template-columns: 110px 1fr;
+  gap: 6px;
+  padding: 3px 0;
+}
+
+.pulse-root .pulse-detail-panel__k {
+  color: rgba(229, 229, 229, 0.45);
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.pulse-root .pulse-detail-panel__v {
+  color: #e5e5e5;
+  word-break: break-word;
+}
+
+/* Right-rail transcript -------------------------------------------------- */
+
+.pulse-root .pulse-transcript {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  border: 1px solid rgba(255, 255, 255, 0.05);
+  border-radius: 8px;
+  background:
+    linear-gradient(180deg, rgba(10, 10, 14, 0.85) 0%, rgba(0, 0, 0, 0.9) 100%);
+  overflow: hidden;
+}
+
+.pulse-root .pulse-transcript__header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+  font-size: 11px;
+  background: rgba(0, 0, 0, 0.45);
+}
+
+.pulse-root .pulse-transcript__switcher-label {
+  color: rgba(229, 229, 229, 0.4);
+  font-size: 9.5px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+}
+
+.pulse-root .pulse-transcript__switcher {
+  flex: 1;
+  min-width: 0;
+  background: rgba(255, 255, 255, 0.04);
+  color: #e5e5e5;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 4px;
+  padding: 3px 6px;
+  font-family: inherit;
+  font-size: 11px;
+  appearance: none;
+  cursor: pointer;
+}
+
+.pulse-root .pulse-transcript__switcher:focus {
+  outline: 1px solid var(--pulse-cyan);
+  outline-offset: 1px;
+}
+
+.pulse-root .pulse-transcript__status {
+  flex-shrink: 0;
+}
+
+.pulse-root .pulse-transcript__status-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border-radius: 999px;
+  padding: 2px 8px;
+  font-size: 9.5px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  border: 1px solid transparent;
+  background: rgba(255, 255, 255, 0.04);
+  cursor: default;
+}
+
+.pulse-root .pulse-transcript__status-pill--connecting {
+  color: var(--pulse-cyan);
+  border-color: rgba(118, 228, 247, 0.35);
+  animation: pulse-transcript-status-pulse 1.6s ease-in-out infinite;
+}
+
+.pulse-root .pulse-transcript__status-pill--open {
+  color: var(--pulse-green);
+  border-color: rgba(104, 211, 145, 0.35);
+}
+
+.pulse-root .pulse-transcript__status-pill--reconnecting {
+  color: var(--pulse-yellow);
+  border-color: rgba(246, 224, 94, 0.35);
+}
+
+.pulse-root .pulse-transcript__status-pill--offline {
+  color: var(--pulse-red);
+  border-color: rgba(252, 129, 129, 0.45);
+  background: rgba(252, 129, 129, 0.08);
+  cursor: pointer;
+  font-family: inherit;
+}
+
+.pulse-root .pulse-transcript__status-pill--offline:hover {
+  background: rgba(252, 129, 129, 0.16);
+}
+
+.pulse-root .pulse-transcript__status-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+  box-shadow: 0 0 6px currentColor;
+}
+
+@keyframes pulse-transcript-status-pulse {
+  0%, 100% { opacity: 0.55; }
+  50%      { opacity: 1; }
+}
+
+.pulse-root .pulse-transcript__scroll {
+  flex: 1;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: 8px 8px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 255, 255, 0.18) transparent;
+}
+
+.pulse-root .pulse-transcript__scroll::-webkit-scrollbar {
+  width: 6px;
+}
+.pulse-root .pulse-transcript__scroll::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.18);
+  border-radius: 3px;
+}
+
+.pulse-root .pulse-transcript__empty {
+  margin: auto;
+  color: rgba(229, 229, 229, 0.4);
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  text-align: center;
+  padding: 24px 12px;
+}
+
+.pulse-root .pulse-transcript__empty code {
+  background: rgba(255, 255, 255, 0.06);
+  padding: 1px 5px;
+  border-radius: 3px;
+  color: var(--pulse-cyan);
+}
+
+.pulse-root .pulse-transcript__bubble {
+  align-self: flex-start;
+  max-width: 90%;
+  padding: 5px 9px 6px;
+  border-radius: 9px 9px 9px 2px;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-left-width: 2px;
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.pulse-root .pulse-transcript__bubble--purple { border-color: rgba(183, 148, 244, 0.55); background: rgba(183, 148, 244, 0.06); }
+.pulse-root .pulse-transcript__bubble--cyan   { border-color: rgba(118, 228, 247, 0.55); background: rgba(118, 228, 247, 0.06); }
+.pulse-root .pulse-transcript__bubble--pink   { border-color: rgba(246, 135, 179, 0.55); background: rgba(246, 135, 179, 0.06); }
+.pulse-root .pulse-transcript__bubble--yellow { border-color: rgba(246, 224, 94, 0.55);  background: rgba(246, 224, 94, 0.06); }
+.pulse-root .pulse-transcript__bubble--green  { border-color: rgba(104, 211, 145, 0.55); background: rgba(104, 211, 145, 0.06); }
+
+.pulse-root .pulse-transcript__bubble-header {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  margin-bottom: 2px;
+  font-size: 9.5px;
+  letter-spacing: 0.06em;
+  color: rgba(229, 229, 229, 0.5);
+}
+
+.pulse-root .pulse-transcript__bubble--purple .pulse-transcript__bubble-hive { color: var(--pulse-purple); }
+.pulse-root .pulse-transcript__bubble--cyan   .pulse-transcript__bubble-hive { color: var(--pulse-cyan); }
+.pulse-root .pulse-transcript__bubble--pink   .pulse-transcript__bubble-hive { color: var(--pulse-pink); }
+.pulse-root .pulse-transcript__bubble--yellow .pulse-transcript__bubble-hive { color: var(--pulse-yellow); }
+.pulse-root .pulse-transcript__bubble--green  .pulse-transcript__bubble-hive { color: var(--pulse-green); }
+
+.pulse-root .pulse-transcript__bubble-hive {
+  font-weight: 600;
+  letter-spacing: 0.04em;
+}
+
+.pulse-root .pulse-transcript__bubble-sep {
+  opacity: 0.5;
+}
+
+.pulse-root .pulse-transcript__bubble-time {
+  font-variant-numeric: tabular-nums;
+  opacity: 0.7;
+}
+
+.pulse-root .pulse-transcript__bubble-body {
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: rgba(229, 229, 229, 0.92);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.pulse-root .pulse-transcript__jump {
+  position: absolute;
+  right: 12px;
+  bottom: 12px;
+  z-index: 2;
+  border: 1px solid rgba(118, 228, 247, 0.45);
+  background: rgba(0, 0, 0, 0.85);
+  color: var(--pulse-cyan);
+  font-family: inherit;
+  font-size: 10px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  padding: 5px 10px;
+  border-radius: 999px;
+  cursor: pointer;
+  box-shadow: 0 0 12px rgba(118, 228, 247, 0.35);
+}
+
+.pulse-root .pulse-transcript__jump:hover {
+  background: rgba(118, 228, 247, 0.12);
+}
+
+/* Bottom-strip queue ----------------------------------------------------- */
+
+.pulse-root .pulse-queue {
+  position: relative;
+  height: 100%;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  border: 1px solid rgba(255, 255, 255, 0.05);
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.55);
+  overflow: hidden;
+}
+
+.pulse-root .pulse-queue__strip {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 255, 255, 0.18) transparent;
+}
+
+.pulse-root .pulse-queue__strip::-webkit-scrollbar {
+  height: 6px;
+}
+.pulse-root .pulse-queue__strip::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.18);
+  border-radius: 3px;
+}
+
+.pulse-root .pulse-queue__chip {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  height: 28px;
+  width: 200px;
+  padding: 0 10px 0 4px;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  color: #e5e5e5;
+  font-family: inherit;
+  font-size: 11px;
+  cursor: pointer;
+  transition: transform 120ms ease, box-shadow 120ms ease, border-color 120ms ease;
+  overflow: hidden;
+}
+
+.pulse-root .pulse-queue__chip:hover {
+  transform: scale(1.02);
+  border-color: rgba(255, 255, 255, 0.22);
+}
+
+.pulse-root .pulse-queue__chip-dot {
+  flex: 0 0 auto;
+  width: 6px;
+  align-self: stretch;
+  border-radius: 2px;
+  background: currentColor;
+  box-shadow: 0 0 6px currentColor;
+}
+
+.pulse-root .pulse-queue__chip--yellow { color: var(--pulse-yellow); border-color: rgba(246, 224, 94, 0.35); }
+.pulse-root .pulse-queue__chip--yellow:hover { box-shadow: 0 0 12px rgba(246, 224, 94, 0.45); }
+.pulse-root .pulse-queue__chip--pink   { color: var(--pulse-pink);   border-color: rgba(246, 135, 179, 0.35); }
+.pulse-root .pulse-queue__chip--pink:hover   { box-shadow: 0 0 12px rgba(246, 135, 179, 0.45); }
+.pulse-root .pulse-queue__chip--red    { color: var(--pulse-red);    border-color: rgba(252, 129, 129, 0.35); }
+.pulse-root .pulse-queue__chip--red:hover    { box-shadow: 0 0 12px rgba(252, 129, 129, 0.45); }
+.pulse-root .pulse-queue__chip--gray   { color: rgba(229, 229, 229, 0.7); border-color: rgba(74, 85, 104, 0.45); }
+.pulse-root .pulse-queue__chip--gray:hover   { box-shadow: 0 0 8px rgba(74, 85, 104, 0.55); }
+
+.pulse-root .pulse-queue__chip-id {
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.04em;
+  flex-shrink: 0;
+  opacity: 0.85;
+}
+
+.pulse-root .pulse-queue__chip-title {
+  flex: 1;
+  min-width: 0;
+  text-align: left;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: rgba(229, 229, 229, 0.88);
+  font-weight: 400;
+}
+
+.pulse-root .pulse-queue__chip-age {
+  flex-shrink: 0;
+  font-variant-numeric: tabular-nums;
+  font-size: 10px;
+  color: rgba(229, 229, 229, 0.6);
+}
+
+.pulse-root .pulse-queue__chip--skeleton {
+  background:
+    linear-gradient(
+      90deg,
+      rgba(255, 255, 255, 0.03) 0%,
+      rgba(255, 255, 255, 0.08) 50%,
+      rgba(255, 255, 255, 0.03) 100%
+    );
+  background-size: 240px 100%;
+  background-repeat: no-repeat;
+  background-position: -240px 0;
+  animation: pulse-queue-shimmer 1.4s linear infinite;
+  cursor: default;
+  pointer-events: none;
+}
+
+@keyframes pulse-queue-shimmer {
+  0%   { background-position: -240px 0; }
+  100% { background-position: 240px 0; }
+}
+
+.pulse-root .pulse-queue__empty {
+  margin: auto;
+  font-size: 11px;
+  color: rgba(229, 229, 229, 0.45);
+  letter-spacing: 0.04em;
+  text-align: center;
+  padding: 12px;
+}
+
+.pulse-root .pulse-queue__empty--error {
+  color: rgba(252, 129, 129, 0.75);
+}
+
+.pulse-root .pulse-queue__error-banner {
+  position: absolute;
+  top: 4px;
+  right: 8px;
+  font-size: 9.5px;
+  letter-spacing: 0.08em;
+  color: rgba(252, 129, 129, 0.85);
+  background: rgba(252, 129, 129, 0.08);
+  border: 1px solid rgba(252, 129, 129, 0.35);
+  padding: 2px 6px;
+  border-radius: 4px;
+  pointer-events: none;
+}
+
+.pulse-root .pulse-queue__toast {
+  position: absolute;
+  bottom: 8px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: rgba(0, 0, 0, 0.9);
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  color: var(--pulse-cyan);
+  font-size: 10.5px;
+  letter-spacing: 0.06em;
+  padding: 4px 10px;
+  border-radius: 4px;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.6);
+  pointer-events: none;
+}
+
+/* -------------------------------------------------------------------------
+ * Mobile layout — narrow viewport (CRIT-2 + CRIT-3 from H5 DEFECTS.md)
+ *
+ * Under ~860px the original two-column grid collapses the constellation
+ * column to width=0 because the right rail (360px fixed) wins. Stack the
+ * zones vertically and let the constellation own a sensible min-height.
+ * The chip row also re-flows: chips were overlapping on a 390-wide phone
+ * because rows shared the same y-coordinate band; here we let the row grow
+ * to fit and bump the chip-row padding so wrap rows clear each other.
+ * ------------------------------------------------------------------------- */
+@media (max-width: 860px) {
+  .pulse-root .pulse-grid {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto minmax(280px, 60vh) auto auto;
+    grid-template-areas:
+      "top"
+      "center"
+      "right"
+      "bottom";
+  }
+
+  .pulse-root .pulse-zone-top    { height: auto; min-height: 0; }
+  .pulse-root .pulse-zone-center { min-height: 280px; }
+  .pulse-root .pulse-zone-right  { min-height: 260px; max-height: 50vh; }
+  .pulse-root .pulse-zone-bottom { min-height: 92px; }
+
+  .pulse-root .pulse-chips {
+    height: auto;
+    row-gap: 8px;
+    padding: 8px 10px;
+  }
+
+  /* Drop the sparkline on narrow phones so each chip can shrink to fit.
+   * The chip's accessible label still announces the value and suffix. */
+  .pulse-root .pulse-chip {
+    height: 32px;
+    font-size: 11px;
+  }
+  .pulse-root .pulse-chip__spark {
+    display: none;
+  }
+
+  /* H5 saw the transcript's "Reconnecting…" status pill render at the same
+   * y-band as the chip row when the layout collapsed. The vertical stack
+   * above already separates them; this z-index pin guarantees the chip row
+   * stays visually above any right-rail content if a chip wraps over. */
+  .pulse-root .pulse-zone-top { z-index: 30; }
+}
+
+/* -------------------------------------------------------------------------
+ * Reduced-motion preference — MIN-3 from H5 DEFECTS.md
+ *
+ * Respect users who set `prefers-reduced-motion: reduce` by disabling the
+ * decorative animations (chip hover lift, reconnect pulse dot, queue chip
+ * shimmer). The constellation's force-graph simulation can't be paused
+ * cleanly mid-frame so we leave its layout cooldown alone — but the most
+ * visible motion (the pulsing reconnect dot, the shimmer, the hover lift)
+ * is silenced.
+ * ------------------------------------------------------------------------- */
+@media (prefers-reduced-motion: reduce) {
+  .pulse-root .pulse-chip,
+  .pulse-root .pulse-queue__chip,
+  .pulse-root .pulse-transcript__status-pill {
+    transition: none !important;
+  }
+  .pulse-root .pulse-chip:hover {
+    transform: none !important;
+  }
+  .pulse-root .pulse-queue__chip--skeleton {
+    animation: none !important;
+    background: rgba(255, 255, 255, 0.04);
+  }
+  .pulse-root .pulse-transcript__status-dot,
+  .pulse-root .pulse-transcript__status-pill--reconnecting .pulse-transcript__status-dot,
+  .pulse-root .pulse-transcript__status-pill--connecting .pulse-transcript__status-dot {
+    animation: none !important;
+  }
+}

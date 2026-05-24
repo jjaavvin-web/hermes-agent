@@ -74,6 +74,7 @@ import PluginsPage from "@/pages/PluginsPage";
 import NexusHealthPage from "@/pages/NexusHealthPage";
 import HivesPage from "@/pages/HivesPage";
 import ExplorerPage from "@/pages/ExplorerPage";
+import PulsePage from "@/pages/PulsePage";
 import WelcomePage from "@/pages/WelcomePage";
 import ChatPage from "@/pages/ChatPage";
 import { LanguageSwitcher } from "@/components/LanguageSwitcher";
@@ -128,6 +129,7 @@ const CHAT_NAV_ITEM: NavItem = {
  */
 const BUILTIN_ROUTES_CORE: Record<string, ComponentType> = {
   "/": RootRedirect,
+  "/pulse": PulsePage,
   "/sessions": SessionsPage,
   "/analytics": AnalyticsPage,
   "/models": ModelsPage,
@@ -154,6 +156,12 @@ function ChatRouteSink() {
 }
 
 const BUILTIN_NAV_REST: NavItem[] = [
+  {
+    path: "/pulse",
+    labelKey: "pulse",
+    label: "Pulse",
+    icon: Activity,
+  },
   {
     path: "/sessions",
     labelKey: "sessions",
@@ -348,6 +356,11 @@ export default function App() {
   const normalizedPath = pathname.replace(/\/$/, "") || "/";
   const isExplorerRoute = normalizedPath === "/explorer";
   const isChatRoute = normalizedPath === "/chat";
+  // H3: /pulse needs full-height layout so the force-directed constellation
+  // canvas has vertical space to render. Without this, the page wrapper
+  // collapses to its content's min-height and the canvas degenerates to a
+  // 44px-tall strip.
+  const isPulseRoute = normalizedPath === "/pulse";
   const embeddedChat = isDashboardEmbeddedChatEnabled();
 
   // `dashboard.show_token_analytics` gates the Analytics nav item.  The
@@ -455,6 +468,21 @@ export default function App() {
       data-layout-variant={layoutVariant}
       className="flex h-dvh max-h-dvh min-h-0 flex-col overflow-hidden bg-black text-text-primary antialiased"
     >
+      {/* Skip-to-content link — WCAG 2.4.1 (Bypass Blocks). Keyboard users
+          land here as the first focusable element so they can jump past
+          the 17 sidebar nav links into the page body. Visible only on focus. */}
+      <a
+        href="#main"
+        className={cn(
+          "sr-only focus:not-sr-only",
+          "focus:fixed focus:top-2 focus:left-2 focus:z-[100]",
+          "focus:bg-midground focus:text-background focus:px-3 focus:py-2",
+          "focus:rounded focus:font-mondwest focus:text-[0.75rem]",
+          "focus:outline focus:outline-2 focus:outline-current",
+        )}
+      >
+        Skip to main content
+      </a>
       <SelectionSwitcher />
       <Backdrop />
       <PluginSlot name="backdrop" />
@@ -620,7 +648,9 @@ export default function App() {
           </aside>
 
           <PageHeaderProvider pluginTabs={pluginTabMeta}>
-            <div
+            <main
+              id="main"
+              tabIndex={-1}
               className={cn(
                 "relative z-2 flex min-w-0 min-h-0 flex-1 flex-col",
                 !isExplorerRoute && "px-3 sm:px-6",
@@ -628,17 +658,18 @@ export default function App() {
                   ? "p-0"
                   : isChatRoute
                     ? "pb-0 pt-1 sm:pt-2 lg:pt-4"
-                    : "pt-2 sm:pt-4 lg:pt-6",
-                (isDocsRoute || isExplorerRoute) && "min-h-0 flex-1",
+                    : "pt-2 sm:pt-4 lg:pt-6 pb-4 sm:pb-8",
+                (isDocsRoute || isExplorerRoute || isPulseRoute) && "min-h-0 flex-1",
+                "focus:outline-none",
               )}
             >
               <PluginSlot name="pre-main" />
               <div
                 className={cn(
                   "w-full min-w-0",
-                  !isChatRoute && !isExplorerRoute &&
+                  !isChatRoute && !isExplorerRoute && !isPulseRoute &&
                     "pb-[calc(2rem+env(safe-area-inset-bottom,0px))] lg:pb-8",
-                  (isDocsRoute || isChatRoute || isExplorerRoute) &&
+                  (isDocsRoute || isChatRoute || isExplorerRoute || isPulseRoute) &&
                     "min-h-0 flex flex-1 flex-col",
                 )}
               >
@@ -683,7 +714,7 @@ export default function App() {
                   ))}
               </div>
               <PluginSlot name="post-main" />
-            </div>
+            </main>
           </PageHeaderProvider>
         </div>
       </div>
@@ -735,8 +766,13 @@ function SidebarNavLink({ closeMobile, item, t }: SidebarNavLinkProps) {
             {isActive && (
               <span
                 aria-hidden
-                className="absolute left-0 top-0 bottom-0 w-px bg-midground"
-                style={{ mixBlendMode: "plus-lighter" }}
+                className="absolute left-0 top-0 bottom-0 w-1 bg-midground"
+              />
+            )}
+            {isActive && (
+              <span
+                aria-hidden
+                className="absolute inset-y-0.5 left-1.5 right-1.5 bg-midground/10 pointer-events-none"
               />
             )}
           </>

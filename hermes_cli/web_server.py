@@ -49,11 +49,17 @@ from hermes_cli.config import (
 )
 from gateway.status import get_running_pid, read_runtime_status
 from utils import env_var_enabled
+from hermes_cli.pulse_data import (
+    build_pulse_graph,
+    build_pulse_queue,
+    build_pulse_kpis,
+    pulse_activity_iter,
+)
 
 try:
     from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
     from fastapi.middleware.cors import CORSMiddleware
-    from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
+    from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response, StreamingResponse
     from fastapi.staticfiles import StaticFiles
     from pydantic import BaseModel
 except ImportError:
@@ -65,7 +71,7 @@ except ImportError:
         _lazy_ensure("tool.dashboard", prompt=False)
         from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
         from fastapi.middleware.cors import CORSMiddleware
-        from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
+        from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response, StreamingResponse
         from fastapi.staticfiles import StaticFiles
         from pydantic import BaseModel
     except Exception:
@@ -124,6 +130,11 @@ _PUBLIC_API_PATHS: frozenset = frozenset({
 })
 
 
+_QUERY_TOKEN_PATHS: frozenset = frozenset({
+    "/api/pulse/stream",
+})
+
+
 def _has_valid_session_token(request: Request) -> bool:
     """True if the request carries a valid dashboard session token.
 
@@ -131,6 +142,11 @@ def _has_valid_session_token(request: Request) -> bool:
     already use ``Authorization`` (for example Caddy ``basic_auth``). We still
     accept the legacy Bearer path for backward compatibility with older
     dashboard bundles.
+
+    For routes the browser cannot reach with custom headers — currently the
+    SSE pulse stream consumed by ``EventSource`` — also accept the token in
+    the ``?token=`` query param. This is the same fallback the PTY WebSocket
+    uses; see ``pty_ws`` at /api/pty.
     """
     session_header = request.headers.get(_SESSION_HEADER_NAME, "")
     if session_header and hmac.compare_digest(
@@ -141,7 +157,18 @@ def _has_valid_session_token(request: Request) -> bool:
 
     auth = request.headers.get("authorization", "")
     expected = f"Bearer {_SESSION_TOKEN}"
-    return hmac.compare_digest(auth.encode(), expected.encode())
+    if hmac.compare_digest(auth.encode(), expected.encode()):
+        return True
+
+    if request.url.path in _QUERY_TOKEN_PATHS:
+        query_token = request.query_params.get("token", "")
+        if query_token and hmac.compare_digest(
+            query_token.encode(),
+            _SESSION_TOKEN.encode(),
+        ):
+            return True
+
+    return False
 
 
 def _require_token(request: Request) -> None:
@@ -4440,6 +4467,112 @@ async def delete_agent_plugin(request: Request, name: str):
         raise HTTPException(status_code=400, detail=result.get("error") or "Remove failed.")
     _get_dashboard_plugins(force_rescan=True)
     return result
+
+
+# --- /api/pulse/* — Pulse tab aggregation ---
+
+@app.get("/api/pulse/graph")
+async def api_pulse_graph() -> dict:
+    """Fused hive + nexus + kanban node/edge graph for the Pulse tab."""
+    loop = asyncio.get_running_loop()
+    try:
+        return await asyncio.wait_for(
+            loop.run_in_executor(None, build_pulse_graph),
+            timeout=10.0,
+        )
+    except asyncio.TimeoutError:
+        raise HTTPException(status_code=503, detail="pulse graph build timed out")
+
+
+@app.get("/api/pulse/queue")
+async def api_pulse_queue(limit: int = 50) -> dict:
+    """Flat list of ready/running/triage kanban cards across boards."""
+    capped = max(1, min(200, int(limit)))
+    loop = asyncio.get_running_loop()
+    try:
+        return await asyncio.wait_for(
+            loop.run_in_executor(None, lambda: build_pulse_queue(limit=capped)),
+            timeout=8.0,
+        )
+    except asyncio.TimeoutError:
+        raise HTTPException(status_code=503, detail="pulse queue build timed out")
+
+
+@app.get("/api/pulse/kpis")
+async def api_pulse_kpis() -> dict:
+    """Fused KPI snapshot — hives + spend + merges + last completion."""
+    loop = asyncio.get_running_loop()
+    try:
+        return await asyncio.wait_for(
+            loop.run_in_executor(None, build_pulse_kpis),
+            timeout=8.0,
+        )
+    except asyncio.TimeoutError:
+        raise HTTPException(status_code=503, detail="pulse kpis build timed out")
+
+
+@app.get("/api/pulse/stream")
+async def api_pulse_stream() -> StreamingResponse:
+    """SSE: re-broadcasts health probes + emits pulse.activity per hive log delta."""
+    from hermes_cli.dashboard_health import _probe_all
+
+    async def _generate():
+        event_id = 0
+        last_heartbeat = time.monotonic()
+        last_health_probe = 0.0
+        loop = asyncio.get_running_loop()
+        activity_gen = pulse_activity_iter()
+        activity_task: asyncio.Task | None = None
+
+        async def _next_activity():
+            try:
+                return await activity_gen.__anext__()
+            except StopAsyncIteration:
+                return None
+
+        try:
+            while True:
+                now_mono = time.monotonic()
+
+                # Health probes every 10s
+                if now_mono - last_health_probe >= 10.0:
+                    chips = await loop.run_in_executor(None, _probe_all)
+                    for chip in chips:
+                        event = {**chip, "eventType": "health"}
+                        yield f"id: {event_id}\nevent: health\ndata: {json.dumps(event)}\n\n"
+                        event_id += 1
+                        await asyncio.sleep(0)
+                    # Re-sample after probe so slow probes don't shrink the cadence
+                    last_health_probe = time.monotonic()
+
+                # Drain pulse.activity (non-blocking — wait up to 1s for next)
+                if activity_task is None:
+                    activity_task = asyncio.create_task(_next_activity())
+                done, _ = await asyncio.wait({activity_task}, timeout=1.0)
+                if activity_task in done:
+                    evt = activity_task.result()
+                    activity_task = None
+                    if evt is not None:
+                        yield f"id: {event_id}\nevent: pulse.activity\ndata: {json.dumps(evt)}\n\n"
+                        event_id += 1
+
+                # Heartbeat every 15s
+                if time.monotonic() - last_heartbeat >= 15:
+                    yield ": heartbeat\n\n"
+                    last_heartbeat = time.monotonic()
+        finally:
+            if activity_task is not None and not activity_task.done():
+                activity_task.cancel()
+            try:
+                await activity_gen.aclose()
+            except Exception:
+                pass
+
+    return StreamingResponse(
+        _generate(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 class _PluginProvidersPutBody(BaseModel):

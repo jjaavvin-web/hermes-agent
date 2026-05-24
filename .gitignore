@@ -20,6 +20,8 @@ data/
 .pytest_cache/
 test_durations.json
 .pytest-cache/
+web/test-results/
+web/playwright-report/
 tmp/
 temp_vision_images/
 hermes-*/*
