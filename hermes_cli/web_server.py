@@ -129,6 +129,11 @@ _PUBLIC_API_PATHS: frozenset = frozenset({
 })
 
 
+_QUERY_TOKEN_PATHS: frozenset = frozenset({
+    "/api/pulse/stream",
+})
+
+
 def _has_valid_session_token(request: Request) -> bool:
     """True if the request carries a valid dashboard session token.
 
@@ -136,6 +141,11 @@ def _has_valid_session_token(request: Request) -> bool:
     already use ``Authorization`` (for example Caddy ``basic_auth``). We still
     accept the legacy Bearer path for backward compatibility with older
     dashboard bundles.
+
+    For routes the browser cannot reach with custom headers — currently the
+    SSE pulse stream consumed by ``EventSource`` — also accept the token in
+    the ``?token=`` query param. This is the same fallback the PTY WebSocket
+    uses; see ``pty_ws`` at /api/pty.
     """
     session_header = request.headers.get(_SESSION_HEADER_NAME, "")
     if session_header and hmac.compare_digest(
@@ -146,7 +156,18 @@ def _has_valid_session_token(request: Request) -> bool:
 
     auth = request.headers.get("authorization", "")
     expected = f"Bearer {_SESSION_TOKEN}"
-    return hmac.compare_digest(auth.encode(), expected.encode())
+    if hmac.compare_digest(auth.encode(), expected.encode()):
+        return True
+
+    if request.url.path in _QUERY_TOKEN_PATHS:
+        query_token = request.query_params.get("token", "")
+        if query_token and hmac.compare_digest(
+            query_token.encode(),
+            _SESSION_TOKEN.encode(),
+        ):
+            return True
+
+    return False
 
 
 def _require_token(request: Request) -> None:
