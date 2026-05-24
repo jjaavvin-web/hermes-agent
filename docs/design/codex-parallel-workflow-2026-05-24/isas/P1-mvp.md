@@ -1,9 +1,9 @@
 ---
 isa:      20260524-2000_codex-parallel-p1-mvp
-task:     "P1 MVP — Discord gateway dispatcher + Worktree broker + one Codex session per thread (manual peer-review handoff)"
+task:     "P1 MVP — Discord gateway dispatcher + Worktree broker + one Codex session per thread (manual peer-review handoff); 19 ISCs"
 tier:     E3
 phase:    scaffold
-progress: 0/18
+progress: 0/19
 card:     "-"
 board:    hermes-kanban-control
 branch:   feat/codex-parallel-p1-mvp
@@ -57,7 +57,7 @@ After this ISA: an operator opens a thread in the configured Discord channel, th
 - [ ] ISC-8: posting a follow-up message in that thread triggers `run_turn` on the existing session (not a fresh session) — verified by capturing the tmux pane and checking the message lands on the session prompt
 - [ ] ISC-9: thread archive on Discord triggers `WorktreeBroker.release(sid)`, kills the tmux session, removes the worktree, removes the row from `codex_sessions.json`, and returns the port to the broker
 - [ ] ISC-10: slash commands `/spawn`, `/status`, `/pause`, `/resume`, `/kill`, `/handoff-to-ruflo` are registered with Discord and respond per `module-specs/discord-gateway.md` §4
-- [ ] ISC-11: bot restart with a live `codex-sess-<sid>` tmux session and a row in `codex_sessions.json` re-binds the dispatcher to that session — verified by killing the bot, restarting it, posting a message in the thread, and confirming the message lands on the same codex thread (codex shows session continuity)
+- [ ] ISC-11: bot restart with a live `codex-sess-<sid>` tmux session and a row in `codex_sessions.json` re-binds the dispatcher to that session. Reattach classification requires a two-step check: (1) `tmux has-session -t codex-sess-<sid>` confirms the tmux session exists; (2) `pane_pid=$(tmux display-message -p -t codex-sess-<sid> '#{pane_pid}')` + `pgrep -P "$pane_pid" hermes` confirms the hermes process is alive inside the pane. Only if BOTH checks pass is the session classified as LIVE. If the tmux session exists but hermes is NOT running (shell prompt after OOM/SIGKILL), the session must be classified as NEEDS_REVIVE (not LIVE) and the "needs revive" banner posted — verified by killing the bot, restarting it, posting a message in the thread, and confirming the message lands on the same codex thread (codex shows session continuity)
 - [ ] ISC-12: bot restart with a `codex_sessions.json` row whose tmux session is GONE marks the session as NEEDS_REVIVE and posts a banner in the Discord thread with `/revive` instructions (the `/revive` handler itself is P5; P1 only posts the banner)
 - [ ] ISC-13: `python3 scripts/isa_lint.py ~/.hermes/work/<isa-id>/ISA.md` exit 0 against this ISA in `phase: complete`
 - [ ] ISC-14: at least 4 concurrent threads can run simultaneously without file/branch/port collision — verified by spawning 4 threads, observing 4 distinct worktrees + tmux sessions + ports, and confirming `git -C <repo> branch --list "codex/*"` lists 4 distinct branches
@@ -65,6 +65,7 @@ After this ISA: an operator opens a thread in the configured Discord channel, th
 - [ ] ISC-16: Anti: NO new write to `~/.hermes/discord_threads.json` from the dispatcher or any new module — grep proves the file appears only in pre-existing code (`ThreadParticipationTracker` + its test)
 - [ ] ISC-17: Anti: NO `rm -rf`, `git clean -fxd`, or force-truncate via `>` in any new module — grep proves it
 - [ ] ISC-18: Anti: existing `/api/dashboard/hives` routes still return correct JSON shape after P1 lands (no dashboard-side regression) — verified by `curl -s -H "X-Hermes-Session-Token: $TOK" :9119/api/dashboard/hives | jq '.hives | length'` returns a non-error number
+- [ ] ISC-19: `WorktreeBroker.__init__` reads `codex_sessions.json` at construction time and populates `self._registry` with any existing `{session_id: worktree_path}` entries, so that the `allocate()` idempotency check at step 2 is robust to bot restarts — verified by seeding a `codex_sessions.json` with one row, constructing a fresh `WorktreeBroker`, and confirming `allocate(sid)` returns the existing worktree without running `git worktree add`
 
 ## Test Strategy
 
@@ -80,7 +81,7 @@ After this ISA: an operator opens a thread in the configured Discord channel, th
 | ISC-8 | post second message in the thread, `tmux capture-pane -p -t codex-sess-<sid> \| tail -20` | message text appears on session prompt |
 | ISC-9 | archive the Discord thread, wait 5s, run `tmux ls` and `ls ~/.hermes/codex-wt/` | session gone, worktree gone |
 | ISC-10 | invoke each slash command; check response | each returns expected behavior per spec §4 |
-| ISC-11 | kill the bot process, restart, post message in existing thread, `tmux capture-pane -p -t codex-sess-<sid>` | message lands on same codex thread |
+| ISC-11 | kill the bot process, restart, post message in existing thread, `tmux capture-pane -p -t codex-sess-<sid>` | message lands on same codex thread; additional probe: kill hermes inside the pane (leave tmux alive), restart bot, verify session is classified NEEDS_REVIVE (not LIVE) and banner posted |
 | ISC-12 | with a live session row + dead tmux: restart bot; check Discord thread | "needs revive" banner posted |
 | ISC-13 | `python3 scripts/isa_lint.py ~/.hermes/work/20260524-2000_codex-parallel-p1-mvp/ISA.md ; echo $?` | `0` |
 | ISC-14 | open 4 Discord threads back-to-back; after 30s: `tmux ls \| grep -c codex-sess-`, `ls ~/.hermes/codex-wt/ \| wc -l`, `git -C <repo> branch --list 'codex/*' \| wc -l`, `cat ~/.hermes/codex-ports.json \| jq '[.[] \| select(. != null)] \| length'` | all 4 |
@@ -88,6 +89,7 @@ After this ISA: an operator opens a thread in the configured Discord channel, th
 | ISC-16 | `grep -rn 'discord_threads.json' gateway/codex_session_dispatcher.py agent/worktree_broker.py scripts/claude_kanban_bridge.py` | 0 hits |
 | ISC-17 | `grep -rnE 'rm -rf\|git clean -fxd\|>\\s*[^>=&|]\|truncate' gateway/codex_session_dispatcher.py agent/worktree_broker.py scripts/claude_kanban_bridge.py` | 0 hits |
 | ISC-18 | `curl -s -H "X-Hermes-Session-Token: $TOK" :9119/api/dashboard/hives \| jq '.hives \| length'` | non-error number |
+| ISC-19 | seed `codex_sessions.json` with one existing row; `python -c "from agent.worktree_broker import WorktreeBroker; b = WorktreeBroker(repo_root=..., hermes_home=<path>); assert <sid> in b._registry"` | sid present in registry without calling git |
 
 ## Git Plan
 

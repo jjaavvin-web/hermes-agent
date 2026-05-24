@@ -36,7 +36,7 @@ The biggest design-time finding: the **`stateless bot reattaches by PID`** premi
   │  ISA: 20260524-2010_codex-parallel-p2-peer-review (16 ISCs, E3)
   │
   ▼
-[P3 — Merge broker: flock + isa_lint gate + Mergify-or-Actions auto-merge]
+[P3 — Merge broker: flock + isa_lint gate + GitHub Actions auto-merge]
   │  ISA: 20260524-2020_codex-parallel-p3-merge-broker (15 ISCs, E3)
   │
   ▼
@@ -79,7 +79,7 @@ The adversarial reviewer (`critique.md`) flagged three structural defects in the
 The five major findings (`critique.md` §Major) are equally real but less load-bearing — they're easy to incorporate during execution without changing the design's spine:
 
 - **M4** Verdict regex `^VERDICT:` misses `**VERDICT: APPROVE**` (Opus markdown). Fix: `r'[*#\s]*VERDICT:\s+(APPROVE|REVISE|ESCALATE)\b'`. Add as P2 ISC.
-- **M5** Mergify rule `#approved-reviews-by >= 1` is never satisfied because nothing calls `gh pr review --approve`. Fix: either P2's APPROVE path calls `gh pr review --approve --pr-number <N>` OR drop the condition from `.mergify.yml`. P3 ISA's Decisions section picks one.
+- **M5** ~~Mergify rule `#approved-reviews-by >= 1` is never satisfied.~~ **RESOLVED 2026-05-24: Mergify dropped; GitHub Actions is the canonical auto-merge mechanism.** See `module-specs/merge-broker.md §6`.
 - **M6** Post-merge poll `gh pr list --label auto-merge --state merged` matches operator-labeled PRs from any branch. Fix: add `--head 'codex/*'`. P3 ISC-12 probe needs the same flag.
 - **M7** `WorktreeBroker._registry` empty on bot restart enables double-allocation. Fix: populate from `codex_sessions.json` at `__init__`. P1 implementation detail.
 - **M8** SSE backpressure unspecified — cap event queue at 100, drop-oldest on overflow. P4 implementation detail.
@@ -105,11 +105,11 @@ In rough order of how-much-this-might-bite-you:
 
 1. **`MemoryManager` has no internal write lock.** Cluster C audit confirms `memory_manager.py:317-326` is sequential-per-session only. If two sessions accidentally use the same MVMS project key, last-write-wins silently. The design mitigates this by convention (each session uses `codex-session-<sid>`), but operator-typo'd keys won't be caught at write time. Watch the MVMS supersede log if you see lessons being overwritten.
 2. **No Codex `thread/resume`.** RQ3 confirmed the codex protocol supports `thread/resume`, but the Hermes adapter doesn't use it. On host reboot, every in-flight codex thread is abandoned. P5 ships `/revive` (operator-triggered fresh session); a future ISA could wire `thread/resume` for true survival.
-3. **Mergify install cost on private repos.** RQ5 covers GitHub Actions as the no-third-party-tools fallback. Pick before P3 lands — both `.mergify.yml` and `.github/workflows/auto-merge.yml.disabled` are committed by P3; operator activates one.
+3. ~~**Mergify install cost on private repos.**~~ **RESOLVED 2026-05-24: GitHub Actions (operator decision).** Mergify is dropped; `.github/workflows/auto-merge.yml` is the only auto-merge config shipped by P3. No `.mergify.yml` is committed. See `module-specs/merge-broker.md §6` and `§6.1`.
 4. **Opus pane-pool size = 2 is a soft cap.** If 8 sessions all hit `phase: verify` in a 5-min window, 6 reviews queue. Latency, not failure — but operator may want to bump the pool size to 3 once usage patterns are visible. Adjustable via orchestrator constructor.
 5. **Disk pressure under 8 npm-heavy worktrees.** 8 × 2 GB = 16 GB worst case (per worktree node_modules). The 4 GB free floor in `WorktreeBroker.allocate` is the safety. If your WSL2 host gets tight, P5 should add `pnpm enableGlobalVirtualStore: true` (RQ4 — near-zero per-worktree disk delta). The P5 ISA explicitly defers this as a project choice.
 6. **`MessageDeduplicator` is in-process TTL (300s).** Bot restart loses dedup state; messages within the 5-min window may be processed twice. This is the cost of statelessness; the cost is bounded.
-7. **Per-worktree port range 50000-50007.** If you run other services on those ports, the broker fails to allocate. Reconfigure in `module-specs/worktree-broker.md` §4.
+7. ~~**Per-worktree port range 50000-50007.**~~ **RESOLVED 2026-05-24: `50000-50007` confirmed free on operator's machine (operator decision).** No reconfiguration needed.
 
 The adversarial critique in `critique.md` enumerates more scenarios — read it before P1 starts.
 

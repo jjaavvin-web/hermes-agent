@@ -3,7 +3,7 @@ isa:      20260524-2020_codex-parallel-p3-merge-broker
 task:     "P3 Merge broker — serialized fork/main merges with isa_lint gate, classify_change, and auto-merge label"
 tier:     E3
 phase:    scaffold
-progress: 0/15
+progress: 0/16
 card:     "-"
 board:    hermes-kanban-control
 branch:   feat/codex-parallel-p3-merge-broker
@@ -55,11 +55,12 @@ After this ISA: when P2 emits an APPROVE verdict, the dispatcher calls `MergeBro
 - [ ] ISC-8: `safe` classification → `gh pr edit <pr#> --add-label auto-merge`; `sensitive` → `--add-label needs-human`
 - [ ] ISC-9: PR description includes ISA path, ISC progress, Opus verdict rationale (from P2's Verdict.rationale), and a `## Verification` excerpt (verbatim probe outputs)
 - [ ] ISC-10: Discord thread receives a post `"PR #N opened — auto-merge | needs-human — <url>"` after labeling
-- [ ] ISC-11: `.mergify.yml` is committed at repo root with rule `success_conditions: [label = auto-merge, "#approved-reviews-by >= 1", check-success = ci]`; alternative `.github/workflows/auto-merge.yml` is committed as `.github/workflows/auto-merge.yml.disabled` so operator can rename to activate
-- [ ] ISC-12: dispatcher poll detects merged PR (label `auto-merge` AND state=merged) within 120s of merge; on detect: `WorktreeBroker.release(sid)`, `kanban_complete <card>`, delete `codex_sessions.json` row, archive Discord thread
+- [ ] ISC-11: `.github/workflows/auto-merge.yml` is committed per `module-specs/merge-broker.md §6.1` (GitHub Actions, operator decision 2026-05-24); NO `.mergify.yml` is committed — grep proves it (`grep -rl '.mergify' . | wc -l` returns 0)
+- [ ] ISC-12: dispatcher poll detects merged PR (label `auto-merge` AND state=merged) within 120s of merge using `gh pr list --label auto-merge --state merged --head 'codex/*'`; on detect: `WorktreeBroker.release(sid)`, `kanban_complete <card>`, delete `codex_sessions.json` row, archive Discord thread. The `--head 'codex/*'` flag is mandatory — it prevents the cleanup loop from matching operator-labeled non-Codex PRs
 - [ ] ISC-13: Anti: NO `git push --force` or `--force-with-lease` against `fork/main` anywhere in `agent/merge_broker.py` — grep proves it
 - [ ] ISC-14: Anti: NO `--no-verify` / `--no-gpg-sign` flags on any git operation in the new module — grep proves it
 - [ ] ISC-15: `python3 scripts/isa_lint.py ~/.hermes/work/20260524-2020_codex-parallel-p3-merge-broker/ISA.md` exit 0 in `phase: complete`
+- [ ] ISC-16: the flock is released after step 5 (push) and before step 6 (`gh pr create`). Acceptance criteria: (a) `module-specs/merge-broker.md §4` shows the flock-released marker between step 5 and step 6; AND (b) the implementation file `agent/merge_broker.py` emits a log line `flock_released = True` at INFO level at that point — verified by `grep -n 'flock_released' agent/merge_broker.py` returning at least 1 hit AND by the mutex serialization test (ISC-2) confirming the second caller can acquire the lock BEFORE the first caller's `gh pr create` subprocess completes
 
 ## Test Strategy
 
@@ -75,11 +76,12 @@ After this ISA: when P2 emits an APPROVE verdict, the dispatcher calls `MergeBro
 | ISC-8 | merge a `safe` change; `gh pr view <pr#> --json labels \| jq '.labels[].name'` | `auto-merge` present |
 | ISC-9 | merge a session; `gh pr view <pr#> --json body \| jq -r .body \| grep -c 'ISA\|ISC\|rationale\|Verification'` | ≥ 4 hits |
 | ISC-10 | merge a session; check Discord thread last 5 messages | one contains `PR #` and the URL |
-| ISC-11 | `ls .mergify.yml .github/workflows/auto-merge.yml.disabled; yamllint .mergify.yml` | both exist; yaml valid |
-| ISC-12 | mark a test PR merged on GitHub; wait 120s | worktree released, kanban completed, json row gone, thread archived |
+| ISC-11 | `ls .github/workflows/auto-merge.yml && grep -c 'pull_request' .github/workflows/auto-merge.yml` | file exists; at least 1 trigger match; also `ls .mergify.yml 2>&1 \| grep "No such file"` confirms no Mergify config |
+| ISC-12 | mark a codex/* test PR merged on GitHub; wait 120s; verify `gh pr list` mock is called with `--head 'codex/*'` flag | worktree released, kanban completed, json row gone, thread archived; mock asserts `--head 'codex/*'` in call args |
 | ISC-13 | `grep -rnE 'push --force\|push.*-f\b\|force-with-lease' agent/merge_broker.py` | 0 hits |
 | ISC-14 | `grep -rnE 'no-verify\|no-gpg-sign' agent/merge_broker.py` | 0 hits |
 | ISC-15 | `python3 scripts/isa_lint.py ~/.hermes/work/20260524-2020_codex-parallel-p3-merge-broker/ISA.md ; echo $?` | `0` |
+| ISC-16 | `grep -n 'flock_released' agent/merge_broker.py` returns ≥1 hit; concurrent merge test shows second caller acquires lock before first caller's `gh pr create` subprocess finishes | both checks pass |
 
 ## Git Plan
 

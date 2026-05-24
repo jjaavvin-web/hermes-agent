@@ -155,7 +155,7 @@ Auth resolves from `~/.claude/.credentials.json` at runtime; no token env var is
    One line only — multiline `send-keys` corrupts on `$`, backticks, and newlines. The temp file absorbs all quoting complexity.
 9. **Poll loop.** Every 5 s: `tmux capture-pane -p -t codex-review-<pane_id>`. Scan for `VERDICT:` sentinel. On first match, record `sentinel_ts`. Continue polling. Exit loop when `time.monotonic() - sentinel_ts >= idle_threshold_sec` (15 s) with no new output.
 10. **Hard timeout.** If 5 min elapse from step 8 without exiting the poll loop: mark pane DEAD, respawn (background), return `Verdict(kind="ESCALATE", rationale="review timeout", ...)`.
-11. **Parse verdict.** Extract from `raw_capture` using regex `^VERDICT:\s+(APPROVE|REVISE|ESCALATE)\b\s*(.*)$` (multiline, DOTALL for rationale). Take the **last** matching line (claude's final answer). Rationale = full text after the verdict line. Failure modes in §7.
+11. **Parse verdict.** Extract from `raw_capture` using regex `r'[*#\s]*VERDICT:\s+(APPROVE|REVISE|ESCALATE)\b'` (multiline; tolerates leading `**`, `##`, or whitespace — Opus 4.7 frequently emits `**VERDICT: APPROVE**` or `## VERDICT: REVISE`). Take the **last** matching line (claude's final answer). Rationale = full text after the verdict line to end of capture. Failure modes in §7.
 12. **Mark pane WARM.** Return pane ID to queue.
 13. **Persist state.** Atomic write to `codex-review-state.json`: increment `iterations` and `reviews_today`, set `last_verdict`, `last_review_at`.
 14. **Cleanup.** Delete `/tmp/review-<sid>.md`.
@@ -310,6 +310,7 @@ Assertions the execution hive must satisfy before this module ships:
 12. **Diff > 20 KB:** pass a 25 KB diff; verify the prompt file written to `/tmp/review-<sid>.md` contains `<truncated>` in the diff header and is smaller than 20 KB.
 13. **Pane recycle at K=50:** set pane usage counter to 49; complete one review; verify pane is killed and respawned.
 14. **Bot restart with existing panes:** create `codex-review-0` externally with claude at prompt; call `start()`; verify module skips dialog-clearing loop and marks pane WARM.
+15. **Bold/markdown VERDICT format (test 8):** pane capture contains `**VERDICT: APPROVE**\nLooks good.`; assert `review()` returns `Verdict(kind="APPROVE")` and does NOT time out or ESCALATE. Additional sub-case: pane capture contains `## VERDICT: REVISE\nISC-3 missing.`; assert `Verdict(kind="REVISE", rationale="ISC-3 missing.")`. Both sub-cases must pass with the `r'[*#\s]*VERDICT:\s+(APPROVE|REVISE|ESCALATE)\b'` regex and would fail with the old `^VERDICT:` regex.
 
 ---
 

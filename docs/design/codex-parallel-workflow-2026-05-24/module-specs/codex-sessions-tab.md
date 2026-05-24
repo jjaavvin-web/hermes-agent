@@ -184,6 +184,8 @@ All subprocess calls use `subprocess.run([...], capture_output=True, text=True, 
 
 No new SSE endpoint. The existing `/api/pulse/stream` channel (`web_server.py:4308–4369`) carries `codex-session` events as a new discriminated variant of the existing `pulse.activity` event type.
 
+**Event queue backpressure:** the `asyncio.Queue` used by `pulse_activity_iter()` for `kind: codex-session` events must be capped at a maximum depth of **100 events**. On overflow (queue full), drop the **oldest** event (not the newest) — the dashboard needs current state, not history. Add a `dropped_codex_events` counter to the SSE health probe so the operator can detect backpressure from a slow client. Rationale: with 8 concurrent Codex sessions each emitting events on every `run_turn` completion, phase transition, and review verdict, the queue can fill faster than the drain rate.
+
 ```
 architecture-diagram.md §7 — full flow diagram
 

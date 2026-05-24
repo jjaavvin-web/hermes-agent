@@ -251,7 +251,8 @@ Per-pane states:    WARM ──┬──► BUSY ──┬──► (verdict cap
   │     - idle ≥ 15s after sentinel (output stable)             │
   │     - OR 5-min hard timeout                                 │
   │                                                             │
-  │   parse last "VERDICT: (APPROVE|REVISE|ESCALATE)\b...\n"    │
+  │   parse last r'[*#\s]*VERDICT:\s+(APPROVE|REVISE|ESCALATE)\b'│
+  │   (tolerates **VERDICT: APPROVE** and ## VERDICT: REVISE)    │
   │   on success → mark pane WARM, return verdict + rationale   │
   │   on hard timeout → mark pane DEAD, ESCALATE                │
   │   on health check fail (pane gone) → re-spawn, ESCALATE     │
@@ -282,6 +283,11 @@ caller (session ready to land)                   broker            github
         │                                          │
         │                                          │── git push fork <branch> ─────► (push)
         │                                          │
+        │                                          │ flock release  ← RELEASED HERE
+        │                                          │   (log: flock_released = True)
+        │                                          │   Critical section ends. Steps below
+        │                                          │   run unlocked — idempotent vs fork/main.
+        │                                          │
         │                                          │── gh pr create --base fork/main \
         │                                          │     --head <branch> \
         │                                          │     --title <title> \
@@ -295,12 +301,11 @@ caller (session ready to land)                   broker            github
         │                                          │
         │                                          │ if safe:
         │                                          │   gh pr edit <pr#> --add-label auto-merge
-        │                                          │   (Mergify rule fires on label)
+        │                                          │   (GitHub Actions fires on label)
         │                                          │ else:
         │                                          │   gh pr edit <pr#> --add-label needs-human
         │                                          │   (queues for operator)
         │                                          │
-        │                                          │ flock release
         │◄── PR # + classification ────────────────│
         │                                          │
         │  post to Discord thread:                 │
@@ -343,7 +348,23 @@ caller (session ready to land)                   broker            github
                        NO `claude -p`  (objective §5 — 2026-06-15 billing constraint)
 ```
 
-If the bot dies and is restarted: `tmux ls` enumerates `codex-sess-*` and `codex-review-*`, the bot reads `~/.hermes/codex_sessions.json` to recover the `thread_id ↔ tmux_session` mapping, and re-binds. The codex app-server subprocesses keep running inside their tmux sessions throughout the bot's downtime.
+If the bot dies and is restarted: `tmux ls` enumerates `codex-sess-*` and `codex-review-*`, the bot reads `~/.hermes/codex_sessions.json` to recover the `thread_id ↔ tmux_session` mapping, and re-binds. The reattach classification requires a two-step check — tmux session alive is necessary but not sufficient:
+
+```
+Step A: tmux has-session -t codex-sess-<sid>
+          → non-zero: session GONE → NEEDS_REVIVE (no further check)
+
+Step B (only if Step A passes): pane_pid + pgrep probe
+          pane_pid=$(tmux display-message -p -t codex-sess-<sid> '#{pane_pid}')
+          pgrep -P "$pane_pid" hermes
+          → hermes running (returncode 0): session LIVE → re-bind dispatcher
+          → hermes NOT running (shell at prompt): session NEEDS_REVIVE
+            (OOM/SIGKILL killed hermes but left tmux alive — tmux send-keys
+             would paste the next Discord message into the shell, not into
+             a Codex session; this must be caught here)
+```
+
+The codex app-server subprocesses keep running inside their tmux sessions throughout the bot's downtime (as long as hermes itself survives).
 
 If the *host* reboots: tmux is gone, codex subprocesses gone. The bot's `codex_sessions.json` rows become NEEDS_REVIVE; operator either uses `/revive` to launch fresh sessions (P5 ISA), or in a later hardening the Hermes transport gains `thread/resume` support and reattaches by storage path + thread_id (external research RQ3 — capability exists in the codex protocol, not yet wired in Hermes).
 

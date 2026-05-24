@@ -3,7 +3,7 @@ isa:      20260524-2030_codex-parallel-p4-operator-surface
 task:     "P4 Operator surface — /codex-sessions dashboard tab + pulse SSE wiring + slash command polish"
 tier:     E3
 phase:    scaffold
-progress: 0/14
+progress: 0/15
 card:     "-"
 board:    hermes-kanban-control
 branch:   feat/codex-parallel-p4-operator-surface
@@ -56,6 +56,7 @@ After this ISA: a new `/codex-sessions` tab in the dashboard shows one card per 
 - [ ] ISC-12: Anti: dashboard service start time does not increase by > 100ms after P4 (mounting the new router is cheap)
 - [ ] ISC-13: Anti: `_SESSION_TOKEN` is NOT changed by deployment — verified by capturing the token, deploying P4 without restart, and re-using the token successfully on the new routes
 - [ ] ISC-14: `python3 scripts/isa_lint.py ~/.hermes/work/20260524-2030_codex-parallel-p4-operator-surface/ISA.md` exit 0 in `phase: complete`
+- [ ] ISC-15: the `asyncio.Queue` for `kind: codex-session` pulse events is capped at 100 events; on overflow the oldest event is dropped (not the newest); a `dropped_codex_events` counter is present in the SSE health probe — verified by mocking a slow consumer, enqueuing 110 events, and asserting (a) queue depth never exceeds 100, (b) the 10 oldest events are dropped, (c) `dropped_codex_events == 10` in the health probe
 
 ## Test Strategy
 
@@ -75,6 +76,7 @@ After this ISA: a new `/codex-sessions` tab in the dashboard shows one card per 
 | ISC-12 | `time curl :9119/api/status` before vs after deploy | within 100ms |
 | ISC-13 | save token; deploy P4 with `systemctl reload hermes-dashboard` (no restart); reuse token | 200 on /api/dashboard/codex-sessions |
 | ISC-14 | `python3 scripts/isa_lint.py ~/.hermes/work/20260524-2030_codex-parallel-p4-operator-surface/ISA.md ; echo $?` | `0` |
+| ISC-15 | mock slow consumer; enqueue 110 codex-session events; check queue depth cap, oldest-drop behavior, `dropped_codex_events` counter | queue capped at 100; 10 oldest dropped; counter == 10 |
 
 ## Git Plan
 

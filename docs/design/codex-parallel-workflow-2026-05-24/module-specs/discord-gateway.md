@@ -284,8 +284,17 @@ Step 2: Run `tmux ls -F '#{session_name}'` (cf. dashboard_health.py:447-458).
 Step 3: For each row in codex_sessions.json:
           expected_tmux = row["tmux_session"]  # e.g. "codex-sess-<sid-short>"
           if expected_tmux in tmux_live:
-            → LIVE: update row["state"] if it was NEEDS_REVIVE → restore prior state.
-              Log INFO: "session <sid> reattached (thread <tid>)".
+            → tmux session exists. Now probe whether hermes is actually running:
+              pane_pid = tmux display-message -p -t <expected_tmux> '#{pane_pid}'
+              hermes_alive = (pgrep -P <pane_pid> hermes → returncode 0)
+              if hermes_alive:
+                → LIVE: update row["state"] if it was NEEDS_REVIVE → restore prior state.
+                  Log INFO: "session <sid> reattached (thread <tid>)".
+              else:
+                → hermes dead (shell at prompt after OOM/SIGKILL): do NOT classify LIVE.
+                  Classify as NEEDS_REVIVE even though tmux is alive.
+                  Log WARNING: "session <sid> tmux alive but hermes not running — classifying NEEDS_REVIVE".
+                  Post "needs revive" banner to Discord thread (see below).
           else:
             → ORPHANED: set row["state"] = "NEEDS_REVIVE".
               Post "needs revive" banner to Discord thread (see below).
@@ -321,6 +330,12 @@ Session <sid> was running when the bot restarted but its tmux session
 Worktree: <worktree_path> [exists / missing]
 Last active: <last_message_at>
 ISA: <isa_path>
+
+Warning: the old worktree at <worktree_path> may contain uncommitted
+source changes. Run `git -C <worktree_path> diff` before reviving to
+capture any unsaved work. The /revive command will post a `git diff
+--stat` summary before allocating the new worktree, but you can inspect
+the full diff now if the worktree is still on disk.
 
 Use /revive to launch a fresh session on the same worktree and branch,
 or /kill to discard and free the slot.

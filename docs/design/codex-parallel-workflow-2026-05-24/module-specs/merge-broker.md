@@ -137,6 +137,12 @@ caller                          broker                        github / OS
   │                               │    push rejected unexpectedly:
   │                               │      raise ManualBranchInterferenceError
   │                               │
+  │                               │ ── FLOCK RELEASED HERE (after step 5) ─────────
+  │                               │    flock_released = True  [logged at INFO]
+  │                               │    Critical section: steps 1-5 only.
+  │                               │    Steps 6-9 run UNLOCKED — PR creation and
+  │                               │    labeling are idempotent against fork/main.
+  │                               │
   │                               │ 6. gh pr create \
   │                               │      --base <base_branch> \       ──────────►│ PR opened
   │                               │      --head <branch> \                        │
@@ -161,11 +167,13 @@ caller                          broker                        github / OS
   │                               │      "PR #<N> opened (<auto-merge|human-queue>): <url>"
   │                               │    [via tools/discord_tool.py:908]
   │                               │
-  │                               │ 9. release flock
+  │                               │ 9. (flock already released at step 5)
   │◄── MergeResult ───────────────│
 ```
 
 Steps 3 and 4 are the only steps that exit without completing the merge. In both cases the lock is released before returning.
+
+**Invariant:** The flock critical section covers only steps 1–5 (`fetch → rebase → push`). This is the minimal scope needed to prevent non-fast-forward push collisions on `fork/main`. Steps 6–9 (`gh pr create`, classify, label, Discord post) are idempotent against `fork/main` and run unlocked. A stuck GitHub API call during PR creation (10-30 s on slow networks, indefinite during GitHub incidents) does NOT block other sessions from completing their own push.
 
 ---
 
@@ -198,43 +206,17 @@ The operator may extend `MergePolicy.sensitive_paths_pattern` at instantiation. 
 
 ---
 
-## 6. Auto-merge tooling: Mergify vs GitHub Actions
+## 6. Auto-merge tooling: decision — GitHub Actions
 
-The P3 ISA must select one option and land the corresponding file. Both are fully specified here so the execution hive builds whichever is selected without re-researching.
+**Decision: GitHub Actions (operator decision, 2026-05-24). See §6.1 for config.**
 
-### Option (a) — Mergify (RECOMMENDED)
+Mergify has been evaluated and rejected. Its `#approved-reviews-by >= 1` condition would require the peer-review orchestrator to call `gh pr review --approve` as part of the APPROVE path — a coordination not wired in P2 that would add cross-module coupling. The operator has chosen GitHub Actions as the canonical auto-merge mechanism. There is no Mergify option; `.mergify.yml` must NOT be committed.
 
-Verdict source: external-research.md RQ5 ("GitHub native auto-merge cannot be triggered by adding a label … use Mergify with a `success_conditions` rule").
+**Kodiak: do not propose.** Unmaintained as of 2026 (external-research.md RQ5 finding #4).
 
-**File:** `.mergify.yml` at repo root.
+---
 
-```yaml
-queue_rules:
-  - name: default
-    queue_conditions:
-      - check-success = ci
-      - label = auto-merge
-      - "#approved-reviews-by >= 1"
-
-merge_protections:
-  - name: codex-parallel auto-merge gate
-    success_conditions:
-      - label = auto-merge
-      - check-success = ci
-      - "#approved-reviews-by >= 1"
-```
-
-Opus's peer-review `APPROVE` verdict satisfies the `approved-reviews-by` condition when the Opus pane submits a GitHub review (the peer-review orchestrator must call `gh pr review --approve` as part of the APPROVE path — coordinate with `module-specs/peer-review-orchestrator.md`).
-
-| Factor | Detail |
-|--------|--------|
-| Label gating | Native; Mergify watches `labeled` events |
-| Queue semantics | Merges serially per queue, avoiding race on `fork/main` |
-| Maintenance | Active as of 2026 (external-research.md RQ5 finding #4 contrasts with Kodiak) |
-| Installation | GitHub App, per-repo scope — do NOT install org-wide (§11 security) |
-| Cons | Third-party app; requires Mergify account + GitHub App install on `jjaavvin-web/hermes-agent` |
-
-### Option (b) — GitHub Actions workflow (no-third-party-tools alternative)
+### §6.1 — GitHub Actions workflow config (canonical)
 
 **File:** `.github/workflows/auto-merge.yml`
 
@@ -258,15 +240,13 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 ```
 
-Requirements: GitHub-native auto-merge must be enabled on the repo (Settings → General → Allow auto-merge). Squash strategy is fixed in the workflow; changing it requires editing the file.
+Requirements: GitHub-native auto-merge must be enabled on the repo (Settings → General → Allow auto-merge). Squash strategy is squash; to change it, edit the `--squash` flag. No third-party app install required.
 
 | Factor | Detail |
 |--------|--------|
 | Label gating | Via `pull_request.labeled` trigger + `if` condition |
 | No third party | Uses only GitHub primitives |
-| Cons | More fragile than Mergify; no queue semantics; merge strategy locked to squash unless workflow is edited |
-
-**Kodiak: do not propose.** Unmaintained as of 2026 (external-research.md RQ5 finding #4).
+| Activation | Operator enables "Allow auto-merge" in repo Settings → General once |
 
 ---
 
@@ -321,7 +301,7 @@ Detection path (dispatcher side, not broker side):
 
 ```
 Dispatcher polls every 60s:
-  gh pr list --label auto-merge --state merged --json number,headRefName
+  gh pr list --label auto-merge --state merged --head 'codex/*' --json number,headRefName
   for each merged PR:
     resolve session_id from headRefName (branch = codex/<sid>/*)
     notify session: "merged"
@@ -330,6 +310,8 @@ Dispatcher polls every 60s:
     delete row from codex_sessions.json (flock + atomic_replace)
     archive Discord thread
 ```
+
+**Scope invariant:** the `--head 'codex/*'` flag restricts the poll to branches matching `codex/<sid>/<slug>`. Without this flag, the poll would match any merged PR with the `auto-merge` label, including operator-labeled non-Codex PRs — causing the cleanup loop to fail when it tries to extract a session_id from an unrecognized branch name pattern.
 
 The 60-second poll is intentionally cheap — it is a single `gh` CLI call, not a webhook. A webhook would require a public endpoint; the current design (single-host WSL2) does not have one. This is acceptable for the P3 phase.
 

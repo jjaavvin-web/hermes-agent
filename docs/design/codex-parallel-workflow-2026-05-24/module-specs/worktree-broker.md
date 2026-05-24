@@ -75,15 +75,25 @@ class WorktreeBroker:
         repo_root: Path,
         hermes_home: Path,
         port_range: Tuple[int, int] = (50000, 50008),
+        existing_sessions: dict[str, str] | None = None,
     ) -> None:
         """
-        repo_root   — absolute path to the hermes-agent git repo
-                      (the repo that worktrees branch off of).
-        hermes_home — typically Path("~/.hermes").expanduser()
-        port_range  — half-open [lo, hi); default covers 50000-50007 (8 ports).
+        repo_root         — absolute path to the hermes-agent git repo
+                            (the repo that worktrees branch off of).
+        hermes_home       — typically Path("~/.hermes").expanduser()
+        port_range        — half-open [lo, hi); default covers 50000-50007 (8 ports).
+        existing_sessions — optional {session_id: worktree_path} mapping read from
+                            codex_sessions.json by the caller (dispatcher). When
+                            provided, self._registry is pre-populated so that
+                            allocate() step 2 (idempotency check) is robust to bot
+                            restarts. Without this, a bot restart empties _registry
+                            and a replayed Discord reconnect event can call allocate()
+                            twice for the same thread, creating two worktrees.
 
-        On init: ensures codex-wt/ directory exists; initialises
-        codex-ports.json if absent (all ports null).
+        On init: pre-populates self._registry from existing_sessions (if provided);
+        ensures codex-wt/ directory exists; initialises codex-ports.json if absent
+        (all ports null). If existing_sessions is None, self._registry starts empty
+        (test / fresh-install path).
         Does NOT spawn subprocesses or write to disk unless those files are missing.
         """
         ...
@@ -102,7 +112,9 @@ class WorktreeBroker:
           1. Disk-pressure check: if df -P hermes_home reports < 4 GB free,
              raise DiskPressureError. If < 8 GB free, log a warning but continue.
           2. Idempotency check: if a Worktree for this session_id already exists
-             in the internal registry, return it immediately without re-running git.
+             in self._registry (pre-populated from codex_sessions.json at __init__
+             time, or added by a prior allocate call in this process lifetime),
+             return it immediately without re-running git.
           3. Run `git -C <repo_root> worktree add <wt_path> -b <branch> <base_branch>`
              via the subprocess pattern from git_janitor.py:50-55 (capture_output=True,
              text=True, check=False). On nonzero returncode:

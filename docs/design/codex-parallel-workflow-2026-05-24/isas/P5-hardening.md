@@ -49,8 +49,8 @@ After this ISA: `WorktreeBroker.gc()` runs every 5 min when free disk < 8 GB, sw
 - [ ] ISC-2: a background tick (every 5 min) runs `gc()` when `df -P ~/.hermes` reports < 8 GB free; otherwise skip
 - [ ] ISC-3: gc detects orphan worktrees (worktree exists, NO row in `codex_sessions.json`, NO live tmux session, NO open PR for its branch) and renames them to `~/.hermes/codex-wt/.deleted-<ts>/<sid>/`
 - [ ] ISC-4: a 7-day reaper background task purges `~/.hermes/codex-wt/.deleted-*` directories older than 7 days, using `git worktree prune` first to release any git-side references
-- [ ] ISC-5: `/revive` slash command rebuilds a session under an existing Discord thread: allocates a NEW sid + NEW tmux session + NEW worktree (off the same branch if it exists on remote, else off `origin/main`); previous ISA progress is preserved as `_ephemeral/orphaned-<ts>.md` per ISA-SPEC §7
-- [ ] ISC-6: `/revive` posts the new sid + tmux session name back to the Discord thread for operator confirmation
+- [ ] ISC-5: `/revive` slash command rebuilds a session under an existing Discord thread: BEFORE allocating a new worktree, the handler runs `git -C <old-worktree> diff --stat` and posts the output to the Discord thread so the operator can see what uncommitted source changes (if any) are at risk of being lost. The message must appear in the thread BEFORE the new worktree is allocated. After the diff-stat post, allocates a NEW sid + NEW tmux session + NEW worktree (off the same branch if it exists on remote, else off `origin/main`); previous ISA progress is preserved as `_ephemeral/orphaned-<ts>.md` per ISA-SPEC §7
+- [ ] ISC-6: `/revive` posts the new sid + tmux session name back to the Discord thread for operator confirmation. The confirmation post must appear AFTER the diff-stat warning from ISC-5, so the operator sees the diff before the revive completes.
 - [ ] ISC-7: `gateway/platforms/telegram.py` is deleted (file removed entirely)
 - [ ] ISC-8: `gateway/platforms/telegram_network.py` is deleted
 - [ ] ISC-9: every `tests/gateway/test_telegram_*.py` file is deleted; remaining test suite passes (`pytest tests/gateway/`)
@@ -73,8 +73,8 @@ After this ISA: `WorktreeBroker.gc()` runs every 5 min when free disk < 8 GB, sw
 | ISC-2 | mock `df` to report 5 GB free; advance time by 5 min; check gc was called | called once |
 | ISC-3 | seed an orphan worktree (no codex_sessions.json row, no tmux session, no PR); run gc; check rename | worktree moved to `.deleted-<ts>/<sid>/` |
 | ISC-4 | seed `.deleted-<ts>/` dirs at 6 and 8 days old; run reaper; check disk | 8-day dir gone, 6-day dir intact |
-| ISC-5 | put a session in NEEDS_REVIVE; run `/revive`; check new sid + new tmux session + `_ephemeral/orphaned-<ts>.md` in ISA dir | all three present |
-| ISC-6 | run `/revive`; check Discord thread response | response contains new sid + tmux session name |
+| ISC-5 | put a session in NEEDS_REVIVE with uncommitted files in old worktree; run `/revive`; check (a) Discord thread first message contains `git diff --stat` output before new worktree is allocated, (b) new sid + new tmux session allocated, (c) `_ephemeral/orphaned-<ts>.md` exists in ISA dir | all three checks pass; diff-stat message precedes confirmation message |
+| ISC-6 | run `/revive`; check Discord thread message order: diff-stat warning appears first, then confirmation with new sid + tmux session name | correct message order |
 | ISC-7 | `test -e gateway/platforms/telegram.py ; echo $?` | non-zero |
 | ISC-8 | `test -e gateway/platforms/telegram_network.py ; echo $?` | non-zero |
 | ISC-9 | `ls tests/gateway/test_telegram_*.py 2>&1` and `pytest tests/gateway/ -q` | no telegram tests + suite green |

@@ -3,7 +3,7 @@ isa:      20260524-2010_codex-parallel-p2-peer-review
 task:     "P2 Peer-review automation — Opus tmux pane pool, auto-trigger on phase: verify, REVISE/APPROVE/ESCALATE loop with caps"
 tier:     E3
 phase:    scaffold
-progress: 0/16
+progress: 0/17
 card:     "-"
 board:    hermes-kanban-control
 branch:   feat/codex-parallel-p2-peer-review
@@ -59,6 +59,7 @@ After this ISA: when a Codex session writes `phase: verify` to its ISA frontmatt
 - [ ] ISC-14: Anti: NO Opus review writes anything to MVMS or kanban under a different sid than the one under review (each review is sid-scoped only) — verified by mock and grep
 - [ ] ISC-15: orchestrator survives `tmux kill-server` (host tmux restart) by treating all panes as DEAD on next dispatch and respawning serially
 - [ ] ISC-16: `python3 scripts/isa_lint.py ~/.hermes/work/20260524-2010_codex-parallel-p2-peer-review/ISA.md` exit 0 in `phase: complete`
+- [ ] ISC-17: verdict parser uses regex `r'[*#\s]*VERDICT:\s+(APPROVE|REVISE|ESCALATE)\b'` tolerating bold/heading markdown wrapping — proven by test 8 in `module-specs/peer-review-orchestrator.md §13`: `**VERDICT: APPROVE**` and `## VERDICT: REVISE` both parse correctly without timing out
 
 ## Test Strategy
 
@@ -80,6 +81,7 @@ After this ISA: when a Codex session writes `phase: verify` to its ISA frontmatt
 | ISC-14 | run sid-A review; grep MVMS+kanban for sid-B mentions during the run | 0 hits referencing sid-B |
 | ISC-15 | `tmux kill-server`; dispatch a new review; check orchestrator behavior | first dispatch logs "pool dead, respawning"; subsequent dispatches succeed |
 | ISC-16 | `python3 scripts/isa_lint.py ~/.hermes/work/20260524-2010_codex-parallel-p2-peer-review/ISA.md ; echo $?` | `0` |
+| ISC-17 | mock pane output `**VERDICT: APPROVE**\nLooks good.` → `Verdict(kind="APPROVE")`; mock pane output `## VERDICT: REVISE\nISC-3 missing.` → `Verdict(kind="REVISE")`; both with regex `r'[*#\s]*VERDICT:\s+(APPROVE|REVISE|ESCALATE)\b'` | both sub-cases pass |
 
 ## Git Plan
 
