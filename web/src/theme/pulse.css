@@ -27,22 +27,28 @@
 .pulse-root .pulse-grid {
   display: grid;
   width: 100%;
-  height: 100%;
+  /* H3: anchor against the parent flex column so the 1fr center row
+   * actually gets a determinate height. `height: 100%` on a grid inside
+   * a flex column doesn't resolve unless we give the grid `flex: 1`
+   * itself — without this the center row collapses to its intrinsic
+   * content (≈ 44px) and the constellation canvas degenerates to a
+   * thin horizontal strip. */
+  flex: 1 1 auto;
   min-height: 0;
   gap: 8px;
   padding: 8px;
-  grid-template-rows: 64px 1fr 96px;
-  grid-template-columns: 1fr 360px;
+  grid-template-rows: 64px minmax(0, 1fr) 96px;
+  grid-template-columns: minmax(0, 1fr) 360px;
   grid-template-areas:
     "top    top"
     "center right"
     "bottom bottom";
 }
 
-.pulse-root .pulse-zone-top    { grid-area: top; }
-.pulse-root .pulse-zone-center { grid-area: center; }
-.pulse-root .pulse-zone-right  { grid-area: right; }
-.pulse-root .pulse-zone-bottom { grid-area: bottom; }
+.pulse-root .pulse-zone-top    { grid-area: top; min-width: 0; }
+.pulse-root .pulse-zone-center { grid-area: center; min-width: 0; min-height: 0; position: relative; }
+.pulse-root .pulse-zone-right  { grid-area: right; min-width: 0; min-height: 0; }
+.pulse-root .pulse-zone-bottom { grid-area: bottom; min-width: 0; }
 
 .pulse-root .pulse-zone-placeholder {
   display: flex;
@@ -136,3 +142,214 @@
 .pulse-root .pulse-chip--red    { color: var(--pulse-red);    box-shadow: 0 0 8px rgba(252, 129, 129, 0.45); border-color: rgba(252, 129, 129, 0.35); }
 .pulse-root .pulse-chip--green  { color: var(--pulse-green);  box-shadow: 0 0 8px rgba(104, 211, 145, 0.45); border-color: rgba(104, 211, 145, 0.35); }
 .pulse-root .pulse-chip--gray   { color: rgba(229, 229, 229, 0.7); box-shadow: 0 0 8px rgba(74, 85, 104, 0.35); border-color: rgba(74, 85, 104, 0.35); }
+
+/* Constellation graph ---------------------------------------------------- */
+
+.pulse-root .pulse-constellation {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+  border-radius: 8px;
+  background:
+    radial-gradient(ellipse at center, rgba(20, 20, 30, 0.65) 0%, rgba(0, 0, 0, 0.9) 80%);
+  border: 1px solid rgba(255, 255, 255, 0.04);
+}
+
+/* ForceGraph2D injects an absolutely positioned canvas — make sure it fills
+ * the container and sits beneath overlays/tooltips/panels. */
+.pulse-root .pulse-constellation > .force-graph-container,
+.pulse-root .pulse-constellation > div:not([class*="pulse-"]) {
+  position: absolute !important;
+  inset: 0;
+}
+
+.pulse-root .pulse-constellation__overlay {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  pointer-events: none;
+}
+
+.pulse-root .pulse-constellation__overlay-text {
+  font-size: 12px;
+  color: rgba(229, 229, 229, 0.8);
+  text-align: center;
+  letter-spacing: 0.04em;
+}
+
+.pulse-root .pulse-constellation__overlay-text--dim {
+  color: rgba(229, 229, 229, 0.5);
+}
+
+.pulse-root .pulse-constellation__overlay-text code {
+  background: rgba(255, 255, 255, 0.06);
+  border-radius: 4px;
+  padding: 2px 6px;
+  color: var(--pulse-cyan);
+}
+
+.pulse-root .pulse-constellation__overlay-meta {
+  font-size: 10px;
+  color: rgba(229, 229, 229, 0.35);
+  letter-spacing: 0.08em;
+}
+
+.pulse-root .pulse-constellation__pulse-dot {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: var(--pulse-purple);
+  box-shadow: 0 0 18px var(--pulse-purple);
+  animation: pulse-constellation-throb 1.4s ease-in-out infinite;
+}
+
+@keyframes pulse-constellation-throb {
+  0%, 100% { transform: scale(0.85); opacity: 0.65; }
+  50%      { transform: scale(1.25); opacity: 1; }
+}
+
+.pulse-root .pulse-constellation__banner {
+  position: absolute;
+  top: 8px;
+  left: 8px;
+  z-index: 6;
+  background: rgba(252, 129, 129, 0.12);
+  border: 1px solid rgba(252, 129, 129, 0.35);
+  color: var(--pulse-red);
+  font-size: 10.5px;
+  letter-spacing: 0.08em;
+  padding: 4px 10px;
+  border-radius: 999px;
+  pointer-events: none;
+}
+
+.pulse-root .pulse-constellation__tooltip {
+  position: absolute;
+  z-index: 8;
+  pointer-events: none;
+  background: rgba(10, 10, 12, 0.92);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 6px;
+  padding: 6px 10px;
+  font-size: 11px;
+  max-width: 240px;
+  color: #e5e5e5;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.6);
+}
+
+.pulse-root .pulse-constellation__tooltip-label {
+  font-weight: 600;
+  margin-bottom: 2px;
+}
+
+.pulse-root .pulse-constellation__tooltip-meta {
+  color: rgba(229, 229, 229, 0.55);
+  font-size: 10px;
+  letter-spacing: 0.04em;
+}
+
+/* Detail panel — slides in from the right edge of the constellation zone.
+ * z-index sits above the right rail so it overlays cleanly. H4 will land
+ * its transcript pane in .pulse-zone-right; the panel uses position:absolute
+ * relative to .pulse-constellation, so its overlay does NOT bleed into the
+ * right zone. Z-index 10 stays safely above forcegraph's canvas (0).
+ * If H4 introduces a right-rail modal of its own, coordinate via this z-index
+ * ladder: graph canvas (0) < tooltip (8) < detail panel (10) < right-rail modal (≥12).
+ */
+.pulse-root .pulse-detail-panel {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  bottom: 8px;
+  width: 50%;
+  max-width: 360px;
+  z-index: 10;
+  background: rgba(8, 8, 10, 0.96);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 8px;
+  display: flex;
+  flex-direction: column;
+  animation: pulse-detail-slide-in 220ms ease-out;
+  box-shadow: -8px 0 28px rgba(0, 0, 0, 0.7);
+}
+
+@keyframes pulse-detail-slide-in {
+  from { transform: translateX(20%); opacity: 0; }
+  to   { transform: translateX(0);   opacity: 1; }
+}
+
+.pulse-root .pulse-detail-panel__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 10px 12px 8px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.pulse-root .pulse-detail-panel__title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--pulse-cyan);
+  letter-spacing: 0.04em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
+}
+
+.pulse-root .pulse-detail-panel__close {
+  background: transparent;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  color: rgba(229, 229, 229, 0.7);
+  width: 24px;
+  height: 24px;
+  border-radius: 4px;
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0;
+}
+
+.pulse-root .pulse-detail-panel__close:hover {
+  background: rgba(255, 255, 255, 0.08);
+  color: #fff;
+}
+
+.pulse-root .pulse-detail-panel__body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 8px 12px 12px;
+  font-size: 11px;
+}
+
+.pulse-root .pulse-detail-panel__divider {
+  height: 1px;
+  background: rgba(255, 255, 255, 0.06);
+  margin: 8px 0;
+}
+
+.pulse-root .pulse-detail-panel__row {
+  display: grid;
+  grid-template-columns: 110px 1fr;
+  gap: 6px;
+  padding: 3px 0;
+}
+
+.pulse-root .pulse-detail-panel__k {
+  color: rgba(229, 229, 229, 0.45);
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.pulse-root .pulse-detail-panel__v {
+  color: #e5e5e5;
+  word-break: break-word;
+}

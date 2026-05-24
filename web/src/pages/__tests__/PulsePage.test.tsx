@@ -65,7 +65,7 @@ describe("PulsePage", () => {
     ).toBe(true);
   });
 
-  it("renders all four zone placeholders", () => {
+  it("renders all four zones with H3 constellation + H4 placeholders", () => {
     const { container, getByText } = render(
       <MemoryRouter>
         <PulsePage />
@@ -76,7 +76,9 @@ describe("PulsePage", () => {
     // Top zone is the chips container — covered by the fetch assertion above
     // but we also assert its grid area is present.
     expect(container.querySelector(".pulse-zone-top")).not.toBeNull();
-    expect(getByText(/Constellation graph — coming in H3/)).toBeTruthy();
+    // H3: center zone now hosts the live constellation component (not a placeholder).
+    expect(container.querySelector(".pulse-zone-center .pulse-constellation"))
+      .not.toBeNull();
     expect(getByText(/Live agent transcript — coming in H4/)).toBeTruthy();
     expect(getByText(/Task queue strip — coming in H4/)).toBeTruthy();
   });

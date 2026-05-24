@@ -356,6 +356,11 @@ export default function App() {
   const normalizedPath = pathname.replace(/\/$/, "") || "/";
   const isExplorerRoute = normalizedPath === "/explorer";
   const isChatRoute = normalizedPath === "/chat";
+  // H3: /pulse needs full-height layout so the force-directed constellation
+  // canvas has vertical space to render. Without this, the page wrapper
+  // collapses to its content's min-height and the canvas degenerates to a
+  // 44px-tall strip.
+  const isPulseRoute = normalizedPath === "/pulse";
   const embeddedChat = isDashboardEmbeddedChatEnabled();
 
   // `dashboard.show_token_analytics` gates the Analytics nav item.  The
@@ -633,14 +638,14 @@ export default function App() {
                   : isChatRoute
                     ? "pb-3 pt-1 sm:pb-4 sm:pt-2 lg:pt-4"
                     : "pt-2 sm:pt-4 lg:pt-6 pb-4 sm:pb-8",
-                (isDocsRoute || isExplorerRoute) && "min-h-0 flex-1",
+                (isDocsRoute || isExplorerRoute || isPulseRoute) && "min-h-0 flex-1",
               )}
             >
               <PluginSlot name="pre-main" />
               <div
                 className={cn(
                   "w-full min-w-0",
-                  (isDocsRoute || isChatRoute || isExplorerRoute) &&
+                  (isDocsRoute || isChatRoute || isExplorerRoute || isPulseRoute) &&
                     "min-h-0 flex flex-1 flex-col",
                 )}
               >
