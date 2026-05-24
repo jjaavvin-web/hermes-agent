@@ -37,15 +37,44 @@ interface ChipProps {
   title?: string;
 }
 
+// Strip a raw markdown summary down to a single human-readable line for use
+// as the chip's title attribute. The /api/pulse/kpis payload's
+// last_completion.summary is the first ~200 chars of a FINAL-REPORT.md which
+// reads as a wall of "# Title\nStatus: X" in a native browser tooltip.
+function summarizeForTooltip(raw: string | undefined): string | undefined {
+  if (!raw) return undefined;
+  const trimmed = raw
+    .replace(/^[#>\s-]+/, "")
+    .split(/\r?\n/)
+    .map((s) => s.trim())
+    .find((s) => s.length > 0);
+  if (!trimmed) return undefined;
+  return trimmed.length > 140 ? `${trimmed.slice(0, 137)}…` : trimmed;
+}
+
 function Chip({ accent, label, value, suffix, retry, title }: ChipProps) {
+  // Rendered as a <button> so keyboard users can Tab to each KPI and the
+  // accessible name (label + value + optional context) is announced once.
+  // The chip is informational only — onClick is a no-op — so we don't need a
+  // role override. Aria-label combines fields in a sentence so screen readers
+  // don't read "hives0" as one token (see H5 DEFECTS.md MIN-1).
+  const ariaParts = [label, value];
+  if (suffix) ariaParts.push(suffix);
+  if (retry) ariaParts.push("(retry)");
+  const ariaLabel = ariaParts.join(" ");
   return (
-    <div className={`pulse-chip pulse-chip--${accent}`} title={title}>
+    <button
+      type="button"
+      className={`pulse-chip pulse-chip--${accent}`}
+      title={title}
+      aria-label={ariaLabel}
+    >
       <span className="pulse-chip__label">{label}</span>
       <span className="pulse-chip__value">{value}</span>
       {suffix && <span className="pulse-chip__suffix">{suffix}</span>}
       {retry && <span className="pulse-chip__retry">(retry)</span>}
       <span aria-hidden className="pulse-chip__spark" />
-    </div>
+    </button>
   );
 }
 
@@ -159,7 +188,7 @@ export default function PulseChips() {
         accent={lcAccent}
         label="last"
         value={lcValue}
-        title={lc?.summary || undefined}
+        title={summarizeForTooltip(lc?.summary)}
       />
     </div>
   );

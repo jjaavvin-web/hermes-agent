@@ -6,7 +6,7 @@ import {
   useRef,
   useState,
 } from "react";
-import { HERMES_BASE_PATH } from "@/lib/api";
+import { HERMES_BASE_PATH, fetchJSON } from "@/lib/api";
 
 const STREAM_URL = `${HERMES_BASE_PATH}/api/pulse/stream`;
 const BUFFER_CAP = 500;
@@ -279,11 +279,12 @@ export default function PulseTranscript() {
     let cancelled = false;
     const load = async () => {
       try {
-        const res = await fetch(`${HERMES_BASE_PATH}/api/pulse/graph`);
-        if (!res.ok) return;
-        const data = (await res.json()) as {
+        // Use fetchJSON so the X-Hermes-Session-Token header is injected;
+        // the bare fetch() global would 401 silently and the dropdown would
+        // never populate (see H5 DEFECTS.md MAJ-1).
+        const data = await fetchJSON<{
           nodes?: Array<{ id: string; kind?: string; label?: string }>;
-        };
+        }>("/api/pulse/graph");
         if (cancelled) return;
         const hives = (data.nodes ?? [])
           .filter((n) => n.kind === "hive")
@@ -380,10 +381,16 @@ export default function PulseTranscript() {
             </span>
           )}
           {conn.kind === "reconnecting" && (
-            <span className="pulse-transcript__status-pill pulse-transcript__status-pill--reconnecting">
+            <button
+              type="button"
+              className="pulse-transcript__status-pill pulse-transcript__status-pill--reconnecting"
+              onClick={manualRetry}
+              data-testid="pulse-transcript-retry-now"
+              title="Skip backoff and reconnect now"
+            >
               <span className="pulse-transcript__status-dot" />
-              Reconnecting in {reconnectSecsRemaining}s…
-            </span>
+              Reconnecting in {reconnectSecsRemaining}s · retry now
+            </button>
           )}
           {conn.kind === "offline" && (
             <button
