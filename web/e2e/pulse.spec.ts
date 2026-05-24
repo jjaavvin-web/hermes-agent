@@ -96,21 +96,26 @@ test('clicking a queue chip triggers window.open with kanban URL', async ({ page
   // Stub window.open before the click so we can record the call without
   // actually opening a browser window.
   await page.evaluate(() => {
-    (window as Window & { __openCalls__: string[] }).__openCalls__ = [];
+    (window as unknown as Window & { __openCalls__: string[] }).__openCalls__ = [];
     window.open = (url?: string | URL) => {
-      (window as Window & { __openCalls__: string[] }).__openCalls__.push(String(url ?? ''));
+      (window as unknown as Window & { __openCalls__: string[] }).__openCalls__.push(String(url ?? ''));
       return null;
     };
   });
 
+  const pageErrors: string[] = [];
+  page.on('pageerror', (err) => pageErrors.push(String(err)));
+
   await chips.first().click();
+  await page.waitForTimeout(100);
 
   const calls = await page.evaluate(
-    () => (window as Window & { __openCalls__: string[] }).__openCalls__,
+    () => (window as unknown as Window & { __openCalls__: string[] }).__openCalls__,
   );
 
   expect(calls.length).toBeGreaterThanOrEqual(1);
   expect(calls[0]).toContain('kanban');
+  expect(pageErrors).toEqual([]);
 });
 
 test('Esc keypress is wired to the detail-panel close handler', async ({ page }) => {
@@ -192,4 +197,69 @@ test('KPI chips are keyboard-focusable buttons with accessible names', async ({ 
     // aria-label must contain the chip label word (lowercased) at minimum.
     expect(row.ariaLabel.length).toBeGreaterThan(0);
   }
+});
+
+// Regression for the 2026-05-24 stuck-Connecting bug: EventSource `open`
+// must flip the transcript pill to Live even when HIVES=0 and no
+// `pulse.activity` event ever arrives. The older no-op open handler left this
+// status as "Connecting…" forever in the live dashboard.
+test('transcript status flips to Live within 3s when active_hives is zero', async ({ page }) => {
+  // Mock only the KPI payload so this regression is deterministic even when a
+  // live dashboard has active historical hives. The SSE stream itself remains
+  // real; the bug was the EventSource `open` handler failing to flip the pill
+  // when zero hives/no activity events were present.
+  await page.route('**/api/pulse/kpis', async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        active_hives: 0,
+        pending_cards: 0,
+        max_usage_pct: null,
+        today_spend_usd: 0,
+        today_pr_merges: 0,
+        last_completion: null,
+      }),
+    });
+  });
+
+  const start = Date.now();
+  await gotoPulse(page);
+
+  const status = page.locator('[data-testid="pulse-transcript-status"]');
+  await expect(status).toHaveText(/Live/i, { timeout: 3_000 });
+  await expect(status).not.toContainText(/Connecting/i);
+  expect(Date.now() - start).toBeLessThan(3_500);
+});
+
+// Sibling handler audit regression: KPI chips are rendered as buttons, so a
+// click should perform a visible/useful action. Here the action is a safe
+// on-demand refresh of /api/pulse/kpis; before the fix, this click was a no-op.
+test('clicking a KPI chip refreshes KPI data', async ({ page }) => {
+  let kpiRequests = 0;
+  await page.route('**/api/pulse/kpis', async (route) => {
+    kpiRequests += 1;
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        active_hives: 0,
+        pending_cards: 0,
+        max_usage_pct: null,
+        today_spend_usd: kpiRequests,
+        today_pr_merges: 0,
+        last_completion: null,
+      }),
+    });
+  });
+
+  await gotoPulse(page);
+  const chips = page.locator('.pulse-chip');
+  await expect(chips).toHaveCount(5, { timeout: 10_000 });
+  await expect(chips.nth(2)).toContainText('$1.00');
+
+  await chips.first().click();
+
+  await expect.poll(() => kpiRequests, { timeout: 3_000 }).toBeGreaterThanOrEqual(2);
+  await expect(chips.nth(2)).toContainText('$2.00');
 });
