@@ -169,13 +169,13 @@ export default function PulseTranscript() {
     esRef.current = es;
 
     es.addEventListener("open", () => {
-      // EventSource fires `open` before any messages; the spec also re-fires
-      // it on reconnect. We don't flip to "open" until the first activity
-      // event lands because the backend may keep the connection alive with
-      // only heartbeats while no hives are running.
+      // EventSource fires `open` once the SSE handshake completes; flip the
+      // status pill to "Live" so the user knows the stream is connected even
+      // when no hives are running (the backend keeps emitting health events
+      // independent of pulse.activity).
       setConn((prev) =>
         prev.kind === "connecting" || prev.kind === "reconnecting"
-          ? prev
+          ? { kind: "open" }
           : prev,
       );
     });
