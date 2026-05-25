@@ -248,6 +248,50 @@ class TestOnThreadArchive:
 # ── Tests: on_bot_restart ─────────────────────────────────────────────────────
 
 
+class TestBaseBranchResolution:
+    """The codex parallel workflow is fork-targeted; default base must be fork/main.
+
+    Resolution order: explicit arg > HERMES_CODEX_BASE_BRANCH env > 'fork/main'.
+    """
+
+    def test_default_is_fork_main(self, tmp_path, monkeypatch):
+        monkeypatch.delenv("HERMES_CODEX_BASE_BRANCH", raising=False)
+        dispatcher, _, _ = _make_dispatcher(tmp_path)
+        assert dispatcher._base_branch == "fork/main"
+
+    def test_env_var_overrides_default(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_CODEX_BASE_BRANCH", "upstream/develop")
+        dispatcher, _, _ = _make_dispatcher(tmp_path)
+        assert dispatcher._base_branch == "upstream/develop"
+
+    def test_explicit_arg_overrides_env(self, tmp_path, monkeypatch):
+        from gateway.codex_session_dispatcher import CodexSessionDispatcher
+        monkeypatch.setenv("HERMES_CODEX_BASE_BRANCH", "upstream/develop")
+        dispatcher = CodexSessionDispatcher(
+            hermes_home=tmp_path,
+            worktree_broker=MagicMock(),
+            peer_review_orchestrator=MagicMock(),
+            merge_broker=MagicMock(),
+            discord_send=AsyncMock(),
+            base_branch="main",
+        )
+        assert dispatcher._base_branch == "main"
+
+    def test_empty_env_falls_through_to_default(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_CODEX_BASE_BRANCH", "")
+        dispatcher, _, _ = _make_dispatcher(tmp_path)
+        assert dispatcher._base_branch == "fork/main"
+
+    def test_passed_to_broker_allocate(self, tmp_path, monkeypatch):
+        """on_thread_create must forward _base_branch to broker.allocate."""
+        monkeypatch.delenv("HERMES_CODEX_BASE_BRANCH", raising=False)
+        dispatcher, broker, _ = _make_dispatcher(tmp_path)
+        _run(dispatcher.on_thread_create(_make_event(thread_id="t-base")))
+        broker.allocate.assert_called_once()
+        kwargs = broker.allocate.call_args.kwargs
+        assert kwargs["base_branch"] == "fork/main"
+
+
 class TestOnBotRestart:
     def _write_session_row(self, tmp_path, thread_id, sid, tmux_name, state_val="EXECUTING"):
         sessions_path = tmp_path / "codex_sessions.json"
