@@ -503,21 +503,10 @@ class LocalEnvironment(BaseEnvironment):
 
         _popen_cwd = self.cwd
 
-        # P1.5: codex-parallel-workflow per-thread cwd override.
-        # When a Discord message in a tracked codex thread set the
-        # active worktree (see ``agent.codex_session_context``), tool
-        # calls executed during that async turn use the worktree as
-        # cwd instead of the LocalEnvironment's configured value.  The
-        # contextvar is async-task-local, so concurrent threads stay
-        # isolated.  Import is lazy so this module remains importable
-        # in environments where the codex dispatcher isn't installed.
-        try:
-            from agent.codex_session_context import get_active_worktree
-            _codex_wt = get_active_worktree()
-            if _codex_wt and os.path.isdir(_codex_wt):
-                _popen_cwd = _codex_wt
-        except ImportError:
-            pass
+        # P1.5 cwd override lives in ``BaseEnvironment.execute`` (where
+        # effective_cwd is resolved before ``_wrap_command`` bakes the
+        # ``cd`` into the bash script).  No override needed here — Popen's
+        # cwd is shadowed by the wrapper's `builtin cd` anyway.
 
         proc = subprocess.Popen(
             args,

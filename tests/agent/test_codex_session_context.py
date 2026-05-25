@@ -88,11 +88,14 @@ class TestAsyncTaskIsolation:
         assert result == "/parent"
 
 
-class TestLocalEnvironmentIntegration:
-    """LocalEnvironment._run_bash must honor the contextvar override
-    when one is set, and fall back to self.cwd otherwise."""
+class TestLocalEnvironmentExecuteIntegration:
+    """``BaseEnvironment.execute`` (the actual entry point used by the
+    terminal tool) must honor the contextvar override when one is set,
+    and fall back to ``self.cwd`` otherwise.  Asserting via ``execute``
+    (not ``_run_bash`` alone) catches the case where the bash wrapper's
+    ``builtin cd`` would otherwise shadow Popen's cwd argument."""
 
-    def test_run_bash_uses_contextvar_when_set(self, tmp_path):
+    def test_execute_uses_contextvar_when_set(self, tmp_path):
         from tools.environments.local import LocalEnvironment
 
         configured = tmp_path / "configured"
@@ -103,27 +106,44 @@ class TestLocalEnvironmentIntegration:
         env = LocalEnvironment(cwd=str(configured), timeout=10)
         token = set_active_worktree(str(override))
         try:
-            proc = env._run_bash("pwd", timeout=5)
-            stdout, _ = proc.communicate(timeout=10)
-            # pwd output must be the override path (resolved)
-            assert os.path.realpath(stdout.strip()) == os.path.realpath(str(override))
+            result = env.execute("pwd", timeout=5)
+            assert os.path.realpath(result["output"].strip()) == os.path.realpath(str(override))
         finally:
             reset_active_worktree(token)
 
-    def test_run_bash_uses_self_cwd_when_contextvar_unset(self, tmp_path):
+    def test_execute_uses_self_cwd_when_contextvar_unset(self, tmp_path):
         from tools.environments.local import LocalEnvironment
 
         configured = tmp_path / "configured"
         configured.mkdir()
         env = LocalEnvironment(cwd=str(configured), timeout=10)
         assert get_active_worktree() is None
-        proc = env._run_bash("pwd", timeout=5)
-        stdout, _ = proc.communicate(timeout=10)
-        assert os.path.realpath(stdout.strip()) == os.path.realpath(str(configured))
+        result = env.execute("pwd", timeout=5)
+        assert os.path.realpath(result["output"].strip()) == os.path.realpath(str(configured))
 
-    def test_run_bash_ignores_contextvar_when_dir_missing(self, tmp_path):
+    def test_execute_explicit_cwd_param_beats_contextvar(self, tmp_path):
+        """LLM-supplied cwd should win over the implicit codex context —
+        the contextvar is a default, not an override of explicit intent."""
+        from tools.environments.local import LocalEnvironment
+
+        configured = tmp_path / "configured"
+        configured.mkdir()
+        codex_wt = tmp_path / "codex-wt"
+        codex_wt.mkdir()
+        explicit = tmp_path / "explicit"
+        explicit.mkdir()
+
+        env = LocalEnvironment(cwd=str(configured), timeout=10)
+        token = set_active_worktree(str(codex_wt))
+        try:
+            result = env.execute("pwd", cwd=str(explicit), timeout=5)
+            assert os.path.realpath(result["output"].strip()) == os.path.realpath(str(explicit))
+        finally:
+            reset_active_worktree(token)
+
+    def test_execute_ignores_contextvar_when_dir_missing(self, tmp_path):
         """Defense: if the contextvar points at a deleted worktree,
-        fall back to self.cwd instead of failing the popen."""
+        fall back to self.cwd instead of failing the cd."""
         from tools.environments.local import LocalEnvironment
 
         configured = tmp_path / "configured"
@@ -131,8 +151,7 @@ class TestLocalEnvironmentIntegration:
         env = LocalEnvironment(cwd=str(configured), timeout=10)
         token = set_active_worktree(str(tmp_path / "never-existed"))
         try:
-            proc = env._run_bash("pwd", timeout=5)
-            stdout, _ = proc.communicate(timeout=10)
-            assert os.path.realpath(stdout.strip()) == os.path.realpath(str(configured))
+            result = env.execute("pwd", timeout=5)
+            assert os.path.realpath(result["output"].strip()) == os.path.realpath(str(configured))
         finally:
             reset_active_worktree(token)
