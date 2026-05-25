@@ -336,6 +336,7 @@ class CodexSessionDispatcher(_CommandsMixin):
             "kill": self._cmd_kill,
             "status": self._cmd_status,
             "review": self._cmd_review,
+            "revive": self._cmd_revive,
             "handoff-to-ruflo": self._cmd_handoff_to_ruflo,
         }
         handler = handlers.get(name)
