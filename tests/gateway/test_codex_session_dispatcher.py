@@ -307,6 +307,33 @@ class TestOnBotRestart:
         assert state["sessions"]["t1"]["state"] == "ORPHANED"
         discord_send.assert_not_awaited()
 
+    def test_on_bot_restart_preserves_complete_state(self, tmp_path):
+        """P3.5 ISC-10: a COMPLETE row whose worktree was released must
+        NOT be clobbered to ORPHANED on the next bot restart."""
+        dispatcher, broker, discord_send = _make_dispatcher(tmp_path)
+        sid = "sid-complete"
+        self._write_session_row(tmp_path, "t1", sid, tmux_name=None, state_val="COMPLETE")
+        # No worktree on disk (P3.5 finalize_merged released it).
+
+        results = _run(dispatcher.on_bot_restart())
+
+        # COMPLETE rows are skipped — no ReattachResult emitted.
+        assert results == []
+        state = json.loads((tmp_path / "codex_sessions.json").read_text())
+        assert state["sessions"]["t1"]["state"] == "COMPLETE"
+
+    def test_on_bot_restart_preserves_escalated_state(self, tmp_path):
+        """P3.5 ISC-10: ESCALATED rows are likewise terminal and skipped."""
+        dispatcher, broker, discord_send = _make_dispatcher(tmp_path)
+        sid = "sid-escalated"
+        self._write_session_row(tmp_path, "t1", sid, tmux_name=None, state_val="ESCALATED")
+
+        results = _run(dispatcher.on_bot_restart())
+
+        assert results == []
+        state = json.loads((tmp_path / "codex_sessions.json").read_text())
+        assert state["sessions"]["t1"]["state"] == "ESCALATED"
+
     def test_missing_sessions_file_returns_empty_list(self, tmp_path):
         dispatcher, broker, discord_send = _make_dispatcher(tmp_path)
         # Remove the sessions file if it was created
