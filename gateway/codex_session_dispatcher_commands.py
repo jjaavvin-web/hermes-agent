@@ -154,6 +154,71 @@ class _CommandsMixin:
             ephemeral=False,
         )
 
+    async def _cmd_revive(self, ctx: "SlashContext") -> "SlashResponse":
+        """Revive an ORPHANED session — rebuild under the same Discord thread.
+
+        P5: when a session's worktree was reaped or its row got marked
+        ORPHANED (worktree missing on bot restart, etc.), ``/revive``
+        allocates a fresh sid + worktree under the SAME thread. The
+        previous ISA progress is archived as ``_ephemeral/orphaned-<ts>.md``
+        per ISA-SPEC §7 so the new session inherits no stale state.
+        """
+        from datetime import datetime, timezone
+        from pathlib import Path as _Path
+        from gateway.codex_session_dispatcher import (
+            SlashResponse, ThreadEvent, WorktreeAllocationError,
+        )
+
+        state = self._load_state()
+        if ctx.thread_id not in state["sessions"]:
+            return SlashResponse(
+                "No prior session in this thread — open a fresh thread instead."
+            )
+        old_row = state["sessions"][ctx.thread_id]
+        old_sid = old_row.get("session_id", "<unknown>")
+        old_state = old_row.get("state", "<unknown>")
+        if old_state not in ("ORPHANED", "NEEDS_REVIVE", "EXECUTING", "ESCALATED"):
+            return SlashResponse(
+                f"Session is in state `{old_state}` — `/revive` only acts on "
+                "ORPHANED / NEEDS_REVIVE / ESCALATED (or EXECUTING if you really mean it). "
+                "Use `/kill` first if you want a clean slate."
+            )
+
+        old_isa = _Path(old_row.get("isa_path", ""))
+        if old_isa.exists():
+            try:
+                ephem = old_isa.parent / "_ephemeral"
+                ephem.mkdir(parents=True, exist_ok=True)
+                ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+                (ephem / f"orphaned-{ts}.md").write_text(
+                    old_isa.read_text(encoding="utf-8"),
+                    encoding="utf-8",
+                )
+            except OSError as exc:
+                log.warning("_cmd_revive: archive previous ISA failed: %s", exc)
+
+        try:
+            self._broker.release(old_sid)
+        except Exception as exc:
+            log.warning("_cmd_revive: old worktree release failed: %s", exc)
+        del state["sessions"][ctx.thread_id]
+        self._write_state(state)
+
+        event = ThreadEvent(
+            thread_id=ctx.thread_id,
+            channel_id=ctx.channel_id,
+            isa_slug=old_row.get("isa_id", "task"),
+        )
+        try:
+            await self.on_thread_create(event)
+        except WorktreeAllocationError as exc:
+            return SlashResponse(f"Revive failed: {exc}")
+        return SlashResponse(
+            f"Session revived — old sid `{old_sid[:8]}` (state {old_state}) "
+            f"replaced; previous progress archived in `_ephemeral/`.",
+            ephemeral=False,
+        )
+
     async def _cmd_handoff_to_ruflo(self, ctx: "SlashContext") -> "SlashResponse":
         from gateway.codex_session_dispatcher import SlashResponse
 

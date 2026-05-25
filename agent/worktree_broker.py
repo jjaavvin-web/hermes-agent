@@ -15,7 +15,7 @@ import logging
 import re
 import subprocess
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Tuple
 
@@ -287,9 +287,91 @@ class WorktreeBroker:
         # Step 4: remove from registry
         del self._registry[session_id]
 
-    def gc(self) -> list[GcAction]:
-        """P5 ONLY — not implemented in P1."""
-        raise NotImplementedError("gc() is a P5 feature; not available in P1.")
+    def gc(
+        self,
+        *,
+        tracked_sids: set[str],
+        live_branches: set[str] | None = None,
+    ) -> list[GcAction]:
+        """Sweep orphan worktrees out of ``~/.hermes/codex-wt/``.
+
+        An orphan is a worktree directory under ``codex-wt/`` whose sid
+        is NOT in ``tracked_sids`` (the dispatcher's ``codex_sessions.json``
+        rows) AND whose branch is NOT in ``live_branches`` (open PRs on
+        fork — caller passes ``None`` to skip that check).  Each orphan
+        is RENAMED to ``codex-wt/.deleted-<ts>/<sid>/`` so the
+        operator can recover; the reaper purges entries older than 7 days.
+
+        Per WORKFLOW-LESSONS §3 rule 5: no ``rm -rf``; renames are the
+        safe deletion pattern.
+        """
+        actions: list[GcAction] = []
+        wt_root = self.hermes_home / "codex-wt"
+        if not wt_root.is_dir():
+            return actions
+        live_branches = live_branches or set()
+        ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        deleted_root = wt_root / f".deleted-{ts}"
+        for entry in sorted(wt_root.iterdir()):
+            if not entry.is_dir():
+                continue
+            name = entry.name
+            # Skip our own .deleted-* dirs and any other dotfiles.
+            if name.startswith("."):
+                continue
+            if name in tracked_sids:
+                continue
+            # If the sid's branch is in the live-branches set (open PR),
+            # leave the worktree alone — operator hasn't merged yet.
+            branch_match = any(b.endswith(f"/{name}/") or f"/{name}/" in b for b in live_branches)
+            if branch_match:
+                continue
+            # Rename into the deleted-<ts> bucket.
+            deleted_root.mkdir(parents=True, exist_ok=True)
+            new_path = deleted_root / name
+            try:
+                entry.rename(new_path)
+                # Also tell git the worktree is gone (cheap; prune later
+                # the next time `git worktree list` is called).
+                self._git("worktree", "prune")
+            except OSError as exc:
+                log.warning("gc: rename %s -> %s failed: %s", entry, new_path, exc)
+                continue
+            actions.append(GcAction(
+                sid=name,
+                old_path=entry,
+                new_path=new_path,
+                reason="orphan: not in tracked_sids and no open PR",
+            ))
+        return actions
+
+    def reap_deleted(self, *, max_age_days: int = 7) -> int:
+        """Purge ``codex-wt/.deleted-<ts>/`` dirs older than ``max_age_days``.
+
+        Returns the number of dirs purged.  Uses a single ``shutil.rmtree``
+        per stamp — this is the ONLY deletion path in the broker, and
+        it operates exclusively on the ``.deleted-`` namespace that gc()
+        owns.  No risk of stomping a live worktree.
+        """
+        import shutil as _shutil  # noqa: PLC0415 — local import to keep top-of-module tidy
+        wt_root = self.hermes_home / "codex-wt"
+        if not wt_root.is_dir():
+            return 0
+        cutoff = datetime.now(timezone.utc) - timedelta(days=max_age_days)
+        purged = 0
+        for entry in wt_root.iterdir():
+            if not entry.is_dir() or not entry.name.startswith(".deleted-"):
+                continue
+            # Parse the trailing timestamp; skip on parse failure.
+            stamp = entry.name.removeprefix(".deleted-")
+            try:
+                stamp_dt = datetime.strptime(stamp, "%Y%m%dT%H%M%SZ").replace(tzinfo=timezone.utc)
+            except ValueError:
+                continue
+            if stamp_dt < cutoff:
+                _shutil.rmtree(entry, ignore_errors=True)
+                purged += 1
+        return purged
 
     def free_port(self, port: int) -> None:
         """Release a specific port back to the pool (by port number)."""
