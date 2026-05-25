@@ -30,10 +30,59 @@ exclusively to the ``.deleted-<ts>`` namespace gc owns.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
-from typing import Any, Optional
+import subprocess
+from typing import Any, Callable, Optional
 
 log = logging.getLogger(__name__)
+
+# ``gh pr list`` should be quick (<5 s in practice).  Cap defensively
+# so a hung call cannot stall the gc loop.
+_GH_TIMEOUT_SEC = 30
+
+
+def _gh_list_open_branches() -> set[str]:
+    """Return the set of ``headRefName`` strings for open PRs on the repo.
+
+    Failure modes are absorbed: gh not on PATH, gh times out, gh exits
+    non-zero, JSON parse fails.  Each is logged as a warning and the
+    function returns an empty set — equivalent to ``live_branches=None``
+    (the watcher's prior behavior).  ``tracked_sids`` still protects
+    in-flight sessions in that case.
+    """
+    try:
+        result = subprocess.run(
+            ["gh", "pr", "list", "--state", "open",
+             "--json", "headRefName", "--limit", "200"],
+            capture_output=True, text=True, check=False, timeout=_GH_TIMEOUT_SEC,
+        )
+    except FileNotFoundError:
+        log.warning("CodexGcWatcher: gh CLI not on PATH; live_branches=empty")
+        return set()
+    except subprocess.TimeoutExpired:
+        log.warning("CodexGcWatcher: gh pr list timed out; live_branches=empty")
+        return set()
+    except Exception as exc:  # pragma: no cover — defensive
+        log.warning("CodexGcWatcher: gh pr list crashed: %s", exc)
+        return set()
+    if result.returncode != 0:
+        log.warning(
+            "CodexGcWatcher: gh pr list exit %s: %s",
+            result.returncode, result.stderr.strip(),
+        )
+        return set()
+    try:
+        prs = json.loads(result.stdout)
+    except json.JSONDecodeError as exc:
+        log.warning("CodexGcWatcher: gh pr list JSON parse: %s", exc)
+        return set()
+    branches: set[str] = set()
+    for pr in prs:
+        ref = pr.get("headRefName") if isinstance(pr, dict) else None
+        if ref:
+            branches.add(ref)
+    return branches
 
 
 class CodexGcWatcher:
@@ -51,11 +100,13 @@ class CodexGcWatcher:
         worktree_broker: Any,
         poll_interval_sec: float = 3600.0,
         reap_max_age_days: int = 7,
+        gh_list_open_branches: Callable[[], set[str]] | None = None,
     ) -> None:
         self._dispatcher = dispatcher
         self._broker = worktree_broker
         self._poll_interval = poll_interval_sec
         self._reap_max_age_days = reap_max_age_days
+        self._gh_list_open_branches = gh_list_open_branches or _gh_list_open_branches
         self._task: Optional[asyncio.Task] = None
         self._stop_event: Optional[asyncio.Event] = None
 
@@ -112,8 +163,23 @@ class CodexGcWatcher:
             if sid:
                 tracked_sids.add(sid)
 
+        # Defense-in-depth: also fetch the set of open-PR branches so a
+        # worktree whose session row was lost but whose PR is still
+        # open survives gc.  On any failure (gh missing / timeout /
+        # parse error / custom callable raising) fall back to empty
+        # set — tracked_sids alone already protects every in-flight
+        # session, and a crash in the lookup must not skip gc/reap.
         try:
-            actions = self._broker.gc(tracked_sids=tracked_sids)
+            live_branches = self._gh_list_open_branches()
+        except Exception as exc:
+            log.warning("CodexGcWatcher: live_branches lookup failed: %s", exc)
+            live_branches = set()
+
+        try:
+            actions = self._broker.gc(
+                tracked_sids=tracked_sids,
+                live_branches=live_branches,
+            )
             if actions:
                 log.info(
                     "CodexGcWatcher: gc renamed %d orphan(s) to .deleted-<ts>",
