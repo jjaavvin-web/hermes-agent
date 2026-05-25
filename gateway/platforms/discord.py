@@ -882,17 +882,20 @@ class DiscordAdapter(BasePlatformAdapter):
                         if "*" not in _free_channels and not (_channel_ids & _free_channels):
                             return
 
-                # Codex P1 (pivot Phase A): for tracked codex-session threads,
-                # record metadata via the dispatcher AND fall through to the
-                # regular Hermes agent path — Hermes itself processes the turn
-                # (using openai-codex as its provider). The dispatcher's job is
-                # bookkeeping + worktree lifecycle, not message execution.
-                # Default (no dispatcher) is unchanged.
+                # Codex P1 (pivot Phase A) + P1.5: for tracked codex-session
+                # threads, record metadata via the dispatcher AND set the
+                # active worktree contextvar so the regular Hermes agent
+                # below cwds in the assigned worktree when running bash /
+                # code tools. The contextvar is task-local; concurrent
+                # Discord threads stay isolated.
+                #
+                # Default (no dispatcher) is unchanged — falls straight through.
                 if adapter_self._codex_dispatcher is not None:
                     try:
                         _ch_id = str(message.channel.id)
                         if adapter_self._codex_dispatcher.is_tracked(_ch_id):
                             from gateway.codex_session_dispatcher import ThreadEvent  # noqa: PLC0415
+                            from agent.codex_session_context import set_active_worktree  # noqa: PLC0415
                             await adapter_self._codex_dispatcher.on_thread_message(
                                 ThreadEvent(
                                     thread_id=_ch_id,
@@ -902,6 +905,16 @@ class DiscordAdapter(BasePlatformAdapter):
                                     author_id=str(message.author.id),
                                 )
                             )
+                            # P1.5: bind the per-thread worktree for the
+                            # rest of this async task. Tool calls executed
+                            # inside ``_handle_message`` will see this via
+                            # ``agent.codex_session_context.get_active_worktree``.
+                            _row = adapter_self._codex_dispatcher._load_state().get(
+                                "sessions", {}
+                            ).get(_ch_id)
+                            _wt = _row.get("worktree_path") if _row else None
+                            if _wt:
+                                set_active_worktree(_wt)
                             # Note: NO early return — regular agent handles
                             # the conversation turn below.
                     except Exception:
