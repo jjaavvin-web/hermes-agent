@@ -22,6 +22,7 @@ from agent.worktree_broker import (
     Worktree,
     WorktreeBroker,
     WorktreeStatus,
+    slugify_ref,
 )
 
 # ── helpers ────────────────────────────────────────────────────────────────────
@@ -131,6 +132,43 @@ class TestAllocateBranchName:
         b_idx = list(git_args).index("-b")
         assert git_args[b_idx + 1] == expected_branch
         assert "origin/main" in git_args
+
+    def test_branch_name_slugifies_discord_thread_title(self, tmp_path):
+        """Discord thread titles like 'Codex hive' must not break git worktree add."""
+        broker = _make_broker(tmp_path)
+        sid = "aaaaaaaa-0000-4000-8000-000000000099"
+
+        with (
+            patch.object(broker, "_disk_free_bytes", return_value=10 * 1024**3),
+            patch.object(broker, "_git", return_value=_ok_git_result()) as mock_git,
+        ):
+            wt = broker.allocate(sid, isa_slug="Codex hive", base_branch="origin/main")
+
+        assert wt.branch == f"codex/{sid}/codex-hive"
+        git_args = mock_git.call_args[0]
+        b_idx = list(git_args).index("-b")
+        assert " " not in git_args[b_idx + 1]
+
+
+class TestSlugifyRef:
+    @pytest.mark.parametrize("raw,expected", [
+        ("Codex hive", "codex-hive"),
+        ("  Whitespace  ", "whitespace"),
+        ("ALL CAPS", "all-caps"),
+        ("dots.and:colons", "dots-and-colons"),
+        ("multi---dash", "multi-dash"),
+        ("trailing-dash-", "trailing-dash"),
+        ("-leading-dash", "leading-dash"),
+        ("!@#$%^&*()", "task"),
+        ("", "task"),
+        (None, "task"),
+        ("a" * 60, "a" * 40),
+    ])
+    def test_slugify_cases(self, raw, expected):
+        assert slugify_ref(raw) == expected
+
+    def test_fallback_override(self):
+        assert slugify_ref("", fallback="default-isa") == "default-isa"
 
 
 # ── Assertion #3 — allocate claims port in codex-ports.json ──────────────────

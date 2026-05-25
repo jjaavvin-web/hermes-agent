@@ -12,6 +12,7 @@ from __future__ import annotations
 import fcntl
 import json
 import logging
+import re
 import subprocess
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -48,6 +49,22 @@ _LOCK_TYPE_FILES = [
     ("npm", "package-lock.json"),
     ("yarn", "yarn.lock"),
 ]
+
+_SLUG_INVALID_RE = re.compile(r"[^a-z0-9-]+")
+_SLUG_REPEAT_DASH_RE = re.compile(r"-+")
+
+
+def slugify_ref(value: str, *, fallback: str = "task", max_len: int = 40) -> str:
+    """Coerce arbitrary text into a git-ref-safe slug.
+
+    Discord thread titles, user-supplied ISA names, etc. routinely contain
+    spaces, capitals, and punctuation that `git worktree add -b` rejects.
+    """
+    lowered = (value or "").lower().strip()
+    replaced = _SLUG_INVALID_RE.sub("-", lowered)
+    collapsed = _SLUG_REPEAT_DASH_RE.sub("-", replaced).strip("-")
+    truncated = collapsed[:max_len].rstrip("-")
+    return truncated or fallback
 
 
 @dataclass
@@ -165,7 +182,9 @@ class WorktreeBroker:
         if session_id in self._registry:
             return self._registry[session_id]
 
-        # Step 3: git worktree add
+        # Step 3: git worktree add (slugify isa_slug — git refs disallow
+        # spaces / capitals / punctuation that Discord thread titles freely use)
+        isa_slug = slugify_ref(isa_slug)
         branch = f"codex/{session_id}/{isa_slug}"
         wt_path = self.hermes_home / "codex-wt" / session_id
         result = self._git(

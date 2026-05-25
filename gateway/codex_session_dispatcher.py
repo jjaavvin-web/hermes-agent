@@ -17,6 +17,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Awaitable
 
+from agent.worktree_broker import slugify_ref
 from gateway.codex_session_dispatcher_commands import _CommandsMixin
 
 log = logging.getLogger(__name__)
@@ -163,7 +164,9 @@ class CodexSessionDispatcher(_CommandsMixin):
             return
 
         sid = str(uuid.uuid4())
-        isa_slug = getattr(event, "isa_slug", None) or "task"
+        # Slugify here so the row's isa_id/isa_path stay consistent with the
+        # branch the broker actually creates (it slugifies defensively too).
+        isa_slug = slugify_ref(getattr(event, "isa_slug", None) or "task")
 
         try:
             wt = self._broker.allocate(sid, isa_slug=isa_slug, base_branch=self._base_branch)
