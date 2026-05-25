@@ -4548,6 +4548,15 @@ try:
     _log.info("Mounted mission control dashboard API routes at /api/dashboard/")
 except Exception as _exc:
     _log.warning("Failed to load dashboard_health routes: %s", _exc)
+
+# P4: codex sessions operator surface — read-only snapshot + per-sid
+# detail + non-destructive pause/resume + confirm-gated kill/force-merge.
+try:
+    from hermes_cli.dashboard_codex_sessions import router as _codex_router
+    app.include_router(_codex_router)
+    _log.info("Mounted codex sessions dashboard API routes at /api/dashboard/codex-sessions/")
+except Exception as _exc:
+    _log.warning("Failed to load dashboard_codex_sessions routes: %s", _exc)
 # ---------------------------------------------------------------------------
 # GitNexus Explorer — serve the production web UI under /_gitnexus-app/.
 # Mounted at a non-React path so the dashboard React route `/explorer`
