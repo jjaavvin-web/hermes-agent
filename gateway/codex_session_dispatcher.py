@@ -120,6 +120,7 @@ class CodexSessionDispatcher(_CommandsMixin):
         merge_broker: Any,
         discord_send: Callable[[str, str], Awaitable[None]],
         kanban_complete: Callable[[str], Any] | None = None,
+        discord_archive_thread: Callable[[str], Awaitable[None]] | None = None,
         base_branch: str = "origin/main",
     ) -> None:
         """
@@ -133,6 +134,7 @@ class CodexSessionDispatcher(_CommandsMixin):
         self._merge_broker = merge_broker              # P3+ — stored, not called in P1
         self._discord_send = discord_send
         self._kanban_complete = kanban_complete
+        self._discord_archive_thread = discord_archive_thread  # P3.5+ — closeout archive
         self._base_branch = base_branch
 
         self._sessions_path = self._hermes_home / "codex_sessions.json"
@@ -309,6 +311,15 @@ class CodexSessionDispatcher(_CommandsMixin):
         for thread_id, row in sessions.items():
             sid = row["session_id"]
             try:
+                # P3.5: COMPLETE / ESCALATED sessions have already been
+                # finalized; their worktree may have been released, but
+                # that's expected and must not flip them to ORPHANED.
+                if row.get("state") in {"COMPLETE", "ESCALATED"}:
+                    log.debug(
+                        "on_bot_restart: session %s in terminal state %s — skipping",
+                        sid, row.get("state"),
+                    )
+                    continue
                 wt_path = Path(row.get("worktree_path", ""))
                 if wt_path.exists() and (wt_path / ".git").exists():
                     log.info("on_bot_restart: session %s rehydrated (thread %s)", sid, thread_id)
@@ -392,6 +403,133 @@ class CodexSessionDispatcher(_CommandsMixin):
 
         await self._apply_verdict(thread_id=thread_id, row=row, state=state, verdict=verdict)
 
+    async def on_pr_merged(self, thread_id: str, pr_payload: dict) -> None:
+        """Finalize a session whose PR was merged (P3.5).
+
+        Called by :class:`CodexMergeWatcher` when its poller observes
+        the PR transition OPEN→MERGED.  Idempotent — re-invocation on
+        a row already at ``state: COMPLETE`` returns immediately.
+
+        Per ISA D-2: the state write commits BEFORE any side effect.
+        That way, if any side effect crashes, the row is still terminal
+        and the watcher will not re-fire on the next tick.  Residue
+        (un-released worktree, open kanban card) is recoverable; a
+        double-fire is not.
+        """
+        state = self._load_state()
+        row = state.get("sessions", {}).get(thread_id)
+        if row is None:
+            log.warning("on_pr_merged: no session for thread %s", thread_id)
+            return
+        if row.get("state") == "COMPLETE":
+            log.debug("on_pr_merged: thread %s already COMPLETE — no-op", thread_id)
+            return
+
+        sid = row["session_id"]
+        pr_number = row.get("pr_number")
+        pr_url = row.get("pr_url") or pr_payload.get("url", "")
+        merge_commit_oid = ""
+        try:
+            mc = pr_payload.get("mergeCommit")
+            if isinstance(mc, dict):
+                merge_commit_oid = mc.get("oid", "") or ""
+        except Exception:  # pragma: no cover — defensive
+            pass
+
+        # ── State write FIRST (ISA D-2). ────────────────────────────
+        row["state"] = "COMPLETE"
+        row["merged_at"] = pr_payload.get("mergedAt") or _now_iso()
+        row["merge_commit_oid"] = merge_commit_oid
+        row["pr_state"] = "MERGED"
+        self._write_state(state)
+        log.info(
+            "on_pr_merged: thread %s sid %s -> COMPLETE (pr=%s)",
+            thread_id, sid, pr_number,
+        )
+
+        # ── Best-effort side effects, each independently. ───────────
+        try:
+            self._broker.release(sid)
+        except Exception as exc:
+            log.warning("on_pr_merged: worktree release failed for %s: %s", sid, exc)
+
+        card_id = row.get("kanban_card_id")
+        if card_id and self._kanban_complete is not None:
+            try:
+                self._kanban_complete(card_id)
+            except Exception as exc:
+                log.warning(
+                    "on_pr_merged: kanban_complete failed for %s: %s", card_id, exc,
+                )
+
+        if self._discord_archive_thread is not None:
+            try:
+                await self._discord_archive_thread(thread_id)
+            except Exception as exc:
+                log.warning(
+                    "on_pr_merged: discord_archive_thread failed for %s: %s",
+                    thread_id, exc,
+                )
+
+        try:
+            await self._discord_send(
+                thread_id,
+                f"🎉 PR #{pr_number} merged — session `{_sid_short(sid)}` closed.\n"
+                f"<{pr_url}>",
+            )
+        except Exception as exc:
+            log.warning(
+                "on_pr_merged: closeout discord_send failed for %s: %s",
+                thread_id, exc,
+            )
+
+    async def on_pr_closed_unmerged(self, thread_id: str, pr_payload: dict) -> None:
+        """Escalate a session whose PR was closed without merging (P3.5).
+
+        Per ISA D-3: the worktree is intentionally LEFT in place.  A
+        reviewer who closes a PR often wants to inspect the diff and
+        push a fixup or reopen.  Releasing here would force a /revive.
+        """
+        state = self._load_state()
+        row = state.get("sessions", {}).get(thread_id)
+        if row is None:
+            log.warning("on_pr_closed_unmerged: no session for thread %s", thread_id)
+            return
+        if row.get("state") == "ESCALATED":
+            log.debug(
+                "on_pr_closed_unmerged: thread %s already ESCALATED — no-op",
+                thread_id,
+            )
+            return
+
+        sid = row["session_id"]
+        pr_number = row.get("pr_number")
+        pr_url = row.get("pr_url") or pr_payload.get("url", "")
+
+        row["state"] = "ESCALATED"
+        row["closed_at"] = pr_payload.get("closedAt") or _now_iso()
+        row["pr_state"] = "CLOSED"
+        self._write_state(state)
+        log.info(
+            "on_pr_closed_unmerged: thread %s sid %s -> ESCALATED (pr=%s)",
+            thread_id, sid, pr_number,
+        )
+
+        try:
+            await self._discord_send(
+                thread_id,
+                f"⛔ PR #{pr_number} closed without merging — session "
+                f"`{_sid_short(sid)}` escalated.\n"
+                f"<@OPERATOR> manual triage needed.  Worktree preserved "
+                f"for inspection; use `/revive` if recoverable.\n"
+                f"<{pr_url}>",
+            )
+        except Exception as exc:
+            log.warning(
+                "on_pr_closed_unmerged: discord_send failed for %s: %s",
+                thread_id, exc,
+            )
+
     async def _ensure_peer_review_started(self) -> None:
         """Start the orchestrator on first use (single-flight)."""
         if self._peer_review is None or self._peer_review_started:
@@ -472,6 +610,15 @@ class CodexSessionDispatcher(_CommandsMixin):
                         f"Session stays at MERGING — operator triage needed.",
                     )
                     return
+                # P3.5: persist PR meta so CodexMergeWatcher has the
+                # data it needs to poll this PR and close the loop.
+                row["pr_number"] = result.pr_number
+                row["pr_url"] = result.pr_url
+                row["head_branch"] = f"codex/{sid}/{row.get('isa_id', 'task')}"
+                row["merge_label"] = result.classification
+                row["merge_requested_at"] = _now_iso()
+                row["pr_state"] = "OPEN"
+                self._write_state(state)
                 await self._discord_send(
                     thread_id,
                     f"📦 PR #{result.pr_number} opened — "

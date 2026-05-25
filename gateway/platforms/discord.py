@@ -599,6 +599,9 @@ class DiscordAdapter(BasePlatformAdapter):
         # P2.5: phase watcher (async task) started in connect() after the
         # Discord adapter is ready; stopped in disconnect().
         self._codex_phase_watcher: Any = None
+        # P3.5: merge watcher (async task) — polls open PRs for MERGING
+        # sessions and closes the loop on merge / close-unmerged.
+        self._codex_merge_watcher: Any = None
 
     def _maybe_init_codex_dispatcher(self) -> Any:
         """Construct CodexSessionDispatcher when HERMES_CODEX_DISPATCHER is set.
@@ -644,6 +647,29 @@ class DiscordAdapter(BasePlatformAdapter):
                     thread_id,
                 )
 
+        async def _discord_archive_thread(thread_id: str) -> None:
+            """P3.5 closeout — lock + archive a finished codex thread."""
+            try:
+                client = getattr(adapter_self, "_client", None)
+                if client is None:
+                    return
+                ch = client.get_channel(int(thread_id))
+                if ch is None:
+                    ch = await client.fetch_channel(int(thread_id))
+                if ch is None or not hasattr(ch, "edit"):
+                    return
+                await ch.edit(
+                    archived=True,
+                    locked=True,
+                    reason="Codex session merged — closing thread (P3.5)",
+                )
+            except Exception:
+                logger.exception(
+                    "[%s] codex dispatcher discord_archive_thread failed for %s",
+                    adapter_self.name,
+                    thread_id,
+                )
+
         # P2 + P2.5: wire the Opus peer-review orchestrator + phase watcher.
         # The orchestrator's heavy lifecycle (spawning tmux panes running
         # interactive ``claude``) is deferred to first use; constructing
@@ -677,6 +703,7 @@ class DiscordAdapter(BasePlatformAdapter):
             merge_broker=merge_broker,
             discord_send=_discord_send,
             kanban_complete=None,            # wired by operator path
+            discord_archive_thread=_discord_archive_thread,
         )
 
         # P2.5: phase watcher polls each session's ISA for transitions into
@@ -693,6 +720,21 @@ class DiscordAdapter(BasePlatformAdapter):
                 "[%s] CodexPhaseWatcher unavailable: %s", self.name, exc,
             )
             self._codex_phase_watcher = None
+
+        # P3.5: merge watcher polls each MERGING row's PR via gh and fires
+        # dispatcher.on_pr_merged / on_pr_closed_unmerged on transitions.
+        try:
+            from gateway.codex_merge_watcher import CodexMergeWatcher  # noqa: PLC0415
+            self._codex_merge_watcher = CodexMergeWatcher(
+                dispatcher=dispatcher,
+                on_pr_merged=dispatcher.on_pr_merged,
+                on_pr_closed_unmerged=dispatcher.on_pr_closed_unmerged,
+            )
+        except Exception as exc:
+            logger.warning(
+                "[%s] CodexMergeWatcher unavailable: %s", self.name, exc,
+            )
+            self._codex_merge_watcher = None
         return dispatcher
 
     async def connect(self) -> bool:
@@ -842,6 +884,16 @@ class DiscordAdapter(BasePlatformAdapter):
                     except Exception:
                         logger.exception(
                             "[%s] codex_phase_watcher.start failed",
+                            adapter_self.name,
+                        )
+
+                # Codex P3.5: start the merge watcher (PR poller).
+                if adapter_self._codex_merge_watcher is not None:
+                    try:
+                        await adapter_self._codex_merge_watcher.start()
+                    except Exception:
+                        logger.exception(
+                            "[%s] codex_merge_watcher.start failed",
                             adapter_self.name,
                         )
 
@@ -1096,6 +1148,13 @@ class DiscordAdapter(BasePlatformAdapter):
                 await self._codex_phase_watcher.stop()
             except Exception:  # pragma: no cover - defensive
                 logger.exception("[%s] codex_phase_watcher.stop failed", self.name)
+
+        # Codex P3.5: tear down the merge watcher symmetrically.
+        if self._codex_merge_watcher is not None:
+            try:
+                await self._codex_merge_watcher.stop()
+            except Exception:  # pragma: no cover - defensive
+                logger.exception("[%s] codex_merge_watcher.stop failed", self.name)
 
         # Clean up all active voice connections before closing the client
         for guild_id in list(self._voice_clients.keys()):
