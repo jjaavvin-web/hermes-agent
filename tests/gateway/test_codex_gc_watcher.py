@@ -124,13 +124,62 @@ async def test_tick_tolerates_gh_callable_crashing(tmp_path):
     broker.reap_deleted.assert_called_once()
 
 
-@pytest.mark.asyncio
-async def test_default_gh_failure_logged_and_returns_empty():
-    """The module-level _gh_list_open_branches returns empty on missing gh."""
-    from gateway.codex_gc_watcher import _gh_list_open_branches
-    # Subprocess will likely succeed in dev — just ensure it returns a set.
-    result = _gh_list_open_branches()
-    assert isinstance(result, set)
+def test_default_gh_helper_absorbs_missing_gh(monkeypatch):
+    """_gh_list_open_branches must return empty set when gh is not on PATH."""
+    from gateway import codex_gc_watcher as mod
+
+    def fake_run(*args, **kwargs):
+        raise FileNotFoundError("gh not on PATH")
+    monkeypatch.setattr(mod.subprocess, "run", fake_run)
+    assert mod._gh_list_open_branches() == set()
+
+
+def test_default_gh_helper_absorbs_timeout(monkeypatch):
+    """_gh_list_open_branches must return empty set when gh times out."""
+    from gateway import codex_gc_watcher as mod
+
+    def fake_run(*args, **kwargs):
+        raise mod.subprocess.TimeoutExpired(cmd=args[0], timeout=30)
+    monkeypatch.setattr(mod.subprocess, "run", fake_run)
+    assert mod._gh_list_open_branches() == set()
+
+
+def test_default_gh_helper_absorbs_nonzero_exit(monkeypatch):
+    """_gh_list_open_branches must return empty set on non-zero exit."""
+    from gateway import codex_gc_watcher as mod
+    from unittest.mock import MagicMock
+
+    fake_proc = MagicMock(returncode=1, stdout="", stderr="auth needed")
+    monkeypatch.setattr(mod.subprocess, "run", lambda *a, **kw: fake_proc)
+    assert mod._gh_list_open_branches() == set()
+
+
+def test_default_gh_helper_parses_branch_names(monkeypatch):
+    """Happy path: gh returns JSON; we extract headRefName values."""
+    from gateway import codex_gc_watcher as mod
+    from unittest.mock import MagicMock
+    import json as _json
+
+    payload = [
+        {"headRefName": "codex/sid-aaa/task"},
+        {"headRefName": "codex/sid-bbb/feat"},
+        {"headRefName": ""},  # empty, must be filtered
+        {},  # no headRefName, must be skipped
+    ]
+    fake_proc = MagicMock(returncode=0, stdout=_json.dumps(payload), stderr="")
+    monkeypatch.setattr(mod.subprocess, "run", lambda *a, **kw: fake_proc)
+    result = mod._gh_list_open_branches()
+    assert result == {"codex/sid-aaa/task", "codex/sid-bbb/feat"}
+
+
+def test_default_gh_helper_absorbs_malformed_json(monkeypatch):
+    """_gh_list_open_branches must return empty set on JSON parse failure."""
+    from gateway import codex_gc_watcher as mod
+    from unittest.mock import MagicMock
+
+    fake_proc = MagicMock(returncode=0, stdout="{not valid json", stderr="")
+    monkeypatch.setattr(mod.subprocess, "run", lambda *a, **kw: fake_proc)
+    assert mod._gh_list_open_branches() == set()
 
 
 @pytest.mark.asyncio
