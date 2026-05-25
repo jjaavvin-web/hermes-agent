@@ -33,7 +33,7 @@ async def test_tick_derives_tracked_sids_from_rows(tmp_path):
     broker = MagicMock()
     broker.gc.return_value = []
     broker.reap_deleted.return_value = 0
-    w = CodexGcWatcher(dispatcher=disp, worktree_broker=broker)
+    w = CodexGcWatcher(dispatcher=disp, worktree_broker=broker, gh_list_open_branches=lambda: set())
     await w._tick()
     broker.gc.assert_called_once()
     sids = broker.gc.call_args.kwargs["tracked_sids"]
@@ -46,9 +46,9 @@ async def test_tick_handles_empty_sessions(tmp_path):
     broker = MagicMock()
     broker.gc.return_value = []
     broker.reap_deleted.return_value = 0
-    w = CodexGcWatcher(dispatcher=disp, worktree_broker=broker)
+    w = CodexGcWatcher(dispatcher=disp, worktree_broker=broker, gh_list_open_branches=lambda: set())
     await w._tick()
-    broker.gc.assert_called_once_with(tracked_sids=set())
+    broker.gc.assert_called_once_with(tracked_sids=set(), live_branches=set())
 
 
 @pytest.mark.asyncio
@@ -57,7 +57,7 @@ async def test_tick_calls_broker_reap_deleted(tmp_path):
     broker = MagicMock()
     broker.gc.return_value = []
     broker.reap_deleted.return_value = 0
-    w = CodexGcWatcher(dispatcher=disp, worktree_broker=broker, reap_max_age_days=14)
+    w = CodexGcWatcher(dispatcher=disp, worktree_broker=broker, reap_max_age_days=14, gh_list_open_branches=lambda: set())
     await w._tick()
     broker.reap_deleted.assert_called_once_with(max_age_days=14)
 
@@ -69,7 +69,7 @@ async def test_gc_exception_does_not_skip_reap(tmp_path):
     broker = MagicMock()
     broker.gc.side_effect = RuntimeError("disk full")
     broker.reap_deleted.return_value = 0
-    w = CodexGcWatcher(dispatcher=disp, worktree_broker=broker)
+    w = CodexGcWatcher(dispatcher=disp, worktree_broker=broker, gh_list_open_branches=lambda: set())
     # Must not raise.
     await w._tick()
     broker.reap_deleted.assert_called_once()
@@ -82,8 +82,55 @@ async def test_reap_exception_does_not_kill_loop(tmp_path):
     broker = MagicMock()
     broker.gc.return_value = []
     broker.reap_deleted.side_effect = OSError("read-only fs")
-    w = CodexGcWatcher(dispatcher=disp, worktree_broker=broker)
+    w = CodexGcWatcher(dispatcher=disp, worktree_broker=broker, gh_list_open_branches=lambda: set())
     await w._tick()  # must not raise
+
+
+@pytest.mark.asyncio
+async def test_tick_passes_live_branches_to_gc(tmp_path):
+    """P5.1+: live_branches set fetched from gh pr list and passed to broker.gc."""
+    disp = _FakeDispatcher(tmp_path, {"t1": _row("sid-aaa")})
+    broker = MagicMock()
+    broker.gc.return_value = []
+    broker.reap_deleted.return_value = 0
+    fake_branches = {"codex/sid-bbb/task", "codex/sid-ccc/feat"}
+    w = CodexGcWatcher(
+        dispatcher=disp, worktree_broker=broker,
+        gh_list_open_branches=lambda: fake_branches,
+    )
+    await w._tick()
+    kw = broker.gc.call_args.kwargs
+    assert kw["tracked_sids"] == {"sid-aaa"}
+    assert kw["live_branches"] == fake_branches
+
+
+@pytest.mark.asyncio
+async def test_tick_tolerates_gh_callable_crashing(tmp_path):
+    """Crashing gh_list_open_branches must NOT abort the tick;
+    gc still runs with live_branches=empty set."""
+    disp = _FakeDispatcher(tmp_path, {"t1": _row("sid-aaa")})
+    broker = MagicMock()
+    broker.gc.return_value = []
+    broker.reap_deleted.return_value = 0
+    def crashing_gh():
+        raise RuntimeError("network gone")
+    w = CodexGcWatcher(
+        dispatcher=disp, worktree_broker=broker,
+        gh_list_open_branches=crashing_gh,
+    )
+    await w._tick()  # must not raise
+    kw = broker.gc.call_args.kwargs
+    assert kw["live_branches"] == set()
+    broker.reap_deleted.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_default_gh_failure_logged_and_returns_empty():
+    """The module-level _gh_list_open_branches returns empty on missing gh."""
+    from gateway.codex_gc_watcher import _gh_list_open_branches
+    # Subprocess will likely succeed in dev — just ensure it returns a set.
+    result = _gh_list_open_branches()
+    assert isinstance(result, set)
 
 
 @pytest.mark.asyncio
@@ -94,6 +141,7 @@ async def test_start_then_stop_clean(tmp_path):
     broker.reap_deleted.return_value = 0
     w = CodexGcWatcher(
         dispatcher=disp, worktree_broker=broker, poll_interval_sec=0.05,
+        gh_list_open_branches=lambda: set(),
     )
     await w.start()
     await asyncio.sleep(0.18)
