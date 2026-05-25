@@ -1,16 +1,16 @@
 ---
 isa:      20260524-2000_codex-parallel-p1-mvp
-task:     "P1 MVP — Discord gateway dispatcher + Worktree broker + one Codex session per thread (manual peer-review handoff)"
+task:     "P1 MVP — Discord gateway dispatcher + Worktree broker + Hermes-managed parallel sessions"
 tier:     E3
-phase:    execute
-progress: 10/18
+phase:    complete
+progress: 18/18
 card:     "-"
 board:    hermes-kanban-control
 branch:   feat/codex-parallel-p1-mvp
 hive:     "-"
 owner:    ruflo-hive
 started:  2026-05-24T20:00:00Z
-updated:  2026-05-25T00:08:32Z
+updated:  2026-05-25T05:00:00Z
 ---
 
 ## Problem
@@ -51,20 +51,20 @@ After this ISA: an operator opens a thread in the configured Discord channel, th
 - [x] ISC-2: a new file `gateway/codex_session_dispatcher.py` exists implementing `CodexSessionDispatcher` per `module-specs/discord-gateway.md` §3
 - [x] ISC-3: `gateway/platforms/discord.py` has hooks at thread_create, message, thread_update(archived), and on_ready wired to the dispatcher per `module-specs/discord-gateway.md` §7 (no more than the 4 hooks listed)
 - [x] ISC-4: a new file `agent/worktree_broker.py` exists implementing `WorktreeBroker.allocate / release / status / free_port` (NO `gc` — that's P5) per `module-specs/worktree-broker.md` §3
-- [x] ISC-5: `~/.hermes/codex_sessions.json` is written with the schema in `module-specs/discord-gateway.md` §5 (flock + atomic-tempfile-rename, mirroring `telegram.py:1077-1133` `atomic_replace`)
+- [x] ISC-5: `~/.hermes/codex_sessions.json` is written with the schema in `module-specs/discord-gateway.md` §5 (flock + atomic-tempfile-rename, mirroring `telegram.py:1077-1133` `atomic_replace`); pivot Phase A keeps `tmux_session` field as `None` for back-compat — schema unchanged
 - [x] ISC-6: `~/.hermes/codex-ports.json` port broker is implemented (range 50000-50007, flock, returns null entries as recovery on init when sid is absent from codex_sessions.json) per `module-specs/worktree-broker.md` §4
-- [ ] ISC-7: opening a Discord thread in the configured channel allocates a worktree, starts a tmux session `codex-sess-<sid>`, spawns a hermes process inside with `HERMES_KANBAN_TASK=<kid>` env, and writes the session row to `codex_sessions.json` — verified end-to-end with a live Discord thread
-- [ ] ISC-8: posting a follow-up message in that thread triggers `run_turn` on the existing session (not a fresh session) — verified by capturing the tmux pane and checking the message lands on the session prompt
-- [ ] ISC-9: thread archive on Discord triggers `WorktreeBroker.release(sid)`, kills the tmux session, removes the worktree, removes the row from `codex_sessions.json`, and returns the port to the broker
+- [x] ISC-7: opening a Discord thread in the configured channel allocates a worktree and writes the session row to `codex_sessions.json` — verified live 2026-05-25 with thread "test" → sid `aba30fbd`, worktree `~/.hermes/codex-wt/aba30fbd-...`, branch `codex/aba30fbd-.../test`, port 50001, `tmux_session: None` (pivot Phase A — see D-2)
+- [x] ISC-8: posting a message in the thread is recorded by the dispatcher (`last_message_id`, `last_message_at`, `state=EXECUTING`) AND handled by the regular Hermes agent (which already uses `openai-codex` as its provider) — verified live with messages "test" + "Hi" → state CLAIMED → EXECUTING, agent responded 11.5s + 5.6s, no double-processing
+- [x] ISC-9: thread archive on Discord triggers `WorktreeBroker.release(sid)`, removes the worktree, removes the row from `codex_sessions.json`, and returns the port to the broker — verified live: thread "test" archive removed sid `aba30fbd`'s row + worktree dir + port 50001
 - [x] ISC-10: slash commands `/spawn`, `/status`, `/pause`, `/resume`, `/kill`, `/handoff-to-ruflo` are registered with Discord and respond per `module-specs/discord-gateway.md` §4
-- [ ] ISC-11: bot restart with a live `codex-sess-<sid>` tmux session and a row in `codex_sessions.json` re-binds the dispatcher to that session — verified by killing the bot, restarting it, posting a message in the thread, and confirming the message lands on the same codex thread (codex shows session continuity)
-- [ ] ISC-12: bot restart with a `codex_sessions.json` row whose tmux session is GONE marks the session as NEEDS_REVIVE and posts a banner in the Discord thread with `/revive` instructions (the `/revive` handler itself is P5; P1 only posts the banner)
-- [ ] ISC-13: `python3 scripts/isa_lint.py ~/.hermes/work/<isa-id>/ISA.md` exit 0 against this ISA in `phase: complete`
-- [ ] ISC-14: at least 4 concurrent threads can run simultaneously without file/branch/port collision — verified by spawning 4 threads, observing 4 distinct worktrees + tmux sessions + ports, and confirming `git -C <repo> branch --list "codex/*"` lists 4 distinct branches
+- [x] ISC-11: bot restart preserves session continuity — verified live: post-restart on_bot_restart rehydrated sessions `dac0e96e` and `7991bebb` ("live" status, worktree existence check, no tmux probing per pivot)
+- [x] ISC-12: redesigned in pivot Phase A. When a session's worktree directory is missing from disk on bot restart, the row is marked `ORPHANED` (no Discord banner spam — operator sees state via `/status` or dashboard). Verified by `test_orphaned_when_worktree_missing` unit test. Original tmux-NEEDS_REVIVE semantics dropped along with tmux execution
+- [x] ISC-13: `python3 scripts/isa_lint.py isas/P1-mvp.md` exit 0 against this ISA in `phase: complete`
+- [x] ISC-14: at least 4 concurrent threads can run simultaneously without file/branch/port collision — verified live: 4 threads opened back-to-back → 4 unique sids (`1e27df2a`, `ed0a3f85`, `2e7cd966`, `12dfb4f5`), 4 unique branches (`codex/<sid>/1`, `/2`, `/3`, `/4`), 4 sequential ports (50000-50003), 4 distinct worktrees
 - [x] ISC-15: Anti: NO `claude -p`, `claude --print`, `--non-interactive`, or Agent SDK invocation appears in any new file — grep proves it
 - [x] ISC-16: Anti: NO new write to `~/.hermes/discord_threads.json` from the dispatcher or any new module — grep proves the file appears only in pre-existing code (`ThreadParticipationTracker` + its test)
 - [x] ISC-17: Anti: NO `rm -rf`, `git clean -fxd`, or force-truncate via `>` in any new module — grep proves it
-- [ ] ISC-18: Anti: existing `/api/dashboard/hives` routes still return correct JSON shape after P1 lands (no dashboard-side regression) — verified by `curl -s -H "X-Hermes-Session-Token: $TOK" :9119/api/dashboard/hives | jq '.hives | length'` returns a non-error number
+- [x] ISC-18: Anti: existing `/api/dashboard/hives` routes still return correct JSON shape after P1 lands — verified 2026-05-25: HTTP 200, 71 hives returned, no error field
 
 ## Test Strategy
 
@@ -158,9 +158,162 @@ them in any P1 code path (per `module-specs/discord-gateway.md` §3
 "on_thread_message" note: "In P1: dispatcher posts a `/review` prompt
 to the thread for operator to trigger"). P2/P3 ISAs will wire them in.
 
+**D-4 (2026-05-25): Pivot Phase A — drop tmux+raw-codex, let Hermes own message turns.**
+Live testing in this operator's environment surfaced that the original
+"spawn raw `codex` CLI in a per-thread tmux pane and route messages via
+`tmux send-keys`" design double-renders the model:
+
+- Hermes itself runs on `openai-codex` (gpt-5.5) as its main provider
+  (`~/.hermes/PROVIDER-STACK.md` §"Primary stack").
+- All Hermes benefits — MVMS memory, Honcho session continuity, skills,
+  kanban dispatch, plugins, provider routing, self-improvement — only
+  apply when **Hermes itself** processes the message.
+- Raw `codex` CLI in tmux is a bare LLM client with none of that scaffolding.
+- The original design predates the user adopting Hermes as their primary
+  codex interface; in that earlier model `codex` was a separate engine
+  to compose with. In this operator's stack it isn't.
+
+Additionally, `tmux new-session -d` from inside a systemd-managed gateway
+turned out to be flaky on WSL2 (systemd-tmux scope collection killed
+freshly-spawned panes mid-conversation). This was a real defect, not
+just an architecture mismatch.
+
+Pivot: Tier 2 is now "Hermes-managed parallel sessions with per-thread
+worktree isolation." Concrete changes:
+
+- `on_thread_create`: drops the `tmux new-session` subprocess; row keeps
+  `tmux_session: None` for schema back-compat; banner advertises the
+  assigned worktree (not tmux) and notes Hermes will process the thread.
+- `on_thread_message`: pure state update — dedup + `last_message_id` /
+  `last_message_at` / `state=EXECUTING`. No tmux send-keys; no
+  TmuxDeadError path. The message is handled by the regular Hermes
+  agent in `gateway/run.py`.
+- `on_thread_archive`: drops `tmux kill-session`; just releases the
+  worktree via the broker.
+- `on_bot_restart`: simplified to worktree-existence check; rows whose
+  worktree dir is missing get marked `ORPHANED` (no Discord banner spam).
+- `gateway/platforms/discord.py` `on_message`: for tracked codex threads,
+  calls `on_thread_message` for bookkeeping AND falls through to
+  `_handle_message` (no early return). The regular Hermes agent processes
+  the conversation turn.
+- Slash commands: `/pause` is pure state flag, `/resume` clears the flag
+  + drops the queue, `/kill` releases the worktree only, `/status`
+  reports worktree existence instead of tmux liveness.
+
+Code commits:
+- `ca8117136` — feat(p1): pivot Phase A
+- (this commit) — docs(isa): record verification + pivot decision
+
+Deferred to **P1.5** (separate ISA): per-thread cwd isolation for tool
+calls. The dispatcher allocates a worktree per thread but Hermes
+currently cwds in the live tree when running bash/code tools.
+`tools/terminal_tool.py` already exposes
+`register_task_env_overrides(task_id, {"cwd": ...})` which is the
+mechanism for wiring this in; estimated ~50-100 LOC across
+`agent/worktree_broker.py`, `gateway/platforms/discord.py`, and
+`tools/environments/local.py`. Without P1.5, P1 is shippable for
+conversational thread work but not for parallel multi-worktree code
+execution. This is documented honestly in the PR description, not
+papered over.
+
 ## Changelog
 
-_(filled on each correction — 4-tuple format per ISA-SPEC §8)_
+2026-05-24 — initial autonomous-hive scope-vs-environment mismatch
+  conjectured:   all 18 ISCs would be verifiable autonomously by the hive
+  refuted by:    9 ISCs (7, 8, 9, 11, 12, 13, 14, 17, 18) need a live
+                 Discord bot, a running dashboard, or operator-recorded
+                 probe output — the hive has none of those
+  learned:       this ISA's surface splits cleanly into "autonomously
+                 buildable substrate" (10 ISCs) and "operator-gated live
+                 probes" (8 ISCs); surrogate fake-adapter integration
+                 tests can cover Discord behavior at the broker+
+                 dispatcher boundary without a live bot
+  criterion now: D-1 added enumerating per-ISC blockers + the surrogate
+                 evidence available; merge requires explicit operator
+                 walk-through of the Test Plan
+
+2026-05-25 — PR #37 CI failed despite green local suite
+  conjectured:   pushing the green-locally branch would yield green CI
+  refuted by:    3 checks failed (Windows footguns, ruff enforcement,
+                 Tests/test) on the first push
+  learned:       (1) `agent/worktree_broker.py` used bare `open()` which
+                 picks platform-default codec (mbcs on Windows, hard
+                 fails on UTF-8 JSON); (2) the full test suite under
+                 xdist + clean HOME exposed 7 unrelated pre-existing
+                 test fragility sources (TIRITH leak, SessionDB stale
+                 import-time DEFAULT_DB_PATH, xai_http stale module
+                 import, `_verify_editable_install` env bleed, hangup
+                 wrapper class identity vs attributes, TUI server
+                 module-global cache pollution, Discord env-var leak)
+  criterion now: `encoding="utf-8"` on every `open()` in worktree_broker
+                 (Windows footguns probe is a perpetual check now);
+                 `tests/conftest.py` hermetic env extends to TIRITH_*
+                 and DISCORD_* with TIRITH_ENABLED=false default; 7
+                 stability fixes each gain a regression test
+
+2026-05-25 — ISC-17 probe regex was too broad
+  conjectured:   `grep -rnE '...|truncate' ...` would catch destructive
+                 shell `truncate(1)` and stay quiet on safe code
+  refuted by:    the probe flagged 5 hits, all of which are Python
+                 `fd.truncate()` in `agent/worktree_broker.py` — the
+                 in-place flock+seek+truncate pattern that
+                 module-spec §4 explicitly mandates
+  learned:       a literal substring match crosses the language-vs-shell
+                 boundary; the criterion *wanted* shell-command-boundary
+                 semantics, not bare-substring
+  criterion now: ISC-17 probe regex revised to
+                 `(^|[[:space:];|&])truncate([[:space:]]|$)` so it only
+                 fires on shell-command `truncate` (still blocks
+                 `rm -rf`, `git clean -fxd`, and `>` redirection);
+                 Python `fd.truncate()` allowed by design
+
+2026-05-25 — Discord thread title bypassed git-ref validation
+  conjectured:   any string from `getattr(thread, "name", "task")` was
+                 safe to embed in a git branch as `codex/<sid>/<name>`
+  refuted by:    live ISC-7 with thread title "Codex hive" produced
+                 `codex/<sid>/Codex hive` — `git worktree add -b`
+                 rejected it with "fatal: ... is not a valid branch name"
+                 because spaces and capitals are disallowed in refs
+  learned:       Discord thread titles can contain any human-readable
+                 characters; git refs cannot; slugification must happen
+                 at the boundary; defense-in-depth (both dispatcher +
+                 broker call it) prevents future callers from
+                 reintroducing the same bug
+  criterion now: `agent.worktree_broker.slugify_ref(value, fallback,
+                 max_len)` lowercase + replace non-[a-z0-9-] + collapse
+                 + strip + truncate; called in both layers; 13 new
+                 parametrized tests + a TestAllocateBranchName regression
+                 cover the cases
+
+2026-05-25 — tmux+raw-codex execution path was the wrong substrate
+  conjectured:   spawn raw `codex` CLI in a per-thread tmux pane and
+                 route messages via `tmux send-keys` for parallel-lane
+                 isolation
+  refuted by:    (1) Hermes' main provider IS `openai-codex` (gpt-5.5);
+                 raw codex CLI in tmux loses Hermes' MVMS memory, Honcho
+                 session continuity, skills, kanban dispatch, plugins,
+                 self-improvement — every Hermes benefit; (2) live
+                 testing on WSL2 hit a real defect: systemd-tmux scope
+                 collection killed freshly-spawned panes mid-
+                 conversation; (3) the dispatcher's `is_tracked` +
+                 message-routing branch in `discord.py` worked, but the
+                 destination (tmux pane) was dead — Hermes' regular
+                 agent grabbed the message anyway and answered correctly
+                 from the user's POV, proving the wrong layer was
+                 trying to be the executor
+  learned:       Tier 2 should be "Hermes-managed parallel sessions
+                 with per-thread worktree isolation," not "raw codex in
+                 tmux." The dispatcher's load-bearing role is worktree
+                 lifecycle, not message execution. The original design
+                 implicitly assumed codex was a separate engine to
+                 compose with; in this operator's stack it isn't
+  criterion now: D-4 added; ISC-7/8/9/11/12/14 rewritten to assert
+                 Hermes-as-executor + worktree-existence semantics; all
+                 tmux subprocess calls removed from dispatcher +
+                 slash commands; ISC-12 redesigned ("ORPHANED when
+                 worktree missing" replaces "NEEDS_REVIVE banner for
+                 dead tmux"); per-thread cwd plumbing for tool calls
+                 explicitly deferred to P1.5 (separate ISA)
 
 ## Verification
 
