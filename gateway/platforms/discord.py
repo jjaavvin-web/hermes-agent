@@ -915,6 +915,10 @@ class DiscordAdapter(BasePlatformAdapter):
                             _wt = _row.get("worktree_path") if _row else None
                             if _wt:
                                 set_active_worktree(_wt)
+                                logger.debug(
+                                    "[%s] codex P1.5: active worktree set to %s for thread %s",
+                                    adapter_self.name, _wt, _ch_id,
+                                )
                             # Note: NO early return — regular agent handles
                             # the conversation turn below.
                     except Exception:
