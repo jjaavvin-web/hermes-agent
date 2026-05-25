@@ -659,11 +659,22 @@ class DiscordAdapter(BasePlatformAdapter):
                 self.name, exc,
             )
 
+        # P3: merge broker — serialized fork/main merges with isa_lint gate.
+        merge_broker: Any = None
+        try:
+            from agent.merge_broker import MergeBroker  # noqa: PLC0415
+            merge_broker = MergeBroker(hermes_home=hermes_home)
+        except Exception as exc:
+            logger.warning(
+                "[%s] MergeBroker unavailable, P3 features disabled: %s",
+                self.name, exc,
+            )
+
         dispatcher = CodexSessionDispatcher(
             hermes_home=hermes_home,
             worktree_broker=broker,
             peer_review_orchestrator=peer_review,
-            merge_broker=None,               # P3
+            merge_broker=merge_broker,
             discord_send=_discord_send,
             kanban_complete=None,            # wired by operator path
         )
