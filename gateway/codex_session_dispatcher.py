@@ -121,12 +121,20 @@ class CodexSessionDispatcher(_CommandsMixin):
         discord_send: Callable[[str, str], Awaitable[None]],
         kanban_complete: Callable[[str], Any] | None = None,
         discord_archive_thread: Callable[[str], Awaitable[None]] | None = None,
-        base_branch: str = "origin/main",
+        base_branch: str | None = None,
     ) -> None:
         """
         Pre-conditions: hermes_home exists and is writable.
         Post-conditions: codex_sessions.json loaded or created empty.
         Raises: PermissionError if hermes_home is not writable.
+
+        ``base_branch`` resolution (most-specific wins):
+        1. explicit constructor arg
+        2. ``HERMES_CODEX_BASE_BRANCH`` env var
+        3. default ``"fork/main"`` — the codex parallel workflow is
+           fork-targeted by design (MergeBroker pushes to ``fork``),
+           so the worktree base must match.  Operators with a
+           differently-named fork remote can override via the env var.
         """
         self._hermes_home = Path(hermes_home)
         self._broker = worktree_broker
@@ -135,6 +143,8 @@ class CodexSessionDispatcher(_CommandsMixin):
         self._discord_send = discord_send
         self._kanban_complete = kanban_complete
         self._discord_archive_thread = discord_archive_thread  # P3.5+ — closeout archive
+        if base_branch is None:
+            base_branch = os.environ.get("HERMES_CODEX_BASE_BRANCH", "").strip() or "fork/main"
         self._base_branch = base_branch
 
         self._sessions_path = self._hermes_home / "codex_sessions.json"
