@@ -4307,8 +4307,12 @@ async def api_pulse_kpis() -> dict:
 
 @app.get("/api/pulse/stream")
 async def api_pulse_stream() -> StreamingResponse:
-    """SSE: re-broadcasts health probes + emits pulse.activity per hive log delta."""
+    """SSE: health probes + pulse.activity log deltas + codex.session row deltas."""
     from hermes_cli.dashboard_health import _probe_all
+    from gateway.codex_session_events import codex_session_events_iter
+    from hermes_constants import get_hermes_home
+
+    sessions_path = get_hermes_home() / "codex_sessions.json"
 
     async def _generate():
         event_id = 0
@@ -4317,10 +4321,18 @@ async def api_pulse_stream() -> StreamingResponse:
         loop = asyncio.get_running_loop()
         activity_gen = pulse_activity_iter()
         activity_task: asyncio.Task | None = None
+        codex_gen = codex_session_events_iter(sessions_path)
+        codex_task: asyncio.Task | None = None
 
         async def _next_activity():
             try:
                 return await activity_gen.__anext__()
+            except StopAsyncIteration:
+                return None
+
+        async def _next_codex():
+            try:
+                return await codex_gen.__anext__()
             except StopAsyncIteration:
                 return None
 
@@ -4342,7 +4354,14 @@ async def api_pulse_stream() -> StreamingResponse:
                 # Drain pulse.activity (non-blocking — wait up to 1s for next)
                 if activity_task is None:
                     activity_task = asyncio.create_task(_next_activity())
-                done, _ = await asyncio.wait({activity_task}, timeout=1.0)
+                if codex_task is None:
+                    codex_task = asyncio.create_task(_next_codex())
+
+                done, _ = await asyncio.wait(
+                    {activity_task, codex_task}, timeout=1.0,
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+
                 if activity_task in done:
                     evt = activity_task.result()
                     activity_task = None
@@ -4350,17 +4369,26 @@ async def api_pulse_stream() -> StreamingResponse:
                         yield f"id: {event_id}\nevent: pulse.activity\ndata: {json.dumps(evt)}\n\n"
                         event_id += 1
 
+                if codex_task in done:
+                    evt = codex_task.result()
+                    codex_task = None
+                    if evt is not None:
+                        yield f"id: {event_id}\nevent: codex.session\ndata: {json.dumps(evt)}\n\n"
+                        event_id += 1
+
                 # Heartbeat every 15s
                 if time.monotonic() - last_heartbeat >= 15:
                     yield ": heartbeat\n\n"
                     last_heartbeat = time.monotonic()
         finally:
-            if activity_task is not None and not activity_task.done():
-                activity_task.cancel()
-            try:
-                await activity_gen.aclose()
-            except Exception:
-                pass
+            for task in (activity_task, codex_task):
+                if task is not None and not task.done():
+                    task.cancel()
+            for gen in (activity_gen, codex_gen):
+                try:
+                    await gen.aclose()
+                except Exception:
+                    pass
 
     return StreamingResponse(
         _generate(),
