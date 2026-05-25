@@ -443,8 +443,39 @@ class CodexSessionDispatcher(_CommandsMixin):
                 thread_id,
                 f"✅ **VERDICT: APPROVE** (Opus, iter {verdict.iteration})\n"
                 f"{rationale_short}\n\n"
-                f"Ready to merge — P3 broker will pick this up.",
+                f"Handing off to merge broker…",
             )
+            # P3: hand the approved diff to the merge broker.  Returns a
+            # MergeResult with the PR URL + classification + auto-merge label
+            # (which Mergify / Actions handles server-side).
+            if self._merge_broker is not None:
+                try:
+                    result = await self._merge_broker.merge(
+                        session_id=sid,
+                        worktree=Path(row.get("worktree_path", "")),
+                        branch=f"codex/{sid}/{row.get('isa_id', 'task')}",
+                        isa_path=Path(row.get("isa_path", "")),
+                        summary=rationale_short,
+                    )
+                except Exception as exc:
+                    log.exception("_apply_verdict: merge_broker.merge crashed")
+                    await self._discord_send(
+                        thread_id,
+                        f"⚠️ Merge broker crashed: `{exc}` — operator handoff.",
+                    )
+                    return
+                if not result.ok:
+                    await self._discord_send(
+                        thread_id,
+                        f"⛔ Merge failed: {result.error}\n"
+                        f"Session stays at MERGING — operator triage needed.",
+                    )
+                    return
+                await self._discord_send(
+                    thread_id,
+                    f"📦 PR #{result.pr_number} opened — "
+                    f"`{result.classification}` — <{result.pr_url}>",
+                )
         elif verdict.kind == "REVISE":
             row["state"] = "EXECUTING"
             self._write_state(state)

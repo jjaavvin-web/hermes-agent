@@ -1,0 +1,47 @@
+# Mergify config for the Codex parallel workflow (P3 merge broker).
+#
+# Behaviour: a PR labelled ``auto-merge`` AND with passing CI ``test`` AND
+# at least one approving review is auto-merged via squash.  PRs without the
+# label go through normal human review.
+#
+# The MergeBroker (``agent/merge_broker.py``) classifies each codex-session
+# PR — ``safe`` (no touch to deny-listed paths) gets ``auto-merge``;
+# ``sensitive`` gets ``needs-human``.  Operator can still override either
+# direction by re-labelling.
+#
+# To activate: install Mergify on the repository
+# (https://docs.mergify.com/installation/).  The alternative is to rename
+# ``.github/workflows/auto-merge.yml.disabled`` → ``.yml`` for a vanilla
+# Actions-based equivalent that lives entirely inside this repo.
+
+pull_request_rules:
+  - name: auto-merge codex PRs that pass CI + review
+    conditions:
+      - label = auto-merge
+      - "#approved-reviews-by >= 1"
+      - check-success = test
+      - check-success = "ruff enforcement (blocking)"
+      - check-success = "Windows footguns (blocking)"
+      - "-draft"
+      - "-conflict"
+    actions:
+      queue:
+        method: squash
+        commit_message_template: |
+          {{ title }} (#{{ number }})
+
+          {{ body }}
+  - name: drop auto-merge label on conflict
+    conditions:
+      - label = auto-merge
+      - conflict
+    actions:
+      label:
+        remove:
+          - auto-merge
+        add:
+          - needs-human
+      comment:
+        message: |
+          Auto-merge dropped — rebase conflict detected.
+          Re-label `auto-merge` after resolving.
