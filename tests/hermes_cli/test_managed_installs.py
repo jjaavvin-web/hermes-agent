@@ -27,10 +27,12 @@ def test_format_managed_message_homebrew(monkeypatch):
 
 
 def test_recommended_update_command_defaults_to_hermes_update(monkeypatch):
+    import hermes_cli.config as config_mod
+
     monkeypatch.delenv("HERMES_MANAGED", raising=False)
 
-    with patch("hermes_cli.config.detect_install_method", return_value="git"):
-        assert recommended_update_command() == "hermes update"
+    with patch.object(config_mod, "detect_install_method", return_value="git"):
+        assert config_mod.recommended_update_command() == "hermes update"
 
 
 def test_cmd_update_blocks_managed_homebrew(monkeypatch, capsys):

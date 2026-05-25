@@ -43,6 +43,13 @@ def server(hermes_home):
         },
     ):
         mod = importlib.import_module("tui_gateway.server")
+        mod._sessions.clear()
+        mod._pending.clear()
+        mod._answers.clear()
+        setattr(mod, "_hermes_home", hermes_home)
+        setattr(mod, "_cfg_cache", None)
+        setattr(mod, "_cfg_mtime", None)
+        setattr(mod, "_cfg_path", None)
         yield mod
         mod._sessions.clear()
         mod._pending.clear()

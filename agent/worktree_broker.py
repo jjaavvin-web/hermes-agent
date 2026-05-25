@@ -275,7 +275,7 @@ class WorktreeBroker:
     def free_port(self, port: int) -> None:
         """Release a specific port back to the pool (by port number)."""
         ports_path = self._ports_path()
-        with open(ports_path, "r+") as fd:
+        with open(ports_path, "r+", encoding="utf-8") as fd:
             fcntl.flock(fd, fcntl.LOCK_EX)
             try:
                 data = self._load_ports_fd(fd)
@@ -347,7 +347,7 @@ class WorktreeBroker:
     def _allocate_port(self, session_id: str) -> int | None:
         """Atomic port claim per spec §4."""
         ports_path = self._ports_path()
-        with open(ports_path, "r+") as fd:
+        with open(ports_path, "r+", encoding="utf-8") as fd:
             fcntl.flock(fd, fcntl.LOCK_EX)
             try:
                 data = self._load_ports_fd(fd)
@@ -368,7 +368,7 @@ class WorktreeBroker:
         ports_path = self._ports_path()
         if not ports_path.exists():
             return
-        with open(ports_path, "r+") as fd:
+        with open(ports_path, "r+", encoding="utf-8") as fd:
             fcntl.flock(fd, fcntl.LOCK_EX)
             try:
                 data = self._load_ports_fd(fd)
@@ -397,7 +397,7 @@ class WorktreeBroker:
         data = {str(p): None for p in range(self.port_range[0], self.port_range[1])}
         ports_path = self._ports_path()
         ports_path.parent.mkdir(parents=True, exist_ok=True)
-        with open(ports_path, "w") as fd:
+        with open(ports_path, "w", encoding="utf-8") as fd:
             json.dump(data, fd)
 
     def _load_ports_fd(self, fd) -> dict:
@@ -456,7 +456,7 @@ class WorktreeBroker:
             )
 
         ports_path = self._ports_path()
-        with open(ports_path, "r+") as fd:
+        with open(ports_path, "r+", encoding="utf-8") as fd:
             fcntl.flock(fd, fcntl.LOCK_EX)
             try:
                 data = self._load_ports_fd(fd)

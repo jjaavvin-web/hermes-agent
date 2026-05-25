@@ -191,6 +191,26 @@ class TestGoalManager:
         assert not mgr.has_goal()
         assert "No active goal" in mgr.status_line()
 
+    def test_uses_current_hermes_home_even_when_sessiondb_default_is_stale(self, tmp_path, monkeypatch):
+        """Goal storage must follow runtime HERMES_HOME, not hermes_state import time."""
+        import hermes_state
+        from hermes_cli import goals
+        from hermes_cli.goals import GoalManager
+
+        stale_home = tmp_path / "stale"
+        current_home = tmp_path / "current"
+        stale_home.mkdir()
+        current_home.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(current_home))
+        monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", stale_home / "state.db")
+        goals._DB_CACHE.clear()
+
+        GoalManager(session_id="runtime-home-sid").set("runtime goal")
+
+        assert (current_home / "state.db").exists()
+        assert not (stale_home / "state.db").exists()
+        goals._DB_CACHE.clear()
+
     def test_set_then_status(self, hermes_home):
         from hermes_cli.goals import GoalManager
 
