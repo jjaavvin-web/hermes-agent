@@ -602,6 +602,8 @@ class DiscordAdapter(BasePlatformAdapter):
         # P3.5: merge watcher (async task) — polls open PRs for MERGING
         # sessions and closes the loop on merge / close-unmerged.
         self._codex_merge_watcher: Any = None
+        # P5.1: gc watcher (async task) — periodic broker.gc() + reap_deleted().
+        self._codex_gc_watcher: Any = None
 
     def _maybe_init_codex_dispatcher(self) -> Any:
         """Construct CodexSessionDispatcher when HERMES_CODEX_DISPATCHER is set.
@@ -735,6 +737,21 @@ class DiscordAdapter(BasePlatformAdapter):
                 "[%s] CodexMergeWatcher unavailable: %s", self.name, exc,
             )
             self._codex_merge_watcher = None
+
+        # P5.1: gc watcher periodically calls broker.gc() to rename
+        # orphan worktrees into .deleted-<ts>/ + reap_deleted() to
+        # purge buckets older than 7 days.  Hourly tick is plenty.
+        try:
+            from gateway.codex_gc_watcher import CodexGcWatcher  # noqa: PLC0415
+            self._codex_gc_watcher = CodexGcWatcher(
+                dispatcher=dispatcher,
+                worktree_broker=broker,
+            )
+        except Exception as exc:
+            logger.warning(
+                "[%s] CodexGcWatcher unavailable: %s", self.name, exc,
+            )
+            self._codex_gc_watcher = None
         return dispatcher
 
     async def connect(self) -> bool:
@@ -894,6 +911,16 @@ class DiscordAdapter(BasePlatformAdapter):
                     except Exception:
                         logger.exception(
                             "[%s] codex_merge_watcher.start failed",
+                            adapter_self.name,
+                        )
+
+                # Codex P5.1: start the gc watcher (hourly broker.gc + reap).
+                if adapter_self._codex_gc_watcher is not None:
+                    try:
+                        await adapter_self._codex_gc_watcher.start()
+                    except Exception:
+                        logger.exception(
+                            "[%s] codex_gc_watcher.start failed",
                             adapter_self.name,
                         )
 
@@ -1155,6 +1182,13 @@ class DiscordAdapter(BasePlatformAdapter):
                 await self._codex_merge_watcher.stop()
             except Exception:  # pragma: no cover - defensive
                 logger.exception("[%s] codex_merge_watcher.stop failed", self.name)
+
+        # Codex P5.1: tear down the gc watcher symmetrically.
+        if self._codex_gc_watcher is not None:
+            try:
+                await self._codex_gc_watcher.stop()
+            except Exception:  # pragma: no cover - defensive
+                logger.exception("[%s] codex_gc_watcher.stop failed", self.name)
 
         # Clean up all active voice connections before closing the client
         for guild_id in list(self._voice_clients.keys()):
