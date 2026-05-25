@@ -15,7 +15,7 @@ import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, Awaitable
+from typing import Any, Awaitable, Callable, Optional
 
 from agent.worktree_broker import slugify_ref
 from gateway.codex_session_dispatcher_commands import _CommandsMixin
@@ -145,6 +145,12 @@ class CodexSessionDispatcher(_CommandsMixin):
         self._state = self._load_state()
         if not self._sessions_path.exists():
             self._write_state(self._state)
+
+        # P2.5: lazy-start the orchestrator on first review request so a
+        # gateway boot with HERMES_CODEX_DISPATCHER=1 but no active codex
+        # threads doesn't burn Opus pane lifetime / Max token quota.
+        self._peer_review_started = False
+        self._peer_review_start_lock: Optional[Any] = None  # asyncio.Lock, created lazily
 
     # ── Public event hooks ────────────────────────────────────────────────────
 
@@ -329,6 +335,7 @@ class CodexSessionDispatcher(_CommandsMixin):
             "resume": self._cmd_resume,
             "kill": self._cmd_kill,
             "status": self._cmd_status,
+            "review": self._cmd_review,
             "handoff-to-ruflo": self._cmd_handoff_to_ruflo,
         }
         handler = handlers.get(name)
@@ -340,6 +347,187 @@ class CodexSessionDispatcher(_CommandsMixin):
         """Return True if thread_id has an active session row."""
         state = self._load_state()
         return thread_id in state.get("sessions", {})
+
+    async def on_phase_verify(self, thread_id: str) -> None:
+        """Auto-trigger Opus peer-review for a session that hit phase: verify.
+
+        Called by CodexPhaseWatcher when an ISA transitions into ``verify``.
+        Looks up the session row, collects the diff from the worktree, asks
+        the orchestrator for a verdict, then runs the verdict-specific
+        side effects (Discord post, kanban comment, ISA Decisions append).
+        """
+        if self._peer_review is None:
+            log.info(
+                "on_phase_verify: no orchestrator wired — skipping for thread %s",
+                thread_id,
+            )
+            return
+        state = self._load_state()
+        row = state.get("sessions", {}).get(thread_id)
+        if row is None:
+            log.warning("on_phase_verify: thread %s not tracked", thread_id)
+            return
+
+        diff = self._collect_diff(Path(row.get("worktree_path", "")))
+        isa_path = Path(row.get("isa_path", ""))
+        sid = row["session_id"]
+
+        await self._ensure_peer_review_started()
+
+        log.info("on_phase_verify: dispatching review for sid=%s thread=%s", sid, thread_id)
+        try:
+            verdict = await self._peer_review.review(
+                session_id=sid,
+                isa_path=isa_path,
+                diff=diff,
+            )
+        except Exception as exc:
+            log.error("on_phase_verify: orchestrator.review crashed: %s", exc)
+            await self._discord_send(
+                thread_id,
+                f"⚠️ Peer review crashed: `{exc}` — operator intervention needed.",
+            )
+            return
+
+        await self._apply_verdict(thread_id=thread_id, row=row, state=state, verdict=verdict)
+
+    async def _ensure_peer_review_started(self) -> None:
+        """Start the orchestrator on first use (single-flight)."""
+        if self._peer_review is None or self._peer_review_started:
+            return
+        import asyncio  # noqa: PLC0415 — kept lazy so the module imports cleanly
+        if self._peer_review_start_lock is None:
+            self._peer_review_start_lock = asyncio.Lock()
+        async with self._peer_review_start_lock:
+            if self._peer_review_started:
+                return
+            log.info("on_phase_verify: starting Opus orchestrator on first use")
+            await self._peer_review.start()
+            self._peer_review_started = True
+
+    def _collect_diff(self, worktree_path: Path) -> str:
+        """Run ``git diff <base_branch>...HEAD`` inside the worktree."""
+        if not worktree_path.exists():
+            return f"<worktree {worktree_path} missing>"
+        try:
+            result = subprocess.run(
+                ["git", "-C", str(worktree_path), "diff", f"{self._base_branch}...HEAD"],
+                capture_output=True, text=True, check=False, timeout=30,
+            )
+            if result.returncode != 0:
+                return f"<git diff failed: {result.stderr.strip()}>"
+            return result.stdout
+        except subprocess.TimeoutExpired:
+            return "<git diff timed out>"
+        except Exception as exc:
+            return f"<git diff exception: {exc}>"
+
+    async def _apply_verdict(
+        self,
+        *,
+        thread_id: str,
+        row: dict,
+        state: dict,
+        verdict: "Any",  # noqa: F821 — Verdict (avoid orchestrator import circularity)
+    ) -> None:
+        """Verdict side effects per ISA: kanban + ISA Decisions + Discord + state."""
+        sid = row["session_id"]
+        rationale = (verdict.rationale or "").strip()
+        # Truncate rationale for Discord (2k char ceiling; keep margin).
+        rationale_short = rationale if len(rationale) <= 1500 else rationale[:1500] + "…"
+
+        if verdict.kind == "APPROVE":
+            row["state"] = "MERGING"
+            self._write_state(state)
+            await self._discord_send(
+                thread_id,
+                f"✅ **VERDICT: APPROVE** (Opus, iter {verdict.iteration})\n"
+                f"{rationale_short}\n\n"
+                f"Ready to merge — P3 broker will pick this up.",
+            )
+        elif verdict.kind == "REVISE":
+            row["state"] = "EXECUTING"
+            self._write_state(state)
+            self._kanban_comment_for_review(
+                row.get("kanban_card_id"), verdict.kind, rationale, verdict.iteration,
+            )
+            self._append_isa_decision(row.get("isa_path"), verdict.kind, rationale, verdict.iteration)
+            await self._discord_send(
+                thread_id,
+                f"🔁 **VERDICT: REVISE** (Opus, iter {verdict.iteration})\n"
+                f"{rationale_short}\n\n"
+                f"Session back to `EXECUTING` — address the feedback above.",
+            )
+        else:  # ESCALATE
+            row["state"] = "ESCALATED"
+            self._write_state(state)
+            await self._discord_send(
+                thread_id,
+                f"⛔ **VERDICT: ESCALATE** (Opus, iter {verdict.iteration})\n"
+                f"{rationale_short}\n\n"
+                f"<@OPERATOR> manual intervention needed. "
+                f"Further auto-reviews stopped for this session.",
+            )
+
+    def _kanban_comment_for_review(
+        self,
+        card_id: Optional[str],
+        kind: str,
+        rationale: str,
+        iteration: int,
+    ) -> None:
+        """Post a peer-review comment to the linked kanban task (best effort)."""
+        if not card_id:
+            return
+        try:
+            from tools.kanban_tools import _connect  # noqa: PLC0415
+            kb, conn = _connect()
+            try:
+                kb.add_comment(
+                    conn,
+                    card_id,
+                    author="peer-review-opus",
+                    body=f"VERDICT: {kind} (iter {iteration})\n\n{rationale}",
+                )
+            finally:
+                conn.close()
+        except Exception as exc:
+            log.warning("_kanban_comment_for_review: %s", exc)
+
+    def _append_isa_decision(
+        self,
+        isa_path_str: Optional[str],
+        kind: str,
+        rationale: str,
+        iteration: int,
+    ) -> None:
+        """Append a Decisions entry to the ISA (best effort)."""
+        if not isa_path_str:
+            return
+        path = Path(isa_path_str)
+        if not path.exists():
+            return
+        try:
+            text = path.read_text(encoding="utf-8")
+            now = _now_iso()
+            entry = (
+                f"\n**Peer review {iteration} ({now}): {kind}.**\n{rationale}\n"
+            )
+            # If ## Decisions section exists, append right after its header line.
+            marker = "\n## Decisions\n"
+            idx = text.find(marker)
+            if idx < 0:
+                # No Decisions section — append the section + entry at end.
+                if not text.endswith("\n"):
+                    text += "\n"
+                text += "\n## Decisions\n" + entry
+            else:
+                head = text[: idx + len(marker)]
+                tail = text[idx + len(marker):]
+                text = head + entry + tail
+            path.write_text(text, encoding="utf-8")
+        except Exception as exc:
+            log.warning("_append_isa_decision: %s", exc)
 
     # ── Persistence ───────────────────────────────────────────────────────────
 

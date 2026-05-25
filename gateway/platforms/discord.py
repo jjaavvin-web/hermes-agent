@@ -596,6 +596,9 @@ class DiscordAdapter(BasePlatformAdapter):
         # Codex Parallel Workflow P1 — opt-in via HERMES_CODEX_DISPATCHER=1.
         # Constructed in connect() before the event handlers are registered.
         self._codex_dispatcher: Any = None
+        # P2.5: phase watcher (async task) started in connect() after the
+        # Discord adapter is ready; stopped in disconnect().
+        self._codex_phase_watcher: Any = None
 
     def _maybe_init_codex_dispatcher(self) -> Any:
         """Construct CodexSessionDispatcher when HERMES_CODEX_DISPATCHER is set.
@@ -641,14 +644,45 @@ class DiscordAdapter(BasePlatformAdapter):
                     thread_id,
                 )
 
-        return CodexSessionDispatcher(
+        # P2 + P2.5: wire the Opus peer-review orchestrator + phase watcher.
+        # The orchestrator's heavy lifecycle (spawning tmux panes running
+        # interactive ``claude``) is deferred to first use; constructing
+        # the object here is cheap.  Import is lazy so partial installs
+        # missing ``agent.peer_review`` don't break the existing P1 dispatcher.
+        peer_review: Any = None
+        try:
+            from agent.peer_review import PeerReviewOrchestrator  # noqa: PLC0415
+            peer_review = PeerReviewOrchestrator(hermes_home=hermes_home)
+        except Exception as exc:
+            logger.warning(
+                "[%s] PeerReviewOrchestrator unavailable, P2 features disabled: %s",
+                self.name, exc,
+            )
+
+        dispatcher = CodexSessionDispatcher(
             hermes_home=hermes_home,
             worktree_broker=broker,
-            peer_review_orchestrator=None,  # P2
+            peer_review_orchestrator=peer_review,
             merge_broker=None,               # P3
             discord_send=_discord_send,
             kanban_complete=None,            # wired by operator path
         )
+
+        # P2.5: phase watcher polls each session's ISA for transitions into
+        # ``verify`` and calls ``dispatcher.on_phase_verify``.  Stored on the
+        # adapter so ``connect`` / ``disconnect`` can start / stop it.
+        try:
+            from gateway.codex_phase_watcher import CodexPhaseWatcher  # noqa: PLC0415
+            self._codex_phase_watcher = CodexPhaseWatcher(
+                dispatcher=dispatcher,
+                on_phase_verify=dispatcher.on_phase_verify,
+            )
+        except Exception as exc:
+            logger.warning(
+                "[%s] CodexPhaseWatcher unavailable: %s", self.name, exc,
+            )
+            self._codex_phase_watcher = None
+        return dispatcher
 
     async def connect(self) -> bool:
         """Connect to Discord and start receiving events."""
@@ -784,6 +818,19 @@ class DiscordAdapter(BasePlatformAdapter):
                     except Exception:
                         logger.exception(
                             "[%s] codex_dispatcher.on_bot_restart failed",
+                            adapter_self.name,
+                        )
+
+                # Codex P2.5: start the phase watcher.  The orchestrator
+                # itself stays lazy-started on first review request so a
+                # gateway boot with no tracked sessions doesn't burn Opus
+                # pane lifetime.
+                if adapter_self._codex_phase_watcher is not None:
+                    try:
+                        await adapter_self._codex_phase_watcher.start()
+                    except Exception:
+                        logger.exception(
+                            "[%s] codex_phase_watcher.start failed",
                             adapter_self.name,
                         )
 
@@ -1014,6 +1061,14 @@ class DiscordAdapter(BasePlatformAdapter):
 
     async def disconnect(self) -> None:
         """Disconnect from Discord."""
+        # Codex P2.5: tear down the phase watcher before closing the client
+        # so its polling loop doesn't observe a half-torn-down dispatcher.
+        if self._codex_phase_watcher is not None:
+            try:
+                await self._codex_phase_watcher.stop()
+            except Exception:  # pragma: no cover - defensive
+                logger.exception("[%s] codex_phase_watcher.stop failed", self.name)
+
         # Clean up all active voice connections before closing the client
         for guild_id in list(self._voice_clients.keys()):
             try:

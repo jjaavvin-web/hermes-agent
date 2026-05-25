@@ -135,6 +135,25 @@ class _CommandsMixin:
         )
         return SlashResponse(text, ephemeral=False)
 
+    async def _cmd_review(self, ctx: "SlashContext") -> "SlashResponse":
+        """Manually trigger Opus peer review for the current thread's session.
+
+        P2.5 operator escape hatch: if the auto-trigger from the phase
+        watcher hasn't fired (e.g. the session's ISA isn't on disk yet,
+        or the operator wants a second pass), running ``/review`` in
+        the Discord thread kicks off ``on_phase_verify`` directly.
+        """
+        from gateway.codex_session_dispatcher import SlashResponse
+
+        state = self._load_state()
+        if ctx.thread_id not in state["sessions"]:
+            return SlashResponse("No active session in this thread.")
+        await self.on_phase_verify(ctx.thread_id)
+        return SlashResponse(
+            "Peer review dispatched — verdict will follow in this thread.",
+            ephemeral=False,
+        )
+
     async def _cmd_handoff_to_ruflo(self, ctx: "SlashContext") -> "SlashResponse":
         from gateway.codex_session_dispatcher import SlashResponse
 
