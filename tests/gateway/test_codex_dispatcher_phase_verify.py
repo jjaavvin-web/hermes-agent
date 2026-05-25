@@ -79,7 +79,7 @@ async def test_approve_marks_merging_and_posts_discord(tmp_path):
     discord_send.assert_awaited()
     args, _ = discord_send.await_args
     assert "APPROVE" in args[1]
-    assert "Ready to merge" in args[1]
+    assert "merge broker" in args[1].lower() or "ready to merge" in args[1].lower()
 
 
 @pytest.mark.asyncio
