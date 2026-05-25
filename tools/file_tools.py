@@ -117,11 +117,36 @@ def _get_live_tracking_cwd(task_id: str = "default") -> str | None:
 
 
 def _resolve_path_for_task(filepath: str, task_id: str = "default") -> Path:
-    """Resolve *filepath* against the task's live terminal cwd when possible."""
+    """Resolve *filepath* against the task's live terminal cwd when possible.
+
+    Resolution priority (most-specific first):
+      1. Absolute path → use as-is.
+      2. Codex-parallel-workflow per-thread worktree (P1.2): if the
+         current async task is inside a tracked codex Discord thread,
+         resolve relative to the assigned worktree path.  This closes
+         the gap where the first Edit/Write of a turn (before any
+         ``cd`` updates live tracking) would otherwise land in the
+         live tree instead of the codex worktree.
+      3. Live tracking cwd that the terminal tool maintains (updated
+         by each bash command's pwd output).
+      4. ``TERMINAL_CWD`` env var.
+      5. ``os.getcwd()`` — the gateway process cwd, which is the live
+         tree on the operator's machine.
+    """
     p = Path(filepath).expanduser()
     if not p.is_absolute():
-        base = _get_live_tracking_cwd(task_id) or os.environ.get(
-            "TERMINAL_CWD", os.getcwd()
+        codex_wt: str | None = None
+        try:
+            from agent.codex_session_context import get_active_worktree
+            _candidate = get_active_worktree()
+            if _candidate and os.path.isdir(_candidate):
+                codex_wt = _candidate
+        except ImportError:
+            pass
+        base = (
+            codex_wt
+            or _get_live_tracking_cwd(task_id)
+            or os.environ.get("TERMINAL_CWD", os.getcwd())
         )
         p = Path(base) / p
     return p.resolve()
