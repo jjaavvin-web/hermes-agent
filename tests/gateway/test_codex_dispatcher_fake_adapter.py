@@ -164,8 +164,10 @@ async def test_thread_create_allocates_worktree_and_writes_row(env):
     ).stdout
     assert f"codex/{sid}/p1-mvp" in branches, f"expected branch missing: {branches!r}"
 
+    # Pivot Phase A: dispatcher no longer spawns tmux.
     tmux_new = [c for c in tmux_calls if len(c) > 1 and c[1] == "new-session"]
-    assert tmux_new, f"no tmux new-session call recorded; got {tmux_calls!r}"
+    assert not tmux_new, f"dispatcher should NOT call tmux new-session after pivot; got {tmux_calls!r}"
+    assert row["tmux_session"] is None
 
 
 # ---------------------------------------------------------------------------
@@ -194,15 +196,16 @@ async def test_follow_up_message_routes_to_existing_session(env):
             )
         )
 
+    # Pivot Phase A: dispatcher does NOT forward via tmux send-keys.
+    # The regular Hermes agent processes the message; dispatcher just
+    # records metadata.
     send_keys = [c for c in tmux_calls if len(c) > 1 and c[1] == "send-keys"]
-    assert send_keys, f"no tmux send-keys recorded; got {tmux_calls!r}"
-    assert any("hello codex" in " ".join(c) for c in send_keys), (
-        f"message text not forwarded: {send_keys!r}"
-    )
+    assert not send_keys, f"dispatcher should NOT send-keys after pivot; got {tmux_calls!r}"
 
     state = json.loads((env["hermes_home"] / "codex_sessions.json").read_text())
     assert state["sessions"]["t2"]["last_message_id"] == "m1"
     assert state["sessions"]["t2"]["last_message_at"] is not None
+    assert state["sessions"]["t2"]["state"] == "EXECUTING"
 
 
 # ---------------------------------------------------------------------------

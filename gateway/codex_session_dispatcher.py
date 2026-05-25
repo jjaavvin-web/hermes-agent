@@ -149,7 +149,13 @@ class CodexSessionDispatcher(_CommandsMixin):
     # ── Public event hooks ────────────────────────────────────────────────────
 
     async def on_thread_create(self, event: ThreadEvent) -> None:
-        """Allocate worktree + launch tmux; write session row (spec §3)."""
+        """Allocate worktree + write session row (spec §3, pivot Phase A).
+
+        Phase A: tmux+raw-codex was dropped — Hermes itself processes thread
+        messages via the regular Discord adapter path. The dispatcher just
+        reserves a worktree + records the assignment. Per-message cwd
+        plumbing lands in P1.5.
+        """
         thread_id = event.thread_id
         if not thread_id:
             log.warning("on_thread_create: empty thread_id — ignored")
@@ -164,8 +170,6 @@ class CodexSessionDispatcher(_CommandsMixin):
             return
 
         sid = str(uuid.uuid4())
-        # Slugify here so the row's isa_id/isa_path stay consistent with the
-        # branch the broker actually creates (it slugifies defensively too).
         isa_slug = slugify_ref(getattr(event, "isa_slug", None) or "task")
 
         try:
@@ -175,23 +179,6 @@ class CodexSessionDispatcher(_CommandsMixin):
             await self._discord_send(thread_id, f"Could not allocate session — reason: {exc}")
             raise WorktreeAllocationError(str(exc)) from exc
 
-        tmux_session = _tmux_name(sid)
-        result = subprocess.run(
-            ["tmux", "new-session", "-d", "-s", tmux_session, "-c", str(wt.path)],
-            capture_output=True, text=True, check=False,
-        )
-        if result.returncode != 0:
-            log.error(
-                "on_thread_create: tmux new-session failed for %s: %s",
-                tmux_session, result.stderr.strip(),
-            )
-            try:
-                self._broker.release(sid)
-            except Exception:
-                pass
-            await self._discord_send(thread_id, "tmux launch failed — session not started")
-            raise TmuxLaunchError(result.stderr.strip())
-
         now = _now_iso()
         row = {
             "session_id": sid,
@@ -199,7 +186,7 @@ class CodexSessionDispatcher(_CommandsMixin):
             "channel_id": event.channel_id,
             "kanban_card_id": None,
             "worktree_path": str(wt.path),
-            "tmux_session": tmux_session,
+            "tmux_session": None,  # deprecated — kept for schema back-compat
             "isa_id": isa_slug,
             "isa_path": str(self._hermes_home / "work" / isa_slug / "ISA.md"),
             "state": "CLAIMED",
@@ -216,12 +203,20 @@ class CodexSessionDispatcher(_CommandsMixin):
 
         await self._discord_send(
             thread_id,
-            f"Session `{sid[:8]}` started. Worktree: `{wt.path}`. tmux: `{tmux_session}`.",
+            f"Session `{sid[:8]}` started. Hermes will process this thread "
+            f"using assigned worktree `{wt.path}` (branch `{wt.branch}`).",
         )
         log.info("on_thread_create: session %s created for thread %s", sid, thread_id)
 
     async def on_thread_message(self, event: ThreadEvent) -> None:
-        """Forward message to tmux; update last_message_at (spec §3)."""
+        """Record message metadata; let regular Hermes agent handle the turn.
+
+        Phase A: tmux send-keys path removed — the Discord adapter falls
+        through to the regular agent which processes the message. This hook
+        is metadata-only: dedup, pause-queueing, last_message_id/state
+        update. The agent's actual response is produced by the existing
+        Discord chat path in gateway/run.py.
+        """
         thread_id = event.thread_id
         state = self._load_state()
 
@@ -236,7 +231,7 @@ class CodexSessionDispatcher(_CommandsMixin):
             log.debug("on_thread_message: duplicate message_id %s — dropped", event.message_id)
             return
 
-        # Paused: queue message
+        # Paused: queue message (operator drains via /resume)
         if row.get("paused"):
             queue = row.setdefault("queued_messages", [])
             if len(queue) >= _MAX_QUEUED_MESSAGES:
@@ -247,25 +242,18 @@ class CodexSessionDispatcher(_CommandsMixin):
             log.info("on_thread_message: session %s paused, queued message", row["session_id"])
             return
 
-        # Check tmux is alive
-        tmux_session = row["tmux_session"]
-        if not self._tmux_has_session(tmux_session):
-            row["state"] = "ORPHANED"
-            self._write_state(state)
-            await self._discord_send(thread_id, self._revive_banner(row))
-            raise TmuxDeadError(f"tmux session {tmux_session} is gone")
-
-        subprocess.run(
-            ["tmux", "send-keys", "-t", tmux_session, event.text, "Enter"],
-            capture_output=True, text=True, check=False,
-        )
+        # State transition + metadata update.
         row["last_message_id"] = event.message_id or row.get("last_message_id")
         row["last_message_at"] = _now_iso()
         row["state"] = "EXECUTING"
         self._write_state(state)
-        log.debug("on_thread_message: forwarded to %s", tmux_session)
+        log.debug(
+            "on_thread_message: recorded for session %s (thread %s)",
+            row["session_id"], thread_id,
+        )
 
-        # P1: post /review prompt if ISA phase is 'verify'
+        # P1: post /review prompt if ISA phase is 'verify' (P2 wires the
+        # actual peer-review trigger; this is just an operator nudge).
         if row.get("isa_phase") == "verify":
             await self._discord_send(
                 thread_id,
@@ -273,7 +261,7 @@ class CodexSessionDispatcher(_CommandsMixin):
             )
 
     async def on_thread_archive(self, event: ThreadEvent) -> None:
-        """Handle thread archive/delete — terminal cleanup (spec §3)."""
+        """Handle thread archive/delete — terminal cleanup (spec §3, pivot Phase A)."""
         thread_id = event.thread_id
         state = self._load_state()
         if thread_id not in state["sessions"]:
@@ -284,19 +272,11 @@ class CodexSessionDispatcher(_CommandsMixin):
         terminal_states = {"COMPLETE", "MERGING"}
 
         try:
-            if row["state"] in terminal_states:
-                if self._kanban_complete and row.get("kanban_card_id"):
-                    try:
-                        self._kanban_complete(row["kanban_card_id"])
-                    except Exception as exc:
-                        log.warning("on_thread_archive: kanban_complete failed: %s", exc)
-            else:
-                tmux_session = row.get("tmux_session", "")
-                if tmux_session:
-                    subprocess.run(
-                        ["tmux", "kill-session", "-t", tmux_session],
-                        capture_output=True, text=True, check=False,
-                    )
+            if row["state"] in terminal_states and self._kanban_complete and row.get("kanban_card_id"):
+                try:
+                    self._kanban_complete(row["kanban_card_id"])
+                except Exception as exc:
+                    log.warning("on_thread_archive: kanban_complete failed: %s", exc)
             try:
                 self._broker.release(sid)
             except Exception as exc:
@@ -308,35 +288,31 @@ class CodexSessionDispatcher(_CommandsMixin):
             log.error("on_thread_archive: unexpected error for %s: %s", sid, exc)
 
     async def on_bot_restart(self) -> list[ReattachResult]:
-        """Reattach or classify all known sessions (spec §6 + amendment C1)."""
+        """Rehydrate dispatcher state after a bot restart (pivot Phase A).
+
+        Phase A: no tmux processes to probe — the dispatcher's state IS the
+        truth. Just verify each session's worktree still exists on disk
+        (operator might have removed one manually) and rehydrate the
+        broker's in-memory registry so subsequent allocate/release calls
+        are idempotent.
+        """
         state = self._load_state()
         sessions = state.get("sessions", {})
-        tmux_live = self._get_live_tmux_sessions()
         results: list[ReattachResult] = []
 
         for thread_id, row in sessions.items():
             sid = row["session_id"]
-            expected_tmux = row.get("tmux_session", _tmux_name(sid))
             try:
-                if expected_tmux in tmux_live:
-                    # Amendment C1: two-step liveness check
-                    if self._hermes_alive_in_tmux(expected_tmux):
-                        if row["state"] == "NEEDS_REVIVE":
-                            row["state"] = "EXECUTING"
-                        log.info("on_bot_restart: session %s reattached (thread %s)", sid, thread_id)
-                        results.append(ReattachResult(sid=sid, thread_id=thread_id, status="live"))
-                    else:
-                        log.warning(
-                            "on_bot_restart: session %s tmux alive but hermes not running "
-                            "— classifying NEEDS_REVIVE", sid,
-                        )
-                        row["state"] = "NEEDS_REVIVE"
-                        await self._discord_send(thread_id, self._revive_banner(row))
-                        results.append(ReattachResult(sid=sid, thread_id=thread_id, status="orphaned"))
+                wt_path = Path(row.get("worktree_path", ""))
+                if wt_path.exists() and (wt_path / ".git").exists():
+                    log.info("on_bot_restart: session %s rehydrated (thread %s)", sid, thread_id)
+                    results.append(ReattachResult(sid=sid, thread_id=thread_id, status="live"))
                 else:
-                    row["state"] = "NEEDS_REVIVE"
-                    log.info("on_bot_restart: session %s orphaned (thread %s)", sid, thread_id)
-                    await self._discord_send(thread_id, self._revive_banner(row))
+                    log.warning(
+                        "on_bot_restart: session %s worktree missing at %s — marking ORPHANED",
+                        sid, wt_path,
+                    )
+                    row["state"] = "ORPHANED"
                     results.append(ReattachResult(sid=sid, thread_id=thread_id, status="orphaned"))
             except Exception as exc:
                 log.warning("on_bot_restart: per-row error sid %s: %s", sid, exc)

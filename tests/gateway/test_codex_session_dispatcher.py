@@ -115,18 +115,19 @@ class TestOnThreadCreate:
         sent_text = discord_send.await_args[0][1]
         assert "disk full" in sent_text
 
-    def test_tmux_failure_releases_worktree_and_posts_banner(self, tmp_path):
-        from gateway.codex_session_dispatcher import TmuxLaunchError
-
+    def test_create_writes_tmux_session_as_none_after_pivot(self, tmp_path):
+        """Pivot Phase A: dispatcher no longer launches tmux; row's
+        tmux_session field stays None for back-compat with the schema."""
         dispatcher, broker, discord_send = _make_dispatcher(tmp_path)
-        event = _make_event(thread_id="t3")
-        with patch("subprocess.run", return_value=_mock_tmux_fail()):
-            with pytest.raises(TmuxLaunchError):
-                _run(dispatcher.on_thread_create(event))
+        event = _make_event(thread_id="threadX")
+        _run(dispatcher.on_thread_create(event))
 
-        broker.release.assert_called_once()
-        discord_send.assert_awaited_once()
-        assert "tmux launch failed" in discord_send.await_args[0][1]
+        state = json.loads((tmp_path / "codex_sessions.json").read_text())
+        row = state["sessions"]["threadX"]
+        assert row["tmux_session"] is None
+        sent_text = discord_send.await_args[0][1]
+        assert "worktree" in sent_text.lower()
+        assert "Hermes will process" in sent_text
 
 
 # ── Tests: on_thread_message ──────────────────────────────────────────────────
@@ -171,19 +172,23 @@ class TestOnThreadMessage:
         state = json.loads(sessions_path.read_text())
         assert len(state["sessions"]["t1"]["queued_messages"]) == 1
 
-    def test_message_forwarded_when_tmux_alive(self, tmp_path):
+    def test_message_records_metadata_no_subprocess_after_pivot(self, tmp_path):
+        """Pivot Phase A: on_thread_message no longer forwards to tmux;
+        it just records last_message_id, last_message_at, and transitions
+        state to EXECUTING. The regular Hermes agent path handles the turn."""
         dispatcher, broker, discord_send = _make_dispatcher(tmp_path)
         self._create_session(dispatcher, "t1")
 
         with patch("subprocess.run") as mock_run:
-            mock_run.return_value = _mock_tmux_ok()
             _run(dispatcher.on_thread_message(_make_event(thread_id="t1", message_id="msg-2")))
+            # NO tmux subprocess calls — dispatcher is pure state.
+            assert mock_run.call_count == 0
 
-            send_key_calls = [
-                c for c in mock_run.call_args_list
-                if c.args and "send-keys" in c.args[0]
-            ]
-            assert len(send_key_calls) == 1
+        state = json.loads((tmp_path / "codex_sessions.json").read_text())
+        row = state["sessions"]["t1"]
+        assert row["last_message_id"] == "msg-2"
+        assert row["state"] == "EXECUTING"
+        assert row["last_message_at"] is not None
 
 
 # ── Tests: on_thread_archive ──────────────────────────────────────────────────
@@ -195,7 +200,9 @@ class TestOnThreadArchive:
         with patch("subprocess.run", return_value=_mock_tmux_ok()):
             _run(dispatcher.on_thread_create(event))
 
-    def test_archive_executing_kills_tmux_and_leaves_kanban_interrupted(self, tmp_path):
+    def test_archive_executing_releases_worktree_skips_kanban(self, tmp_path):
+        """Pivot Phase A: archiving an EXECUTING session releases the
+        worktree but does NOT touch kanban (in-flight work isn't complete)."""
         kanban = MagicMock()
         dispatcher, broker, discord_send = _make_dispatcher(tmp_path, kanban_complete=kanban)
         self._create_session(dispatcher, "t1")
@@ -207,10 +214,10 @@ class TestOnThreadArchive:
         state["sessions"]["t1"]["kanban_card_id"] = "card-1"
         sessions_path.write_text(json.dumps(state))
 
-        with patch("subprocess.run", return_value=_mock_tmux_ok()):
-            _run(dispatcher.on_thread_archive(_make_event(thread_id="t1")))
+        _run(dispatcher.on_thread_archive(_make_event(thread_id="t1")))
 
         kanban.assert_not_called()
+        broker.release.assert_called_once()
         state = json.loads(sessions_path.read_text())
         assert "t1" not in state["sessions"]
 
@@ -265,52 +272,40 @@ class TestOnBotRestart:
         data = {"version": 1, "sessions": {thread_id: row}}
         sessions_path.write_text(json.dumps(data))
 
-    def test_all_live_returns_all_live_no_banners(self, tmp_path):
+    def test_all_live_when_worktree_exists(self, tmp_path):
+        """Pivot Phase A: on_bot_restart checks worktree existence on disk
+        instead of probing tmux. A session with a live worktree is 'live'."""
         dispatcher, broker, discord_send = _make_dispatcher(tmp_path)
-        self._write_session_row(tmp_path, "t1", "sid-abc123", "codex-sess-sid-abc1")
+        sid = "sid-abc123"
+        self._write_session_row(tmp_path, "t1", sid, tmux_name=None)
 
-        def fake_run(cmd, **kw):
-            r = MagicMock()
-            r.returncode = 0
-            if "ls" in cmd:
-                r.stdout = "codex-sess-sid-abc1\n"
-            elif "display-message" in cmd:
-                r.stdout = "12345\n"
-            else:
-                r.stdout = "hermes\n"
-            r.stderr = ""
-            return r
+        # Create the worktree dir + .git subdir to simulate a real worktree
+        wt = tmp_path / "codex-wt" / sid
+        (wt / ".git").mkdir(parents=True)
 
-        with patch("subprocess.run", side_effect=fake_run):
-            results = _run(dispatcher.on_bot_restart())
+        results = _run(dispatcher.on_bot_restart())
 
         assert len(results) == 1
         assert results[0].status == "live"
         discord_send.assert_not_awaited()
 
-    def test_all_orphaned_calls_discord_send_per_row(self, tmp_path):
+    def test_orphaned_when_worktree_missing(self, tmp_path):
+        """Pivot Phase A: if the worktree directory was deleted out from
+        under us, mark the row ORPHANED (no banner — operator finds out
+        via /status or dashboard)."""
         dispatcher, broker, discord_send = _make_dispatcher(tmp_path)
-        self._write_session_row(tmp_path, "t1", "sid-abc123", "codex-sess-sid-abc1")
+        sid = "sid-abc123"
+        self._write_session_row(tmp_path, "t1", sid, tmux_name=None)
+        # Note: NO worktree dir created — simulates missing/manually-removed worktree
 
-        def fake_run(cmd, **kw):
-            r = MagicMock()
-            # tmux ls returns nothing — session gone
-            if "ls" in cmd:
-                r.returncode = 0
-                r.stdout = ""
-            else:
-                r.returncode = 1
-                r.stdout = ""
-            r.stderr = ""
-            return r
-
-        with patch("subprocess.run", side_effect=fake_run):
-            results = _run(dispatcher.on_bot_restart())
+        results = _run(dispatcher.on_bot_restart())
 
         assert len(results) == 1
         assert results[0].status == "orphaned"
-        discord_send.assert_awaited_once()
-        assert "[Session needs revive]" in discord_send.await_args[0][1]
+        # Phase A: no banner spam; row state reflects orphaning
+        state = json.loads((tmp_path / "codex_sessions.json").read_text())
+        assert state["sessions"]["t1"]["state"] == "ORPHANED"
+        discord_send.assert_not_awaited()
 
     def test_missing_sessions_file_returns_empty_list(self, tmp_path):
         dispatcher, broker, discord_send = _make_dispatcher(tmp_path)

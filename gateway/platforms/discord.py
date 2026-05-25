@@ -882,9 +882,12 @@ class DiscordAdapter(BasePlatformAdapter):
                         if "*" not in _free_channels and not (_channel_ids & _free_channels):
                             return
 
-                # Codex P1: route messages in tracked codex-session threads
-                # to the dispatcher and skip the normal _handle_message path.
-                # Default (no dispatcher) is unchanged — falls straight through.
+                # Codex P1 (pivot Phase A): for tracked codex-session threads,
+                # record metadata via the dispatcher AND fall through to the
+                # regular Hermes agent path — Hermes itself processes the turn
+                # (using openai-codex as its provider). The dispatcher's job is
+                # bookkeeping + worktree lifecycle, not message execution.
+                # Default (no dispatcher) is unchanged.
                 if adapter_self._codex_dispatcher is not None:
                     try:
                         _ch_id = str(message.channel.id)
@@ -899,7 +902,8 @@ class DiscordAdapter(BasePlatformAdapter):
                                     author_id=str(message.author.id),
                                 )
                             )
-                            return
+                            # Note: NO early return — regular agent handles
+                            # the conversation turn below.
                     except Exception:
                         logger.exception(
                             "[%s] codex_dispatcher.on_thread_message failed for %s",
