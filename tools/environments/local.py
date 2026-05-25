@@ -503,6 +503,11 @@ class LocalEnvironment(BaseEnvironment):
 
         _popen_cwd = self.cwd
 
+        # P1.5 cwd override lives in ``BaseEnvironment.execute`` (where
+        # effective_cwd is resolved before ``_wrap_command`` bakes the
+        # ``cd`` into the bash script).  No override needed here — Popen's
+        # cwd is shadowed by the wrapper's `builtin cd` anyway.
+
         proc = subprocess.Popen(
             args,
             text=True,

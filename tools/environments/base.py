@@ -793,7 +793,24 @@ class BaseEnvironment(ABC):
         from tools.terminal_tool import _rewrite_compound_background
         exec_command = _rewrite_compound_background(exec_command)
         effective_timeout = timeout or self.timeout
-        effective_cwd = cwd or self.cwd
+
+        # P1.5: codex-parallel-workflow per-thread cwd override.
+        # When a Discord message in a tracked codex thread is the source,
+        # ``agent.codex_session_context.set_active_worktree`` carries the
+        # worktree path through the async task; tool calls inside that
+        # turn default to the worktree instead of ``self.cwd``. Explicit
+        # caller-supplied ``cwd`` still wins (LLM may want a specific
+        # directory). Lazy import so this module imports cleanly without
+        # the codex dispatcher installed.
+        codex_wt = None
+        try:
+            from agent.codex_session_context import get_active_worktree
+            _candidate = get_active_worktree()
+            if _candidate and os.path.isdir(_candidate):
+                codex_wt = _candidate
+        except ImportError:
+            pass
+        effective_cwd = cwd or codex_wt or self.cwd
 
         # Merge sudo stdin with caller stdin
         if sudo_stdin is not None and stdin_data is not None:
