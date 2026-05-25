@@ -187,6 +187,13 @@ _HERMES_BEHAVIORAL_VARS = frozenset({
     "HERMES_BACKGROUND_NOTIFICATIONS",
     "HERMES_EXEC_ASK",
     "HERMES_HOME_MODE",
+    # Tirith auto-install is a real network/background-thread side effect.
+    # Tests opt into it with explicit monkeypatches; inherited developer/CI
+    # env must not change hermetic test behavior.
+    "TIRITH_ENABLED",
+    "TIRITH_BIN",
+    "TIRITH_TIMEOUT",
+    "TIRITH_FAIL_OPEN",
     # Kanban path/board pins must never leak from a developer shell or
     # dispatched worker into tests; otherwise tests can write fake tasks to
     # the real ~/.hermes/kanban.db instead of the per-test HERMES_HOME.
@@ -280,8 +287,17 @@ _HERMES_BEHAVIORAL_VARS = frozenset({
     "SLACK_FREE_RESPONSE_CHANNELS",
     "SLACK_ALLOW_BOTS",
     "SLACK_REACTIONS",
+    "DISCORD_ALLOWED_CHANNELS",
+    "DISCORD_ALLOWED_GUILDS",
+    "DISCORD_ALLOWED_ROLES",
+    "DISCORD_ALLOW_BOTS",
+    "DISCORD_AUTO_THREAD",
+    "DISCORD_HIDE_SLASH_COMMANDS",
+    "DISCORD_IGNORED_CHANNELS",
+    "DISCORD_NO_THREAD_CHANNELS",
     "DISCORD_REQUIRE_MENTION",
     "DISCORD_FREE_RESPONSE_CHANNELS",
+    "DISCORD_THREAD_REQUIRE_MENTION",
     "TELEGRAM_REQUIRE_MENTION",
     "WHATSAPP_REQUIRE_MENTION",
     "DINGTALK_REQUIRE_MENTION",
@@ -331,7 +347,13 @@ def _hermetic_environment(tmp_path, monkeypatch):
     monkeypatch.setenv("LC_ALL", "C.UTF-8")
     monkeypatch.setenv("PYTHONHASHSEED", "0")
 
-    # 4b. Disable AWS IMDS lookups. Without this, any test that ends up
+    # 4b. Disable Tirith auto-install during ordinary tests. The install path
+    #     performs real network I/O in a background daemon thread; tests that
+    #     exercise it patch the resolver/config explicitly. Leaving the default
+    #     enabled made unrelated gateway tests depend on network/SSL state.
+    monkeypatch.setenv("TIRITH_ENABLED", "false")
+
+    # 4c. Disable AWS IMDS lookups. Without this, any test that ends up
     #     calling has_aws_credentials() / resolve_aws_auth_env_var()
     #     (e.g. provider auto-detect, status command, cron run_job) burns
     #     ~2s waiting for the metadata service at 169.254.169.254 to time

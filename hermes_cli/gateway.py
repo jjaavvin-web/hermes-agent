@@ -2103,29 +2103,43 @@ def _hermes_home_for_target_user(target_home_dir: str) -> str:
         return str(current_hermes)
 
 
+def _is_dir_accessible(path: Path) -> bool:
+    """Return whether *path* is an accessible directory.
+
+    System service generation may run under sudo/root while remapping paths for
+    another target user.  In that state, probing the caller's Hermes home can
+    hit permission-denied directories; those should simply be excluded from the
+    generated PATH instead of aborting unit generation.
+    """
+    try:
+        return path.is_dir()
+    except OSError:
+        return False
+
+
 def _build_service_path_dirs(project_root: Path | None = None) -> list[str]:
-    """Build PATH directory list for service units, excluding non-existent dirs."""
+    """Build PATH directory list for service units, excluding inaccessible dirs."""
     if project_root is None:
         project_root = PROJECT_ROOT
 
     candidates = []
 
     venv_bin = project_root / "venv" / "bin"
-    if venv_bin.is_dir():
+    if _is_dir_accessible(venv_bin):
         candidates.append(str(venv_bin))
     elif sys.prefix != sys.base_prefix:
         candidates.append(str(Path(sys.prefix) / "bin"))
 
     node_bin = project_root / "node_modules" / ".bin"
-    if node_bin.is_dir():
+    if _is_dir_accessible(node_bin):
         candidates.append(str(node_bin))
 
     hermes_home = get_hermes_home()
     hermes_node = hermes_home / "node" / "bin"
-    if hermes_node.is_dir():
+    if _is_dir_accessible(hermes_node):
         candidates.append(str(hermes_node))
     hermes_nm = hermes_home / "node_modules" / ".bin"
-    if hermes_nm.is_dir():
+    if _is_dir_accessible(hermes_nm):
         candidates.append(str(hermes_nm))
 
     return candidates

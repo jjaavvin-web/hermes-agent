@@ -213,8 +213,12 @@ class TestInstallHangupProtection:
         try:
             # On Windows (no SIGHUP) we still wrap stdio and create the log.
             assert state["installed"] is True
-            assert isinstance(sys.stdout, _UpdateOutputStream)
-            assert isinstance(sys.stderr, _UpdateOutputStream)
+            assert sys.stdout is not prev_out
+            assert sys.stderr is not prev_err
+            assert getattr(sys.stdout, "_original", None) is prev_out
+            assert getattr(sys.stderr, "_original", None) is prev_err
+            assert getattr(sys.stdout, "_log", None) is state["log_file"]
+            assert getattr(sys.stderr, "_log", None) is state["log_file"]
             assert state["log_file"] is not None
 
             sys.stdout.write("checking mirror\n")

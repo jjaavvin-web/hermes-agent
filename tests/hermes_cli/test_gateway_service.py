@@ -1293,6 +1293,36 @@ class TestHermesHomeForTargetUser:
         assert result == "/home/alice/.hermes"
 
 
+class TestBuildServicePathDirs:
+    def test_excludes_inaccessible_dirs(self, tmp_path, monkeypatch):
+        project_root = tmp_path / "repo"
+        venv_bin = project_root / "venv" / "bin"
+        inaccessible_node_bin = project_root / "node_modules" / ".bin"
+        hermes_home = tmp_path / "hermes"
+        hermes_node_bin = hermes_home / "node" / "bin"
+
+        venv_bin.mkdir(parents=True)
+        inaccessible_node_bin.mkdir(parents=True)
+        hermes_node_bin.mkdir(parents=True)
+
+        monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: hermes_home)
+
+        real_is_dir = Path.is_dir
+
+        def fake_is_dir(path):
+            if path == inaccessible_node_bin:
+                raise PermissionError("permission denied")
+            return real_is_dir(path)
+
+        monkeypatch.setattr(Path, "is_dir", fake_is_dir)
+
+        dirs = gateway_cli._build_service_path_dirs(project_root)
+
+        assert str(venv_bin) in dirs
+        assert str(inaccessible_node_bin) not in dirs
+        assert str(hermes_node_bin) in dirs
+
+
 class TestGeneratedUnitUsesDetectedVenv:
     def test_systemd_unit_uses_dot_venv_when_detected(self, tmp_path, monkeypatch):
         dot_venv = tmp_path / ".venv"
