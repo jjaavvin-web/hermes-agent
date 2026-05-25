@@ -461,9 +461,8 @@ class TestAntiProbes:
     def test_no_claude_p_or_agent_sdk_in_module(self):
         """ISC-12: NO `claude -p`, `--print`, `--non-interactive`, Agent SDK
         invocation in agent/peer_review.py."""
-        src = Path("/home/josep/.local/share/hermes-agent/agent/peer_review.py").read_text(
-            encoding="utf-8"
-        )
+        import agent.peer_review as _module
+        src = Path(_module.__file__).read_text(encoding="utf-8")
         # Strip docstrings / comments referencing the forbidden APIs by context.
         # The actual check is that no actual invocation exists.
         # Acceptable: doctring mentions for explanation. We check that the
