@@ -107,6 +107,16 @@ def _build_snapshot() -> dict:
             "last_verdict": review.get("last_verdict"),
             "last_review_at": review.get("last_review_at"),
             "created_at": row.get("created_at"),
+            # P3.5 PR meta surfaced for the SPA tab.
+            "pr_number": row.get("pr_number"),
+            "pr_url": row.get("pr_url"),
+            "pr_state": row.get("pr_state"),
+            "head_branch": row.get("head_branch"),
+            "merge_label": row.get("merge_label"),
+            "merge_requested_at": row.get("merge_requested_at"),
+            "merged_at": row.get("merged_at"),
+            "merge_commit_oid": row.get("merge_commit_oid"),
+            "closed_at": row.get("closed_at"),
         })
         state = row.get("state") or "UNKNOWN"
         state_counts[state] = state_counts.get(state, 0) + 1

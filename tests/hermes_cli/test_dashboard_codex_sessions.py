@@ -110,6 +110,50 @@ class TestSnapshot:
         assert sess["reviews_today"] == 3
         assert sess["last_verdict"] == "REVISE"
 
+    def test_pr_meta_surfaced(self, app_with_router, tmp_path):
+        """P4 Wave 2: PR meta fields (pr_number/pr_url/pr_state/etc.)
+        must surface in the snapshot for the SPA tab."""
+        _seed(tmp_path, {"t1": _make_row("sid-x", "t1",
+            state="MERGING",
+            pr_number=99,
+            pr_url="https://example/pr/99",
+            pr_state="OPEN",
+            head_branch="codex/sid-x/task",
+            merge_label="auto-merge",
+            merge_requested_at="2026-05-25T16:00:00Z",
+        )})
+        client = TestClient(app_with_router)
+        sess = client.get("/api/dashboard/codex-sessions").json()["sessions"][0]
+        assert sess["pr_number"] == 99
+        assert sess["pr_url"] == "https://example/pr/99"
+        assert sess["pr_state"] == "OPEN"
+        assert sess["head_branch"] == "codex/sid-x/task"
+        assert sess["merge_label"] == "auto-merge"
+        assert sess["merge_requested_at"] == "2026-05-25T16:00:00Z"
+
+    def test_pr_meta_absent_for_pre_p35_rows(self, app_with_router, tmp_path):
+        """Old rows without PR meta still come back; missing fields = None."""
+        _seed(tmp_path, {"t1": _make_row("sid-y", "t1", state="EXECUTING")})
+        client = TestClient(app_with_router)
+        sess = client.get("/api/dashboard/codex-sessions").json()["sessions"][0]
+        assert sess["pr_number"] is None
+        assert sess["pr_url"] is None
+        assert sess["pr_state"] is None
+
+    def test_merged_session_carries_merged_at_and_oid(self, app_with_router, tmp_path):
+        _seed(tmp_path, {"t1": _make_row("sid-m", "t1",
+            state="COMPLETE",
+            pr_number=42,
+            pr_state="MERGED",
+            merged_at="2026-05-25T17:00:00Z",
+            merge_commit_oid="deadbeef",
+        )})
+        client = TestClient(app_with_router)
+        sess = client.get("/api/dashboard/codex-sessions").json()["sessions"][0]
+        assert sess["pr_state"] == "MERGED"
+        assert sess["merged_at"] == "2026-05-25T17:00:00Z"
+        assert sess["merge_commit_oid"] == "deadbeef"
+
 
 # ── detail ────────────────────────────────────────────────────────────
 
