@@ -131,6 +131,7 @@ export const ru: Translations = {
 
   sessions: {
     title: "Сессии",
+    overview: "Обзор",
     searchPlaceholder: "Поиск по содержимому сообщений...",
     noSessions: "Сессий пока нет",
     noMatch: "Нет сессий, соответствующих запросу",
@@ -273,7 +274,7 @@ export const ru: Translations = {
       "Поиск, установка, включение и обновление плагинов Hermes (аналог `hermes plugins`).",
     identifierLabel: "Git URL или owner/repo",
     inactive: "неактивно",
-    installBtn: "Установить из Git",
+    installBtn: "Установить",
     installHeading: "Установка из GitHub / Git URL",
     installHint: "Используйте сокращение owner/repo или полный https:// или git@ URL для клонирования.",
     memoryProviderLabel: "Провайдер памяти",
@@ -371,6 +372,8 @@ export const ru: Translations = {
     description: "Управление API-ключами и секретами, хранящимися в",
     hideAdvanced: "Скрыть расширенные",
     showAdvanced: "Показать расширенные",
+    showLess: "Показать меньше",
+    showMore: "Показать больше",
     llmProviders: "Провайдеры LLM",
     providersConfigured: "Настроено {configured} из {total} провайдеров",
     getKey: "Получить ключ",
@@ -396,7 +399,7 @@ export const ru: Translations = {
     disconnect: "Отключить",
     managedExternally: "Управляется извне",
     copied: "Скопировано ✓",
-    cli: "CLI",
+    cli: "Копировать",
     copyCliCommand: "Скопировать CLI-команду (для внешнего / резервного варианта)",
     connect: "Подключить",
     sessionExpires: "Сессия истечёт через {time}",
@@ -662,6 +665,7 @@ export const ru: Translations = {
     columnLabels: {
       triage: "Сортировка",
       todo: "К выполнению",
+      scheduled: "Запланировано",
       ready: "Готово к работе",
       running: "В работе",
       blocked: "Заблокировано",
@@ -671,6 +675,7 @@ export const ru: Translations = {
     columnHelp: {
       triage: "Сырые идеи — specifier подготовит спецификацию",
       todo: "Ожидает зависимостей или без исполнителя",
+      scheduled: "Ожидает известной задержки по времени или запланированного продолжения",
       ready: "Зависимости выполнены; назначьте профиль для диспетчеризации",
       running: "Взято воркером — выполняется",
       blocked: "Воркер запросил вмешательство человека",

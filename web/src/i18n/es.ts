@@ -131,6 +131,7 @@ export const es: Translations = {
 
   sessions: {
     title: "Sesiones",
+    overview: "Resumen",
     searchPlaceholder: "Buscar contenido de mensajes...",
     noSessions: "Aún no hay sesiones",
     noMatch: "Ninguna sesión coincide con tu búsqueda",
@@ -273,7 +274,7 @@ export const es: Translations = {
       "Descubre, instala, habilita y actualiza complementos de Hermes (equivalente a `hermes plugins`).",
     identifierLabel: "URL de Git u owner/repo",
     inactive: "inactivo",
-    installBtn: "Instalar desde Git",
+    installBtn: "Instalar",
     installHeading: "Instalar desde GitHub / URL de Git",
     installHint: "Usa la forma corta owner/repo o una URL de clonación https:// o git@ completa.",
     memoryProviderLabel: "Proveedor de memoria",
@@ -371,6 +372,8 @@ export const es: Translations = {
     description: "Gestiona claves API y secretos almacenados en",
     hideAdvanced: "Ocultar avanzado",
     showAdvanced: "Mostrar avanzado",
+    showLess: "Mostrar menos",
+    showMore: "Mostrar más",
     llmProviders: "Proveedores LLM",
     providersConfigured: "{configured} de {total} proveedores configurados",
     getKey: "Obtener clave",
@@ -396,7 +399,7 @@ export const es: Translations = {
     disconnect: "Desconectar",
     managedExternally: "Gestionado externamente",
     copied: "Copiado ✓",
-    cli: "CLI",
+    cli: "Copiar",
     copyCliCommand: "Copiar comando CLI (para externo / alternativa)",
     connect: "Conectar",
     sessionExpires: "La sesión caduca en {time}",
@@ -661,6 +664,7 @@ export const es: Translations = {
     columnLabels: {
       triage: "Clasificación",
       todo: "Por hacer",
+      scheduled: "Programado",
       ready: "Listo",
       running: "En curso",
       blocked: "Bloqueado",
@@ -670,6 +674,7 @@ export const es: Translations = {
     columnHelp: {
       triage: "Ideas en bruto — un specifier desarrollará la especificación",
       todo: "Esperando dependencias o sin asignar",
+      scheduled: "Esperando un retraso conocido o un seguimiento programado",
       ready: "Dependencias satisfechas; asigna un perfil para despachar",
       running: "Reclamado por un worker — en ejecución",
       blocked: "El worker pidió intervención humana",
