@@ -28,6 +28,100 @@ CURRENT_VERSION = 1
 _MIGRATIONS: dict[tuple[int, int], Any] = {}
 
 
+def _canonical_isa_id(slug: str, sid: str, created_at_iso: str) -> str:
+    """Build a canonical ISA id per ISA-SPEC §2: ``YYYYMMDD-HHMM_<slug>-<sid8>``.
+
+    The sid8 suffix disambiguates same-slug sessions (two threads named
+    ``config`` would otherwise collide on the same ISA dir).
+    """
+    try:
+        ts = datetime.fromisoformat(created_at_iso.replace("Z", "+00:00"))
+    except Exception:
+        ts = datetime.now(timezone.utc)
+    date_part = ts.strftime("%Y%m%d-%H%M")
+    slug_clean = slug or "task"
+    return f"{date_part}_{slug_clean}-{sid[:8]}"
+
+
+_ISA_STUB_TEMPLATE = """---
+isa:      {isa_id}
+task:     "{task}"
+tier:     E2
+phase:    scaffold
+progress: 0/0
+card:     "-"
+board:    "-"
+branch:   {branch}
+hive:     "-"
+owner:    hermes-codex
+started:  {started}
+updated:  {started}
+session:  {sid}
+worktree: {worktree}
+thread:   {thread_id}
+---
+
+# {task}
+
+> **Workflow contract for this session**
+>
+> 1. **scaffold** — fill in Goals, Constraints, ISCs below. You are in phase `scaffold` until the plan is concrete enough to start executing.
+> 2. **execute** — write the code in this worktree (`{worktree}`). Edit/Write are sandboxed to that path. When you finish an iteration, `git add -A && git commit -m "..."` inside the worktree. Tick the matching ISC `[x]`.
+> 3. **verify** — when the iteration is implementation-complete, bump frontmatter `phase: verify`. The Codex Phase Watcher polls every 30s and auto-fires Opus peer review. **Do not push manually** — the merge broker takes over on APPROVE.
+> 4. **complete** — set on PR-merge by the dispatcher. Hands-off.
+
+## 1. Goals
+- TODO: what is this session's outcome?
+
+## 2. Constraints
+- Stay inside worktree `{worktree}` (sandbox enforced).
+- Branch `{branch}` is yours. Other sessions own their own branches.
+
+## 3. ISCs (Independent State Checks)
+- [ ] TODO — replace with verifiable checkboxes the reviewer can run.
+
+## 4. Plan
+TODO.
+
+## 5. Decisions
+"""
+
+
+def _bootstrap_isa(
+    *,
+    isa_path: Path,
+    isa_id: str,
+    task: str,
+    branch: str,
+    sid: str,
+    worktree: str,
+    thread_id: str,
+    started: str,
+) -> None:
+    """Write an ISA stub if one doesn't already exist at ``isa_path``.
+
+    Idempotent — if the file is already there (operator pre-wrote it,
+    or a prior session crashed mid-flight), we leave it alone.
+    """
+    try:
+        isa_path.parent.mkdir(parents=True, exist_ok=True)
+        if isa_path.exists():
+            return
+        text = _ISA_STUB_TEMPLATE.format(
+            isa_id=isa_id,
+            task=task or isa_id,
+            branch=branch,
+            sid=sid,
+            worktree=worktree,
+            thread_id=thread_id,
+            started=started,
+        )
+        isa_path.write_text(text, encoding="utf-8")
+        log.info("bootstrap_isa: wrote %s", isa_path)
+    except Exception as exc:
+        log.warning("bootstrap_isa: failed for %s: %s", isa_path, exc)
+
+
 class SessionNotFoundError(KeyError):
     """Raised when on_thread_message targets an untracked thread_id."""
 
@@ -203,6 +297,24 @@ class CodexSessionDispatcher(_CommandsMixin):
             raise WorktreeAllocationError(str(exc)) from exc
 
         now = _now_iso()
+        # Per ISA-SPEC §2 the canonical isa-id is
+        # ``YYYYMMDD-HHMM_<slug>-<sid8>``. The bare-slug path used in P1
+        # collided across same-slug sessions and (more importantly) never
+        # existed on disk, so CodexPhaseWatcher silently no-op'd for every
+        # session. Bootstrap the ISA stub at the canonical location now.
+        isa_id = _canonical_isa_id(isa_slug, sid, now)
+        isa_path = self._hermes_home / "work" / isa_id / "ISA.md"
+        branch_name = f"codex/{sid}/{isa_slug}"
+        _bootstrap_isa(
+            isa_path=isa_path,
+            isa_id=isa_id,
+            task=isa_slug,
+            branch=branch_name,
+            sid=sid,
+            worktree=str(wt.path),
+            thread_id=thread_id,
+            started=now,
+        )
         row = {
             "session_id": sid,
             "thread_id": thread_id,
@@ -210,8 +322,9 @@ class CodexSessionDispatcher(_CommandsMixin):
             "kanban_card_id": None,
             "worktree_path": str(wt.path),
             "tmux_session": None,  # deprecated — kept for schema back-compat
-            "isa_id": isa_slug,
-            "isa_path": str(self._hermes_home / "work" / isa_slug / "ISA.md"),
+            "isa_id": isa_id,
+            "isa_slug": isa_slug,
+            "isa_path": str(isa_path),
             "state": "CLAIMED",
             "paused": False,
             "queued_messages": [],
@@ -665,11 +778,18 @@ class CodexSessionDispatcher(_CommandsMixin):
             # MergeResult with the PR URL + classification + auto-merge label
             # (which Mergify / Actions handles server-side).
             if self._merge_broker is not None:
+                # ``isa_slug`` is the git-ref-safe slug used by the broker
+                # when the worktree was allocated.  ``isa_id`` since 2026-05-26
+                # is the dated canonical ISA-SPEC id (e.g.
+                # ``20260526-1645_notionformat-b5728e4a``) and would NOT
+                # match the actual branch name. Old rows pre-backfill store
+                # the slug in ``isa_id`` directly — keep the fallback.
+                _branch_slug = row.get("isa_slug") or row.get("isa_id") or "task"
                 try:
                     result = await self._merge_broker.merge(
                         session_id=sid,
                         worktree=Path(row.get("worktree_path", "")),
-                        branch=f"codex/{sid}/{row.get('isa_id', 'task')}",
+                        branch=f"codex/{sid}/{_branch_slug}",
                         isa_path=Path(row.get("isa_path", "")),
                         summary=rationale_short,
                     )
@@ -691,7 +811,7 @@ class CodexSessionDispatcher(_CommandsMixin):
                 # data it needs to poll this PR and close the loop.
                 row["pr_number"] = result.pr_number
                 row["pr_url"] = result.pr_url
-                row["head_branch"] = f"codex/{sid}/{row.get('isa_id', 'task')}"
+                row["head_branch"] = f"codex/{sid}/{_branch_slug}"
                 row["merge_label"] = result.classification
                 row["merge_requested_at"] = _now_iso()
                 row["pr_state"] = "OPEN"

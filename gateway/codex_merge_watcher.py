@@ -43,17 +43,24 @@ log = logging.getLogger(__name__)
 _GH_TIMEOUT_SEC = 30
 
 
-def _gh_pr_view(pr_number: int) -> Optional[dict]:
+def _gh_pr_view(pr_number: int, repo: Optional[str] = None) -> Optional[dict]:
     """Return ``gh pr view`` JSON for ``pr_number`` or None on any failure.
+
+    ``repo`` is the ``OWNER/REPO`` slug to query — when None, ``gh``
+    falls back to inferring from the cwd's ``origin`` remote, which in
+    this codebase is the upstream NousResearch fork, not the user's
+    fork where codex PRs live. Always pass ``repo`` in production
+    (the watcher derives it from the row's stored ``pr_url``).
 
     Failure modes that legitimately return None: PR doesn't exist (gh
     exits non-zero), gh times out, gh isn't on PATH, network blip.
     Each is logged as a warning; the next tick will retry.
     """
+    repo_args: list[str] = ["--repo", repo] if repo else []
     try:
         result = subprocess.run(
             [
-                "gh", "pr", "view", str(pr_number),
+                "gh", "pr", "view", *repo_args, str(pr_number),
                 "--json", "state,mergedAt,mergeCommit,closedAt,url,number",
             ],
             capture_output=True,
@@ -181,7 +188,26 @@ class CodexMergeWatcher:
             if not pr_number:
                 # MergeBroker crashed before opening the PR — operator triage.
                 continue
-            payload = self._gh_pr_view(int(pr_number))
+            # Derive OWNER/REPO from the stored pr_url so we query the
+            # right repo (the user's fork, not upstream origin). Without
+            # this gh defaults to the gateway cwd's ``origin`` remote,
+            # which in this codebase is the upstream NousResearch repo,
+            # so gh pr view <num> queries the wrong PR.
+            pr_repo: Optional[str] = None
+            pr_url = row.get("pr_url") or ""
+            if "github.com/" in pr_url:
+                tail = pr_url.split("github.com/", 1)[1]
+                # Expect ``<owner>/<repo>/pull/<n>``; keep the first two segments.
+                parts = tail.split("/")
+                if len(parts) >= 2:
+                    pr_repo = f"{parts[0]}/{parts[1]}"
+            # gh_pr_view's repo arg is optional for back-compat with old
+            # tests that didn't pass it; production always derives it.
+            try:
+                payload = self._gh_pr_view(int(pr_number), pr_repo)
+            except TypeError:
+                # Test doubles may have the older single-arg signature.
+                payload = self._gh_pr_view(int(pr_number))
             if payload is None:
                 continue
             current = _classify_pr_state(payload)

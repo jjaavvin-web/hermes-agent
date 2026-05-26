@@ -43,12 +43,22 @@ _DEFAULT_IDLE_THRESHOLD_SEC = 15
 _DEFAULT_PANE_RECYCLE_AFTER = 50
 _DIFF_SUMMARY_THRESHOLD = 20480
 _STARTUP_DIALOG_TIMEOUT_SEC = 120
+
+# Sentinel the reviewer is instructed to emit so we can distinguish a
+# verdict (in the reviewer's reply) from the orchestrator's own typed-in
+# invocation echoed back into the pane capture. Without this, a literal
+# "VERDICT: APPROVE | REVISE | ESCALATE" in the prompt itself matches
+# the regex and returns a fake-positive APPROVE within ~20s of dispatch
+# (no real review having happened). Discovered 2026-05-26 during the
+# first live smoke after the ISA-bootstrap fix.
+_VERDICT_SENTINEL = "==CODEX_REVIEW_VERDICT=="
+
 _VERDICT_PATTERN = re.compile(
-    r"[*#\s]*VERDICT:\s+(APPROVE|REVISE|ESCALATE)\b",
+    r"==CODEX_REVIEW_VERDICT==\s*(APPROVE|REVISE|ESCALATE)\b",
     re.MULTILINE,
 )
 _FUZZY_VERDICT_PATTERN = re.compile(
-    r"[*#\s]*VERDIC?T:\s+(APPROOVE|APROVE|APPROVE|REWISE|REVIESE|REVISE|ESCAATE|ESCALATE|ESCALAT)\b",
+    r"==CODEX_REVIEW_VERDICT==\s*(APPROOVE|APROVE|APPROVE|REWISE|REVIESE|REVISE|ESCAATE|ESCALATE|ESCALAT)\b",
     re.MULTILINE | re.IGNORECASE,
 )
 
@@ -227,8 +237,22 @@ class PeerReviewOrchestrator:
         if kill.returncode == 0:
             log.debug("peer_review._spawn_pane: killed pre-existing %s", pane_id)
 
+        # Pre-approve the tools the reviewer needs and the directory the
+        # prompt file lives in. Without these flags Claude Code v2.1.150+
+        # blocks the Read tool by default and the pane has to ask the
+        # operator — there is no operator on a headless reviewer pane,
+        # so the review just stalls.
+        #
+        # Why not ``--dangerously-skip-permissions``: it triggers a
+        # "Bypass Permissions" confirmation dialog whose default
+        # selection is "No, exit". Our generic dialog_clear blindly
+        # presses Enter on that dialog and kills the pane. Discovered
+        # the hard way 2026-05-26.
         spawn = self._tmux(
-            "new-session", "-d", "-s", pane_id, "claude",
+            "new-session", "-d", "-s", pane_id,
+            "claude",
+            "--allowed-tools", "Read,Bash",
+            "--add-dir", "/tmp",
             check=False,
         )
         if spawn.returncode != 0:
@@ -338,11 +362,25 @@ class PeerReviewOrchestrator:
                 pane_id=pane.pane_id,
             )
 
+        # The reviewer is instructed to use a UNIQUE sentinel
+        # (``_VERDICT_SENTINEL``) so the orchestrator's polling regex
+        # cannot accidentally match the orchestrator's own typed-in
+        # invocation in the pane capture. See _VERDICT_PATTERN docstring.
         invocation = (
-            f"Review the diff and ISA at {prompt_path} and reply with "
-            f"VERDICT: APPROVE | REVISE | ESCALATE followed by the rationale."
+            f"Read the review document at {prompt_path}. "
+            f"Then, on a line by itself, write {_VERDICT_SENTINEL} followed "
+            f"by exactly one of APPROVE, REVISE, or ESCALATE, and on the "
+            f"following lines give your rationale. The "
+            f"{_VERDICT_SENTINEL} marker must appear nowhere else in your reply."
         )
-        self._tmux("send-keys", "-t", pane.pane_id, invocation, "Enter", check=False)
+        # Claude Code v2.1.150 TUI swallows ``send-keys <text> Enter`` when
+        # both are passed in a single call (the text lands in the input box
+        # but Enter doesn't submit). Send Enter as a separate keystroke
+        # with a small settle delay. Matches the working pattern from the
+        # ``Tmux wake Claude TUI queen`` memory.
+        self._tmux("send-keys", "-t", pane.pane_id, invocation, check=False)
+        await self._sleep(0.5)
+        self._tmux("send-keys", "-t", pane.pane_id, "Enter", check=False)
 
         verdict = await self._poll_for_verdict(
             pane=pane,
@@ -439,12 +477,24 @@ class PeerReviewOrchestrator:
 
     def _render_prompt(self, isa_path: Path, isa_text: str, diff_payload: str) -> str:
         return (
-            f"You are reviewing diff produced by a Codex session for ISA at {isa_path}.\n"
-            f"Lineage: Codex wrote the code; you (Opus 4.7) are checking what Codex missed.\n\n"
-            f"ISA:\n{isa_text}\n\n"
-            f"Diff:\n{diff_payload}\n\n"
-            f"Reply with exactly one line starting with VERDICT: APPROVE | REVISE | ESCALATE\n"
-            f"followed by the rationale on subsequent lines.\n"
+            f"You are reviewing the diff produced by a Codex session for the ISA at {isa_path}.\n"
+            f"Lineage: GPT-5.5 (via the openai-codex backend) wrote the code in a per-thread\n"
+            f"worktree; you are the auto-reviewer checking what the implementer missed.\n\n"
+            f"## ISA\n\n{isa_text}\n\n"
+            f"## Diff\n\n```diff\n{diff_payload}\n```\n\n"
+            f"## How to reply\n\n"
+            f"On a line by itself, write exactly:\n\n"
+            f"    {_VERDICT_SENTINEL} APPROVE\n\n"
+            f"or `{_VERDICT_SENTINEL} REVISE` or `{_VERDICT_SENTINEL} ESCALATE`. "
+            f"Then provide your rationale on the lines that follow.\n\n"
+            f"- **APPROVE**: the diff matches the ISA's stated goals + ISCs, has no obvious "
+            f"correctness/security regressions, and is mergeable as-is.\n"
+            f"- **REVISE**: there are addressable issues. List each one concretely so the "
+            f"implementer can fix and re-submit.\n"
+            f"- **ESCALATE**: the diff has fundamental problems or scope drift that need "
+            f"human triage. Explain why.\n\n"
+            f"The `{_VERDICT_SENTINEL}` token must appear in your reply exactly once and only "
+            f"on the verdict line; the orchestrator looks for it to parse your decision.\n"
         )
 
     def _maybe_summarize_diff(self, diff: str) -> tuple[str, bool]:

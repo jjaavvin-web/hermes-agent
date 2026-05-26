@@ -6215,11 +6215,36 @@ class AIAgent:
             # mode).  The gateway process runs from the hermes-agent install
             # dir, so os.getcwd() would pick up the repo's AGENTS.md and
             # other dev files — inflating token usage by ~10k for no benefit.
-            _context_cwd = os.getenv("TERMINAL_CWD") or None
+            #
+            # Codex parallel workflow: if the Discord adapter bound an
+            # active codex worktree on the per-task ContextVar, that path
+            # overrides TERMINAL_CWD. The worktree IS a hermes-agent checkout
+            # so its AGENTS.md is the right one to load, and the session
+            # prompt block below tells the agent it's in a codex session.
+            _context_cwd = None
+            try:
+                from agent.codex_session_context import get_active_worktree  # noqa: PLC0415
+                _context_cwd = get_active_worktree()
+            except Exception:
+                _context_cwd = None
+            if not _context_cwd:
+                _context_cwd = os.getenv("TERMINAL_CWD") or None
             context_files_prompt = build_context_files_prompt(
                 cwd=_context_cwd, skip_soul=_soul_loaded)
             if context_files_prompt:
                 context_parts.append(context_files_prompt)
+
+            # Codex parallel workflow — per-session block (worktree, ISA,
+            # phase contract). No-op (empty string) when not in a codex
+            # session, so regular Discord chat is unaffected.
+            if _context_cwd:
+                try:
+                    from agent.prompt_builder import build_codex_session_prompt  # noqa: PLC0415
+                    _codex_block = build_codex_session_prompt(_context_cwd)
+                    if _codex_block:
+                        context_parts.append(_codex_block)
+                except Exception:
+                    logger.debug("codex_session_prompt: skipped", exc_info=True)
 
         # ── Volatile tier (changes per session/turn — never cached) ───
         volatile_parts: List[str] = []

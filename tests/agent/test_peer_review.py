@@ -143,7 +143,7 @@ class TestVerdictParsing:
         await orch.start()
         tmux.capture_script["codex-review-0"] = [
             "...some output...",
-            "VERDICT: APPROVE\nRationale: looks good",
+            "==CODEX_REVIEW_VERDICT== APPROVE\nRationale: looks good",
         ]
         v = await orch.review(
             session_id="sid-a",
@@ -164,7 +164,7 @@ class TestVerdictParsing:
         await orch.start()
         tmux.capture_script["codex-review-0"] = [
             "...thinking...",
-            "VERDICT: REVISE\nMissing input validation on line 42.",
+            "==CODEX_REVIEW_VERDICT== REVISE\nMissing input validation on line 42.",
         ]
         v = await orch.review(
             session_id="sid-b",
@@ -185,7 +185,7 @@ class TestVerdictParsing:
         await orch.start()
         tmux.capture_script["codex-review-0"] = [
             "first pass...",
-            "VERDICT: REVISE\nfirst rationale\n\non second look\nVERDICT: APPROVE\nfinal rationale",
+            "==CODEX_REVIEW_VERDICT== REVISE\nfirst rationale\n\non second look\n==CODEX_REVIEW_VERDICT== APPROVE\nfinal rationale",
         ]
         v = await orch.review(
             session_id="sid-c",
@@ -197,7 +197,7 @@ class TestVerdictParsing:
 
     @pytest.mark.asyncio
     async def test_markdown_bold_verdict_picked_up(self, tmp_path):
-        """Opus tends to emit `**VERDICT: APPROVE**` (markdown bold)."""
+        """Opus tends to emit `**==CODEX_REVIEW_VERDICT== APPROVE**` (markdown bold)."""
         tmux = _TmuxState()
         tmux.capture_script = {
             "codex-review-0": ["Enter to confirm", "", "", ""],
@@ -207,7 +207,7 @@ class TestVerdictParsing:
         await orch.start()
         tmux.capture_script["codex-review-0"] = [
             "considering...",
-            "**VERDICT: APPROVE**\nLooks fine.",
+            "**==CODEX_REVIEW_VERDICT== APPROVE**\nLooks fine.",
         ]
         v = await orch.review(
             session_id="sid-md",
@@ -239,11 +239,11 @@ class TestIterationCap:
         for i in range(3):
             tmux.capture_script["codex-review-0"] = [
                 "...",
-                f"VERDICT: REVISE\nround {i}",
+                f"==CODEX_REVIEW_VERDICT== REVISE\nround {i}",
             ]
             tmux.capture_script["codex-review-1"] = [
                 "...",
-                f"VERDICT: REVISE\nround {i}",
+                f"==CODEX_REVIEW_VERDICT== REVISE\nround {i}",
             ]
             v = await orch.review(
                 session_id="sid-loop",
@@ -279,11 +279,11 @@ class TestDailyCap:
         for _ in range(2):
             tmux.capture_script["codex-review-0"] = [
                 "...",
-                "VERDICT: APPROVE\nok",
+                "==CODEX_REVIEW_VERDICT== APPROVE\nok",
             ]
             tmux.capture_script["codex-review-1"] = [
                 "...",
-                "VERDICT: APPROVE\nok",
+                "==CODEX_REVIEW_VERDICT== APPROVE\nok",
             ]
             v = await orch.review(
                 session_id="sid-cap",
@@ -326,7 +326,7 @@ class TestDailyCap:
         await orch.start()
         tmux.capture_script["codex-review-0"] = [
             "...",
-            "VERDICT: APPROVE\nfresh day",
+            "==CODEX_REVIEW_VERDICT== APPROVE\nfresh day",
         ]
         v = await orch.review(
             session_id="sid-roll",
@@ -352,7 +352,7 @@ class TestStatePersistence:
         await orch.start()
         tmux.capture_script["codex-review-0"] = [
             "...",
-            "VERDICT: REVISE\nfeedback",
+            "==CODEX_REVIEW_VERDICT== REVISE\nfeedback",
         ]
         await orch.review(
             session_id="sid-write",
@@ -379,12 +379,12 @@ class TestStatePersistence:
 
         tmux.capture_script["codex-review-0"] = [
             "...",
-            "VERDICT: REVISE\ntry again",
+            "==CODEX_REVIEW_VERDICT== REVISE\ntry again",
         ]
         await orch.review(session_id="sid-r", isa_path=tmp_path / "x.md", diff="d")
         tmux.capture_script["codex-review-1"] = [
             "...",
-            "VERDICT: APPROVE\nok",
+            "==CODEX_REVIEW_VERDICT== APPROVE\nok",
         ]
         await orch.review(session_id="sid-r", isa_path=tmp_path / "x.md", diff="d")
 
