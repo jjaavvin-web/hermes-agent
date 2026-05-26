@@ -565,8 +565,11 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = 
                 pass  # stat failed — fall through to full read
 
         # ── Perform the read ──────────────────────────────────────────
+        # P1.3: pass the contextvar-resolved absolute path so file_ops
+        # bypasses its own cwd-tracking layer (which would otherwise
+        # land at /workspace/path instead of the codex worktree).
         file_ops = _get_file_ops(task_id)
-        result = file_ops.read_file(path, offset, limit)
+        result = file_ops.read_file(resolved_str, offset, limit)
         result_dict = result.to_dict()
 
         # ── Character-count guard ─────────────────────────────────────
@@ -853,7 +856,9 @@ def write_file_tool(path: str, content: str, task_id: str = "default") -> str:
             cross_warning = file_state.check_stale(task_id, _resolved)
             stale_warning = _check_file_staleness(path, task_id)
             file_ops = _get_file_ops(task_id)
-            result = file_ops.write_file(path, content)
+            # P1.3: pass the contextvar-resolved absolute path so file_ops
+            # writes to the codex worktree, not its tracked-cwd.
+            result = file_ops.write_file(_resolved, content)
             result_dict = result.to_dict()
             effective_warning = cross_warning or stale_warning
             if effective_warning:
@@ -934,7 +939,12 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
                     return tool_error("path required")
                 if old_string is None or new_string is None:
                     return tool_error("old_string and new_string required")
-                result = file_ops.patch_replace(path, old_string, new_string, replace_all)
+                # P1.3: pass the resolved absolute path so file_ops
+                # operates on the codex worktree file, not the
+                # tracked-cwd fallback.  If resolution failed earlier
+                # _path_to_resolved holds None — keep the original.
+                _path_for_op = _path_to_resolved.get(path) or path
+                result = file_ops.patch_replace(_path_for_op, old_string, new_string, replace_all)
             elif mode == "patch":
                 if not patch:
                     return tool_error("patch content required")
