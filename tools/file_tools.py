@@ -199,6 +199,59 @@ def _check_sensitive_path(filepath: str, task_id: str = "default") -> str | None
     return None
 
 
+def _enforce_codex_sandbox(resolved_abs_path: str, op_name: str) -> str | None:
+    """P1.5 defense-in-depth: refuse writes outside the active codex worktree.
+
+    When a Discord codex thread is processing a message, the
+    ``agent.codex_session_context`` contextvar carries that thread's
+    assigned worktree path.  Any WRITE operation whose resolved path
+    falls outside that worktree is rejected with a clear error.
+
+    This is a load-bearing guard: it converts silent live-tree
+    corruption (the agent over-verifies, gets confused by an
+    os.path.abspath result against the gateway's process cwd, and
+    overwrites the live tree) into a loud refusal that the agent can
+    react to.
+
+    Returns:
+      - None if the write is allowed (no active codex session OR
+        resolved path is inside the assigned worktree).
+      - An error string if denied — callers wrap in ``tool_error``.
+
+    Symlinks: both paths are canonicalized with ``os.path.realpath``
+    so a symlinked worktree (e.g. ``~/work -> ~/.hermes/codex-wt/sid``)
+    still compares correctly.
+    """
+    try:
+        from agent.codex_session_context import get_active_worktree  # noqa: PLC0415
+        wt = get_active_worktree()
+    except ImportError:
+        return None
+    if not wt:
+        return None  # No active codex session — normal Discord chat
+    try:
+        if not os.path.isdir(wt):
+            return None  # Stale contextvar pointing at deleted dir
+    except OSError:
+        return None
+    try:
+        wt_real = os.path.realpath(wt)
+        target_real = os.path.realpath(resolved_abs_path)
+    except (OSError, ValueError):
+        # Defensive: if path can't be canonicalized, defer to the
+        # operating system's own permission checks.
+        return None
+    if target_real == wt_real or target_real.startswith(wt_real + os.sep):
+        return None  # Inside the worktree — allowed
+    return (
+        f"CODEX_SANDBOX: {op_name} denied — path {resolved_abs_path!r} is "
+        f"outside the active codex session worktree {wt!r}. "
+        "When working in a tracked codex Discord thread, file writes must "
+        "stay inside the assigned worktree.  Use a path relative to the "
+        "worktree, or an absolute path that starts with the worktree path."
+    )
+
+
 def _is_expected_write_exception(exc: Exception) -> bool:
     """Return True for expected write denials that should not hit error logs."""
     if isinstance(exc, PermissionError):
@@ -837,6 +890,15 @@ def write_file_tool(path: str, content: str, task_id: str = "default") -> str:
         except Exception:
             _resolved = None
 
+        # P1.5 sandbox: refuse writes outside the active codex worktree.
+        # Runs AFTER resolution so absolute paths constructed by the
+        # agent (e.g. from os.path.abspath in a terminal subprocess) are
+        # caught even though the resolver lets absolute paths through.
+        if _resolved is not None:
+            sandbox_err = _enforce_codex_sandbox(_resolved, "write_file")
+            if sandbox_err:
+                return tool_error(sandbox_err)
+
         if _resolved is None:
             stale_warning = _check_file_staleness(path, task_id)
             file_ops = _get_file_ops(task_id)
@@ -908,6 +970,16 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
                 _resolved_paths.append(_r)
                 _seen.add(_r)
         _resolved_paths.sort()
+
+        # P1.5 sandbox: refuse patches that would touch ANY path outside
+        # the active codex worktree.  Multi-file v4a patches are
+        # all-or-nothing: if even one target falls outside, deny the
+        # whole patch (otherwise we'd land a partial write that the
+        # operator wouldn't expect).
+        for _r in _resolved_paths:
+            sandbox_err = _enforce_codex_sandbox(_r, "patch")
+            if sandbox_err:
+                return tool_error(sandbox_err)
 
         # Acquire per-path locks in sorted order via ExitStack.  On single
         # path this degenerates to one lock; on empty list (unresolvable)
