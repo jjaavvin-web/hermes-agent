@@ -891,6 +891,44 @@ class DiscordAdapter(BasePlatformAdapter):
                             adapter_self.name,
                         )
 
+                # Codex P1.4: discover existing Discord threads that
+                # were created while the bot was offline (and therefore
+                # never fired on_thread_create) and allocate sessions
+                # for them.  Optional channel allowlist via
+                # HERMES_CODEX_DISCOVER_CHANNELS (comma-separated parent
+                # channel IDs); unset = discover every visible thread.
+                if adapter_self._codex_dispatcher is not None:
+                    try:
+                        _allow_raw = os.getenv("HERMES_CODEX_DISCOVER_CHANNELS", "").strip()
+                        _allow: set[str] | None = None
+                        if _allow_raw:
+                            _allow = {p.strip() for p in _allow_raw.split(",") if p.strip()}
+                        _discoverable: list[tuple[str, str, str]] = []
+                        for _guild in adapter_self._client.guilds:
+                            for _thread in getattr(_guild, "threads", []) or []:
+                                if getattr(_thread, "archived", False):
+                                    continue
+                                _parent_id = str(getattr(_thread, "parent_id", "") or "")
+                                if _allow is not None and _parent_id not in _allow:
+                                    continue
+                                _discoverable.append((
+                                    str(_thread.id),
+                                    _parent_id,
+                                    getattr(_thread, "name", "") or "task",
+                                ))
+                        if _discoverable:
+                            _new = await adapter_self._codex_dispatcher.discover_threads(_discoverable)
+                            if _new:
+                                logger.info(
+                                    "[%s] codex P1.4: discovered %d new session(s) from %d visible thread(s)",
+                                    adapter_self.name, len(_new), len(_discoverable),
+                                )
+                    except Exception:
+                        logger.exception(
+                            "[%s] codex_dispatcher.discover_threads failed",
+                            adapter_self.name,
+                        )
+
                 # Codex P2.5: start the phase watcher.  The orchestrator
                 # itself stays lazy-started on first review request so a
                 # gateway boot with no tracked sessions doesn't burn Opus

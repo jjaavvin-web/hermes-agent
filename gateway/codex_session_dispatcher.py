@@ -166,13 +166,17 @@ class CodexSessionDispatcher(_CommandsMixin):
 
     # ── Public event hooks ────────────────────────────────────────────────────
 
-    async def on_thread_create(self, event: ThreadEvent) -> None:
+    async def on_thread_create(self, event: ThreadEvent, *, silent: bool = False) -> None:
         """Allocate worktree + write session row (spec §3, pivot Phase A).
 
         Phase A: tmux+raw-codex was dropped — Hermes itself processes thread
         messages via the regular Discord adapter path. The dispatcher just
         reserves a worktree + records the assignment. Per-message cwd
         plumbing lands in P1.5.
+
+        ``silent``: when True, skip the Discord banner post.  Used by
+        :meth:`discover_threads` so re-discovering N existing threads on
+        bot restart doesn't spam Discord with N banner messages (P1.4).
         """
         thread_id = event.thread_id
         if not thread_id:
@@ -194,7 +198,8 @@ class CodexSessionDispatcher(_CommandsMixin):
             wt = self._broker.allocate(sid, isa_slug=isa_slug, base_branch=self._base_branch)
         except Exception as exc:
             log.error("on_thread_create: allocation failed for thread %s: %s", thread_id, exc)
-            await self._discord_send(thread_id, f"Could not allocate session — reason: {exc}")
+            if not silent:
+                await self._discord_send(thread_id, f"Could not allocate session — reason: {exc}")
             raise WorktreeAllocationError(str(exc)) from exc
 
         now = _now_iso()
@@ -219,12 +224,74 @@ class CodexSessionDispatcher(_CommandsMixin):
         state["sessions"][thread_id] = row
         self._write_state(state)
 
-        await self._discord_send(
-            thread_id,
-            f"Session `{sid[:8]}` started. Hermes will process this thread "
-            f"using assigned worktree `{wt.path}` (branch `{wt.branch}`).",
-        )
-        log.info("on_thread_create: session %s created for thread %s", sid, thread_id)
+        if not silent:
+            await self._discord_send(
+                thread_id,
+                f"Session `{sid[:8]}` started. Hermes will process this thread "
+                f"using assigned worktree `{wt.path}` (branch `{wt.branch}`).",
+            )
+        log.info("on_thread_create: session %s created for thread %s (silent=%s)", sid, thread_id, silent)
+
+    async def discover_threads(
+        self,
+        threads: list[tuple[str, str, str]],
+    ) -> list[ReattachResult]:
+        """Allocate session rows for any threads not already tracked (P1.4).
+
+        ``threads`` is a list of ``(thread_id, channel_id, name)`` tuples
+        provided by the Discord adapter on ``on_ready`` — typically by
+        walking ``client.guilds`` for active (non-archived) threads.
+
+        For each thread not in ``codex_sessions.json``:
+        - Build a ``ThreadEvent`` with the thread name as ``isa_slug``.
+        - Call :meth:`on_thread_create` with ``silent=True`` so we don't
+          spam Discord with N banner posts on every bot restart.
+
+        Returns a list of ``ReattachResult`` for each newly-discovered
+        session (status="discovered").  Already-tracked threads are
+        silently skipped — they're handled by :meth:`on_bot_restart`.
+
+        Spec: see ``isas/P1.4-auto-discover-threads.md``.
+        """
+        state = self._load_state()
+        tracked = state.get("sessions", {})
+        results: list[ReattachResult] = []
+        for thread_id, channel_id, name in threads:
+            if not thread_id:
+                continue
+            if thread_id in tracked:
+                continue
+            event = ThreadEvent(
+                thread_id=thread_id,
+                channel_id=channel_id or "",
+                isa_slug=name or "task",
+            )
+            try:
+                await self.on_thread_create(event, silent=True)
+            except WorktreeAllocationError as exc:
+                log.warning(
+                    "discover_threads: allocation failed for %s (%s): %s",
+                    thread_id, name, exc,
+                )
+                continue
+            except Exception as exc:
+                log.warning(
+                    "discover_threads: per-thread error %s (%s): %s",
+                    thread_id, name, exc,
+                )
+                continue
+            # Re-read state to pick up the new row's sid.
+            state = self._load_state()
+            new_row = state.get("sessions", {}).get(thread_id)
+            if new_row:
+                results.append(ReattachResult(
+                    sid=new_row["session_id"],
+                    thread_id=thread_id,
+                    status="discovered",
+                ))
+                tracked = state["sessions"]  # so subsequent iterations see it
+        log.info("discover_threads: %d newly-discovered session(s)", len(results))
+        return results
 
     async def on_thread_message(self, event: ThreadEvent) -> None:
         """Record message metadata; let regular Hermes agent handle the turn.
