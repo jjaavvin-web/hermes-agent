@@ -108,6 +108,68 @@ class TestEnforceCodexSandbox:
 # ─── End-to-end tool integration tests ───────────────────────────────────
 
 
+class TestEnforceCodexSandboxAllowlist:
+    """The opt-in extra-roots allowlist lets _enforce_codex_sandbox permit
+    specific paths outside the worktree without bypassing the guard wholesale."""
+
+    def test_allowlist_permits_outside_path(self, codex_worktree, tmp_path, monkeypatch):
+        outside = tmp_path / "vault"
+        outside.mkdir()
+        monkeypatch.setenv("HERMES_CODEX_SANDBOX_ALLOW", str(outside))
+        import agent.codex_sandbox_allowlist as allow
+        allow.reset_cache_for_tests()
+        target = outside / "note.md"
+        assert _enforce_codex_sandbox(str(target), "write_file") is None
+
+    def test_allowlist_does_not_open_unrelated_paths(
+        self, codex_worktree, tmp_path, monkeypatch
+    ):
+        allowed = tmp_path / "vault"
+        allowed.mkdir()
+        unrelated = tmp_path / "elsewhere"
+        unrelated.mkdir()
+        monkeypatch.setenv("HERMES_CODEX_SANDBOX_ALLOW", str(allowed))
+        import agent.codex_sandbox_allowlist as allow
+        allow.reset_cache_for_tests()
+        err = _enforce_codex_sandbox(str(unrelated / "leak.txt"), "write_file")
+        assert err is not None
+        assert "CODEX_SANDBOX" in err
+
+    def test_default_no_allowlist_preserves_original_behavior(
+        self, codex_worktree, tmp_path, monkeypatch
+    ):
+        """Regression guard: with no allowlist configured, every outside
+        path is still denied — original P1.5 semantics unchanged."""
+        monkeypatch.delenv("HERMES_CODEX_SANDBOX_ALLOW", raising=False)
+        # Point hermes_home at an empty dir so no real ~/.hermes/codex-sandbox-allow.yaml
+        # leaks into the test.
+        import hermes_constants
+        empty = tmp_path / "empty-hermes-home"
+        empty.mkdir()
+        monkeypatch.setattr(hermes_constants, "get_hermes_home", lambda: empty)
+        import agent.codex_sandbox_allowlist as allow
+        allow.reset_cache_for_tests()
+        err = _enforce_codex_sandbox(str(tmp_path / "anywhere.txt"), "write_file")
+        assert err is not None
+        assert "CODEX_SANDBOX" in err
+
+    def test_allowlist_error_message_points_at_config_file(
+        self, codex_worktree, tmp_path, monkeypatch
+    ):
+        """When a write is refused, the error mentions the allowlist config
+        so an agent or operator can self-serve the fix."""
+        monkeypatch.delenv("HERMES_CODEX_SANDBOX_ALLOW", raising=False)
+        import hermes_constants
+        empty = tmp_path / "empty-hermes-home"
+        empty.mkdir()
+        monkeypatch.setattr(hermes_constants, "get_hermes_home", lambda: empty)
+        import agent.codex_sandbox_allowlist as allow
+        allow.reset_cache_for_tests()
+        err = _enforce_codex_sandbox(str(tmp_path / "nope.txt"), "write_file")
+        assert err is not None
+        assert "codex-sandbox-allow.yaml" in err
+
+
 class TestWriteFileSandbox:
     def test_write_inside_worktree_succeeds(self, codex_worktree, monkeypatch):
         fops = _mock_file_ops_ok()

@@ -1410,6 +1410,104 @@ def _load_cursorrules(cwd_path: Path) -> str:
     return _truncate_content(cursorrules_content, ".cursorrules")
 
 
+# ---------------------------------------------------------------------------
+# Codex parallel workflow — per-session context block.
+#
+# When the Discord adapter handles a message in a tracked codex thread it
+# binds the worktree path on a ContextVar (``agent.codex_session_context``).
+# We surface that here as a system-prompt block so the agent KNOWS it's in
+# a codex session and the scaffold→execute→verify workflow contract.
+#
+# Without this block the agent runs as a plain chat assistant: it'll happily
+# answer the user, but won't commit, won't bump ISA phase, and the merge
+# broker / phase watcher therefore never fire end-to-end.
+# ---------------------------------------------------------------------------
+
+def build_codex_session_prompt(worktree_path: Optional[str]) -> str:
+    """Return a system-prompt block describing the active codex session.
+
+    Returns ``""`` when:
+      - ``worktree_path`` is None / empty (not in a codex session), or
+      - the dispatcher state file is missing / unreadable, or
+      - no row in ``codex_sessions.json`` matches the worktree.
+
+    On a match the block names the worktree, branch, ISA path + id, and
+    walks through the workflow contract (read ISA, commit, bump phase to
+    `verify`, hands-off after that).
+    """
+    if not worktree_path:
+        return ""
+    try:
+        hermes_home = Path(get_hermes_home())
+        sessions_path = hermes_home / "codex_sessions.json"
+        if not sessions_path.exists():
+            return ""
+        with open(sessions_path, "r", encoding="utf-8") as fd:
+            data = json.load(fd)
+    except (OSError, json.JSONDecodeError) as exc:
+        logger.debug("build_codex_session_prompt: read failed: %s", exc)
+        return ""
+
+    wt_norm = str(Path(worktree_path).resolve())
+    row = None
+    for _tid, _row in (data.get("sessions") or {}).items():
+        if str(Path(_row.get("worktree_path", "") or "").resolve()) == wt_norm:
+            row = _row
+            break
+    if row is None:
+        return ""
+
+    sid = row.get("session_id", "")
+    isa_id = row.get("isa_id", "")
+    isa_path = row.get("isa_path", "")
+    isa_slug = row.get("isa_slug") or row.get("isa_id") or "task"
+    branch = f"codex/{sid}/{isa_slug}"
+    state = row.get("state", "")
+    isa_phase = row.get("isa_phase") or "(read ISA frontmatter)"
+    review_round = row.get("review_round", 0)
+
+    return (
+        "# Codex Parallel Workflow — Active Session\n\n"
+        "You are running inside a Hermes-managed codex session. This thread is one "
+        "of N parallel sessions, each isolated in its own git worktree.\n\n"
+        f"- **Worktree (your cwd):** `{worktree_path}`\n"
+        f"- **Branch:** `{branch}`\n"
+        f"- **ISA file:** `{isa_path}`\n"
+        f"- **ISA id:** `{isa_id}`\n"
+        f"- **Session id:** `{sid[:8]}`\n"
+        f"- **Dispatcher state:** `{state}` · **ISA phase:** `{isa_phase}` · "
+        f"**review round:** {review_round}\n\n"
+        "## Workflow contract (read carefully)\n\n"
+        "1. **Read the ISA at the path above FIRST.** Its frontmatter `phase:` "
+        "is the source of truth — `scaffold` / `execute` / `verify` / `complete`.\n"
+        "2. **Stay in the worktree.** Edit/Write tools are sandboxed to "
+        f"`{worktree_path}`; any patch outside it is rejected with `CODEX_SANDBOX`. "
+        "If you need to touch a path outside, say so to the user — don't fight the sandbox.\n"
+        "3. **Phase: scaffold** — flesh out the ISA's Goals / Constraints / ISCs sections "
+        "before writing any code. Tick `progress: 0/N` once ISCs are defined. "
+        "Then bump frontmatter `phase: execute`.\n"
+        "4. **Phase: execute** — implement against the ISCs. When you finish an "
+        "iteration: run `git -C " + worktree_path + " add -A && git -C " + worktree_path +
+        " commit -m \"<short msg>\"` from a Bash tool call. Tick the matching ISC `[x]`.\n"
+        "5. **Phase: verify** — when ALL ISCs are checked and the iteration is "
+        "implementation-complete, bump frontmatter `phase: verify`. The Codex Phase "
+        "Watcher polls every 30s and will auto-fire Opus peer review on that transition. "
+        "**Do not push, do not open a PR manually** — the merge broker takes over on `APPROVE`. "
+        "On `REVISE` you'll be put back to `execute`; address the feedback and re-bump to `verify`.\n"
+        "6. **Phase: complete** — set by the dispatcher when the PR merges. You're done; "
+        "the dispatcher archives the thread.\n\n"
+        "## Tips specific to this loop\n\n"
+        "- The reviewer is **Opus 4.7** (via Anthropic Max). You are the implementer "
+        "(GPT-5.5 via OpenAI Codex backend). The reviewer sees `git diff fork/main...HEAD` "
+        f"of `{worktree_path}` plus the full ISA, so keep ISCs honest — the reviewer "
+        "checks them against your diff.\n"
+        "- Conversational replies that don't change code are fine for clarification, but "
+        "don't claim work is done without a commit and a phase bump.\n"
+        "- If the user asks you to do something completely unrelated to the ISA, ask "
+        "before silently abandoning the session's stated goal.\n"
+    )
+
+
 def build_context_files_prompt(cwd: Optional[str] = None, skip_soul: bool = False) -> str:
     """Discover and load context files for the system prompt.
 

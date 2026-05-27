@@ -251,12 +251,21 @@ class WorktreeBroker:
         return wt
 
     def release(self, session_id: str) -> None:
-        """Tear down the worktree for the given session (idempotent)."""
-        if session_id not in self._registry:
-            return
+        """Tear down the worktree for the given session (idempotent).
 
-        wt = self._registry[session_id]
-        wt_path = wt.path
+        Works in two cases:
+          - sid is in the in-memory registry (normal: same-process allocate)
+          - sid was allocated by a prior gateway run (registry empty after
+            restart) but the worktree dir is still on disk under the
+            canonical path. Without the fallback, post-restart releases
+            (most notably the closeout fired by ``on_pr_merged`` after the
+            MergeWatcher catches a merge) would silently no-op and leave
+            the worktree checked out forever. Discovered 2026-05-26.
+        """
+        wt = self._registry.get(session_id)
+        wt_path = wt.path if wt else (self.hermes_home / "codex-wt" / session_id)
+        if not wt and not wt_path.exists():
+            return
 
         # Step 1: kill tmux session
         tmux_result = subprocess.run(
@@ -270,7 +279,8 @@ class WorktreeBroker:
                 tmux_result.stderr.strip(),
             )
 
-        # Step 2: remove git worktree
+        # Step 2: remove git worktree (git-level — clears worktree index
+        # entry + removes the dir when there's no uncommitted work).
         rm_result = self._git(
             "worktree", "remove", "--force", str(wt_path)
         )
@@ -281,11 +291,22 @@ class WorktreeBroker:
                 rm_result.stderr.strip(),
             )
 
-        # Step 3: free port
+        # Step 3: filesystem cleanup — ``git worktree remove`` leaves the
+        # directory behind in edge cases (e.g. the worktree was never
+        # registered with git, or rm failed). Fall back to a direct
+        # ``rm -rf`` so the closeout actually frees the disk.
+        if wt_path.exists():
+            try:
+                import shutil  # noqa: PLC0415
+                shutil.rmtree(wt_path, ignore_errors=True)
+            except Exception as exc:  # pragma: no cover — defensive
+                log.warning("worktree dir cleanup failed for %s: %s", wt_path, exc)
+
+        # Step 4: free port
         self._free_port(session_id)
 
-        # Step 4: remove from registry
-        del self._registry[session_id]
+        # Step 5: remove from registry (if it was there)
+        self._registry.pop(session_id, None)
 
     def gc(
         self,

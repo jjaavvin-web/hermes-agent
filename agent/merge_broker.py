@@ -4,7 +4,7 @@ Implements ``isas/P3-merge-broker.md`` + ``module-specs/merge-broker.md``.
 
 When a P2.5 verdict transitions a session to ``MERGING``, the dispatcher
 calls :meth:`MergeBroker.merge`.  The broker acquires a global flock,
-rebases the worktree onto ``origin/main``, runs ``isa_lint``, pushes the
+rebases the worktree onto ``<base_remote>/<base_branch>`` (default fork/main), runs ``isa_lint``, pushes the
 feature branch, opens a PR via ``gh pr create``, classifies the change
 as ``safe`` or ``sensitive``, and applies the matching label
 (``auto-merge`` / ``needs-human``).  Mergify (or the alternate Actions
@@ -70,7 +70,7 @@ class MergeResult:
 
 
 class ConflictEscalation(RuntimeError):
-    """Raised when ``git rebase origin/main`` produces conflicts."""
+    """Raised when ``git rebase <base_remote>/<base_branch>`` produces conflicts."""
 
 
 class MergeBrokerError(RuntimeError):
@@ -121,10 +121,10 @@ class MergeBroker:
         isa_path = Path(isa_path)
 
         with self._merge_flock():
-            # Step 1: rebase onto latest origin/main
+            # Step 1: rebase onto latest <base_remote>/<base_branch> (default fork/main)
             try:
-                self._fetch_origin(worktree)
-                self._rebase_onto_origin_main(worktree)
+                self._fetch_base(worktree)
+                self._rebase_onto_base(worktree)
             except ConflictEscalation as exc:
                 return MergeResult(
                     ok=False,
@@ -178,8 +178,10 @@ class MergeBroker:
         # Step 5: classify + label
         classification = self.classify_change(worktree)
         label = "auto-merge" if classification == "safe" else "needs-human"
+        gh_repo = self._resolve_gh_repo(worktree)
+        edit_repo_args = ["--repo", gh_repo] if gh_repo else []
         self._run(
-            ["gh", "pr", "edit", str(pr_number), "--add-label", label],
+            ["gh", "pr", "edit", *edit_repo_args, str(pr_number), "--add-label", label],
             capture_output=True, text=True, check=False,
             timeout=_DEFAULT_GH_TIMEOUT_SEC,
         )
@@ -196,8 +198,14 @@ class MergeBroker:
 
     def classify_change(self, worktree: Path) -> str:
         """Return 'safe' if NO changed file matches the deny-list, else 'sensitive'."""
+        # ISA D-codex-2026-05-26: the diff base must match the worktree's
+        # actual base branch.  Worktrees branch off ``<remote>/<branch>``
+        # (default fork/main); diffing against origin/main when origin is
+        # a divergent upstream fork (1000+ commits apart) returns the
+        # WHOLE delta and over-classifies everything as sensitive.
+        _base_ref = f"{self._base_remote}/{self._base_branch}"
         diff = self._run(
-            ["git", "-C", str(worktree), "diff", "--name-only", "origin/main...HEAD"],
+            ["git", "-C", str(worktree), "diff", "--name-only", f"{_base_ref}...HEAD"],
             capture_output=True, text=True, check=False,
             timeout=_DEFAULT_GIT_TIMEOUT_SEC,
         )
@@ -214,18 +222,32 @@ class MergeBroker:
 
     # ── git helpers ─────────────────────────────────────────────────────
 
-    def _fetch_origin(self, worktree: Path) -> None:
+    def _fetch_base(self, worktree: Path) -> None:
+        """Fetch the configured base remote so the rebase target is current."""
         r = self._run(
-            ["git", "-C", str(worktree), "fetch", "origin"],
+            ["git", "-C", str(worktree), "fetch", self._base_remote],
             capture_output=True, text=True, check=False,
             timeout=_DEFAULT_GIT_TIMEOUT_SEC,
         )
         if r.returncode != 0:
-            raise MergeBrokerError(f"git fetch origin failed: {r.stderr.strip()}")
+            raise MergeBrokerError(
+                f"git fetch {self._base_remote} failed: {r.stderr.strip()}"
+            )
 
-    def _rebase_onto_origin_main(self, worktree: Path) -> None:
+    # Back-compat shim: callers from older code paths used _fetch_origin.
+    _fetch_origin = _fetch_base
+
+    def _rebase_onto_base(self, worktree: Path) -> None:
+        """Rebase onto ``<base_remote>/<base_branch>`` (default fork/main).
+
+        The previous name hardcoded ``origin/main``; once HERMES_CODEX_BASE_BRANCH
+        landed in P1.1 (2026-05-26) the worktrees no longer branch from origin,
+        and rebasing onto origin/main produced 1000+ conflicting commits on
+        every single merge.
+        """
+        base_ref = f"{self._base_remote}/{self._base_branch}"
         r = self._run(
-            ["git", "-C", str(worktree), "rebase", "origin/main"],
+            ["git", "-C", str(worktree), "rebase", base_ref],
             capture_output=True, text=True, check=False,
             timeout=_DEFAULT_GIT_TIMEOUT_SEC,
         )
@@ -236,7 +258,13 @@ class MergeBroker:
                 capture_output=True, text=True, check=False,
                 timeout=_DEFAULT_GIT_TIMEOUT_SEC,
             )
-            raise ConflictEscalation(r.stderr.strip() or r.stdout.strip())
+            raise ConflictEscalation(
+                f"rebase onto {base_ref} failed: "
+                f"{r.stderr.strip() or r.stdout.strip()}"
+            )
+
+    # Back-compat shim.
+    _rebase_onto_origin_main = _rebase_onto_base
 
     def _run_isa_lint(self, isa_path: Path) -> subprocess.CompletedProcess:
         return self._run(
@@ -244,6 +272,45 @@ class MergeBroker:
             capture_output=True, text=True, check=False,
             timeout=_DEFAULT_GIT_TIMEOUT_SEC,
         )
+
+    def _resolve_gh_repo(self, worktree: Path) -> Optional[str]:
+        """Resolve ``OWNER/REPO`` for the configured base_remote.
+
+        Cached on the instance after first success — the remote URL
+        does not change at runtime, and re-shelling out per gh call
+        is wasted I/O and makes the test fakes noisy.
+
+        ``gh`` defaults to inferring the repo from ``git remote origin``,
+        which in this environment is the *upstream* NousResearch repo
+        and is NOT where the codex feature branch lives. Without an
+        explicit ``--repo`` flag every gh call silently targets the
+        wrong repo: ``gh pr list --head <branch>`` returns nothing,
+        ``gh pr create`` errors. Discovered 2026-05-26.
+        """
+        cached = getattr(self, "_gh_repo_cache", None)
+        if cached is not None:
+            return cached
+        r = self._run(
+            ["git", "-C", str(worktree), "remote", "get-url", self._base_remote],
+            capture_output=True, text=True, check=False,
+            timeout=_DEFAULT_GIT_TIMEOUT_SEC,
+        )
+        if r.returncode != 0:
+            return None
+        url = (r.stdout or "").strip()
+        # Accept both SSH (git@github.com:OWNER/REPO.git) and HTTPS
+        # (https://github.com/OWNER/REPO[.git]) forms.
+        slug: Optional[str] = None
+        if url.startswith("git@") and ":" in url:
+            slug = url.split(":", 1)[1]
+        elif "github.com/" in url:
+            slug = url.split("github.com/", 1)[1]
+        if not slug:
+            return None
+        slug = slug.removesuffix(".git").strip("/")
+        if slug:
+            self._gh_repo_cache = slug
+        return slug or None
 
     def _ensure_pr(
         self,
@@ -255,9 +322,12 @@ class MergeBroker:
         summary: str,
     ) -> tuple[Optional[int], Optional[str], Optional[str]]:
         """Open a PR if one doesn't exist for the branch; return (number, url, err)."""
+        gh_repo = self._resolve_gh_repo(worktree)
+        repo_args: list[str] = ["--repo", gh_repo] if gh_repo else []
+
         # Check if a PR already exists (idempotency).
         existing = self._run(
-            ["gh", "pr", "list", "--head", branch, "--state", "open",
+            ["gh", "pr", "list", *repo_args, "--head", branch, "--state", "open",
              "--json", "number,url", "--limit", "1"],
             capture_output=True, text=True, check=False,
             timeout=_DEFAULT_GH_TIMEOUT_SEC,
@@ -273,7 +343,7 @@ class MergeBroker:
         # Compose PR body.
         body = self._render_pr_body(isa_path, session_id, summary)
         create = self._run(
-            ["gh", "pr", "create",
+            ["gh", "pr", "create", *repo_args,
              "--base", self._base_branch,
              "--head", branch,
              "--title", f"feat(codex): {Path(isa_path).stem} — peer-reviewed by Opus",

@@ -2300,9 +2300,11 @@ class AIAgent:
 
 
     def _build_system_prompt_parts(self, system_message: str = None) -> Dict[str, str]:
+
         """Forwarder — see ``agent.system_prompt.build_system_prompt_parts``."""
         from agent.system_prompt import build_system_prompt_parts
         return build_system_prompt_parts(self, system_message=system_message)
+
 
     def _build_system_prompt(self, system_message: str = None) -> str:
         """Forwarder — see ``agent.system_prompt.build_system_prompt``."""
@@ -2697,6 +2699,7 @@ class AIAgent:
     def _abort_request_openai_client(self, client: Any, *, reason: str) -> None:
         """Cross-thread abort: shut sockets down without releasing FDs.
 
+
         Companion to :meth:`_close_request_openai_client` for stranger-thread
         callers (interrupt-check loop, stale-call detector). Calling
         ``client.close()`` from a thread that does not own the active httpx
@@ -2736,6 +2739,7 @@ class AIAgent:
         """Forwarder — see ``agent.codex_runtime.run_codex_create_stream_fallback``."""
         from agent.codex_runtime import run_codex_create_stream_fallback
         return run_codex_create_stream_fallback(self, api_kwargs, client)
+
 
     def _try_refresh_codex_client_credentials(self, *, force: bool = True) -> bool:
         if self.api_mode != "codex_responses" or self.provider not in {"openai-codex", "xai-oauth"}:
@@ -3072,9 +3076,11 @@ class AIAgent:
             )
 
     def _interruptible_api_call(self, api_kwargs: dict):
+
         """Forwarder — see ``agent.chat_completion_helpers.interruptible_api_call``."""
         from agent.chat_completion_helpers import interruptible_api_call
         return interruptible_api_call(self, api_kwargs)
+
 
     # ── Unified streaming API call ─────────────────────────────────────────
 
@@ -4160,9 +4166,11 @@ class AIAgent:
         stream_callback: Optional[callable] = None,
         persist_user_message: Optional[str] = None,
     ) -> Dict[str, Any]:
+
         """Forwarder — see ``agent.conversation_loop.run_conversation``."""
         from agent.conversation_loop import run_conversation
         return run_conversation(self, user_message, system_message, conversation_history, task_id, stream_callback, persist_user_message)
+
 
     def chat(self, message: str, stream_callback: Optional[callable] = None) -> str:
         """
