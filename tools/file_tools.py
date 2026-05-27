@@ -243,12 +243,22 @@ def _enforce_codex_sandbox(resolved_abs_path: str, op_name: str) -> str | None:
         return None
     if target_real == wt_real or target_real.startswith(wt_real + os.sep):
         return None  # Inside the worktree — allowed
+    # Opt-in extra-writable-roots allowlist.  Empty by default; populated via
+    # ~/.hermes/codex-sandbox-allow.yaml or HERMES_CODEX_SANDBOX_ALLOW.
+    try:
+        from agent.codex_sandbox_allowlist import is_path_allowed  # noqa: PLC0415
+    except ImportError:
+        is_path_allowed = None  # type: ignore[assignment]
+    if is_path_allowed is not None and is_path_allowed(target_real):
+        return None
     return (
         f"CODEX_SANDBOX: {op_name} denied — path {resolved_abs_path!r} is "
         f"outside the active codex session worktree {wt!r}. "
         "When working in a tracked codex Discord thread, file writes must "
         "stay inside the assigned worktree.  Use a path relative to the "
-        "worktree, or an absolute path that starts with the worktree path."
+        "worktree, or an absolute path that starts with the worktree path. "
+        "To grant a specific extra path for this thread, add it under "
+        "'allowed_paths' in ~/.hermes/codex-sandbox-allow.yaml."
     )
 
 
