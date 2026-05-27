@@ -7898,11 +7898,6 @@ class AIAgent:
                     _elapsed, _stale_timeout,
                     api_kwargs.get("model", "unknown"), f"{_est_ctx:,}",
                 )
-                self._emit_status(
-                    f"⚠️ No response from provider for {int(_elapsed)}s "
-                    f"(non-streaming, model: {api_kwargs.get('model', 'unknown')}). "
-                    f"Aborting call."
-                )
                 try:
                     if self.api_mode == "anthropic_messages":
                         self._anthropic_client.close()
@@ -7918,11 +7913,101 @@ class AIAgent:
                 )
                 # Wait briefly for the thread to notice the closed connection.
                 t.join(timeout=2.0)
-                if result["error"] is None and result["response"] is None:
-                    result["error"] = TimeoutError(
-                        f"Non-streaming API call timed out after {int(_elapsed)}s "
-                        f"with no response (threshold: {int(_stale_timeout)}s)"
+
+                # Inline silent-recovery: when chatgpt.com/backend-api/codex
+                # opens the stream connection but never sends a chunk, the
+                # main retry loop's next attempt usually hits the same hung
+                # backend route. Try ONE direct streaming retry with a fresh
+                # HTTP client via the SDK-bypass fallback path before
+                # surfacing a user-visible "Aborting call" status. Capped at
+                # 60s so a second silent hang doesn't double the user wait.
+                _recovered_silently = False
+                if (
+                    self.api_mode == "codex_responses"
+                    and self.provider == "openai-codex"
+                    and result["response"] is None
+                ):
+                    _recovery_timeout = min(60.0, _stale_timeout / 2.0)
+                    _recovery_result: dict = {"response": None, "error": None}
+                    _recovery_client = None
+                    try:
+                        _recovery_client = self._create_request_openai_client(
+                            reason="codex_stale_recovery",
+                            api_kwargs=api_kwargs,
+                        )
+                        logger.warning(
+                            "Codex stale-timeout recovery: retrying via "
+                            "create(stream=True) with fresh client (cap=%.0fs). "
+                            "model=%s",
+                            _recovery_timeout,
+                            api_kwargs.get("model", "unknown"),
+                        )
+
+                        def _recovery_call():
+                            try:
+                                _recovery_result["response"] = (
+                                    self._run_codex_create_stream_fallback(
+                                        api_kwargs, client=_recovery_client
+                                    )
+                                )
+                            except Exception as _rec_exc:
+                                _recovery_result["error"] = _rec_exc
+
+                        rt = threading.Thread(target=_recovery_call, daemon=True)
+                        rt.start()
+                        _recovery_start = time.time()
+                        while rt.is_alive():
+                            rt.join(timeout=0.3)
+                            if time.time() - _recovery_start > _recovery_timeout:
+                                try:
+                                    self._close_request_openai_client(
+                                        _recovery_client,
+                                        reason="codex_stale_recovery_kill",
+                                    )
+                                except Exception:
+                                    pass
+                                rt.join(timeout=2.0)
+                                break
+
+                        if _recovery_result["response"] is not None:
+                            result["response"] = _recovery_result["response"]
+                            result["error"] = None
+                            _recovered_silently = True
+                            logger.info(
+                                "Codex stale-timeout recovery succeeded silently "
+                                "after %.1fs (no user-visible abort).",
+                                time.time() - _recovery_start,
+                            )
+                    except Exception as _rec_outer:
+                        logger.warning(
+                            "Codex stale-timeout recovery raised %s; falling "
+                            "through to main retry loop.",
+                            type(_rec_outer).__name__,
+                        )
+                    finally:
+                        if (
+                            not _recovered_silently
+                            and _recovery_client is not None
+                        ):
+                            try:
+                                self._close_request_openai_client(
+                                    _recovery_client,
+                                    reason="codex_stale_recovery_cleanup",
+                                )
+                            except Exception:
+                                pass
+
+                if not _recovered_silently:
+                    self._emit_status(
+                        f"⚠️ No response from provider for {int(_elapsed)}s "
+                        f"(non-streaming, model: {api_kwargs.get('model', 'unknown')}). "
+                        f"Aborting call."
                     )
+                    if result["error"] is None and result["response"] is None:
+                        result["error"] = TimeoutError(
+                            f"Non-streaming API call timed out after {int(_elapsed)}s "
+                            f"with no response (threshold: {int(_stale_timeout)}s)"
+                        )
                 break
 
             if self._interrupt_requested:
