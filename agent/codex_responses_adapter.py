@@ -826,6 +826,41 @@ def _preflight_codex_api_kwargs(
             f"Codex Responses request has unsupported field(s): {', '.join(unexpected)}."
         )
 
+    # Env-gated A/B kill-switch (2026-05-26): the chatgpt.com/backend-api/codex
+    # backend started silently returning ``output: null`` on every request whose
+    # input includes replayed reasoning items with ``encrypted_content`` — the
+    # same failure pattern xAI's OAuth Responses surface shipped during the
+    # May 2026 SuperGrok rollout (see ``_chat_messages_to_responses_input``
+    # docstring). When ``HERMES_CODEX_DROP_ENCRYPTED_REASONING=1`` we (1) strip
+    # the encrypted_content blob off every replayed reasoning item, dropping
+    # any item that becomes empty, and (2) clear the ``include`` request so
+    # we don't ask for fresh encrypted reasoning back. Native reasoning per
+    # turn still happens server-side; we just stop trying to thread prior
+    # encrypted blobs back in.
+    import os as _os  # noqa: PLC0415
+    if _os.environ.get("HERMES_CODEX_DROP_ENCRYPTED_REASONING", "").strip() == "1":
+        _stripped_input = []
+        _strip_count = 0
+        for _item in normalized.get("input", []):
+            if isinstance(_item, dict) and _item.get("type") == "reasoning":
+                _has_encrypted = bool(_item.get("encrypted_content"))
+                _item_no_enc = {k: v for k, v in _item.items() if k != "encrypted_content"}
+                # An "encrypted-only" reasoning item with nothing else to say
+                # serves no purpose if we strip the blob — drop it entirely.
+                _meaningful = any(k for k in _item_no_enc if k not in ("type", "id"))
+                if _has_encrypted and not _meaningful:
+                    _strip_count += 1
+                    continue
+                if _has_encrypted:
+                    _strip_count += 1
+                _stripped_input.append(_item_no_enc)
+            else:
+                _stripped_input.append(_item)
+        if _strip_count:
+            normalized["input"] = _stripped_input
+        if normalized.get("include") == ["reasoning.encrypted_content"]:
+            normalized["include"] = []
+
     return normalized
 
 

@@ -7185,7 +7185,7 @@ class AIAgent:
                     # but get_final_response() can return an empty output list.
                     # Backfill from collected items or synthesize from deltas.
                     _out = getattr(final_response, "output", None)
-                    if isinstance(_out, list) and not _out:
+                    if _out is None or (isinstance(_out, list) and not _out):
                         if collected_output_items:
                             final_response.output = list(collected_output_items)
                             logger.debug(
@@ -7221,6 +7221,34 @@ class AIAgent:
                     exc,
                 )
                 return self._run_codex_create_stream_fallback(api_kwargs, client=active_client)
+            except TypeError as exc:
+                # Discovered 2026-05-26: openai-python's
+                # ``openai/lib/_parsing/_responses.py:61`` runs
+                # ``for output in response.output:`` while accumulating
+                # the streaming response, but the chatgpt.com/backend-api/codex
+                # backend now sends a payload where ``output`` is ``None``
+                # instead of ``[]``. That raises ``TypeError: 'NoneType'
+                # object is not iterable`` deep inside the SDK and tanks
+                # the whole stream parser, even though our own collection
+                # of ``response.output_item.done`` events would have been
+                # fine. The lower-level ``responses.create(stream=True)``
+                # path (``_run_codex_create_stream_fallback``) does its
+                # own SSE event loop and never calls ``parse_response``,
+                # so it's immune. Route around the SDK bug.
+                err_text = str(exc)
+                sdk_parse_bug = (
+                    "NoneType" in err_text and "iterable" in err_text
+                )
+                if sdk_parse_bug:
+                    logger.warning(
+                        "Codex Responses stream: openai-sdk parse_response "
+                        "TypeError (response.output is None) — falling back to "
+                        "create(stream=True). %s err=%s",
+                        self._client_log_context(),
+                        err_text,
+                    )
+                    return self._run_codex_create_stream_fallback(api_kwargs, client=active_client)
+                raise
             except RuntimeError as exc:
                 err_text = str(exc)
                 missing_completed = "response.completed" in err_text
@@ -7301,7 +7329,7 @@ class AIAgent:
                         done_item = event.get("item")
                     if done_item is not None:
                         collected_output_items.append(done_item)
-                elif event_type in {"response.output_text.delta",}:
+                elif event_type and "output_text.delta" in str(event_type):
                     delta = getattr(event, "delta", "")
                     if not delta and isinstance(event, dict):
                         delta = event.get("delta", "")
@@ -7317,7 +7345,7 @@ class AIAgent:
                 if terminal_response is not None:
                     # Backfill empty output from collected stream events
                     _out = getattr(terminal_response, "output", None)
-                    if isinstance(_out, list) and not _out:
+                    if _out is None or (isinstance(_out, list) and not _out):
                         if collected_output_items:
                             terminal_response.output = list(collected_output_items)
                             logger.debug(
@@ -13093,8 +13121,24 @@ class AIAgent:
                                     error_details.append(f"response.status={_codex_resp_status}: {_codex_error_msg}")
                                 else:
                                     # output_text fallback: stream backfill may have failed
-                                    # but normalize can still recover from output_text
-                                    _out_text = getattr(response, "output_text", None)
+                                    # but normalize can still recover from output_text.
+                                    #
+                                    # The openai SDK's ``Response.output_text`` is a
+                                    # @property that iterates over ``self.output``. The
+                                    # chatgpt.com/backend-api/codex backend now sends
+                                    # ``output: null`` instead of ``[]`` for some
+                                    # responses (2026-05-26), and the property raises
+                                    # ``TypeError: 'NoneType' object is not iterable``
+                                    # instead of returning an empty string. getattr's
+                                    # default doesn't catch raised exceptions, so wrap
+                                    # the read.
+                                    try:
+                                        _out_text = getattr(response, "output_text", None)
+                                    except TypeError as _exc:
+                                        if "NoneType" in str(_exc) and "iterable" in str(_exc):
+                                            _out_text = None
+                                        else:
+                                            raise
                                     _out_text_stripped = _out_text.strip() if isinstance(_out_text, str) else ""
                                     if _out_text_stripped:
                                         logger.debug(
@@ -14154,7 +14198,6 @@ class AIAgent:
                         self._client_log_context(),
                         _error_summary,
                     )
-
                     _provider = getattr(self, "provider", "unknown")
                     _base = getattr(self, "base_url", "unknown")
                     _model = getattr(self, "model", "unknown")
