@@ -5464,6 +5464,40 @@ class GatewayRunner:
                 default_assignee,
             )
 
+        # Machine-wide running-worker ceiling across all non-archived boards.
+        # Defaults to max_spawn so a single-board install behaves exactly as
+        # before while multi-board dispatch cannot fan out to max_spawn × N.
+        raw_global_max_running = kanban_cfg.get("global_max_running", max_spawn)
+        global_max_running = None
+        if raw_global_max_running is not None:
+            try:
+                global_max_running = int(raw_global_max_running)
+            except (TypeError, ValueError):
+                logger.warning(
+                    "kanban dispatcher: invalid kanban.global_max_running=%r; "
+                    "using max_spawn=%r",
+                    raw_global_max_running,
+                    max_spawn,
+                )
+                try:
+                    global_max_running = int(max_spawn) if max_spawn is not None else None
+                except (TypeError, ValueError):
+                    global_max_running = None
+            else:
+                if global_max_running < 1:
+                    logger.warning(
+                        "kanban dispatcher: kanban.global_max_running=%r is below 1; "
+                        "using max_spawn=%r",
+                        raw_global_max_running,
+                        max_spawn,
+                    )
+                    try:
+                        global_max_running = int(max_spawn) if max_spawn is not None else None
+                    except (TypeError, ValueError):
+                        global_max_running = None
+        if global_max_running is not None:
+            logger.info("kanban dispatcher: global_max_running=%d", global_max_running)
+
         # Read kanban.max_in_progress_per_profile — per-profile concurrency
         # cap (#21582). When set, no single profile gets more than N
         # workers running at once, even if the global max_in_progress
@@ -5536,7 +5570,37 @@ class GatewayRunner:
                 or "database disk image is malformed" in msg
             )
 
-        def _tick_once_for_board(slug: str) -> "Optional[object]":
+        def _running_count_for_board(slug: str) -> int:
+            conn = None
+            try:
+                conn = _kb.connect(board=slug)
+                row = conn.execute(
+                    "SELECT COUNT(*) FROM tasks WHERE status = 'running'"
+                ).fetchone()
+                return int(row[0] if row is not None else 0)
+            except Exception:
+                logger.debug(
+                    "kanban dispatcher: failed to count running tasks for board %s",
+                    slug,
+                    exc_info=True,
+                )
+                return 0
+            finally:
+                if conn is not None:
+                    try:
+                        conn.close()
+                    except Exception:
+                        pass
+
+        def _global_running_count(boards: "list[dict]") -> int:
+            total = 0
+            for b in boards:
+                slug = b.get("slug") or _kb.DEFAULT_BOARD
+                total += _running_count_for_board(slug)
+            logger.debug("kanban dispatcher: global running count=%d", total)
+            return total
+
+        def _tick_once_for_board(slug: str, per_board_max_spawn: "Optional[int]" = None) -> "Optional[object]":
             """Run one dispatch_once for a specific board.
 
             Runs in a worker thread via `asyncio.to_thread`. `board=slug`
@@ -5580,7 +5644,7 @@ class GatewayRunner:
                 return _kb.dispatch_once(
                     conn,
                     board=slug,
-                    max_spawn=max_spawn,
+                    max_spawn=per_board_max_spawn if per_board_max_spawn is not None else max_spawn,
                     max_in_progress=max_in_progress,
                     failure_limit=failure_limit,
                     stale_timeout_seconds=stale_timeout_seconds,
@@ -5635,10 +5699,28 @@ class GatewayRunner:
                 boards = _kb.list_boards(include_archived=False)
             except Exception:
                 boards = [_kb.read_board_metadata(_kb.DEFAULT_BOARD)]
+            global_running = _global_running_count(boards) if global_max_running is not None else 0
             out: list[tuple[str, "Optional[object]"]] = []
             for b in boards:
                 slug = b.get("slug") or _kb.DEFAULT_BOARD
-                out.append((slug, _tick_once_for_board(slug)))
+                per_board_max_spawn = max_spawn
+                if global_max_running is not None:
+                    headroom = global_max_running - global_running
+                    if headroom <= 0:
+                        logger.debug(
+                            "kanban dispatcher: global_max_running reached (%d/%d); "
+                            "skipping board %s",
+                            global_running,
+                            global_max_running,
+                            slug,
+                        )
+                        break
+                    if per_board_max_spawn is None or per_board_max_spawn > headroom:
+                        per_board_max_spawn = headroom
+                result = _tick_once_for_board(slug, per_board_max_spawn)
+                out.append((slug, result))
+                if result is not None and getattr(result, "spawned", None):
+                    global_running += len(getattr(result, "spawned", []) or [])
             return out
 
         def _locked_tick_once() -> "list[tuple[str, Optional[object]]] | None":
