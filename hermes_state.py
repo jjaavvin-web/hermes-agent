@@ -351,6 +351,11 @@ class SessionDB:
                 isolation_level=None,
             )
             self._conn.row_factory = sqlite3.Row
+            # Incremental auto-vacuum must be enabled before tables are created
+            # for new DBs. For existing DBs this setting only becomes effective
+            # after a full VACUUM rebuild; do not run that expensive exclusive
+            # rewrite here during normal startup.
+            self._conn.execute("PRAGMA auto_vacuum=INCREMENTAL")
             apply_wal_with_fallback(self._conn, db_label="state.db")
             self._conn.execute("PRAGMA foreign_keys=ON")
 
@@ -2855,6 +2860,25 @@ class SessionDB:
                 pass
             self._conn.execute("VACUUM")
 
+    def run_db_maintenance(self) -> List[str]:
+        """Run low-impact state.db maintenance in a fixed, auditable order.
+
+        ``PRAGMA auto_vacuum=INCREMENTAL`` is configured at DB init, but for
+        pre-existing databases SQLite only honors it after an operator-run full
+        ``VACUUM`` rebuild. This routine intentionally does not perform that
+        exclusive rewrite; it only checkpoints WAL, lets SQLite optimize planner
+        stats, and reclaims pages incrementally when available.
+        """
+        steps = [
+            "PRAGMA wal_checkpoint(TRUNCATE)",
+            "PRAGMA optimize",
+            "PRAGMA incremental_vacuum",
+        ]
+        with self._lock:
+            for statement in steps:
+                self._conn.execute(statement)
+        return steps
+
     def maybe_auto_prune_and_vacuum(
         self,
         retention_days: int = 90,
@@ -3059,6 +3083,12 @@ def main(argv: Optional[List[str]] = None) -> int:
         help="Report how many zombie sessions would be reaped without writing",
     )
 
+    db_maintenance = subparsers.add_parser(
+        "db-maintenance",
+        help="Run WAL checkpoint, PRAGMA optimize, and incremental vacuum for state.db",
+    )
+    db_maintenance.add_argument("--db-path", type=Path, default=DEFAULT_DB_PATH)
+
     args = parser.parse_args(argv)
     if args.command == "reap-zombies":
         db = SessionDB(db_path=args.db_path)
@@ -3075,6 +3105,14 @@ def main(argv: Optional[List[str]] = None) -> int:
                     inactive_days=args.inactive_days,
                 )
                 print(f"reaped {count} zombie session(s)")
+        finally:
+            db.close()
+        return 0
+    if args.command == "db-maintenance":
+        db = SessionDB(db_path=args.db_path)
+        try:
+            steps = db.run_db_maintenance()
+            print("db-maintenance complete: " + " -> ".join(steps))
         finally:
             db.close()
         return 0
