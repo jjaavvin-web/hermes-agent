@@ -8,6 +8,7 @@ Backup and import commands for hermes CLI.
 HERMES_HOME root.
 """
 
+import argparse
 import json
 import logging
 import os
@@ -467,9 +468,10 @@ def run_import(args) -> None:
 # Quick state snapshots (used by /snapshot slash command and hermes backup --quick)
 # ---------------------------------------------------------------------------
 
-# Critical state files to include in quick snapshots (relative to HERMES_HOME).
-# Everything else is either regeneratable (logs, cache) or managed separately
-# (skills, repo, sessions/).
+# Critical non-secret state files to include in quick snapshots (relative to
+# HERMES_HOME). Everything else is either regeneratable (logs, cache), managed
+# separately (skills, repo, sessions/), or intentionally excluded because it can
+# contain live credentials (`.env`, `auth.json`).
 #
 # Entries may be individual files OR directories.  Directories are captured
 # recursively; missing entries are silently skipped.  Pairing data lives in
@@ -479,8 +481,6 @@ def run_import(args) -> None:
 _QUICK_STATE_FILES = (
     "state.db",
     "config.yaml",
-    ".env",
-    "auth.json",
     "cron/jobs.json",
     "gateway_state.json",
     "channel_directory.json",
@@ -699,6 +699,84 @@ def run_quick_backup(args) -> None:
         print(f"  Restore with: /snapshot restore {snap_id}")
     else:
         print("No state files found to snapshot.")
+
+
+def _finish_daily_quick_snapshot(
+    snap_id: Optional[str],
+    *,
+    hermes_home: Optional[Path],
+    retain: int,
+) -> tuple[Optional[str], int]:
+    if snap_id is None:
+        return None, 0
+
+    snap_dir = _quick_snapshot_root(hermes_home) / snap_id
+    state_copy = snap_dir / "state.db"
+    if state_copy.exists():
+        os.chmod(state_copy, 0o600)
+
+    deleted = prune_quick_snapshots(keep=retain, hermes_home=hermes_home)
+    return snap_id, deleted
+
+
+def _create_daily_quick_snapshot_result(
+    hermes_home: Optional[Path] = None,
+    retain: int = _QUICK_DEFAULT_KEEP,
+) -> tuple[Optional[str], int]:
+    snap_id = create_quick_snapshot(label="nightly", hermes_home=hermes_home)
+    return _finish_daily_quick_snapshot(snap_id, hermes_home=hermes_home, retain=retain)
+
+
+def create_daily_quick_snapshot(
+    hermes_home: Optional[Path] = None,
+    retain: int = _QUICK_DEFAULT_KEEP,
+) -> Optional[str]:
+    """Create the nightly state.db quick snapshot and prune to ``retain``.
+
+    This intentionally reuses the generic quick-snapshot helpers so the daily
+    CLI keeps the same safe SQLite-copy and manifest behavior as /snapshot and
+    ``hermes backup --quick``.
+    """
+    return _create_daily_quick_snapshot_result(hermes_home=hermes_home, retain=retain)[0]
+
+
+def run_daily_quick_snapshot(args) -> None:
+    """CLI entry point for the daily state.db quick snapshot."""
+    retain = getattr(args, "retain", _QUICK_DEFAULT_KEEP)
+    snap_id, deleted = _create_daily_quick_snapshot_result(hermes_home=None, retain=retain)
+    if snap_id:
+        print(f"State snapshot created: {snap_id}")
+        if deleted:
+            print(f"Pruned {deleted} old snapshot(s)")
+        print(f"Retained up to {retain} snapshot(s) in {display_hermes_home()}/state-snapshots/")
+    else:
+        print("No state files found to snapshot.")
+
+
+def main(argv: Optional[List[str]] = None) -> int:
+    """Small maintenance CLI for backup helpers."""
+    parser = argparse.ArgumentParser(prog="python -m hermes_cli.backup")
+    subparsers = parser.add_subparsers(dest="command")
+
+    quick = subparsers.add_parser("quick-snapshot", help="create a nightly state.db quick snapshot")
+    quick.add_argument(
+        "--retain",
+        type=int,
+        default=_QUICK_DEFAULT_KEEP,
+        help=f"number of quick snapshots to retain (default: {_QUICK_DEFAULT_KEEP})",
+    )
+
+    args = parser.parse_args(argv)
+    if args.command == "quick-snapshot":
+        run_daily_quick_snapshot(args)
+        return 0
+
+    parser.print_help()
+    return 2
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
 
 
 # ---------------------------------------------------------------------------
