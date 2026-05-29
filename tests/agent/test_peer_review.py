@@ -13,6 +13,8 @@ from unittest.mock import MagicMock
 
 import pytest
 
+import agent.peer_review as peer_review
+from agent.role_defaults import REVIEWER_MODEL
 from agent.peer_review import (
     PanePoolFailedToStart,
     PeerReviewOrchestrator,
@@ -47,6 +49,7 @@ class _TmuxState:
     # capture_script is still used by _dialog_clear (startup "Enter to confirm").
     capture_script: dict = field(default_factory=dict)  # session -> [outputs]
     send_keys_log: list = field(default_factory=list)
+    new_session_log: list = field(default_factory=list)
     new_session_will_fail: set = field(default_factory=set)
     has_session_dead: set = field(default_factory=set)
     # pane_id -> verdict dict; None entry means use default APPROVE.
@@ -59,6 +62,7 @@ def _make_fake_subprocess(tmux_state: _TmuxState):
             return _FakeProc(returncode=0)
         cmd = args[1] if len(args) > 1 else ""
         if cmd == "new-session":
+            tmux_state.new_session_log.append(list(args))
             session = args[args.index("-s") + 1]
             if session in tmux_state.new_session_will_fail:
                 return _FakeProc(returncode=1, stderr="forced fail")
@@ -156,6 +160,22 @@ class TestStart:
         await orch.start()
         assert "codex-review-0" in tmux.sessions
         assert "codex-review-1" in tmux.sessions
+
+    @pytest.mark.asyncio
+    async def test_spawn_uses_single_source_reviewer_model(self, tmp_path, monkeypatch):
+        sentinel_model = f"{REVIEWER_MODEL}-single-source-sentinel"
+        monkeypatch.setattr(peer_review, "REVIEWER_MODEL", sentinel_model, raising=False)
+        tmux = _TmuxState()
+        tmux.capture_script = {
+            "codex-review-0": ["Enter to confirm", "", "", "", ""],
+        }
+        orch = _make_orchestrator(tmp_path, tmux, pool_size=1)
+
+        await orch.start()
+
+        assert len(tmux.new_session_log) == 1
+        spawn_args = tmux.new_session_log[0]
+        assert spawn_args[spawn_args.index("--model") + 1] == sentinel_model
 
     @pytest.mark.asyncio
     async def test_raises_if_all_panes_fail(self, tmp_path):
@@ -653,12 +673,9 @@ class TestAntiProbes:
         assert not hasattr(_module, "_canonicalize_fuzzy_verdict"), \
             "_canonicalize_fuzzy_verdict should be deleted"
 
-    def test_opus_model_in_spawn_command(self):
-        """Verify --model opus is present in _spawn_pane command."""
-        import agent.peer_review as _module
-        src = Path(_module.__file__).read_text(encoding="utf-8")
-        assert '"--model", "opus"' in src or "'--model', 'opus'" in src, \
-            "--model opus not found in _spawn_pane"
+    def test_role_defaults_reviewer_model_still_resolves_to_opus(self):
+        """Verify the single reviewer model pin still resolves to Opus."""
+        assert REVIEWER_MODEL == "opus"
 
     def test_write_tool_in_allowed_tools(self):
         """Verify Write is in --allowed-tools in _spawn_pane command."""
