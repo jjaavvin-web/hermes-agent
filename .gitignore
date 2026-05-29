@@ -80,6 +80,12 @@ mini-swe-agent/
 .nix-stamps/
 result
 website/static/api/skills-index.json
+# skills.json + skills-meta.json are build artifacts emitted by
+# website/scripts/extract-skills.py during prebuild — keep them out of
+# git for the same reason as skills-index.json (large, generated, change
+# every build).
+website/static/api/skills.json
+website/static/api/skills-meta.json
 models-dev-upstream/
 hermes_cli/tui_dist/*
 hermes_cli/scripts/
@@ -87,3 +93,8 @@ docs/superpowers/*
 # Added 2026-05-27 by elite-memory follow-up: prevent GitNexus from walking 6.1GB venv
 venv/
 .gitnexus/
+
+# Working directory for the Hermes Agent's session state (~/.hermes/ at runtime;
+# also created in-repo when an agent operates in this checkout). Plans, audit
+# logs, and per-session caches are never artifacts of the codebase.
+.hermes/
