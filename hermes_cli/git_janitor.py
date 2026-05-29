@@ -14,6 +14,7 @@ only when its merged/class check passes; on any doubt it is renamed to
 from __future__ import annotations
 
 import json
+import logging
 import os
 import subprocess
 from datetime import datetime, timezone
@@ -27,6 +28,7 @@ DEFAULT_STALE_DAYS = 7
 # Classes a caller may pass to ``--confirm``. ``ACTIVE`` is excluded by
 # design — an active worktree is never reapable.
 REAP_CLASSES = ("MERGED", "STALE", "ORPHANED")
+logger = logging.getLogger(__name__)
 
 
 # ── Path / environment resolution ─────────────────────────────────────────
@@ -166,7 +168,8 @@ def _read_run_registry() -> list[dict]:
     for lock in sorted(registry.glob("*.lock")):
         try:
             data = json.loads(lock.read_text())
-        except (OSError, ValueError):
+        except (OSError, ValueError) as exc:
+            logger.warning("Skipping malformed run-registry lease %s: %s", lock, exc)
             continue
         if isinstance(data, dict):
             data["_path"] = str(lock)
