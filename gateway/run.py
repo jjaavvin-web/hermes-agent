@@ -4766,6 +4766,26 @@ class GatewayRunner:
                 out.append((slug, _tick_once_for_board(slug)))
             return out
 
+        def _locked_tick_once() -> "list[tuple[str, Optional[object]]] | None":
+            dispatch_lock = get_hermes_home() / "kanban" / "dispatch.lock"
+            try:
+                dispatch_lock.parent.mkdir(parents=True, exist_ok=True)
+                dispatch_lock.touch(mode=0o600, exist_ok=True)
+                try:
+                    dispatch_lock.chmod(0o600)
+                except OSError:
+                    pass
+                with _file_lock(
+                    dispatch_lock,
+                    threading.local(),
+                    0.0,
+                    "kanban dispatcher dispatch lock held",
+                ):
+                    return _tick_once()
+            except TimeoutError:
+                logger.info("kanban dispatcher: dispatch lock held; skipping tick")
+                return None
+
         def _ready_nonempty() -> bool:
             """Cheap probe: is there at least one ready+assigned+unclaimed
             task on ANY board whose assignee maps to a real Hermes profile
