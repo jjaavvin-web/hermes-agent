@@ -195,6 +195,73 @@ def _collect_diff(worktree_path: str) -> tuple[str, bool]:
 # ── routes ─────────────────────────────────────────────────────────────
 
 
+@router.get("/git-health", summary="Per-session git readiness + recommended next move")
+def git_health() -> dict:
+    """Per tracked codex session: uncommitted file count, reviewable diff size
+    (3-dot vs fork/main), and a plain-English recommended next move. Powers the
+    dashboard Git Health tab."""
+    import os as _os
+    import re as _re
+    import subprocess as _sp
+    from datetime import datetime as _dt, timezone as _tz
+
+    state = _load_json(_SESSIONS_PATH)
+    sessions = state.get("sessions", state) if isinstance(state, dict) else {}
+    if not isinstance(sessions, dict):
+        sessions = {}
+
+    def _git(wt: str, *args: str):
+        try:
+            r = _sp.run(["git", "-C", wt, *args], capture_output=True, text=True, timeout=15)
+            return r.stdout.strip() if r.returncode == 0 else None
+        except Exception:
+            return None
+
+    rows: list[dict] = []
+    for _sid, s in sessions.items():
+        if not isinstance(s, dict):
+            continue
+        slug = s.get("isa_slug") or "?"
+        thread_id = s.get("thread_id")
+        wt = s.get("worktree_path") or ""
+        if not wt or not _os.path.isdir(wt):
+            rows.append({"slug": slug, "thread_id": thread_id, "worktree": False,
+                         "uncommitted": None, "files_changed": None,
+                         "recommendation": "No worktree on disk — nothing to review",
+                         "severity": "idle"})
+            continue
+        st = _git(wt, "status", "--porcelain")
+        uncommitted = len([ln for ln in (st.splitlines() if st else []) if ln.strip()])
+        shortstat = _git(wt, "diff", "--shortstat", "fork/main...HEAD") or ""
+        m = _re.search(r"(\d+)\s+files?\s+changed", shortstat)
+        files_changed = int(m.group(1)) if m else 0
+        if uncommitted > 0:
+            rec = f"{uncommitted} uncommitted file(s) — the worker must commit before /review"
+            sev = "warn"
+        elif files_changed == 0:
+            rec, sev = "No new work yet — nothing to review", "idle"
+        elif files_changed > 400:
+            rec = f"Base looks diverged ({files_changed} files) — re-base on fork/main, don't /review"
+            sev = "bad"
+        else:
+            rec = f"Ready — run /review in this thread ({files_changed} file{'s' if files_changed != 1 else ''})"
+            sev = "ready"
+        rows.append({"slug": slug, "thread_id": thread_id, "worktree": True,
+                     "uncommitted": uncommitted, "files_changed": files_changed,
+                     "recommendation": rec, "severity": sev})
+
+    rank = {"ready": 0, "warn": 1, "bad": 2, "idle": 3}
+    actionable = [r for r in rows if r["severity"] != "idle"]
+    if not rows:
+        best = {"text": "No tracked codex sessions.", "severity": "idle"}
+    elif not actionable:
+        best = {"text": "All clear — nothing is waiting on you.", "severity": "ready"}
+    else:
+        top = sorted(actionable, key=lambda r: rank[r["severity"]])[0]
+        best = {"text": f"{top['slug']}: {top['recommendation']}", "severity": top["severity"]}
+    return {"scanned_at": _dt.now(_tz.utc).isoformat(), "best_move": best, "rows": rows}
+
+
 @router.get("/codex-sessions", summary="Snapshot of all codex sessions")
 def get_snapshot():
     return _cached_snapshot()
