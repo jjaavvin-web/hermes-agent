@@ -55,6 +55,7 @@ from agent.async_utils import safe_schedule_threadsafe
 from agent.i18n import t
 from hermes_cli.config import cfg_get
 from hermes_cli.fallback_config import get_fallback_chain
+from hermes_cli.auth import _file_lock
 
 # --- Agent cache tuning ---------------------------------------------------
 # Bounds the per-session AIAgent cache to prevent unbounded growth in
@@ -5638,6 +5639,26 @@ class GatewayRunner:
                 out.append((slug, _tick_once_for_board(slug)))
             return out
 
+        def _locked_tick_once() -> "list[tuple[str, Optional[object]]] | None":
+            dispatch_lock = get_hermes_home() / "kanban" / "dispatch.lock"
+            try:
+                dispatch_lock.parent.mkdir(parents=True, exist_ok=True)
+                dispatch_lock.touch(mode=0o600, exist_ok=True)
+                try:
+                    dispatch_lock.chmod(0o600)
+                except OSError:
+                    pass
+                with _file_lock(
+                    dispatch_lock,
+                    threading.local(),
+                    0.0,
+                    "kanban dispatcher dispatch lock held",
+                ):
+                    return _tick_once()
+            except TimeoutError:
+                logger.info("kanban dispatcher: dispatch lock held; skipping tick")
+                return None
+
         def _ready_nonempty() -> bool:
             """Cheap probe: is there at least one ready+assigned+unclaimed
             task on ANY board whose assignee maps to a real Hermes profile
@@ -5786,7 +5807,7 @@ class GatewayRunner:
             try:
                 if auto_decompose_enabled:
                     await asyncio.to_thread(_auto_decompose_tick)
-                results = await asyncio.to_thread(_tick_once)
+                results = await asyncio.to_thread(_locked_tick_once)
                 any_spawned = False
                 for slug, res in (results or []):
                     if res is not None and getattr(res, "spawned", None):
