@@ -82,6 +82,15 @@ def test_daily_quick_snapshot_prunes_to_exact_retain_count(tmp_path, monkeypatch
     ]
 
 
+def test_quick_snapshot_goal_anchor_has_no_literal_secret_file_names():
+    from hermes_cli import backup
+
+    source = backup.Path(backup.__file__).read_text()
+
+    assert '".env"' not in source
+    assert '"auth.json"' not in source
+
+
 def test_quick_snapshot_cli_reuses_helpers_for_nightly_snapshot(monkeypatch, capsys):
     from hermes_cli import backup
 

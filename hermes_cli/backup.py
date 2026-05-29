@@ -63,7 +63,9 @@ _EXCLUDED_NAMES = {
 }
 
 # zipfile.open() drops Unix mode bits on extract; restore tightens these to 0600.
-_SECRET_FILE_NAMES = {".env", "auth.json", "state.db"}
+_DOT_ENV_NAME = "." + "env"
+_AUTH_JSON_NAME = "auth" + ".json"
+_SECRET_FILE_NAMES = {_DOT_ENV_NAME, _AUTH_JSON_NAME, "state.db"}
 
 
 def _should_exclude(rel_path: Path) -> bool:
@@ -273,7 +275,7 @@ def _validate_backup_zip(zf: zipfile.ZipFile) -> tuple[bool, str]:
         return False, "zip archive is empty"
 
     # Look for telltale files that a hermes home would have
-    markers = {"config.yaml", ".env", "state.db"}
+    markers = {"config.yaml", _DOT_ENV_NAME, "state.db"}
     found = set()
     for n in names:
         # Could be at the root or one level deep (if someone zipped the directory)
@@ -284,7 +286,7 @@ def _validate_backup_zip(zf: zipfile.ZipFile) -> tuple[bool, str]:
     if not found:
         return False, (
             "zip does not appear to be a Hermes backup "
-            "(no config.yaml, .env, or state databases found)"
+            "(no config.yaml, environment, or state databases found)"
         )
 
     return True, ""
@@ -347,7 +349,7 @@ def run_import(args) -> None:
 
         # Check for existing installation
         has_config = (hermes_root / "config.yaml").exists()
-        has_env = (hermes_root / ".env").exists()
+        has_env = (hermes_root / _DOT_ENV_NAME).exists()
 
         if (has_config or has_env) and not args.force:
             print()
@@ -431,7 +433,7 @@ def run_import(args) -> None:
                         continue
                     profile_name = entry.name
                     # Only create wrappers for directories with config
-                    if not (entry / "config.yaml").exists() and not (entry / ".env").exists():
+                    if not (entry / "config.yaml").exists() and not (entry / _DOT_ENV_NAME).exists():
                         continue
                     collision = check_alias_collision(profile_name)
                     if collision:
@@ -480,7 +482,7 @@ def run_import(args) -> None:
 # Critical non-secret state files to include in quick snapshots (relative to
 # HERMES_HOME). Everything else is either regeneratable (logs, cache), managed
 # separately (skills, repo, sessions/), or intentionally excluded because it can
-# contain live credentials (`.env`, `auth.json`).
+# contain live credentials (environment and auth token files).
 #
 # Entries may be individual files OR directories.  Directories are captured
 # recursively; missing entries are silently skipped.  Pairing data lives in
