@@ -28,7 +28,13 @@ DEFAULT_STALE_DAYS = 7
 # Classes a caller may pass to ``--confirm``. ``ACTIVE`` is excluded by
 # design — an active worktree is never reapable.
 REAP_CLASSES = ("MERGED", "STALE", "ORPHANED")
+BRANCH_REAP_CONFIRM = "BRANCHES"
+BRANCH_REAPER_PROTECTED_PREFIXES = ("backup/", "candidate/")
 logger = logging.getLogger(__name__)
+
+
+class BranchPrLookupError(RuntimeError):
+    """Open-PR status could not be determined for branch reaping."""
 
 
 # ── Path / environment resolution ─────────────────────────────────────────
@@ -90,6 +96,12 @@ def _git(repo, *args: str) -> subprocess.CompletedProcess:
 
 def _is_protected_branch(branch: Optional[str]) -> bool:
     return bool(branch) and branch in PROTECTED_BRANCHES
+
+
+def _is_protected_reaper_branch(branch: Optional[str]) -> bool:
+    if not branch:
+        return True
+    return _is_protected_branch(branch) or branch.startswith(BRANCH_REAPER_PROTECTED_PREFIXES)
 
 
 def inventory_worktrees(repo) -> list[dict]:
@@ -489,6 +501,112 @@ def reclaimable_bytes(classified: list[tuple[dict, str]]) -> int:
     )
 
 
+def _branch_has_open_pr(repo, branch: str) -> Optional[bool]:
+    """Return True/False for open PR status; raise when status is unknown."""
+    try:
+        cp = subprocess.run(
+            [
+                "gh", "pr", "list",
+                "--head", branch,
+                "--state", "open",
+                "--json", "number",
+                "--limit", "1",
+            ],
+            cwd=str(repo), capture_output=True, text=True, check=False,
+        )
+    except (OSError, ValueError) as exc:
+        raise BranchPrLookupError(str(exc)) from exc
+    if cp.returncode != 0:
+        detail = (cp.stderr or cp.stdout or f"gh pr list failed with exit {cp.returncode}").strip()
+        raise BranchPrLookupError(detail)
+    try:
+        data = json.loads(cp.stdout or "[]")
+    except ValueError as exc:
+        raise BranchPrLookupError(f"invalid gh pr list JSON: {exc}") from exc
+    return bool(data)
+
+
+def _local_branches(repo) -> list[str]:
+    cp = _git(repo, "branch", "--format=%(refname:short)")
+    if cp.returncode != 0:
+        return []
+    return [line.strip() for line in cp.stdout.splitlines() if line.strip()]
+
+
+def _current_branch(repo) -> Optional[str]:
+    cp = _git(repo, "branch", "--show-current")
+    if cp.returncode != 0:
+        return None
+    return cp.stdout.strip() or None
+
+
+def classify_branches(repo, *, base: str = DEFAULT_BASE) -> list[dict]:
+    """Classify local branches for the report-only branch reaper pass."""
+    current = _current_branch(repo)
+    live_worktree_branches = {
+        wt.get("branch")
+        for wt in inventory_worktrees(repo)
+        if wt.get("branch")
+    }
+    classified: list[dict] = []
+    for branch in _local_branches(repo):
+        reason = "merged-no-worktree-no-open-pr"
+        reapable = True
+        merged = _git(repo, "merge-base", "--is-ancestor", branch, base).returncode == 0
+        has_worktree = branch in live_worktree_branches
+        has_open_pr = False
+        if _is_protected_reaper_branch(branch):
+            reason = "protected"
+            reapable = False
+        elif branch == current:
+            reason = "current-head"
+            reapable = False
+        elif not merged:
+            reason = "not-merged"
+            reapable = False
+        elif has_worktree:
+            reason = "live-worktree"
+            reapable = False
+        else:
+            try:
+                has_open_pr = _branch_has_open_pr(repo, branch)
+            except BranchPrLookupError:
+                has_open_pr = None
+            if has_open_pr is None:
+                reason = "open-pr-unknown"
+                reapable = False
+            elif has_open_pr:
+                reason = "open-pr"
+                reapable = False
+        classified.append({
+            "branch": branch,
+            "base": base,
+            "merged": merged,
+            "has_live_worktree": has_worktree,
+            "has_open_pr": has_open_pr,
+            "reapable": reapable,
+            "reason": reason,
+        })
+    return classified
+
+
+def reap_branches(repo, branches: list[dict]) -> list[tuple[str, str, str]]:
+    """Delete selected merged branches using git branch -d only."""
+    results: list[tuple[str, str, str]] = []
+    for row in branches:
+        branch = str(row.get("branch") or "")
+        if not branch or not row.get("reapable") or _is_protected_reaper_branch(branch):
+            results.append((branch, "skipped", "not reapable"))
+            continue
+        cp = _git(repo, "branch", "-d", branch)
+        if cp.returncode == 0:
+            results.append((branch, "deleted", "git branch -d"))
+        else:
+            detail = (cp.stderr or cp.stdout or "git branch -d failed").strip()
+            results.append((branch, "error", detail))
+    return results
+
+
 # ── janitor orchestration + CLI dispatch ──────────────────────────────────
 
 def gather_classified(
@@ -541,14 +659,34 @@ def run_janitor(
         branch = wt.get("branch") or ("(detached)" if wt.get("detached") else "(bare)")
         print(f"{klass:<9} {branch:<46} {wt['path']}")
 
+    branch_report = classify_branches(repo)
+    reapable_branch_rows = [row for row in branch_report if row.get("reapable")]
+    print(f"\nreapable branches ({len(reapable_branch_rows)})")
+    print("-" * 100)
+    if reapable_branch_rows:
+        for row in reapable_branch_rows:
+            print(f"BRANCH    {row['branch']:<46} {row['reason']}")
+    else:
+        print("(none)")
+
     if not confirm:
         print("\n(dry-run — no mutations. Pass --confirm "
-              "MERGED|STALE|ORPHANED to reap a class.)")
+              "MERGED|STALE|ORPHANED to reap a worktree class, or "
+              "--confirm BRANCHES to reap merged local branches.)")
         return 0
 
     confirm = confirm.upper()
+    if confirm == BRANCH_REAP_CONFIRM:
+        if not reapable_branch_rows:
+            print("\nNo merged local branches to reap.")
+            return 0
+        print(f"\nReaping {len(reapable_branch_rows)} merged branch(es):")
+        for branch, action, detail in reap_branches(repo, reapable_branch_rows):
+            print(f"  [{action}] {branch} — {detail}")
+        return 0
+
     if confirm not in REAP_CLASSES:
-        print(f"\n--confirm must be one of {REAP_CLASSES}")
+        print(f"\n--confirm must be one of {REAP_CLASSES + (BRANCH_REAP_CONFIRM,)}")
         return 2
     reapable = select_reapable(classified, confirm)
     if not reapable:
