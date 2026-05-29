@@ -460,6 +460,35 @@ def install_hooks(repo, *, all_worktrees: bool = False) -> list[dict]:
     return [_install_hook_into(t) for t in (targets or [str(repo)])]
 
 
+def _path_size_bytes(path: str | Path) -> int:
+    """Best-effort recursive byte size for a worktree path."""
+    root = Path(path)
+    if not root.exists():
+        return 0
+    if root.is_file():
+        try:
+            return root.stat().st_size
+        except OSError:
+            return 0
+    total = 0
+    for item in root.rglob("*"):
+        try:
+            if item.is_file() or item.is_symlink():
+                total += item.stat().st_size
+        except OSError:
+            continue
+    return total
+
+
+def reclaimable_bytes(classified: list[tuple[dict, str]]) -> int:
+    """Estimate bytes reclaimable by non-ACTIVE janitor classes."""
+    return sum(
+        _path_size_bytes(wt["path"])
+        for wt, klass in classified
+        if klass in REAP_CLASSES
+    )
+
+
 # ── janitor orchestration + CLI dispatch ──────────────────────────────────
 
 def gather_classified(
@@ -505,6 +534,7 @@ def run_janitor(
           f"[stale-days={stale_days}]")
     print("  " + "  ".join(f"{k}={counts.get(k, 0)}"
                            for k in ("ACTIVE", "MERGED", "STALE", "ORPHANED")))
+    print(f"  reclaimable-bytes={reclaimable_bytes(classified)}")
     print(f"\n{'CLASS':<9} {'BRANCH':<46} PATH")
     print("-" * 100)
     for wt, klass in classified:
