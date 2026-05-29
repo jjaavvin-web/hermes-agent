@@ -523,6 +523,15 @@ class EnvVarReveal(BaseModel):
     key: str
 
 
+class ReflectRejectBody(BaseModel):
+    reason: str = ""
+
+
+def _reflect_writer(candidate):
+    from agent.reflect_promote import mvms_writer
+    return mvms_writer(candidate)
+
+
 class ModelAssignment(BaseModel):
     """Payload for POST /api/model/set — assign a provider/model to a slot.
 
@@ -595,6 +604,37 @@ def _probe_gateway_health() -> tuple[bool, dict | None]:
         except Exception:
             continue
     return False, None
+
+
+@app.get("/api/reflect-promote/candidates")
+async def get_reflect_promote_candidates():
+    from agent.reflect_promote import pending_payload
+
+    return pending_payload()
+
+
+@app.post("/api/reflect-promote/candidates/{candidate_id}/approve")
+async def approve_reflect_promote_candidate(candidate_id: str):
+    from agent.reflect_promote import approve_candidate
+
+    try:
+        candidate = approve_candidate(candidate_id, writer=_reflect_writer)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="reflect candidate not found")
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc))
+    return {"ok": True, "candidate": candidate.to_row()}
+
+
+@app.post("/api/reflect-promote/candidates/{candidate_id}/reject")
+async def reject_reflect_promote_candidate(candidate_id: str, body: ReflectRejectBody):
+    from agent.reflect_promote import reject_candidate
+
+    try:
+        candidate = reject_candidate(candidate_id, reason=body.reason)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="reflect candidate not found")
+    return {"ok": True, "candidate": candidate.to_row()}
 
 
 @app.get("/api/status")
