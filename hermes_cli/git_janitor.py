@@ -41,6 +41,37 @@ def _run_registry_dir() -> Path:
     return _hermes_home() / "run-registry"
 
 
+RUN_REGISTRY_LEASE_FIELDS = {
+    "branch",
+    "worktree_path",
+    "spawner",
+    "tmux_session",
+    "kanban_card_id",
+    "repo_root",
+    "created_at",
+}
+
+
+def validate_janitor_repo_root(repo: str | Path) -> Path:
+    """Return a normalized repo root or reject unsafe ephemeral roots.
+
+    The alert-first systemd janitor must never be pointed at ``/tmp`` or a
+    descendant. Unit tests may still call pure helpers with temp repos, but an
+    operator/timer repo root must be durable and intentional.
+    """
+    path = Path(repo).expanduser().resolve(strict=False)
+    tmp_root = Path(os.environ.get("TMPDIR", "/tmp")).resolve(strict=False)
+    if path == tmp_root or tmp_root in path.parents:
+        raise ValueError(f"janitor repo root must not be under /tmp: {path}")
+    return path
+
+
+def _lock_card_id(lock: dict) -> Optional[str]:
+    """Return the card id from either legacy or B4 lease-schema names."""
+    val = lock.get("kanban_card_id") or lock.get("tracking_card")
+    return str(val) if val else None
+
+
 def _utc_stamp() -> str:
     return datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
 
@@ -327,7 +358,7 @@ def merge_ready_report(branch: str, repo, *, base: str = DEFAULT_BASE) -> dict:
             overlaps[ob] = common
 
     lock = _lock_for_branch(_read_run_registry(), branch)
-    card_id = lock.get("tracking_card") if lock else None
+    card_id = _lock_card_id(lock) if lock else None
     return {
         "branch": branch,
         "base": base,
@@ -436,7 +467,7 @@ def gather_classified(
     classified: list[tuple[dict, str]] = []
     for wt in inventory_worktrees(repo):
         lock = _lock_for_branch(locks, wt.get("branch"))
-        card_id = lock.get("tracking_card") if lock else None
+        card_id = _lock_card_id(lock) if lock else None
         klass = classify_worktree(
             wt,
             lock=lock,
@@ -529,8 +560,13 @@ def git_health_command(args) -> int:
         return 1
 
     if sub == "janitor":
+        try:
+            repo = validate_janitor_repo_root(_resolve_repo(getattr(args, "repo", None)))
+        except ValueError as exc:
+            print(f"git-health janitor: {exc}")
+            return 2
         return run_janitor(
-            _resolve_repo(getattr(args, "repo", None)),
+            repo,
             stale_days=getattr(args, "stale_days", DEFAULT_STALE_DAYS),
             confirm=getattr(args, "confirm", None),
         )

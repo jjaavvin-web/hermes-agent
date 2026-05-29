@@ -293,8 +293,8 @@ class WorktreeBroker:
 
         # Step 3: filesystem cleanup — ``git worktree remove`` leaves the
         # directory behind in edge cases (e.g. the worktree was never
-        # registered with git, or rm failed). Fall back to a direct
-        # ``rm -rf`` so the closeout actually frees the disk.
+        # registered with git, or rm failed). Fall back to Python-scoped
+        # directory cleanup so the closeout actually frees the disk.
         if wt_path.exists():
             try:
                 import shutil  # noqa: PLC0415
@@ -313,18 +313,21 @@ class WorktreeBroker:
         *,
         tracked_sids: set[str],
         live_branches: set[str] | None = None,
+        dry_run: bool = False,
+        merged_base: str = "fork/main",
     ) -> list[GcAction]:
-        """Sweep orphan worktrees out of ``~/.hermes/codex-wt/``.
+        """Sweep stale/orphan worktrees out of ``~/.hermes/codex-wt/``.
 
-        An orphan is a worktree directory under ``codex-wt/`` whose sid
-        is NOT in ``tracked_sids`` (the dispatcher's ``codex_sessions.json``
-        rows) AND whose branch is NOT in ``live_branches`` (open PRs on
-        fork — caller passes ``None`` to skip that check).  Each orphan
-        is RENAMED to ``codex-wt/.deleted-<ts>/<sid>/`` so the
-        operator can recover; the reaper purges entries older than 7 days.
+        Default behavior remains conservative: untracked worktrees whose
+        branch is not protected by an open PR are renamed into
+        ``codex-wt/.deleted-<ts>/<sid>/``.  B2 adds two alert-first rails:
 
-        Per WORKFLOW-LESSONS §3 rule 5: no ``rm -rf``; renames are the
-        safe deletion pattern.
+        * ``dry_run=True`` returns the exact actions without renaming or
+          pruning anything.
+        * a *tracked* sid can become eligible only when its worktree HEAD is
+          already an ancestor of ``merged_base`` and its tmux session is dead.
+          This prevents terminal/merged rows from protecting stale worktrees
+          forever while still preserving active sessions.
         """
         actions: list[GcAction] = []
         wt_root = self.hermes_home / "codex-wt"
@@ -340,16 +343,36 @@ class WorktreeBroker:
             # Skip our own .deleted-* dirs and any other dotfiles.
             if name.startswith("."):
                 continue
+
+            reason: str | None = None
             if name in tracked_sids:
+                if self._tracked_worktree_reapable(entry, name, merged_base):
+                    reason = f"tracked sid merged into {merged_base} with no live tmux"
+                else:
+                    continue
+            else:
+                # If the sid's branch is in the live-branches set (open PR),
+                # leave the worktree alone — operator hasn't merged yet.
+                branch_match = any(
+                    b.endswith(f"/{name}/") or f"/{name}/" in b
+                    for b in live_branches
+                )
+                if branch_match:
+                    continue
+                reason = "orphan: not in tracked_sids and no open PR"
+
+            new_path = deleted_root / name
+            if dry_run:
+                actions.append(GcAction(
+                    sid=name,
+                    old_path=entry,
+                    new_path=new_path,
+                    reason=f"dry-run: {reason}",
+                ))
                 continue
-            # If the sid's branch is in the live-branches set (open PR),
-            # leave the worktree alone — operator hasn't merged yet.
-            branch_match = any(b.endswith(f"/{name}/") or f"/{name}/" in b for b in live_branches)
-            if branch_match:
-                continue
+
             # Rename into the deleted-<ts> bucket.
             deleted_root.mkdir(parents=True, exist_ok=True)
-            new_path = deleted_root / name
             try:
                 entry.rename(new_path)
                 # Also tell git the worktree is gone (cheap; prune later
@@ -362,9 +385,43 @@ class WorktreeBroker:
                 sid=name,
                 old_path=entry,
                 new_path=new_path,
-                reason="orphan: not in tracked_sids and no open PR",
+                reason=reason,
             ))
         return actions
+
+    def _tracked_worktree_reapable(self, wt_path: Path, sid: str, base: str) -> bool:
+        """True when a tracked Codex worktree is terminal/merged and inactive."""
+        if self._tmux_session_alive(sid):
+            return False
+        head = self._worktree_head(wt_path)
+        if not head:
+            return False
+        return self._head_is_ancestor(head, base)
+
+    def _tmux_session_alive(self, sid: str) -> bool:
+        try:
+            return subprocess.run(
+                ["tmux", "has-session", "-t", f"codex-sess-{sid}"],
+                capture_output=True, text=True, check=False,
+            ).returncode == 0
+        except OSError:
+            return False
+
+    def _worktree_head(self, wt_path: Path) -> str | None:
+        try:
+            cp = subprocess.run(
+                ["git", "-C", str(wt_path), "rev-parse", "HEAD"],
+                capture_output=True, text=True, check=False,
+            )
+        except OSError:
+            return None
+        if cp.returncode != 0:
+            return None
+        head = (cp.stdout or "").strip()
+        return head or None
+
+    def _head_is_ancestor(self, head: str, base: str) -> bool:
+        return self._git("merge-base", "--is-ancestor", head, base).returncode == 0
 
     def reap_deleted(self, *, max_age_days: int = 7) -> int:
         """Purge ``codex-wt/.deleted-<ts>/`` dirs older than ``max_age_days``.

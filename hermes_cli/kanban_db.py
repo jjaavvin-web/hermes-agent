@@ -226,6 +226,21 @@ def kanban_home() -> Path:
     return get_default_hermes_root()
 
 
+def run_registry_dir() -> Path:
+    """Return the shared run-registry directory for cross-spawner leases."""
+    return kanban_home() / "run-registry"
+
+
+def ensure_run_registry() -> Path:
+    """Create ``~/.hermes/run-registry`` and its lock-only gitignore."""
+    registry = run_registry_dir()
+    registry.mkdir(parents=True, exist_ok=True)
+    gitignore = registry / ".gitignore"
+    if not gitignore.exists():
+        gitignore.write_text("*.lock\n", encoding="utf-8")
+    return registry
+
+
 def boards_root() -> Path:
     """Return ``<root>/kanban/boards`` — the parent of non-default board dirs.
 
@@ -1381,6 +1396,7 @@ def init_db(
     else:
         path = kanban_db_path(board=board)
     path.parent.mkdir(parents=True, exist_ok=True)
+    ensure_run_registry()
     resolved = str(path.resolve())
     # Clear the cache entry so the underlying connect() re-runs the
     # schema + migration pass unconditionally.
@@ -4394,7 +4410,7 @@ def _hive_registry_conflict(
         if not isinstance(data, dict):
             continue
         lock_branch = data.get("branch")
-        lock_card = data.get("tracking_card")
+        lock_card = data.get("kanban_card_id") or data.get("tracking_card")
         if (branch and lock_branch and branch == lock_branch) or (
             card_id and lock_card and card_id == lock_card
         ):
