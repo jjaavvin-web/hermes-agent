@@ -318,6 +318,25 @@ def kanban_db_path(board: Optional[str] = None) -> Path:
     return board_dir(slug) / "kanban.db"
 
 
+def _board_repo_root_path(board: Optional[str] = None) -> Optional[Path]:
+    """Return the validated repo root recorded on ``board``, if any."""
+    try:
+        raw = read_board_metadata(board).get("repo_root")
+    except Exception:
+        return None
+    if not raw:
+        return None
+    try:
+        return Path(str(raw)).expanduser().resolve(strict=False)
+    except OSError:
+        return Path(str(raw)).expanduser()
+
+
+def _repo_scoped_kanban_root(repo_root: Path) -> Path:
+    """Per-repo workspace root used by project-isolated kanban boards."""
+    return repo_root / ".hermes" / "kanban"
+
+
 def workspaces_root(board: Optional[str] = None) -> Path:
     """Return the directory under which ``scratch`` workspaces are created.
 
@@ -325,19 +344,37 @@ def workspaces_root(board: Optional[str] = None) -> Path:
     ``HERMES_KANBAN_WORKSPACES_ROOT`` pins the path directly (highest
     precedence) — the dispatcher injects this into worker env.
 
-    ``default`` keeps the legacy path ``<root>/kanban/workspaces/`` so
-    that existing scratch workspaces from before the boards feature are
-    preserved. Other boards use ``<root>/kanban/boards/<slug>/workspaces/``.
+    Boards with ``board.json.repo_root`` get repo-scoped scratch storage
+    under that checkout so workers operate inside the board's project
+    boundary. Boards without repo metadata preserve the legacy roots:
+    ``default`` keeps ``<root>/kanban/workspaces/`` and other boards use
+    ``<root>/kanban/boards/<slug>/workspaces/``.
     """
     override = os.environ.get("HERMES_KANBAN_WORKSPACES_ROOT", "").strip()
     if override:
         return Path(override).expanduser()
+    repo_root = _board_repo_root_path(board)
+    if repo_root is not None:
+        return _repo_scoped_kanban_root(repo_root) / "workspaces"
     slug = _normalize_board_slug(board)
     if slug is None:
         slug = get_current_board()
     if slug == DEFAULT_BOARD:
         return kanban_home() / "kanban" / "workspaces"
     return board_dir(slug) / "workspaces"
+
+
+def worktrees_root(board: Optional[str] = None) -> Optional[Path]:
+    """Return a repo-scoped default worktree root when board metadata has one.
+
+    ``None`` means callers should use their historical fallback; this keeps
+    boards created before repo metadata on the old ``Path.cwd()/.worktrees``
+    path.
+    """
+    repo_root = _board_repo_root_path(board)
+    if repo_root is None:
+        return None
+    return _repo_scoped_kanban_root(repo_root) / "worktrees"
 
 
 def worker_logs_dir(board: Optional[str] = None) -> Path:
@@ -2870,6 +2907,9 @@ def resolve_workspace(task: Task, *, board: Optional[str] = None) -> Path:
         return p
     if kind == "worktree":
         if not task.workspace_path:
+            board_worktrees_root = worktrees_root(board=board)
+            if board_worktrees_root is not None:
+                return board_worktrees_root / task.id
             # Default: .worktrees/<id>/ under CWD.  Worker skill creates it.
             return Path.cwd() / ".worktrees" / task.id
         p = Path(task.workspace_path).expanduser()
@@ -4764,6 +4804,8 @@ def dispatch_once(
     ``spawn_fn`` defaults to ``_default_spawn``. Tests pass a stub.
     ``board`` pins workspace/log/db resolution for this tick to a specific
     board. When omitted, the current-board resolution chain is used.
+    ``base_branch`` overrides the board's metadata value for worktree spawn;
+    when omitted, board ``base_branch`` is read from board metadata.
     """
     # Reap zombie children from previously spawned workers.
     # The gateway-embedded dispatcher is the parent of every worker spawned
@@ -4906,7 +4948,18 @@ def dispatch_once(
             import inspect
             try:
                 sig = inspect.signature(_spawn)
-                if "board" in sig.parameters:
+                if "base_branch" in sig.parameters:
+                    pid = _spawn(
+                        claimed,
+                        str(workspace),
+                        board=board,
+                        base_branch=(
+                            base_branch
+                            if base_branch is not None
+                            else _board_base_branch(board)
+                        ),
+                    )
+                elif "board" in sig.parameters:
                     pid = _spawn(claimed, str(workspace), board=board)
                 else:
                     pid = _spawn(claimed, str(workspace))
@@ -4990,6 +5043,7 @@ def _default_spawn(
     workspace: str,
     *,
     board: Optional[str] = None,
+    base_branch: Optional[str] = None,
 ) -> Optional[int]:
     """Fire-and-forget ``hermes -p <profile> chat -q ...`` subprocess.
 

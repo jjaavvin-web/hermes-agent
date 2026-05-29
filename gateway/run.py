@@ -4765,6 +4765,7 @@ class GatewayRunner:
                 # re-ran the migration on a second connection, racing
                 # the first. See the matching comment in
                 # `_kanban_notifier_watcher` and issue #21378.
+                board_meta = _kb.read_board_metadata(slug)
                 return _kb.dispatch_once(
                     conn,
                     board=slug,
