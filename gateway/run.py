@@ -5641,9 +5641,11 @@ class GatewayRunner:
                 # re-ran the migration on a second connection, racing
                 # the first. See the matching comment in
                 # `_kanban_notifier_watcher` and issue #21378.
+                board_meta = _kb.read_board_metadata(slug)
                 return _kb.dispatch_once(
                     conn,
                     board=slug,
+                    base_branch=board_meta.get("base_branch") or None,
                     max_spawn=per_board_max_spawn if per_board_max_spawn is not None else max_spawn,
                     max_in_progress=max_in_progress,
                     failure_limit=failure_limit,
