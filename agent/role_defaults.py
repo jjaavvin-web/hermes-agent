@@ -34,6 +34,9 @@ ANTHROPIC_MAX_OAUTH_ONLY: Final[bool] = True
 ANTHROPIC_API_KEY_ALLOWED: Final[bool] = False
 """Anthropic API keys are disallowed for this Max-OAuth-only rail."""
 
+ANTHROPIC_API_KEY_ENV: Final[str] = "ANTHROPIC_API_KEY"
+"""Environment variable name that would enable disallowed paid Anthropic API fallback."""
+
 ANTHROPIC_CLAUDE_P_ALLOWED: Final[bool] = False
 """Plain ``claude -p`` is disallowed; use the approved interactive/OAuth path."""
 
@@ -56,7 +59,7 @@ def assert_no_anthropic_api_key(env: Mapping[str, str | None]) -> None:
     mutate state.
     """
 
-    if env.get("ANTHROPIC_API_KEY"):
+    if env.get(ANTHROPIC_API_KEY_ENV):
         raise RuntimeError(
             "ANTHROPIC_API_KEY is not allowed for the Anthropic Max-OAuth-only rail"
         )

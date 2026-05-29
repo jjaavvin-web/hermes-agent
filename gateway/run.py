@@ -17094,6 +17094,16 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
     except Exception as _mm_exc:
         logger.debug("Failed to start memory monitor: %s", _mm_exc)
 
+    try:
+        from agent.startup_safety import enforce_startup_role_invariants
+        from hermes_cli.config import load_config as _load_cli_config
+
+        enforce_startup_role_invariants(env=os.environ, cfg=_load_cli_config())
+    except Exception as exc:
+        if exc.__class__.__name__ == "StartupInvariantError":
+            raise
+        logger.debug("Startup role invariant guard failed: %s", exc)
+
     # Optional stderr handler — level driven by -v/-q flags on the CLI.
     # verbosity=None (-q/--quiet): no stderr output
     # verbosity=0    (default):    WARNING and above
