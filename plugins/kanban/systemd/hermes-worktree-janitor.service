@@ -1,0 +1,7 @@
+[Unit]
+Description=Hermes worktree janitor dry-run report (alert-first)
+Documentation=https://hermes-agent.nousresearch.com/docs
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/env bash -lc 'hermes git-health janitor --repo "%h/.local/share/hermes-agent" --dry-run 2>&1 | systemd-cat -t hermes-worktree-janitor -p info'

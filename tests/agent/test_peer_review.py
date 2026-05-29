@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -16,7 +17,6 @@ from agent.peer_review import (
     PanePoolFailedToStart,
     PeerReviewOrchestrator,
     Verdict,
-    _canonicalize_fuzzy_verdict,
 )
 
 
@@ -30,14 +30,27 @@ class _FakeProc:
     stderr: str = ""
 
 
+# Regex to extract the verdict_path from the review invocation send-keys text.
+# The invocation contains a path like /tmp/review-<session_id>.verdict.json.
+_VERDICT_PATH_RE = re.compile(r"(/tmp/review-\S+\.verdict\.json)")
+
+
 @dataclass
 class _TmuxState:
-    """Tracks the in-memory tmux session set + scripted capture-pane outputs."""
+    """Tracks the in-memory tmux session set + scripted capture-pane outputs.
+
+    verdict_script maps pane_id -> verdict dict to write when the review
+    invocation send-keys is detected for that pane.  Default (None) means
+    write an APPROVE verdict.
+    """
     sessions: set = field(default_factory=set)
+    # capture_script is still used by _dialog_clear (startup "Enter to confirm").
     capture_script: dict = field(default_factory=dict)  # session -> [outputs]
     send_keys_log: list = field(default_factory=list)
     new_session_will_fail: set = field(default_factory=set)
     has_session_dead: set = field(default_factory=set)
+    # pane_id -> verdict dict; None entry means use default APPROVE.
+    verdict_script: dict = field(default_factory=dict)
 
 
 def _make_fake_subprocess(tmux_state: _TmuxState):
@@ -63,7 +76,32 @@ def _make_fake_subprocess(tmux_state: _TmuxState):
             return _FakeProc(returncode=0, stdout=out)
         if cmd == "send-keys":
             session = args[args.index("-t") + 1]
-            tmux_state.send_keys_log.append((session, args[args.index("-t") + 2:]))
+            # args after -t <session> are the key text(s).
+            key_args = args[args.index("-t") + 2:]
+            tmux_state.send_keys_log.append((session, key_args))
+            # When the review invocation arrives, write the verdict file.
+            # We detect it by looking for the verdict_path pattern in the text.
+            text = " ".join(str(a) for a in key_args)
+            m = _VERDICT_PATH_RE.search(text)
+            if m:
+                verdict_path = Path(m.group(1))
+                # Use the pane-specific script or fall back to APPROVE.
+                script_entry = tmux_state.verdict_script.get(session)
+                if script_entry is None:
+                    verdict_dict = {
+                        "verdict": "APPROVE",
+                        "summary": "looks good",
+                        "comments": [],
+                    }
+                elif isinstance(script_entry, list):
+                    # Pop the first entry if multiple rounds are scripted.
+                    if len(script_entry) > 1:
+                        verdict_dict = script_entry.pop(0)
+                    else:
+                        verdict_dict = script_entry[0]
+                else:
+                    verdict_dict = script_entry
+                verdict_path.write_text(json.dumps(verdict_dict), encoding="utf-8")
             return _FakeProc(returncode=0)
         if cmd == "kill-session":
             session = args[args.index("-t") + 1]
@@ -128,10 +166,10 @@ class TestStart:
             await orch.start()
 
 
-# ── verdict parsing ─────────────────────────────────────────────────────
+# ── verdict delivery via file handoff ────────────────────────────────────
 
 
-class TestVerdictParsing:
+class TestVerdictFileHandoff:
     @pytest.mark.asyncio
     async def test_approve_picked_up(self, tmp_path):
         tmux = _TmuxState()
@@ -139,12 +177,15 @@ class TestVerdictParsing:
             "codex-review-0": ["Enter to confirm", "", "", ""],
             "codex-review-1": ["Enter to confirm", "", "", ""],
         }
+        tmux.verdict_script = {
+            "codex-review-0": {
+                "verdict": "APPROVE",
+                "summary": "looks good",
+                "comments": [],
+            },
+        }
         orch = _make_orchestrator(tmp_path, tmux, idle_threshold_sec=0)
         await orch.start()
-        tmux.capture_script["codex-review-0"] = [
-            "...some output...",
-            "VERDICT: APPROVE\nRationale: looks good",
-        ]
         v = await orch.review(
             session_id="sid-a",
             isa_path=tmp_path / "missing.md",
@@ -160,12 +201,15 @@ class TestVerdictParsing:
             "codex-review-0": ["Enter to confirm", "", "", ""],
             "codex-review-1": ["Enter to confirm", "", "", ""],
         }
+        tmux.verdict_script = {
+            "codex-review-0": {
+                "verdict": "REVISE",
+                "summary": "needs work",
+                "comments": ["Missing input validation on line 42."],
+            },
+        }
         orch = _make_orchestrator(tmp_path, tmux, idle_threshold_sec=0)
         await orch.start()
-        tmux.capture_script["codex-review-0"] = [
-            "...thinking...",
-            "VERDICT: REVISE\nMissing input validation on line 42.",
-        ]
         v = await orch.review(
             session_id="sid-b",
             isa_path=tmp_path / "missing.md",
@@ -175,51 +219,138 @@ class TestVerdictParsing:
         assert "line 42" in v.rationale
 
     @pytest.mark.asyncio
-    async def test_uses_last_verdict_when_multiple(self, tmp_path):
+    async def test_escalate_picked_up(self, tmp_path):
         tmux = _TmuxState()
         tmux.capture_script = {
             "codex-review-0": ["Enter to confirm", "", "", ""],
             "codex-review-1": ["Enter to confirm", "", "", ""],
         }
+        tmux.verdict_script = {
+            "codex-review-0": {
+                "verdict": "ESCALATE",
+                "summary": "fundamental scope drift",
+                "comments": ["completely wrong approach"],
+            },
+        }
         orch = _make_orchestrator(tmp_path, tmux, idle_threshold_sec=0)
         await orch.start()
-        tmux.capture_script["codex-review-0"] = [
-            "first pass...",
-            "VERDICT: REVISE\nfirst rationale\n\non second look\nVERDICT: APPROVE\nfinal rationale",
-        ]
         v = await orch.review(
-            session_id="sid-c",
+            session_id="sid-esc",
             isa_path=tmp_path / "missing.md",
             diff="diff",
         )
-        assert v.kind == "APPROVE"
-        assert "final rationale" in v.rationale
+        assert v.kind == "ESCALATE"
+        assert "fundamental scope drift" in v.rationale
 
     @pytest.mark.asyncio
-    async def test_markdown_bold_verdict_picked_up(self, tmp_path):
-        """Opus tends to emit `**VERDICT: APPROVE**` (markdown bold)."""
+    async def test_verdict_path_extracted_from_send_keys(self, tmp_path):
+        """Verify the fake correctly extracts verdict_path from the invocation text."""
         tmux = _TmuxState()
         tmux.capture_script = {
             "codex-review-0": ["Enter to confirm", "", "", ""],
             "codex-review-1": ["Enter to confirm", "", "", ""],
         }
+        # No explicit verdict_script — defaults to APPROVE.
         orch = _make_orchestrator(tmp_path, tmux, idle_threshold_sec=0)
         await orch.start()
-        tmux.capture_script["codex-review-0"] = [
-            "considering...",
-            "**VERDICT: APPROVE**\nLooks fine.",
-        ]
         v = await orch.review(
-            session_id="sid-md",
+            session_id="sid-extract",
             isa_path=tmp_path / "missing.md",
-            diff="diff",
+            diff="d",
         )
         assert v.kind == "APPROVE"
+        # Confirm the invocation send-keys contained the verdict path pattern.
+        invocation_calls = [
+            (sess, keys) for sess, keys in tmux.send_keys_log
+            if any(_VERDICT_PATH_RE.search(str(k)) for k in keys)
+        ]
+        assert invocation_calls, "No send-keys with verdict path found"
 
-    def test_canonicalize_fuzzy_verdict(self):
-        assert _canonicalize_fuzzy_verdict("APROVE") == "APPROVE"
-        assert _canonicalize_fuzzy_verdict("REWISE") == "REVISE"
-        assert _canonicalize_fuzzy_verdict("ESCALAT") == "ESCALATE"
+
+# ── _read_verdict_file unit tests ─────────────────────────────────────────
+
+
+class TestReadVerdictFile:
+    """Direct unit tests for PeerReviewOrchestrator._read_verdict_file."""
+
+    def _make_pane_and_state(self):
+        from agent.peer_review import _Pane, _ReviewState
+        pane = _Pane(pane_id="codex-review-0", state="BUSY")
+        state = _ReviewState(iterations=1)
+        return pane, state
+
+    def test_valid_approve_json(self, tmp_path):
+        orch = _make_orchestrator(tmp_path, _TmuxState())
+        pane, state = self._make_pane_and_state()
+        vf = tmp_path / "verdict.json"
+        vf.write_text(json.dumps({
+            "verdict": "APPROVE",
+            "summary": "all good",
+            "comments": [],
+        }))
+        import time
+        result = orch._read_verdict_file(vf, pane, state, time.monotonic())
+        assert result is not None
+        assert result.kind == "APPROVE"
+        assert "all good" in result.rationale
+        assert result.iteration == 1
+
+    def test_valid_revise_with_comments(self, tmp_path):
+        orch = _make_orchestrator(tmp_path, _TmuxState())
+        pane, state = self._make_pane_and_state()
+        vf = tmp_path / "verdict.json"
+        vf.write_text(json.dumps({
+            "verdict": "REVISE",
+            "summary": "issues found",
+            "comments": ["fix import", "add tests"],
+        }))
+        import time
+        result = orch._read_verdict_file(vf, pane, state, time.monotonic())
+        assert result is not None
+        assert result.kind == "REVISE"
+        assert "fix import" in result.rationale
+        assert "add tests" in result.rationale
+
+    def test_empty_file_returns_none(self, tmp_path):
+        orch = _make_orchestrator(tmp_path, _TmuxState())
+        pane, state = self._make_pane_and_state()
+        vf = tmp_path / "verdict.json"
+        vf.write_text("")
+        import time
+        result = orch._read_verdict_file(vf, pane, state, time.monotonic())
+        assert result is None
+
+    def test_malformed_json_returns_none(self, tmp_path):
+        orch = _make_orchestrator(tmp_path, _TmuxState())
+        pane, state = self._make_pane_and_state()
+        vf = tmp_path / "verdict.json"
+        vf.write_text('{"verdict": "APPROVE"')  # truncated — mid-write
+        import time
+        result = orch._read_verdict_file(vf, pane, state, time.monotonic())
+        assert result is None
+
+    def test_unrecognised_verdict_value_returns_escalate(self, tmp_path):
+        orch = _make_orchestrator(tmp_path, _TmuxState())
+        pane, state = self._make_pane_and_state()
+        vf = tmp_path / "verdict.json"
+        vf.write_text(json.dumps({
+            "verdict": "YOLO",
+            "summary": "bad value",
+            "comments": [],
+        }))
+        import time
+        result = orch._read_verdict_file(vf, pane, state, time.monotonic())
+        assert result is not None
+        assert result.kind == "ESCALATE"
+        assert "YOLO" in result.rationale
+
+    def test_missing_file_returns_none(self, tmp_path):
+        orch = _make_orchestrator(tmp_path, _TmuxState())
+        pane, state = self._make_pane_and_state()
+        vf = tmp_path / "nonexistent.json"
+        import time
+        result = orch._read_verdict_file(vf, pane, state, time.monotonic())
+        assert result is None
 
 
 # ── caps ────────────────────────────────────────────────────────────────
@@ -237,14 +368,16 @@ class TestIterationCap:
         orch = _make_orchestrator(tmp_path, tmux, iteration_cap=3, idle_threshold_sec=0)
         await orch.start()
         for i in range(3):
-            tmux.capture_script["codex-review-0"] = [
-                "...",
-                f"VERDICT: REVISE\nround {i}",
-            ]
-            tmux.capture_script["codex-review-1"] = [
-                "...",
-                f"VERDICT: REVISE\nround {i}",
-            ]
+            tmux.verdict_script["codex-review-0"] = {
+                "verdict": "REVISE",
+                "summary": f"round {i}",
+                "comments": [],
+            }
+            tmux.verdict_script["codex-review-1"] = {
+                "verdict": "REVISE",
+                "summary": f"round {i}",
+                "comments": [],
+            }
             v = await orch.review(
                 session_id="sid-loop",
                 isa_path=tmp_path / "missing.md",
@@ -277,14 +410,16 @@ class TestDailyCap:
         await orch.start()
         # Two reviews under the cap.
         for _ in range(2):
-            tmux.capture_script["codex-review-0"] = [
-                "...",
-                "VERDICT: APPROVE\nok",
-            ]
-            tmux.capture_script["codex-review-1"] = [
-                "...",
-                "VERDICT: APPROVE\nok",
-            ]
+            tmux.verdict_script["codex-review-0"] = {
+                "verdict": "APPROVE",
+                "summary": "ok",
+                "comments": [],
+            }
+            tmux.verdict_script["codex-review-1"] = {
+                "verdict": "APPROVE",
+                "summary": "ok",
+                "comments": [],
+            }
             v = await orch.review(
                 session_id="sid-cap",
                 isa_path=tmp_path / "missing.md",
@@ -322,12 +457,15 @@ class TestDailyCap:
             "codex-review-0": ["Enter to confirm", "", "", ""],
             "codex-review-1": ["Enter to confirm", "", "", ""],
         }
+        tmux.verdict_script = {
+            "codex-review-0": {
+                "verdict": "APPROVE",
+                "summary": "fresh day",
+                "comments": [],
+            },
+        }
         orch = _make_orchestrator(tmp_path, tmux, daily_cap=10, idle_threshold_sec=0)
         await orch.start()
-        tmux.capture_script["codex-review-0"] = [
-            "...",
-            "VERDICT: APPROVE\nfresh day",
-        ]
         v = await orch.review(
             session_id="sid-roll",
             isa_path=tmp_path / "missing.md",
@@ -348,12 +486,15 @@ class TestStatePersistence:
             "codex-review-0": ["Enter to confirm", "", "", ""],
             "codex-review-1": ["Enter to confirm", "", "", ""],
         }
+        tmux.verdict_script = {
+            "codex-review-0": {
+                "verdict": "REVISE",
+                "summary": "feedback",
+                "comments": [],
+            },
+        }
         orch = _make_orchestrator(tmp_path, tmux, idle_threshold_sec=0)
         await orch.start()
-        tmux.capture_script["codex-review-0"] = [
-            "...",
-            "VERDICT: REVISE\nfeedback",
-        ]
         await orch.review(
             session_id="sid-write",
             isa_path=tmp_path / "missing.md",
@@ -377,15 +518,17 @@ class TestStatePersistence:
         orch = _make_orchestrator(tmp_path, tmux, idle_threshold_sec=0)
         await orch.start()
 
-        tmux.capture_script["codex-review-0"] = [
-            "...",
-            "VERDICT: REVISE\ntry again",
-        ]
+        tmux.verdict_script["codex-review-0"] = {
+            "verdict": "REVISE",
+            "summary": "try again",
+            "comments": [],
+        }
         await orch.review(session_id="sid-r", isa_path=tmp_path / "x.md", diff="d")
-        tmux.capture_script["codex-review-1"] = [
-            "...",
-            "VERDICT: APPROVE\nok",
-        ]
+        tmux.verdict_script["codex-review-1"] = {
+            "verdict": "APPROVE",
+            "summary": "ok",
+            "comments": [],
+        }
         await orch.review(session_id="sid-r", isa_path=tmp_path / "x.md", diff="d")
 
         state = json.loads((tmp_path / "codex-review-state.json").read_text())
@@ -407,9 +550,25 @@ class TestPaneDeathMidReview:
         orch = _make_orchestrator(tmp_path, tmux, idle_threshold_sec=0)
         await orch.start()
         # The pane will have its has-session probe FAIL on the next poll.
+        # Do NOT write a verdict file — the poll loop should detect the dead pane.
         tmux.has_session_dead.add("codex-review-0")
-        # Provide some capture output but mark the pane dead.
-        tmux.capture_script["codex-review-0"] = ["..."]
+        # Override the fake so it does NOT write a verdict file for this pane.
+        # We achieve this by removing codex-review-0 from verdict_script and
+        # relying on the has_session_dead check firing before has-session returns 0.
+        # The default fake_run writes on send-keys invocation, but has_session_dead
+        # will cause the poll loop to ESCALATE before any file appears.
+        # We prevent file write by patching verdict_script to a sentinel that
+        # tells the fake not to write.
+        tmux.verdict_script["codex-review-0"] = None
+        # Restore the default to None so no file is written — but wait,
+        # the default (None) currently writes APPROVE. We need to intercept.
+        # Use a special sentinel value: set to an empty dict to avoid writing.
+        # Actually: the send-keys fake writes on receipt of the invocation,
+        # which happens BEFORE the poll loop starts. By the time the poll
+        # loop runs, the pane is dead (has_session_dead) so it should ESCALATE
+        # even if a file was written.
+        # The pane-death check comes BEFORE the file check in the poll loop,
+        # so has_session_dead fires first.
 
         v = await orch.review(
             session_id="sid-dead",
@@ -481,3 +640,26 @@ class TestAntiProbes:
         # so its absence is the assertion.
         assert "--print" not in cleaned
         assert "--non-interactive" not in cleaned
+
+    def test_no_dead_regex_machinery(self):
+        """Confirm the dead sentinel/regex globals are gone from the module."""
+        import agent.peer_review as _module
+        assert not hasattr(_module, "_VERDICT_SENTINEL"), \
+            "_VERDICT_SENTINEL should be deleted"
+        assert not hasattr(_module, "_VERDICT_PATTERN"), \
+            "_VERDICT_PATTERN should be deleted"
+        assert not hasattr(_module, "_FUZZY_VERDICT_PATTERN"), \
+            "_FUZZY_VERDICT_PATTERN should be deleted"
+        assert not hasattr(_module, "_canonicalize_fuzzy_verdict"), \
+            "_canonicalize_fuzzy_verdict should be deleted"
+
+    def test_role_defaults_reviewer_model_still_resolves_to_opus(self):
+        """Verify the single reviewer model pin still resolves to Opus."""
+        assert REVIEWER_MODEL == "opus"
+
+    def test_write_tool_in_allowed_tools(self):
+        """Verify Write is in --allowed-tools in _spawn_pane command."""
+        import agent.peer_review as _module
+        src = Path(_module.__file__).read_text(encoding="utf-8")
+        assert "Read,Bash,Write" in src, \
+            "Write not found in --allowed-tools in _spawn_pane"

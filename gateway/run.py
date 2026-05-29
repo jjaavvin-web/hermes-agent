@@ -52,6 +52,8 @@ from typing import Dict, Optional, Any, List, Union
 from agent.account_usage import fetch_account_usage, render_account_usage_lines
 from agent.async_utils import safe_schedule_threadsafe
 from agent.i18n import t
+from agent.worktree_broker import remove_lease, write_lease
+from hermes_cli.auth import _file_lock
 from hermes_cli.config import cfg_get
 
 # --- Agent cache tuning ---------------------------------------------------
@@ -4649,6 +4651,40 @@ class GatewayRunner:
         if max_spawn is not None:
             logger.info(f"kanban dispatcher: max_spawn={max_spawn}")
 
+        # Machine-wide running-worker ceiling across all non-archived boards.
+        # Defaults to max_spawn so a single-board install behaves exactly as
+        # before while multi-board dispatch cannot fan out to max_spawn × N.
+        raw_global_max_running = kanban_cfg.get("global_max_running", max_spawn)
+        global_max_running = None
+        if raw_global_max_running is not None:
+            try:
+                global_max_running = int(raw_global_max_running)
+            except (TypeError, ValueError):
+                logger.warning(
+                    "kanban dispatcher: invalid kanban.global_max_running=%r; "
+                    "using max_spawn=%r",
+                    raw_global_max_running,
+                    max_spawn,
+                )
+                try:
+                    global_max_running = int(max_spawn) if max_spawn is not None else None
+                except (TypeError, ValueError):
+                    global_max_running = None
+            else:
+                if global_max_running < 1:
+                    logger.warning(
+                        "kanban dispatcher: kanban.global_max_running=%r is below 1; "
+                        "using max_spawn=%r",
+                        raw_global_max_running,
+                        max_spawn,
+                    )
+                    try:
+                        global_max_running = int(max_spawn) if max_spawn is not None else None
+                    except (TypeError, ValueError):
+                        global_max_running = None
+        if global_max_running is not None:
+            logger.info("kanban dispatcher: global_max_running=%d", global_max_running)
+
         raw_failure_limit = kanban_cfg.get("failure_limit", _kb.DEFAULT_FAILURE_LIMIT)
         try:
             failure_limit = int(raw_failure_limit)
@@ -4700,7 +4736,7 @@ class GatewayRunner:
                 return _kb.dispatch_once(
                     conn,
                     board=slug,
-                    max_spawn=max_spawn,
+                    max_spawn=per_board_max_spawn,
                     failure_limit=failure_limit,
                 )
             except Exception:
@@ -4768,7 +4804,7 @@ class GatewayRunner:
         )
         while self._running:
             try:
-                results = await asyncio.to_thread(_tick_once)
+                results = await asyncio.to_thread(_locked_tick_once)
                 any_spawned = False
                 for slug, res in (results or []):
                     if res is not None and getattr(res, "spawned", None):
