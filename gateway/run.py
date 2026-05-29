@@ -4717,7 +4717,37 @@ class GatewayRunner:
         bad_ticks = 0
         last_warn_at = 0
 
-        def _tick_once_for_board(slug: str) -> "Optional[object]":
+        def _running_count_for_board(slug: str) -> int:
+            conn = None
+            try:
+                conn = _kb.connect(board=slug)
+                row = conn.execute(
+                    "SELECT COUNT(*) FROM tasks WHERE status = 'running'"
+                ).fetchone()
+                return int(row[0] if row is not None else 0)
+            except Exception:
+                logger.debug(
+                    "kanban dispatcher: failed to count running tasks for board %s",
+                    slug,
+                    exc_info=True,
+                )
+                return 0
+            finally:
+                if conn is not None:
+                    try:
+                        conn.close()
+                    except Exception:
+                        pass
+
+        def _global_running_count(boards: "list[dict]") -> int:
+            total = 0
+            for b in boards:
+                slug = b.get("slug") or _kb.DEFAULT_BOARD
+                total += _running_count_for_board(slug)
+            logger.debug("kanban dispatcher: global running count=%d", total)
+            return total
+
+        def _tick_once_for_board(slug: str, per_board_max_spawn: "Optional[int]" = None) -> "Optional[object]":
             """Run one dispatch_once for a specific board.
 
             Runs in a worker thread via `asyncio.to_thread`. `board=slug`
@@ -4762,10 +4792,28 @@ class GatewayRunner:
                 boards = _kb.list_boards(include_archived=False)
             except Exception:
                 boards = [_kb.read_board_metadata(_kb.DEFAULT_BOARD)]
+            global_running = _global_running_count(boards) if global_max_running is not None else 0
             out: list[tuple[str, "Optional[object]"]] = []
             for b in boards:
                 slug = b.get("slug") or _kb.DEFAULT_BOARD
-                out.append((slug, _tick_once_for_board(slug)))
+                per_board_max_spawn = max_spawn
+                if global_max_running is not None:
+                    headroom = global_max_running - global_running
+                    if headroom <= 0:
+                        logger.debug(
+                            "kanban dispatcher: global_max_running reached (%d/%d); "
+                            "skipping board %s",
+                            global_running,
+                            global_max_running,
+                            slug,
+                        )
+                        break
+                    if per_board_max_spawn is None or per_board_max_spawn > headroom:
+                        per_board_max_spawn = headroom
+                result = _tick_once_for_board(slug, per_board_max_spawn)
+                out.append((slug, result))
+                if result is not None and getattr(result, "spawned", None):
+                    global_running += len(getattr(result, "spawned", []) or [])
             return out
 
         def _locked_tick_once() -> "list[tuple[str, Optional[object]]] | None":
