@@ -88,9 +88,8 @@ def _gh_list_open_branches() -> set[str]:
 class CodexGcWatcher:
     """Background task that periodically sweeps worktree orphans.
 
-    Mirrors :class:`gateway.codex_phase_watcher.CodexPhaseWatcher` and
-    :class:`gateway.codex_merge_watcher.CodexMergeWatcher` so the adapter
-    start/stop wire-up stays symmetric.
+    Mirrors :class:`gateway.codex_merge_watcher.CodexMergeWatcher` so the
+    adapter start/stop wire-up stays symmetric.
     """
 
     def __init__(

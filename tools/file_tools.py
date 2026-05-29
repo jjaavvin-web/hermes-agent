@@ -218,23 +218,74 @@ def _check_sensitive_path(filepath: str, task_id: str = "default") -> str | None
     return None
 
 
+_CODEX_PROTECTED_CACHE: tuple[str, ...] | None = None
+
+
+def _codex_protected_code_roots(wt_real: str) -> tuple[str, ...]:
+    """Code trees a codex Discord thread must NOT write into (besides its own
+    active worktree): the live source checkout (the worktree's parent repo) and
+    the codex-worktree root (so a thread can't clobber a *sibling* thread's
+    tree).  Computed once per process and cached — these roots are constant.
+    """
+    global _CODEX_PROTECTED_CACHE
+    if _CODEX_PROTECTED_CACHE is not None:
+        return _CODEX_PROTECTED_CACHE
+    roots: list[str] = []
+    # Authoritative: the parent repo of the active worktree, via git.
+    try:
+        import subprocess  # noqa: PLC0415
+        proc = subprocess.run(
+            ["git", "-C", wt_real, "rev-parse", "--path-format=absolute",
+             "--git-common-dir"],
+            capture_output=True, text=True, timeout=5,
+        )
+        if proc.returncode == 0 and proc.stdout.strip():
+            roots.append(os.path.realpath(os.path.dirname(proc.stdout.strip())))
+    except Exception:
+        pass
+    # Belt-and-suspenders: the checkout this module is imported from.
+    try:
+        roots.append(os.path.dirname(os.path.dirname(os.path.realpath(__file__))))
+    except Exception:
+        pass
+    # Parent of all codex worktrees → protects sibling threads' trees.
+    try:
+        from hermes_constants import get_hermes_home  # noqa: PLC0415
+        roots.append(os.path.realpath(os.path.join(str(get_hermes_home()), "codex-wt")))
+    except Exception:
+        try:
+            roots.append(os.path.realpath(os.path.expanduser("~/.hermes/codex-wt")))
+        except Exception:
+            pass
+    seen: set[str] = set()
+    deduped: list[str] = []
+    for r in roots:
+        if r and r not in seen:
+            seen.add(r)
+            deduped.append(r)
+    _CODEX_PROTECTED_CACHE = tuple(deduped)
+    return _CODEX_PROTECTED_CACHE
+
+
 def _enforce_codex_sandbox(resolved_abs_path: str, op_name: str) -> str | None:
-    """P1.5 defense-in-depth: refuse writes outside the active codex worktree.
+    """Codex Discord-thread write guard (Model B, 2026-05-28).
 
-    When a Discord codex thread is processing a message, the
-    ``agent.codex_session_context`` contextvar carries that thread's
-    assigned worktree path.  Any WRITE operation whose resolved path
-    falls outside that worktree is rejected with a clear error.
+    The active worktree (carried by the ``agent.codex_session_context``
+    contextvar) isolates the thread's GIT/code state — not the whole
+    filesystem.  A thread legitimately needs to edit shared config
+    (``~/.hermes/config.yaml``), dotfiles, and other non-repo state, so the
+    guard denies a write ONLY when it would corrupt *another code tree* — the
+    live source checkout or a sibling thread's worktree — and allows
+    everything else.
 
-    This is a load-bearing guard: it converts silent live-tree
-    corruption (the agent over-verifies, gets confused by an
-    os.path.abspath result against the gateway's process cwd, and
-    overwrites the live tree) into a loud refusal that the agent can
-    react to.
+    This preserves the load-bearing anti-corruption purpose (an agent that
+    gets confused by an ``os.path.abspath`` against the gateway cwd and tries
+    to overwrite the live tree gets a loud refusal) while no longer jailing
+    threads to their worktree for legitimate config edits.
 
     Returns:
-      - None if the write is allowed (no active codex session OR
-        resolved path is inside the assigned worktree).
+      - None if allowed (no active codex session; inside the active worktree;
+        on the opt-in allowlist; or outside every protected code tree).
       - An error string if denied — callers wrap in ``tool_error``.
 
     Symlinks: both paths are canonicalized with ``os.path.realpath``
@@ -261,24 +312,31 @@ def _enforce_codex_sandbox(resolved_abs_path: str, op_name: str) -> str | None:
         # operating system's own permission checks.
         return None
     if target_real == wt_real or target_real.startswith(wt_real + os.sep):
-        return None  # Inside the worktree — allowed
-    # Opt-in extra-writable-roots allowlist.  Empty by default; populated via
-    # ~/.hermes/codex-sandbox-allow.yaml or HERMES_CODEX_SANDBOX_ALLOW.
+        return None  # Inside the active worktree — always allowed
+
+    # Opt-in extra-writable-roots allowlist (explicit allows; still honored).
     try:
         from agent.codex_sandbox_allowlist import is_path_allowed  # noqa: PLC0415
     except ImportError:
         is_path_allowed = None  # type: ignore[assignment]
     if is_path_allowed is not None and is_path_allowed(target_real):
         return None
-    return (
-        f"CODEX_SANDBOX: {op_name} denied — path {resolved_abs_path!r} is "
-        f"outside the active codex session worktree {wt!r}. "
-        "When working in a tracked codex Discord thread, file writes must "
-        "stay inside the assigned worktree.  Use a path relative to the "
-        "worktree, or an absolute path that starts with the worktree path. "
-        "To grant a specific extra path for this thread, add it under "
-        "'allowed_paths' in ~/.hermes/codex-sandbox-allow.yaml."
-    )
+
+    # Model B: deny only writes into ANOTHER code tree (the live source
+    # checkout or a sibling thread's worktree).  Everything else — shared
+    # config, ~/.hermes state, dotfiles — is allowed.
+    for root in _codex_protected_code_roots(wt_real):
+        if target_real == root or target_real.startswith(root + os.sep):
+            return (
+                f"CODEX_SANDBOX: {op_name} denied — path {resolved_abs_path!r} is "
+                f"inside another code tree ({root!r}), not the active codex "
+                f"worktree {wt!r}.  Writes into the live source checkout or a "
+                "sibling thread's worktree are refused to prevent cross-tree "
+                "corruption.  Config and state outside any repo are allowed; to "
+                "grant a specific extra path add it under 'allowed_paths' in "
+                "~/.hermes/codex-sandbox-allow.yaml."
+            )
+    return None  # Outside every protected code tree — allowed
 def _check_cross_profile_path(filepath: str, task_id: str = "default") -> str | None:
     """Return a cross-profile warning string when ``filepath`` lands in
     another Hermes profile's skills/plugins/cron/memories directory.

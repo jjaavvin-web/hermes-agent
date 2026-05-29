@@ -16,7 +16,7 @@ This module is that watcher.  Once per ``poll_interval_sec`` (default
    ``dispatcher.on_pr_merged(thread_id, pr_meta)`` or
    ``dispatcher.on_pr_closed_unmerged(thread_id, pr_meta)``.
 
-Design parallels with :class:`CodexPhaseWatcher`:
+Design parallels with :class:`gateway.codex_gc_watcher.CodexGcWatcher`:
 
 - Targets are derived from ``codex_sessions.json`` per tick — the
   dispatcher's row set is the source of truth.
@@ -108,7 +108,7 @@ def _classify_pr_state(payload: dict) -> str:
 class CodexMergeWatcher:
     """Background task that watches open PRs and fires transition callbacks.
 
-    Mirrors :class:`gateway.codex_phase_watcher.CodexPhaseWatcher` so the
+    Mirrors :class:`gateway.codex_gc_watcher.CodexGcWatcher` so the
     adapter's start / stop wire-up is symmetric.
     """
 

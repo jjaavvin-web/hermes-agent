@@ -623,9 +623,6 @@ class DiscordAdapter(BasePlatformAdapter):
         # Codex Parallel Workflow P1 — opt-in via HERMES_CODEX_DISPATCHER=1.
         # Constructed in connect() before the event handlers are registered.
         self._codex_dispatcher: Any = None
-        # P2.5: phase watcher (async task) started in connect() after the
-        # Discord adapter is ready; stopped in disconnect().
-        self._codex_phase_watcher: Any = None
         # P3.5: merge watcher (async task) — polls open PRs for MERGING
         # sessions and closes the loop on merge / close-unmerged.
         self._codex_merge_watcher: Any = None
@@ -735,20 +732,9 @@ class DiscordAdapter(BasePlatformAdapter):
             discord_archive_thread=_discord_archive_thread,
         )
 
-        # P2.5: phase watcher polls each session's ISA for transitions into
-        # ``verify`` and calls ``dispatcher.on_phase_verify``.  Stored on the
-        # adapter so ``connect`` / ``disconnect`` can start / stop it.
-        try:
-            from gateway.codex_phase_watcher import CodexPhaseWatcher  # noqa: PLC0415
-            self._codex_phase_watcher = CodexPhaseWatcher(
-                dispatcher=dispatcher,
-                on_phase_verify=dispatcher.on_phase_verify,
-            )
-        except Exception as exc:
-            logger.warning(
-                "[%s] CodexPhaseWatcher unavailable: %s", self.name, exc,
-            )
-            self._codex_phase_watcher = None
+        # Phase watcher removed (2026-05-28 simplify): peer review is triggered
+        # explicitly by the `/review` slash command (→ dispatcher.on_phase_verify),
+        # not by polling each ISA's `phase:` frontmatter on a 30s loop.
 
         # P3.5: merge watcher polls each MERGING row's PR via gh and fires
         # dispatcher.on_pr_merged / on_pr_closed_unmerged on transitions.
@@ -961,19 +947,6 @@ class DiscordAdapter(BasePlatformAdapter):
                     except Exception:
                         logger.exception(
                             "[%s] codex_dispatcher.discover_threads failed",
-                            adapter_self.name,
-                        )
-
-                # Codex P2.5: start the phase watcher.  The orchestrator
-                # itself stays lazy-started on first review request so a
-                # gateway boot with no tracked sessions doesn't burn Opus
-                # pane lifetime.
-                if adapter_self._codex_phase_watcher is not None:
-                    try:
-                        await adapter_self._codex_phase_watcher.start()
-                    except Exception:
-                        logger.exception(
-                            "[%s] codex_phase_watcher.start failed",
                             adapter_self.name,
                         )
 
@@ -1241,14 +1214,6 @@ class DiscordAdapter(BasePlatformAdapter):
 
     async def disconnect(self) -> None:
         """Disconnect from Discord."""
-        # Codex P2.5: tear down the phase watcher before closing the client
-        # so its polling loop doesn't observe a half-torn-down dispatcher.
-        if self._codex_phase_watcher is not None:
-            try:
-                await self._codex_phase_watcher.stop()
-            except Exception:  # pragma: no cover - defensive
-                logger.exception("[%s] codex_phase_watcher.stop failed", self.name)
-
         # Codex P3.5: tear down the merge watcher symmetrically.
         if self._codex_merge_watcher is not None:
             try:

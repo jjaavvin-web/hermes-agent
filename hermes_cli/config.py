@@ -22,8 +22,15 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
+
+try:
+    import fcntl  # POSIX advisory locks (config.yaml cross-process guard)
+except ImportError:  # pragma: no cover — Windows
+    fcntl = None  # type: ignore[assignment]
 from typing import Dict, Any, Optional, List, Tuple
 
 from hermes_cli.secret_prompt import masked_secret_prompt
@@ -171,6 +178,57 @@ _RAW_CONFIG_CACHE: Dict[str, Tuple[int, int, Dict[str, Any]]] = {}
 # calls read_raw_config. Also covers mutation of the module-level cache
 # dicts above.
 _CONFIG_LOCK = threading.RLock()
+_CONFIG_FLOCK_HOLDER = threading.local()
+
+
+@contextmanager
+def _config_file_lock(timeout_seconds: float = 10.0):
+    """Cross-process advisory lock for the config.yaml read-modify-write body.
+
+    The gateway, dashboard, auth-refresh and CLI are separate processes that
+    all edit ``~/.hermes/config.yaml``; before this only ``auth.json`` had a
+    cross-process lock, so their RMW cycles could lost-update each other
+    (Elite Blueprint B1). Reentrant per-thread via a depth counter; degrades
+    to a best-effort no-op if ``fcntl`` is unavailable or the lock can't be
+    acquired within ``timeout_seconds`` (a config write never blocks forever).
+    """
+    holder = _CONFIG_FLOCK_HOLDER
+    if getattr(holder, "depth", 0) > 0:
+        holder.depth += 1
+        try:
+            yield
+        finally:
+            holder.depth -= 1
+        return
+    lock_file = None
+    if fcntl is not None:
+        try:
+            ensure_hermes_home()
+            lock_path = get_config_path().with_name("config.yaml.lock")
+            lock_file = open(lock_path, "a+", encoding="utf-8")  # noqa: SIM115
+        except OSError:
+            lock_file = None
+    if lock_file is not None:
+        deadline = time.monotonic() + max(1.0, timeout_seconds)
+        while True:
+            try:
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except (BlockingIOError, OSError):
+                if time.monotonic() >= deadline:
+                    break  # best-effort: proceed rather than hang the gateway
+                time.sleep(0.05)
+    holder.depth = 1
+    try:
+        yield
+    finally:
+        holder.depth = 0
+        if lock_file is not None:
+            try:
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+            except OSError:
+                pass
+            lock_file.close()
 # Env var names written to .env that aren't in OPTIONAL_ENV_VARS
 # (managed by setup/provider flows directly).
 _EXTRA_ENV_KEYS = frozenset({
@@ -4838,7 +4896,7 @@ _COMMENTED_SECTIONS = """
 
 def save_config(config: Dict[str, Any]):
     """Save configuration to ~/.hermes/config.yaml."""
-    with _CONFIG_LOCK:
+    with _CONFIG_LOCK, _config_file_lock():
         if is_managed():
             managed_error("save configuration")
             return

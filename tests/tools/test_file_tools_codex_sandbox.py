@@ -1,30 +1,65 @@
-"""Tests for P1.5 sandbox: refuse writes outside the active codex worktree."""
+"""Model B codex sandbox (2026-05-28): deny writes into OTHER code trees (the
+live source checkout + sibling worktrees); allow config / state / dotfiles
+outside any repo.
+
+Supersedes the original P1.5 "deny everything outside the active worktree"
+contract — a tracked codex Discord thread may now edit shared config (e.g.
+``~/.hermes/config.yaml``) but still cannot clobber the live tree or a sibling
+thread's worktree.
+"""
 
 from __future__ import annotations
 
-import json
+import contextlib
 import os
-from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
 
-from agent.codex_session_context import (
-    set_active_worktree,
-    reset_active_worktree,
-)
+from agent.codex_session_context import set_active_worktree, reset_active_worktree
 import tools.file_tools as ft
 from tools.file_tools import _enforce_codex_sandbox
 
 
+@pytest.fixture(autouse=True)
+def _reset_protected_cache():
+    """The protected-roots list is process-cached; reset around every test."""
+    ft._CODEX_PROTECTED_CACHE = None
+    yield
+    ft._CODEX_PROTECTED_CACHE = None
+
+
 @pytest.fixture
-def codex_worktree(tmp_path):
-    """Bind a temp dir as the active codex worktree."""
-    wt = tmp_path / "codex-wt" / "test-sid"
+def codex_env(tmp_path, monkeypatch):
+    """Hermetic Model-B environment.
+
+    - ``wt``            active worktree (under codex_wt_root)
+    - ``main_repo``     protected 'live source checkout'
+    - ``codex_wt_root`` protected parent of all worktrees (sibling protection)
+    - ``outside``       a config-ish dir outside every code tree (writable)
+    """
+    codex_wt_root = tmp_path / "codex-wt"
+    wt = codex_wt_root / "test-sid"
     wt.mkdir(parents=True)
+    main_repo = tmp_path / "live-checkout"
+    main_repo.mkdir()
+    outside = tmp_path / "dot-hermes"
+    outside.mkdir()
+    monkeypatch.setattr(
+        ft,
+        "_codex_protected_code_roots",
+        lambda wt_real: (
+            os.path.realpath(str(main_repo)),
+            os.path.realpath(str(codex_wt_root)),
+        ),
+    )
     token = set_active_worktree(str(wt))
     try:
-        yield wt
+        yield SimpleNamespace(
+            wt=wt, main_repo=main_repo, codex_wt_root=codex_wt_root,
+            outside=outside, tmp=tmp_path,
+        )
     finally:
         reset_active_worktree(token)
 
@@ -43,43 +78,46 @@ def _mock_file_ops_ok() -> MagicMock:
 
 class TestEnforceCodexSandbox:
     def test_no_contextvar_allows_anything(self, tmp_path):
-        # No contextvar set — sandbox is inert.
         assert _enforce_codex_sandbox(str(tmp_path / "anywhere.txt"), "write_file") is None
 
-    def test_inside_worktree_allowed(self, codex_worktree):
-        target = codex_worktree / "subdir" / "file.txt"
+    def test_inside_worktree_allowed(self, codex_env):
+        target = codex_env.wt / "subdir" / "file.txt"
         assert _enforce_codex_sandbox(str(target), "write_file") is None
 
-    def test_worktree_root_allowed(self, codex_worktree):
-        target = codex_worktree / "file.txt"
-        assert _enforce_codex_sandbox(str(target), "write_file") is None
+    def test_worktree_root_allowed(self, codex_env):
+        assert _enforce_codex_sandbox(str(codex_env.wt / "file.txt"), "write_file") is None
 
-    def test_outside_worktree_denied(self, codex_worktree, tmp_path):
-        outside = tmp_path / "elsewhere" / "file.txt"
-        err = _enforce_codex_sandbox(str(outside), "write_file")
+    def test_live_checkout_denied(self, codex_env):
+        """The corruption mode we caught in production: a write into the live
+        source checkout must still be a loud refusal."""
+        err = _enforce_codex_sandbox(str(codex_env.main_repo / "agent" / "x.py"), "write_file")
         assert err is not None
         assert "CODEX_SANDBOX" in err
-        assert "write_file" in err
-        assert str(outside) in err
+        assert "another code tree" in err
 
-    def test_op_name_appears_in_error(self, codex_worktree, tmp_path):
-        outside = tmp_path / "elsewhere" / "file.txt"
-        err = _enforce_codex_sandbox(str(outside), "patch")
+    def test_sibling_worktree_denied(self, codex_env):
+        """A thread must not write into a *sibling* thread's worktree."""
+        sibling = codex_env.codex_wt_root / "other-sid" / "file.txt"
+        err = _enforce_codex_sandbox(str(sibling), "write_file")
+        assert err is not None
+        assert "CODEX_SANDBOX" in err
+
+    def test_config_outside_repos_allowed(self, codex_env):
+        """Model B's reason for existing: shared config/state outside any code
+        tree is now writable from a tracked codex thread."""
+        cfg = codex_env.outside / "config.yaml"
+        assert _enforce_codex_sandbox(str(cfg), "write_file") is None
+
+    def test_op_name_appears_in_error(self, codex_env):
+        err = _enforce_codex_sandbox(str(codex_env.main_repo / "f"), "patch")
+        assert err is not None
         assert "patch denied" in err
 
-    def test_live_tree_corruption_path_denied(self, codex_worktree, tmp_path):
-        """The exact corruption mode we caught in production:
-        agent uses an absolute path from /home/josep/.local/share/hermes-agent/.
-        Must be denied."""
-        live_tree_target = tmp_path / "live-tree" / "codex-smoke.txt"
-        live_tree_target.parent.mkdir(parents=True, exist_ok=True)
-        err = _enforce_codex_sandbox(str(live_tree_target), "write_file")
-        assert err is not None
-        assert "outside the active codex session worktree" in err
+    def test_error_points_at_allowlist(self, codex_env):
+        err = _enforce_codex_sandbox(str(codex_env.main_repo / "f"), "write_file")
+        assert "codex-sandbox-allow.yaml" in err
 
     def test_stale_contextvar_at_deleted_dir_is_inert(self, tmp_path):
-        """If contextvar points at a deleted directory, sandbox falls
-        through to None (defer to OS) rather than building a phantom comparison."""
         bogus = tmp_path / "does" / "not" / "exist"
         token = set_active_worktree(str(bogus))
         try:
@@ -87,162 +125,105 @@ class TestEnforceCodexSandbox:
         finally:
             reset_active_worktree(token)
 
-    def test_symlinked_worktree_inside_is_allowed(self, codex_worktree, tmp_path):
-        """Worktree referenced by symlink: realpath canonicalization makes
-        the inside-check work even when paths use different routes."""
+    def test_symlinked_worktree_inside_is_allowed(self, codex_env, tmp_path):
         link = tmp_path / "wt-symlink"
-        link.symlink_to(codex_worktree)
-        # Re-bind via the symlinked path.
-        reset_active_worktree(set_active_worktree(str(link)))
+        link.symlink_to(codex_env.wt)
         token = set_active_worktree(str(link))
         try:
-            target_via_real = codex_worktree / "file.txt"
-            target_via_link = link / "file.txt"
-            # Both should resolve to the same canonical place — both allowed.
-            assert _enforce_codex_sandbox(str(target_via_real), "write_file") is None
-            assert _enforce_codex_sandbox(str(target_via_link), "write_file") is None
+            assert _enforce_codex_sandbox(str(codex_env.wt / "file.txt"), "write_file") is None
+            assert _enforce_codex_sandbox(str(link / "file.txt"), "write_file") is None
         finally:
             reset_active_worktree(token)
+
+
+class TestEnforceCodexSandboxAllowlist:
+    def test_allowlist_permits_path_in_protected_root(self, codex_env, monkeypatch):
+        """An explicit allowlist entry overrides the protected-tree denial —
+        opt-in operator config wins."""
+        allowed = codex_env.main_repo / "generated"
+        monkeypatch.setenv("HERMES_CODEX_SANDBOX_ALLOW", str(allowed))
+        import agent.codex_sandbox_allowlist as allow
+        allow.reset_cache_for_tests()
+        assert _enforce_codex_sandbox(str(allowed / "out.txt"), "write_file") is None
+
+    def test_allowlist_does_not_open_other_protected_paths(self, codex_env, monkeypatch):
+        allowed = codex_env.main_repo / "generated"
+        monkeypatch.setenv("HERMES_CODEX_SANDBOX_ALLOW", str(allowed))
+        import agent.codex_sandbox_allowlist as allow
+        allow.reset_cache_for_tests()
+        err = _enforce_codex_sandbox(str(codex_env.main_repo / "elsewhere.py"), "write_file")
+        assert err is not None
+        assert "CODEX_SANDBOX" in err
 
 
 # ─── End-to-end tool integration tests ───────────────────────────────────
 
 
-class TestEnforceCodexSandboxAllowlist:
-    """The opt-in extra-roots allowlist lets _enforce_codex_sandbox permit
-    specific paths outside the worktree without bypassing the guard wholesale."""
-
-    def test_allowlist_permits_outside_path(self, codex_worktree, tmp_path, monkeypatch):
-        outside = tmp_path / "vault"
-        outside.mkdir()
-        monkeypatch.setenv("HERMES_CODEX_SANDBOX_ALLOW", str(outside))
-        import agent.codex_sandbox_allowlist as allow
-        allow.reset_cache_for_tests()
-        target = outside / "note.md"
-        assert _enforce_codex_sandbox(str(target), "write_file") is None
-
-    def test_allowlist_does_not_open_unrelated_paths(
-        self, codex_worktree, tmp_path, monkeypatch
-    ):
-        allowed = tmp_path / "vault"
-        allowed.mkdir()
-        unrelated = tmp_path / "elsewhere"
-        unrelated.mkdir()
-        monkeypatch.setenv("HERMES_CODEX_SANDBOX_ALLOW", str(allowed))
-        import agent.codex_sandbox_allowlist as allow
-        allow.reset_cache_for_tests()
-        err = _enforce_codex_sandbox(str(unrelated / "leak.txt"), "write_file")
-        assert err is not None
-        assert "CODEX_SANDBOX" in err
-
-    def test_default_no_allowlist_preserves_original_behavior(
-        self, codex_worktree, tmp_path, monkeypatch
-    ):
-        """Regression guard: with no allowlist configured, every outside
-        path is still denied — original P1.5 semantics unchanged."""
-        monkeypatch.delenv("HERMES_CODEX_SANDBOX_ALLOW", raising=False)
-        # Point hermes_home at an empty dir so no real ~/.hermes/codex-sandbox-allow.yaml
-        # leaks into the test.
-        import hermes_constants
-        empty = tmp_path / "empty-hermes-home"
-        empty.mkdir()
-        monkeypatch.setattr(hermes_constants, "get_hermes_home", lambda: empty)
-        import agent.codex_sandbox_allowlist as allow
-        allow.reset_cache_for_tests()
-        err = _enforce_codex_sandbox(str(tmp_path / "anywhere.txt"), "write_file")
-        assert err is not None
-        assert "CODEX_SANDBOX" in err
-
-    def test_allowlist_error_message_points_at_config_file(
-        self, codex_worktree, tmp_path, monkeypatch
-    ):
-        """When a write is refused, the error mentions the allowlist config
-        so an agent or operator can self-serve the fix."""
-        monkeypatch.delenv("HERMES_CODEX_SANDBOX_ALLOW", raising=False)
-        import hermes_constants
-        empty = tmp_path / "empty-hermes-home"
-        empty.mkdir()
-        monkeypatch.setattr(hermes_constants, "get_hermes_home", lambda: empty)
-        import agent.codex_sandbox_allowlist as allow
-        allow.reset_cache_for_tests()
-        err = _enforce_codex_sandbox(str(tmp_path / "nope.txt"), "write_file")
-        assert err is not None
-        assert "codex-sandbox-allow.yaml" in err
-
-
 class TestWriteFileSandbox:
-    def test_write_inside_worktree_succeeds(self, codex_worktree, monkeypatch):
-        fops = _mock_file_ops_ok()
+    def _patch_common(self, monkeypatch, fops):
         monkeypatch.setattr(ft, "_get_file_ops", lambda task_id="default": fops)
         monkeypatch.setattr(ft, "_check_sensitive_path", lambda p, t: None)
         monkeypatch.setattr(ft, "_check_file_staleness", lambda p, t: None)
-        monkeypatch.setattr(ft.file_state, "lock_path", lambda p: __import__("contextlib").nullcontext())
+        monkeypatch.setattr(ft.file_state, "lock_path", lambda p: contextlib.nullcontext())
         monkeypatch.setattr(ft.file_state, "check_stale", lambda t, r: None)
         monkeypatch.setattr(ft.file_state, "note_write", lambda t, r: None)
 
-        out = ft.write_file_tool("smoke.txt", "ok", task_id="t-inside")
-        # Successful write — no sandbox denial.
+    def test_write_inside_worktree_succeeds(self, codex_env, monkeypatch):
+        fops = _mock_file_ops_ok()
+        self._patch_common(monkeypatch, fops)
+        out = ft.write_file_tool(str(codex_env.wt / "smoke.txt"), "ok", task_id="t-inside")
         assert "CODEX_SANDBOX" not in out
         fops.write_file.assert_called_once()
 
-    def test_write_outside_worktree_denied(self, codex_worktree, tmp_path, monkeypatch):
-        """Agent uses an absolute path outside the worktree — write must be denied."""
+    def test_write_into_live_checkout_denied(self, codex_env, monkeypatch):
         fops = _mock_file_ops_ok()
         monkeypatch.setattr(ft, "_get_file_ops", lambda task_id="default": fops)
         monkeypatch.setattr(ft, "_check_sensitive_path", lambda p, t: None)
-
-        # Target an absolute path outside the worktree (simulates the
-        # production bug: agent runs os.path.abspath in a terminal cwd-leaked
-        # subprocess, gets the live-tree path, then re-writes there).
-        outside = tmp_path / "live-tree-copy.txt"
-        out = ft.write_file_tool(str(outside), "leak", task_id="t-outside")
-
+        target = codex_env.main_repo / "tools" / "leak.py"
+        out = ft.write_file_tool(str(target), "leak", task_id="t-live")
         assert "CODEX_SANDBOX" in out
-        # The actual file_ops.write_file should NOT have been called.
         fops.write_file.assert_not_called()
-        # The file should NOT exist on disk.
-        assert not outside.exists()
+        assert not target.exists()
+
+    def test_write_config_outside_repos_succeeds(self, codex_env, monkeypatch):
+        """Model B: writing shared config from a codex thread now works."""
+        fops = _mock_file_ops_ok()
+        self._patch_common(monkeypatch, fops)
+        out = ft.write_file_tool(str(codex_env.outside / "config.yaml"), "k: v", task_id="t-cfg")
+        assert "CODEX_SANDBOX" not in out
+        fops.write_file.assert_called_once()
 
     def test_write_no_contextvar_unrestricted(self, tmp_path, monkeypatch):
-        """Regular Discord chat (no codex session) — writes anywhere allowed."""
         fops = _mock_file_ops_ok()
-        monkeypatch.setattr(ft, "_get_file_ops", lambda task_id="default": fops)
-        monkeypatch.setattr(ft, "_check_sensitive_path", lambda p, t: None)
-        monkeypatch.setattr(ft, "_check_file_staleness", lambda p, t: None)
-        monkeypatch.setattr(ft.file_state, "lock_path", lambda p: __import__("contextlib").nullcontext())
-        monkeypatch.setattr(ft.file_state, "check_stale", lambda t, r: None)
-        monkeypatch.setattr(ft.file_state, "note_write", lambda t, r: None)
+        self._patch_common(monkeypatch, fops)
         monkeypatch.setenv("TERMINAL_CWD", str(tmp_path))
-
         out = ft.write_file_tool("anywhere.txt", "fine", task_id="t-no-codex")
         assert "CODEX_SANDBOX" not in out
         fops.write_file.assert_called_once()
 
 
 class TestPatchSandbox:
-    def test_patch_inside_worktree_succeeds(self, codex_worktree, monkeypatch):
-        target = codex_worktree / "f.py"
+    def test_patch_inside_worktree_succeeds(self, codex_env, monkeypatch):
+        target = codex_env.wt / "f.py"
         target.write_text("old line\n")
         fops = _mock_file_ops_ok()
         monkeypatch.setattr(ft, "_get_file_ops", lambda task_id="default": fops)
         monkeypatch.setattr(ft, "_check_sensitive_path", lambda p, t: None)
         monkeypatch.setattr(ft, "_check_file_staleness", lambda p, t: None)
-        monkeypatch.setattr(ft.file_state, "lock_path", lambda p: __import__("contextlib").nullcontext())
+        monkeypatch.setattr(ft.file_state, "lock_path", lambda p: contextlib.nullcontext())
         monkeypatch.setattr(ft.file_state, "check_stale", lambda t, r: None)
-
-        out = ft.patch_tool(mode="replace", path="f.py", old_string="old",
+        out = ft.patch_tool(mode="replace", path=str(target), old_string="old",
                             new_string="new", task_id="t-patch-inside")
         assert "CODEX_SANDBOX" not in out
 
-    def test_patch_outside_worktree_denied(self, codex_worktree, tmp_path, monkeypatch):
+    def test_patch_into_live_checkout_denied(self, codex_env, monkeypatch):
         fops = _mock_file_ops_ok()
         monkeypatch.setattr(ft, "_get_file_ops", lambda task_id="default": fops)
         monkeypatch.setattr(ft, "_check_sensitive_path", lambda p, t: None)
-
-        # Absolute path outside the worktree.
-        outside = tmp_path / "elsewhere.py"
-        outside.write_text("old\n")
-        out = ft.patch_tool(mode="replace", path=str(outside), old_string="old",
-                            new_string="new", task_id="t-patch-outside")
+        target = codex_env.main_repo / "elsewhere.py"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("old\n")
+        out = ft.patch_tool(mode="replace", path=str(target), old_string="old",
+                            new_string="new", task_id="t-patch-live")
         assert "CODEX_SANDBOX" in out
         fops.patch_replace.assert_not_called()

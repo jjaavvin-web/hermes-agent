@@ -299,9 +299,9 @@ class CodexSessionDispatcher(_CommandsMixin):
         now = _now_iso()
         # Per ISA-SPEC §2 the canonical isa-id is
         # ``YYYYMMDD-HHMM_<slug>-<sid8>``. The bare-slug path used in P1
-        # collided across same-slug sessions and (more importantly) never
-        # existed on disk, so CodexPhaseWatcher silently no-op'd for every
-        # session. Bootstrap the ISA stub at the canonical location now.
+        # collided across same-slug sessions and never existed on disk.
+        # Bootstrap the ISA stub (the worker's plan doc) at the canonical
+        # location now.
         isa_id = _canonical_isa_id(isa_slug, sid, now)
         isa_path = self._hermes_home / "work" / isa_id / "ISA.md"
         branch_name = f"codex/{sid}/{isa_slug}"
@@ -553,7 +553,8 @@ class CodexSessionDispatcher(_CommandsMixin):
     async def on_phase_verify(self, thread_id: str) -> None:
         """Auto-trigger Opus peer-review for a session that hit phase: verify.
 
-        Called by CodexPhaseWatcher when an ISA transitions into ``verify``.
+        Called by the ``/review`` slash command (see
+        codex_session_dispatcher_commands) when the worker is ready for review.
         Looks up the session row, collects the diff from the worktree, asks
         the orchestrator for a verdict, then runs the verdict-specific
         side effects (Discord post, kanban comment, ISA Decisions append).
