@@ -836,8 +836,9 @@ kanban task.
   the schema only appears for processes actually running as a worker.
 - **Dispatcher:** long-lived loop that (default every 60s) reclaims
   stale claims, promotes ready tasks, atomically claims, and spawns
-  assigned profiles. Runs **inside the gateway** by default via
-  `kanban.dispatch_in_gateway: true`.
+  assigned profiles. Runs **inside the gateway** only when explicitly
+  enabled. `kanban.dispatch_in_gateway: false` is the safe default and
+  live value; `ORCHESTRATION.md` is authoritative for this runtime stance.
 - **Plugin assets:** `plugins/kanban/dashboard/` (web UI) +
   `plugins/kanban/systemd/` (`hermes-kanban-dispatcher.service` for
   standalone dispatcher deployment).
