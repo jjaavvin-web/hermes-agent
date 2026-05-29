@@ -693,6 +693,58 @@ def _get_hives_snapshot() -> dict:
     return data
 
 
+def _get_codex_sessions_snapshot() -> dict:
+    """Read the Codex Sessions dashboard snapshot without mutating sessions."""
+    try:
+        from hermes_cli.dashboard_codex_sessions import _cached_snapshot
+
+        snapshot = _cached_snapshot()
+        if isinstance(snapshot, dict):
+            return snapshot
+    except Exception as exc:
+        return {
+            "scanned_at": _now(),
+            "sessions": [],
+            "counts": {"total": 0, "by_state": {}, "ports_claimed": 0, "ports_free": 0},
+            "review_pool": {},
+            "_error": str(exc),
+        }
+    return {
+        "scanned_at": _now(),
+        "sessions": [],
+        "counts": {"total": 0, "by_state": {}, "ports_claimed": 0, "ports_free": 0},
+        "review_pool": {},
+    }
+
+
+def _get_pulse_kpis_snapshot() -> dict:
+    """Read Pulse KPI fusion for System Health sector cards."""
+    try:
+        from hermes_cli.pulse_data import build_pulse_kpis
+
+        snapshot = build_pulse_kpis()
+        if isinstance(snapshot, dict):
+            return snapshot
+    except Exception as exc:
+        return {
+            "active_hives": 0,
+            "pending_cards": 0,
+            "max_usage_pct": None,
+            "today_spend_usd": 0.0,
+            "today_pr_merges": 0,
+            "last_completion": None,
+            "_error": str(exc),
+        }
+    return {
+        "active_hives": 0,
+        "pending_cards": 0,
+        "max_usage_pct": None,
+        "today_spend_usd": 0.0,
+        "today_pr_merges": 0,
+        "last_completion": None,
+    }
+
+
 def _get_hive_log_tail(hive_id: str, tail: int = 200) -> Optional[dict]:
     """Return last N lines of a hive's hive-mind.log. Read-only.
 
@@ -1223,6 +1275,111 @@ def _nexus_edge(
     }
 
 
+def _metric(label: str, value: Any) -> dict[str, str]:
+    return {"label": label, "value": str(value if value is not None else "—")}
+
+
+def _build_nexus_sectors(
+    *,
+    pulse: dict,
+    hives: dict,
+    codex: dict,
+) -> list[dict[str, Any]]:
+    """Summarize adjacent dashboard tabs as read-only System Health sectors."""
+    pending_cards = int(pulse.get("pending_cards") or 0)
+    pulse_active_hives = int(pulse.get("active_hives") or 0)
+    today_merges = int(pulse.get("today_pr_merges") or 0)
+    pulse_status = "warn" if pulse.get("_error") or pending_cards > 0 else "ok"
+    last_completion = pulse.get("last_completion") if isinstance(pulse.get("last_completion"), dict) else None
+    pulse_summary = (
+        f"{pending_cards} queued card(s), {pulse_active_hives} active hive(s), "
+        f"{today_merges} PR merge(s) today."
+    )
+    if last_completion and last_completion.get("slug"):
+        pulse_summary += f" Last completion: {last_completion.get('slug')}."
+
+    hive_rows = hives.get("hives", []) if isinstance(hives.get("hives"), list) else []
+    active_hives = int(hives.get("active_count") or 0)
+    completed_hives = int(hives.get("completed_count") or 0)
+    stale_hives = int(hives.get("stale_count") or 0)
+    blocked_hives = sum(1 for hive in hive_rows if hive.get("status") == "blocked")
+    if hives.get("_error") or blocked_hives > 0:
+        hives_status = "error"
+    elif stale_hives > 0:
+        hives_status = "warn"
+    else:
+        hives_status = "ok" if hive_rows or active_hives or completed_hives else "unknown"
+
+    codex_rows = codex.get("sessions", []) if isinstance(codex.get("sessions"), list) else []
+    codex_counts = codex.get("counts", {}) if isinstance(codex.get("counts"), dict) else {}
+    by_state = codex_counts.get("by_state", {}) if isinstance(codex_counts.get("by_state"), dict) else {}
+    total_sessions = int(codex_counts.get("total") or len(codex_rows))
+    escalated = sum(1 for row in codex_rows if str(row.get("state") or "").upper() == "ESCALATED")
+    orphaned = sum(1 for row in codex_rows if str(row.get("state") or "").upper() == "ORPHANED")
+    paused = sum(1 for row in codex_rows if row.get("paused") or str(row.get("state") or "").upper() == "PAUSED")
+    active_sessions = sum(
+        1 for row in codex_rows
+        if str(row.get("state") or "").upper() in {"CLAIMED", "EXECUTING", "MERGING"}
+    )
+    missing_worktrees = sum(1 for row in codex_rows if row.get("worktree_alive") is False)
+    if codex.get("_error") or escalated or orphaned or missing_worktrees:
+        codex_status = "error"
+    elif paused or active_sessions:
+        codex_status = "warn"
+    else:
+        codex_status = "ok" if total_sessions else "unknown"
+
+    return [
+        {
+            "id": "pulse",
+            "label": "Pulse",
+            "kind": "read_only_drilldown",
+            "status": pulse_status,
+            "summary": pulse_summary,
+            "href": "/pulse",
+            "metrics": [
+                _metric("Pending cards", pending_cards),
+                _metric("Active hives", pulse_active_hives),
+                _metric("PR merges today", today_merges),
+                _metric("Spend today", f"${float(pulse.get('today_spend_usd') or 0.0):.2f}"),
+            ],
+            "guardrail": "Read-only drilldown. No dispatch, queue mutation, or worker launch controls.",
+        },
+        {
+            "id": "hives",
+            "label": "Hives",
+            "kind": "read_only_drilldown",
+            "status": hives_status,
+            "summary": f"{active_hives} active, {completed_hives} complete/blocked, {stale_hives} stale hive run(s).",
+            "href": "/hives",
+            "metrics": [
+                _metric("Active", active_hives),
+                _metric("Completed/blocked", completed_hives),
+                _metric("Stale", stale_hives),
+                _metric("Total", len(hive_rows)),
+            ],
+            "guardrail": "Read-only drilldown. No Ruflo launch, tmux control, or worktree mutation controls.",
+        },
+        {
+            "id": "codex",
+            "label": "Codex Sessions",
+            "kind": "read_only_drilldown",
+            "status": codex_status,
+            "summary": f"{total_sessions} tracked session(s), {active_sessions} active, {paused} paused, {escalated} escalated.",
+            "href": "/codex-sessions",
+            "metrics": [
+                _metric("Tracked", total_sessions),
+                _metric("Active", active_sessions),
+                _metric("Paused", paused),
+                _metric("Escalated", escalated),
+                _metric("Ports claimed", codex_counts.get("ports_claimed", 0)),
+                _metric("States", ", ".join(f"{k}:{v}" for k, v in sorted(by_state.items())) or "—"),
+            ],
+            "guardrail": "Read-only drilldown. No launch or merge controls; force-merge/kill remain locked elsewhere.",
+        },
+    ]
+
+
 def _build_nexus_health() -> dict:
     """Compose the read-only infrastructure health graph.
 
@@ -1232,15 +1389,25 @@ def _build_nexus_health() -> dict:
     individual MCP server. Every input comes from a read-only probe.
     """
     generated_at = _now()
-    # Fan-out the three independent snapshot builders concurrently so cold time ≈
-    # max(single-group latency) rather than the sum of all three groups.
-    with concurrent.futures.ThreadPoolExecutor(max_workers=3) as pool:
+    # Fan-out the five independent snapshot builders concurrently so cold time ≈
+    # max(single-group latency) rather than the sum of all groups.
+    with concurrent.futures.ThreadPoolExecutor(max_workers=5) as pool:
         fut_mission  = pool.submit(_get_snapshot)
         fut_topology = pool.submit(_get_gitnexus_runtime_snapshot)
         fut_infra    = pool.submit(_get_infra_snapshot)
+        fut_hives    = pool.submit(_get_hives_snapshot)
+        fut_codex    = pool.submit(_get_codex_sessions_snapshot)
         mission  = fut_mission.result()
         topology = fut_topology.result()
         infra    = fut_infra.result()
+        hives_snapshot = fut_hives.result()
+        codex_snapshot = fut_codex.result()
+    pulse_snapshot = _get_pulse_kpis_snapshot()
+    sectors = _build_nexus_sectors(
+        pulse=pulse_snapshot,
+        hives=hives_snapshot,
+        codex=codex_snapshot,
+    )
     runtimes = _runtime_by_name(mission)
 
     hermes_rt = runtimes.get("hermes", {})
@@ -1611,8 +1778,13 @@ def _build_nexus_health() -> dict:
         summary = (f"{len(needs_joseph)} node(s) need Joseph: "
                    f"{', '.join(g['label'] for g in needs_joseph[:4])}.")
     else:
-        summary = (f"{len(degraded)} of {len(nodes)} node(s) need attention: "
-                   f"{', '.join(degraded[:4])}{'…' if len(degraded) > 4 else ''}.")
+        shown = ", ".join(degraded[:4])
+        more = len(degraded) - 4
+        summary = f"{len(degraded)} of {len(nodes)} node(s) need attention: {shown}"
+        if more > 0:
+            summary = f"{summary}; +{more} more attention target(s) shown as chips."
+        else:
+            summary = f"{summary}."
 
     evidence = [
         {"source": "mission-control", "detail": "Runtime probes feed core status."},
@@ -1630,6 +1802,7 @@ def _build_nexus_health() -> dict:
         "counts": counts,
         "nodes": nodes,
         "edges": edges,
+        "sectors": sectors,
         "needs_joseph": needs_joseph,
         "safe_actions": safe_actions,
         "locked_actions": locked_actions,

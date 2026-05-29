@@ -51,11 +51,6 @@ export async function fetchJSON<T>(url: string, init?: RequestInit): Promise<T> 
   return res.json();
 }
 
-/** Encode a plugin registry key for URL paths (preserves `/` segment separators). */
-function pluginPath(name: string): string {
-  return name.split("/").map(encodeURIComponent).join("/");
-}
-
 async function getSessionToken(): Promise<string> {
   if (_sessionToken) return _sessionToken;
   const injected = window.__HERMES_SESSION_TOKEN__;
@@ -298,25 +293,25 @@ export const api = {
 
   enableAgentPlugin: (name: string) =>
     fetchJSON<{ ok: boolean; name: string; unchanged?: boolean }>(
-      `/api/dashboard/agent-plugins/${pluginPath(name)}/enable`,
+      `/api/dashboard/agent-plugins/${encodeURIComponent(name)}/enable`,
       { method: "POST" },
     ),
 
   disableAgentPlugin: (name: string) =>
     fetchJSON<{ ok: boolean; name: string; unchanged?: boolean }>(
-      `/api/dashboard/agent-plugins/${pluginPath(name)}/disable`,
+      `/api/dashboard/agent-plugins/${encodeURIComponent(name)}/disable`,
       { method: "POST" },
     ),
 
   updateAgentPlugin: (name: string) =>
     fetchJSON<AgentPluginUpdateResponse>(
-      `/api/dashboard/agent-plugins/${pluginPath(name)}/update`,
+      `/api/dashboard/agent-plugins/${encodeURIComponent(name)}/update`,
       { method: "POST" },
     ),
 
   removeAgentPlugin: (name: string) =>
     fetchJSON<{ ok: boolean; name: string }>(
-      `/api/dashboard/agent-plugins/${pluginPath(name)}`,
+      `/api/dashboard/agent-plugins/${encodeURIComponent(name)}`,
       { method: "DELETE" },
     ),
 
@@ -329,7 +324,7 @@ export const api = {
 
   setPluginVisibility: (name: string, hidden: boolean) =>
     fetchJSON<{ ok: boolean; name: string; hidden: boolean }>(
-      `/api/dashboard/plugins/${pluginPath(name)}/visibility`,
+      `/api/dashboard/plugins/${encodeURIComponent(name)}/visibility`,
       {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -609,8 +604,6 @@ export interface CronJob {
   id: string;
   profile?: string | null;
   profile_name?: string | null;
-  hermes_home?: string | null;
-  is_default_profile?: boolean;
   name?: string | null;
   prompt?: string | null;
   script?: string | null;
@@ -860,6 +853,22 @@ export interface NexusHealthAction {
   payload: string;
 }
 
+export interface NexusHealthSectorMetric {
+  label: string;
+  value: string;
+}
+
+export interface NexusHealthSector {
+  id: string;
+  label: string;
+  kind: "read_only_drilldown";
+  status: NexusHealthStatus;
+  summary: string;
+  href: string;
+  metrics: NexusHealthSectorMetric[];
+  guardrail: string;
+}
+
 export interface NexusHealthResponse {
   generated_at: string;
   posture: NexusHealthPosture;
@@ -867,6 +876,7 @@ export interface NexusHealthResponse {
   counts?: Record<NexusHealthStatus, number>;
   nodes: NexusHealthNode[];
   edges: NexusHealthEdge[];
+  sectors: NexusHealthSector[];
   needs_joseph: NexusHealthGate[];
   safe_actions: NexusHealthAction[];
   locked_actions: NexusHealthGate[];

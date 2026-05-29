@@ -3,7 +3,16 @@ import ast
 from pathlib import Path
 
 
-def _mock_health(monkeypatch, *, runtimes=None, topology=None, infra=None):
+def _mock_health(
+    monkeypatch,
+    *,
+    runtimes=None,
+    topology=None,
+    infra=None,
+    hives=None,
+    codex=None,
+    pulse=None,
+):
     """Wire dashboard_health probes to controlled fixtures and clear the cache."""
     from hermes_cli import dashboard_health
 
@@ -38,6 +47,42 @@ def _mock_health(monkeypatch, *, runtimes=None, topology=None, infra=None):
         dashboard_health,
         "_get_infra_snapshot",
         lambda: infra or {"services": [], "containers": [], "ports": []},
+    )
+    monkeypatch.setattr(
+        dashboard_health,
+        "_get_hives_snapshot",
+        lambda: hives
+        or {
+            "hives": [],
+            "scanned_at": "2026-05-28T00:00:00Z",
+            "active_count": 0,
+            "completed_count": 0,
+            "stale_count": 0,
+        },
+    )
+    monkeypatch.setattr(
+        dashboard_health,
+        "_get_codex_sessions_snapshot",
+        lambda: codex
+        or {
+            "scanned_at": "2026-05-28T00:00:00Z",
+            "sessions": [],
+            "counts": {"total": 0, "by_state": {}, "ports_claimed": 0, "ports_free": 0},
+            "review_pool": {},
+        },
+    )
+    monkeypatch.setattr(
+        dashboard_health,
+        "_get_pulse_kpis_snapshot",
+        lambda: pulse
+        or {
+            "active_hives": 0,
+            "pending_cards": 0,
+            "max_usage_pct": None,
+            "today_spend_usd": 0.0,
+            "today_pr_merges": 0,
+            "last_completion": None,
+        },
     )
     monkeypatch.setattr(dashboard_health, "_NEXUS_CACHE", None)
     return dashboard_health
@@ -77,6 +122,7 @@ def test_nexus_health_endpoint_returns_required_schema(monkeypatch):
         "counts",
         "nodes",
         "edges",
+        "sectors",
         "needs_joseph",
         "safe_actions",
         "locked_actions",
@@ -270,3 +316,93 @@ def test_nexus_health_does_not_import_gitnexus_ingest_path():
 
     assert "hermes_cli.gitnexus_runtime_adapter" not in imported_modules
     assert ".ingest(" not in source
+
+def test_nexus_health_summary_points_to_attention_chips_without_ellipsis(monkeypatch):
+    d = _mock_health(
+        monkeypatch,
+        runtimes=[
+            {"name": "hermes", "label": "Hermes", "status": "online"},
+            {"name": "kanban", "label": "Kanban", "status": "degraded"},
+            {"name": "cron", "label": "Cron", "status": "degraded"},
+            {"name": "codex", "label": "Codex", "status": "offline"},
+            {"name": "ruflo", "label": "Ruflo", "status": "offline"},
+            {"name": "claude-code", "label": "Claude Code", "status": "offline"},
+        ],
+        infra={
+            "services": [
+                {"name": "svc-one", "status": "error", "active": "failed", "sub": "failed"},
+                {"name": "svc-two", "status": "error", "active": "failed", "sub": "failed"},
+            ],
+            "containers": [],
+            "ports": [],
+        },
+    )
+
+    data = d._build_nexus_health()
+
+    assert "…" not in data["summary"]
+    assert "+" in data["summary"]
+    assert "shown as chips" in data["summary"]
+
+
+def test_nexus_health_exposes_consolidated_sector_snapshot(monkeypatch):
+    d = _mock_health(
+        monkeypatch,
+        pulse={
+            "active_hives": 2,
+            "pending_cards": 5,
+            "max_usage_pct": 68,
+            "today_spend_usd": 1.25,
+            "today_pr_merges": 1,
+            "last_completion": {"slug": "system-health"},
+        },
+        hives={
+            "hives": [
+                {"id": "hive-live", "status": "running"},
+                {"id": "hive-stale", "status": "stale"},
+            ],
+            "scanned_at": "2026-05-28T00:00:00Z",
+            "active_count": 1,
+            "completed_count": 0,
+            "stale_count": 1,
+        },
+        codex={
+            "scanned_at": "2026-05-28T00:00:00Z",
+            "sessions": [
+                {"id": "codex-a", "state": "EXECUTING", "paused": False, "worktree_alive": True},
+                {"id": "codex-b", "state": "ESCALATED", "paused": False, "worktree_alive": True},
+            ],
+            "counts": {
+                "total": 2,
+                "by_state": {"EXECUTING": 1, "ESCALATED": 1},
+                "ports_claimed": 1,
+                "ports_free": 3,
+            },
+            "review_pool": {},
+        },
+    )
+
+    data = d._build_nexus_health()
+    sectors = {sector["id"]: sector for sector in data["sectors"]}
+
+    assert set(sectors) == {"pulse", "hives", "codex"}
+    assert sectors["pulse"]["kind"] == "read_only_drilldown"
+    assert sectors["pulse"]["href"] == "/pulse"
+    assert sectors["pulse"]["status"] == "warn"
+    assert any(
+        metric["label"] == "Pending cards" and metric["value"] == "5"
+        for metric in sectors["pulse"]["metrics"]
+    )
+    assert "No dispatch" in sectors["pulse"]["guardrail"]
+
+    assert sectors["hives"]["href"] == "/hives"
+    assert sectors["hives"]["status"] == "warn"
+    assert "No Ruflo launch" in sectors["hives"]["guardrail"]
+
+    assert sectors["codex"]["href"] == "/codex-sessions"
+    assert sectors["codex"]["status"] == "error"
+    assert any(
+        metric["label"] == "Escalated" and metric["value"] == "1"
+        for metric in sectors["codex"]["metrics"]
+    )
+    assert "No launch or merge controls" in sectors["codex"]["guardrail"]

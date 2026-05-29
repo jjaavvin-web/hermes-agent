@@ -28,6 +28,8 @@ def test_api_exposes_nexus_health_endpoints():
     assert "getNexusHealthNode" in api
     assert "/api/dashboard/nexus-health/node/" in api
     assert "NexusHealthNodeDetail" in api
+    assert "NexusHealthSector" in api
+    assert "sectors: NexusHealthSector[]" in api
 
 
 def test_system_health_route_and_nav_exist():
@@ -58,6 +60,7 @@ def test_system_health_renders_required_surfaces():
     for token in (
         "nodes",
         "edges",
+        "sectors",
         "needs_joseph",
         "locked_actions",
         "recommendations",
@@ -81,3 +84,44 @@ def test_system_health_is_read_only():
     )
     offenders = [name for name in forbidden if name in text]
     assert offenders == [], offenders
+
+def test_system_health_renders_attention_targets_and_accessible_filter_state():
+    page = _read("pages/NexusHealthPage.tsx")
+    detail = _read("components/system-health/DetailPanel.tsx")
+    filters = _read("components/system-health/FilterRail.tsx")
+
+    assert 'aria-label="Critical summary"' in page
+    assert 'aria-label="attention-targets"' in page
+    assert "Inspect attention target" in page
+    assert "ATTENTION_SCORE" in page
+    assert "Command posture" in detail
+    assert "Approval locked" in detail
+    assert "aria-pressed={active}" in filters
+    assert "Reset System Health filters" in filters
+
+
+def test_system_health_renders_consolidated_sector_drilldowns():
+    page = _read("pages/NexusHealthPage.tsx")
+    detail = _read("components/system-health/DetailPanel.tsx")
+
+    assert "consolidated-sector-status" in page
+    assert "Consolidated sectors" in detail
+    assert "read-only drilldown" in detail
+    assert "Open ${sector.label} read-only drilldown" in detail
+    assert "sector.guardrail" in detail
+    assert "onNavigate(sector.href)" in detail
+
+
+def test_system_health_avoids_known_react_compiler_pitfalls():
+    page = _read("pages/NexusHealthPage.tsx")
+    detail = _read("components/system-health/DetailPanel.tsx")
+    constants = _read("components/system-health/constants.ts")
+
+    assert "Date.now() - lastLiveAt" not in page
+    assert "setIsMobile(mq.matches)" not in page
+    assert "setLastLiveAt(Date.now())" not in page
+    assert "queueMicrotask" in page
+    assert "liveUntil" in page
+    assert "const Icon = kindIcon" not in detail
+    assert "kindIconElement" in detail
+    assert "createElement(kindIcon(kind)" in constants

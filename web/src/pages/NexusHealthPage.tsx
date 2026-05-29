@@ -18,8 +18,12 @@ import {
   type NexusHealthResponse,
   type NexusHealthStatus,
 } from "@/lib/api";
-import { GROUP_ORDER } from "@/components/system-health/constants";
-import { STATUS_ORDER } from "@/components/system-health/constants";
+import {
+  GROUP_ORDER,
+  STATUS_ORDER,
+  groupLabel,
+  statusMeta,
+} from "@/components/system-health/constants";
 import { FilterRail } from "@/components/system-health/FilterRail";
 import { HealthGraph } from "@/components/system-health/HealthGraph";
 import { DetailPanel } from "@/components/system-health/DetailPanel";
@@ -48,6 +52,14 @@ const SSE_STATUS_MAP: Record<string, NexusHealthStatus> = {
   unknown: "unknown",
 };
 
+const ATTENTION_SCORE: Record<NexusHealthStatus, number> = {
+  ok: 0,
+  unknown: 1,
+  warn: 2,
+  auth_gated: 3,
+  error: 4,
+};
+
 /** Returns true when the viewport is narrow (phone). Reacts to resize. */
 function useIsMobile(): boolean {
   const [isMobile, setIsMobile] = useState(
@@ -56,7 +68,6 @@ function useIsMobile(): boolean {
   useEffect(() => {
     const mq = window.matchMedia(`(max-width: ${MOBILE_BREAKPOINT}px)`);
     const handler = (e: MediaQueryListEvent) => setIsMobile(e.matches);
-    setIsMobile(mq.matches);
     mq.addEventListener("change", handler);
     return () => mq.removeEventListener("change", handler);
   }, []);
@@ -83,7 +94,7 @@ export default function NexusHealthPage() {
   const [groupFilter, setGroupFilter] = useState<Set<string>>(
     () => new Set(GROUP_ORDER),
   );
-  const [lastLiveAt, setLastLiveAt] = useState(0);
+  const [liveUntil, setLiveUntil] = useState(0);
 
   // Mobile collapsible panel state
   const [filtersOpen, setFiltersOpen] = useState(false);
@@ -110,27 +121,31 @@ export default function NexusHealthPage() {
   }, []);
 
   useEffect(() => {
-    void load();
-    const timer = window.setInterval(() => void load(), POLL_MS);
+    const run = () => void load();
+    queueMicrotask(run);
+    const timer = window.setInterval(run, POLL_MS);
     return () => window.clearInterval(timer);
   }, [load]);
 
   // Live status deltas from the shared SSE stream (instant node recolour).
   useEffect(() => {
     if (liveChips.length === 0) return;
-    setLastLiveAt(Date.now());
-    setData((prev) => {
-      if (!prev) return prev;
-      let changed = false;
-      const nodes = prev.nodes.map((node) => {
-        const chip = liveChips.find((c) => SSE_NODE_MAP[c.name] === node.id);
-        if (!chip) return node;
-        const mapped = SSE_STATUS_MAP[chip.status] ?? "unknown";
-        if (mapped === node.status) return node;
-        changed = true;
-        return { ...node, status: mapped };
+    const now = Date.now();
+    queueMicrotask(() => {
+      setLiveUntil(now + 40_000);
+      setData((prev) => {
+        if (!prev) return prev;
+        let changed = false;
+        const nodes = prev.nodes.map((node) => {
+          const chip = liveChips.find((c) => SSE_NODE_MAP[c.name] === node.id);
+          if (!chip) return node;
+          const mapped = SSE_STATUS_MAP[chip.status] ?? "unknown";
+          if (mapped === node.status) return node;
+          changed = true;
+          return { ...node, status: mapped };
+        });
+        return changed ? { ...prev, nodes } : prev;
       });
-      return changed ? { ...prev, nodes } : prev;
     });
   }, [liveChips]);
 
@@ -223,10 +238,20 @@ export default function NexusHealthPage() {
   const snapshot = data as NexusHealthResponse;
   const posture = POSTURE_META[snapshot.posture];
   const PostureIcon = posture.icon;
-  const live = lastLiveAt > 0 && Date.now() - lastLiveAt < 40_000;
+  const live = liveUntil > 0;
+  const sectors = snapshot.sectors ?? [];
+  const attentionNodes = snapshot.nodes
+    .filter((node) => node.status !== "ok" || node.needs_joseph)
+    .sort((a, b) => {
+      if (Number(b.needs_joseph) !== Number(a.needs_joseph)) {
+        return Number(b.needs_joseph) - Number(a.needs_joseph);
+      }
+      return ATTENTION_SCORE[b.status] - ATTENTION_SCORE[a.status];
+    })
+    .slice(0, 6);
 
   const headerEl = (
-    <header className="flex items-center gap-4 border-b border-white/10 px-4 py-3">
+    <header className="flex flex-wrap items-start gap-4 border-b border-white/10 px-4 py-3">
       <div className="flex-shrink-0">
         <div className="flex items-center gap-1.5 text-[9.5px] font-semibold uppercase tracking-[0.18em] text-white/40">
           <Activity className="h-3 w-3" />
@@ -237,9 +262,61 @@ export default function NexusHealthPage() {
         </h1>
       </div>
 
-      <p className="min-w-0 flex-1 truncate text-[12px] text-white/55">
-        {snapshot.summary}
-      </p>
+      <div className="min-w-[280px] flex-1" aria-label="Critical summary">
+        <p className="text-[12px] leading-relaxed text-white/65">
+          {snapshot.summary}
+        </p>
+        {attentionNodes.length > 0 && (
+          <div
+            className="mt-2 flex flex-wrap gap-1.5"
+            aria-label="attention-targets"
+          >
+            {attentionNodes.map((node) => {
+              const meta = statusMeta(node.status);
+              return (
+                <button
+                  key={node.id}
+                  type="button"
+                  onClick={() => void selectNode(node.id)}
+                  className="inline-flex max-w-[220px] items-center gap-1.5 rounded-full border px-2 py-1 text-[10.5px] font-medium transition hover:bg-white/[0.05]"
+                  style={{
+                    borderColor: meta.ring,
+                    background: meta.soft,
+                    color: meta.color,
+                  }}
+                  aria-label={`Inspect attention target ${node.label}`}
+                  title={`${node.label}: ${node.summary}`}
+                >
+                  <span className="h-1.5 w-1.5 rounded-full" style={{ background: meta.color }} />
+                  <span className="truncate">{node.label}</span>
+                  <span className="text-white/45">· {groupLabel(node.group)}</span>
+                </button>
+              );
+            })}
+          </div>
+        )}
+        {sectors.length > 0 && (
+          <div
+            className="mt-2 flex flex-wrap gap-1.5 text-[10px] text-white/40"
+            aria-label="consolidated-sector-status"
+          >
+            {sectors.map((sector) => {
+              const meta = statusMeta(sector.status);
+              return (
+                <span
+                  key={sector.id}
+                  className="inline-flex items-center gap-1 rounded-full border px-2 py-0.5"
+                  style={{ borderColor: meta.ring, color: meta.color }}
+                  title={sector.guardrail}
+                >
+                  <span className="h-1.5 w-1.5 rounded-full" style={{ background: meta.color }} />
+                  {sector.label}
+                </span>
+              );
+            })}
+          </div>
+        )}
+      </div>
 
       <div
         className="flex flex-shrink-0 items-center gap-1.5 rounded-full px-2.5 py-1 text-[11px] font-semibold"
@@ -267,7 +344,7 @@ export default function NexusHealthPage() {
       <button
         type="button"
         onClick={() => void load()}
-        aria-label="Refresh"
+        aria-label="Refresh System Health snapshot"
         className="flex-shrink-0 rounded-md border border-white/12 p-1.5 text-white/65 transition hover:border-white/30 hover:text-white"
       >
         <RefreshCw className={`h-4 w-4 ${loading ? "animate-spin" : ""}`} />

@@ -18,7 +18,7 @@ import type {
   NexusHealthRecommendation,
   NexusHealthResponse,
 } from "@/lib/api";
-import { kindIcon, statusMeta } from "./constants";
+import { kindIconElement, statusMeta } from "./constants";
 
 interface DetailPanelProps {
   data: NexusHealthResponse;
@@ -129,6 +129,11 @@ export function DetailPanel({
   onNavigate,
 }: DetailPanelProps) {
   if (!selectedId) {
+    const attentionCount = data.nodes.filter((node) => node.status !== "ok" || node.needs_joseph).length;
+    const lockedCount = data.locked_actions.length;
+    const safeCount = data.safe_actions.length;
+    const sectors = data.sectors ?? [];
+
     return (
       <div className="flex h-full flex-col overflow-y-auto border-l border-white/10 bg-white/[0.02]">
         <div className="px-4 pb-1 pt-4">
@@ -138,10 +143,94 @@ export function DetailPanel({
           <p className="mt-2 text-[12px] leading-relaxed text-white/55">
             {data.summary}
           </p>
+          <div className="mt-3 grid grid-cols-3 gap-2" aria-label="Command posture">
+            <div className="rounded-lg border border-white/10 bg-white/[0.03] px-2.5 py-2">
+              <div className="text-[9px] uppercase tracking-wider text-white/35">Attention</div>
+              <div className="mt-0.5 text-[15px] font-semibold text-amber-200">{attentionCount}</div>
+            </div>
+            <div className="rounded-lg border border-white/10 bg-white/[0.03] px-2.5 py-2">
+              <div className="text-[9px] uppercase tracking-wider text-white/35">Safe</div>
+              <div className="mt-0.5 text-[15px] font-semibold text-emerald-200">{safeCount}</div>
+            </div>
+            <div className="rounded-lg border border-white/10 bg-white/[0.03] px-2.5 py-2">
+              <div className="text-[9px] uppercase tracking-wider text-white/35">Approval locked</div>
+              <div className="mt-0.5 text-[15px] font-semibold text-rose-200">{lockedCount}</div>
+            </div>
+          </div>
           <p className="mt-2 text-[10.5px] text-white/35">
             Click any node to inspect its health, metrics and recommendations.
           </p>
         </div>
+
+        <Section title="Consolidated sectors">
+          {sectors.length === 0 ? (
+            <p className="text-[11.5px] text-white/45">
+              No adjacent dashboard sectors are available in this snapshot.
+            </p>
+          ) : (
+            <div className="flex flex-col gap-2">
+              {data.sectors.map((sector) => {
+                const meta = statusMeta(sector.status);
+                return (
+                  <div
+                    key={sector.id}
+                    className="rounded-lg border border-white/10 bg-black/25 p-2.5"
+                  >
+                    <div className="flex items-start gap-2">
+                      <span
+                        className="mt-1 h-1.5 w-1.5 rounded-full"
+                        style={{ background: meta.color, boxShadow: `0 0 6px ${meta.color}` }}
+                      />
+                      <div className="min-w-0 flex-1">
+                        <div className="flex items-center gap-2">
+                          <span className="text-[12px] font-semibold text-white/80">
+                            {sector.label}
+                          </span>
+                          <span
+                            className="rounded-full px-1.5 py-0.5 text-[8.5px] font-semibold uppercase tracking-wider"
+                            style={{ color: meta.color, background: meta.soft, border: `1px solid ${meta.ring}` }}
+                          >
+                            {meta.label}
+                          </span>
+                        </div>
+                        <p className="mt-1 text-[11px] leading-relaxed text-white/55">
+                          {sector.summary}
+                        </p>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => onNavigate(sector.href)}
+                        aria-label={`Open ${sector.label} read-only drilldown`}
+                        className="inline-flex flex-shrink-0 items-center gap-1 rounded-md border border-white/10 px-2 py-1 text-[10px] text-white/55 transition hover:border-white/25 hover:text-white/85"
+                      >
+                        Open
+                        <ExternalLink className="h-3 w-3" />
+                      </button>
+                    </div>
+                    <div className="mt-2 grid grid-cols-2 gap-1.5">
+                      {sector.metrics.slice(0, 4).map((metric) => (
+                        <div
+                          key={`${sector.id}-${metric.label}`}
+                          className="rounded-md border border-white/8 bg-white/[0.025] px-2 py-1.5"
+                        >
+                          <div className="text-[8.5px] uppercase tracking-wider text-white/30">
+                            {metric.label}
+                          </div>
+                          <div className="mt-0.5 truncate text-[11.5px] font-semibold text-white/75">
+                            {metric.value}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                    <div className="mt-2 text-[10px] text-white/35">
+                      {sector.guardrail}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </Section>
 
         <Section title={`Needs Joseph · ${data.needs_joseph.length}`}>
           {data.needs_joseph.length === 0 ? (
@@ -184,6 +273,7 @@ export function DetailPanel({
                     onNavigate(action.payload);
                   }
                 }}
+                aria-label={`Run safe System Health action ${action.label}`}
                 className="flex items-center justify-between rounded-lg border border-white/10 px-2.5 py-2 text-left text-[11.5px] text-white/75 transition hover:border-white/25 hover:bg-white/[0.04]"
               >
                 <span>{action.label}</span>
@@ -237,7 +327,7 @@ export function DetailPanel({
 
   const fallbackNode = data.nodes.find((n) => n.id === selectedId);
   const meta = statusMeta(detail?.status ?? fallbackNode?.status ?? "unknown");
-  const Icon = kindIcon(detail?.kind ?? fallbackNode?.kind ?? "");
+  const iconKind = detail?.kind ?? fallbackNode?.kind ?? "";
   const label = detail?.label ?? fallbackNode?.label ?? selectedId;
   const fixes = detail?.recommendations.filter((r) => r.kind === "fix") ?? [];
   const opts =
@@ -250,7 +340,7 @@ export function DetailPanel({
           className="flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-lg"
           style={{ background: meta.soft, color: meta.color }}
         >
-          <Icon size={18} />
+          {kindIconElement(iconKind, { size: 18 })}
         </div>
         <div className="min-w-0 flex-1">
           <div className="truncate text-[14px] font-semibold text-white/95">

@@ -56,6 +56,7 @@ export function FilterRail({
           <button
             type="button"
             onClick={onReset}
+            aria-label="Reset System Health filters"
             className="flex items-center gap-1 rounded-md border border-white/10 px-1.5 py-1 text-[10px] text-white/55 transition hover:border-white/25 hover:text-white/85"
           >
             <RotateCcw className="h-3 w-3" />
@@ -76,6 +77,8 @@ export function FilterRail({
                 key={status}
                 type="button"
                 onClick={() => onToggleStatus(status)}
+                aria-pressed={active}
+                aria-label={`Toggle ${meta.label} status filter (${count} node${count === 1 ? "" : "s"})`}
                 className="group flex items-center gap-2.5 rounded-lg px-2 py-1.5 text-left transition hover:bg-white/[0.05]"
                 style={{ opacity: active ? 1 : 0.4 }}
               >
@@ -113,6 +116,8 @@ export function FilterRail({
                 key={group.id}
                 type="button"
                 onClick={() => onToggleGroup(group.id)}
+                aria-pressed={active}
+                aria-label={`Toggle ${group.label} category filter (${count} node${count === 1 ? "" : "s"})`}
                 className="flex items-center gap-2.5 rounded-lg px-2 py-1.5 text-left transition hover:bg-white/[0.05]"
                 style={{ opacity: active ? 1 : 0.4 }}
               >

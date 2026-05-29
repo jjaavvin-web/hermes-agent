@@ -84,3 +84,6 @@ models-dev-upstream/
 hermes_cli/tui_dist/*
 hermes_cli/scripts/
 docs/superpowers/*
+# Added 2026-05-27 by elite-memory follow-up: prevent GitNexus from walking 6.1GB venv
+venv/
+.gitnexus/
