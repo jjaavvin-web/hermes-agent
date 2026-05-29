@@ -454,6 +454,9 @@ def read_board_metadata(board: Optional[str] = None) -> dict:
         "icon": "",
         "color": "",
         "default_workdir": None,
+        "repo_root": None,
+        "base_branch": None,
+        "vcs_kind": None,
         "created_at": None,
         "archived": False,
     }
@@ -481,6 +484,9 @@ def write_board_metadata(
     color: Optional[str] = None,
     archived: Optional[bool] = None,
     default_workdir: Optional[str] = None,
+    repo_root: Optional[str] = None,
+    base_branch: Optional[str] = None,
+    vcs_kind: Optional[str] = None,
 ) -> dict:
     """Create / update ``board.json`` for ``board``.
 
@@ -504,6 +510,23 @@ def write_board_metadata(
         meta["archived"] = bool(archived)
     if default_workdir is not None:
         meta["default_workdir"] = str(default_workdir) if default_workdir else None
+    if repo_root is not None:
+        repo = Path(str(repo_root)).expanduser().resolve()
+        if not repo.is_dir() or not (repo / ".git").exists():
+            raise ValueError(f"repo_root must resolve to an existing git directory: {repo_root}")
+        meta["repo_root"] = str(repo)
+    if base_branch is not None:
+        branch = str(base_branch).strip()
+        if not branch:
+            raise ValueError("base_branch must be non-empty")
+        meta["base_branch"] = branch
+    if vcs_kind is not None:
+        kind = str(vcs_kind).strip() or "git"
+        if kind != "git":
+            raise ValueError("vcs_kind must be 'git'")
+        meta["vcs_kind"] = kind
+    elif repo_root is not None or base_branch is not None:
+        meta["vcs_kind"] = meta.get("vcs_kind") or "git"
     if not meta.get("created_at"):
         meta["created_at"] = int(time.time())
     path = board_metadata_path(slug)
@@ -524,6 +547,9 @@ def create_board(
     icon: Optional[str] = None,
     color: Optional[str] = None,
     default_workdir: Optional[str] = None,
+    repo_root: Optional[str] = None,
+    base_branch: Optional[str] = None,
+    vcs_kind: Optional[str] = None,
 ) -> dict:
     """Create a new board directory + DB + metadata. Idempotent.
 
@@ -541,6 +567,9 @@ def create_board(
         icon=icon,
         color=color,
         default_workdir=default_workdir,
+        repo_root=repo_root,
+        base_branch=base_branch,
+        vcs_kind=vcs_kind,
     )
     # Touch the DB so list_boards() sees it immediately.
     init_db(board=normed)
