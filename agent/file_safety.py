@@ -46,6 +46,12 @@ def build_write_denied_paths(home: str) -> set[str]:
             # Top-level Anthropic PKCE credential store remains sensitive even
             # when a profile is active; default/non-profile sessions still read it.
             str(hermes_root / ".anthropic_oauth.json"),
+            # Bitwarden Secrets Manager plaintext cache. The read guard already
+            # blocks reading it; deny writes too — Model B no longer jails
+            # ~/.hermes via the codex sandbox, so a worker could otherwise
+            # poison/truncate it (plaintext-equivalent to .env).
+            str(hermes_home / "cache" / "bws_cache.json"),
+            str(hermes_root / "cache" / "bws_cache.json"),
             os.path.join(home, ".bashrc"),
             os.path.join(home, ".zshrc"),
             os.path.join(home, ".profile"),

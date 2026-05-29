@@ -434,12 +434,44 @@ class PeerReviewOrchestrator:
             raw = verdict_path.read_text(encoding="utf-8")
         except OSError:
             return None
-        if not raw.strip():
+        cleaned = raw.strip()
+        if not cleaned:
+            return None
+        # Reviewers (interactive Claude) habitually wrap JSON in a ```json fence;
+        # strip it so a compliant-but-fenced verdict isn't mistaken for mid-write
+        # and polled until the review timeout.
+        if cleaned.startswith("```"):
+            cleaned = cleaned.split("\n", 1)[1] if "\n" in cleaned else ""
+            if cleaned.rstrip().endswith("```"):
+                cleaned = cleaned.rstrip()[:-3]
+            cleaned = cleaned.strip()
+        if not cleaned:
             return None
         try:
-            data = json.loads(raw)
+            data = json.loads(cleaned)
         except json.JSONDecodeError:
-            return None
+            # Tolerate trailing prose after a complete object: parse the leading
+            # JSON value and ignore the rest. A truncated prefix still fails here
+            # and falls through to None (mid-write — keep polling).
+            brace = cleaned.find("{")
+            if brace == -1:
+                return None
+            try:
+                data, _ = json.JSONDecoder().raw_decode(cleaned[brace:])
+            except (ValueError, json.JSONDecodeError):
+                return None
+        if not isinstance(data, dict):
+            # Valid JSON of the wrong shape (bare string/array/scalar): the
+            # reviewer ignored the contract. ESCALATE rather than raise —
+            # review() promises it never raises — or poll to a 300s timeout.
+            return Verdict(
+                kind="ESCALATE",
+                rationale=f"verdict file was not a JSON object: {data!r}",
+                iteration=state.iterations,
+                raw_capture=raw,
+                duration_sec=time.monotonic() - start,
+                pane_id=pane.pane_id,
+            )
         kind = str(data.get("verdict", "")).strip().upper()
         if kind not in {"APPROVE", "REVISE", "ESCALATE"}:
             return Verdict(

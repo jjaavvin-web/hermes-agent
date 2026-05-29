@@ -1526,7 +1526,7 @@ def build_codex_session_prompt(worktree_path: Optional[str]) -> str:
         f"of `{worktree_path}` plus the full ISA, so keep ISCs honest — the reviewer "
         "checks them against your diff.\n"
         "- Conversational replies that don't change code are fine for clarification, but "
-        "don't claim work is done without a commit and a phase bump.\n"
+        "don't claim work is done without a commit and a `/review`.\n"
         "- If the user asks you to do something completely unrelated to the ISA, ask "
         "before silently abandoning the session's stated goal.\n"
     )

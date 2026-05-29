@@ -67,7 +67,7 @@ thread:   {thread_id}
 >
 > 1. **scaffold** — fill in Goals, Constraints, ISCs below. You are in phase `scaffold` until the plan is concrete enough to start executing.
 > 2. **execute** — write the code in this worktree (`{worktree}`). Edit/Write are sandboxed to that path. When you finish an iteration, `git add -A && git commit -m "..."` inside the worktree. Tick the matching ISC `[x]`.
-> 3. **verify** — when the iteration is implementation-complete, bump frontmatter `phase: verify`. The Codex Phase Watcher polls every 30s and auto-fires Opus peer review. **Do not push manually** — the merge broker takes over on APPROVE.
+> 3. **verify** — when the iteration is implementation-complete, run `/review` in this thread to trigger Opus peer review. **Do not push manually** — the merge broker takes over on APPROVE.
 > 4. **complete** — set on PR-merge by the dispatcher. Hands-off.
 
 ## 1. Goals
