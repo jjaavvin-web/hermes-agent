@@ -30,6 +30,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Literal, Optional
 
+from agent.role_defaults import REVIEWER_MODEL
+
 log = logging.getLogger(__name__)
 
 
