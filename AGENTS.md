@@ -853,6 +853,44 @@ Isolation model:
 - After ~5 consecutive spawn failures on the same task the dispatcher
   auto-blocks it to prevent spin loops.
 
+Config keys (`kanban.*`, defaults in `hermes_cli/config.py` `DEFAULT_CONFIG`):
+- `kanban.dispatch_in_gateway` — run the dispatcher inside the gateway
+  process. Default `false` (fail-safe): auto-dispatch is opt-in so a stray
+  gateway never races a standalone dispatcher for claims.
+- `kanban.dispatch_interval_seconds` — seconds between dispatcher ticks
+  (default `60`). Lower = snappier pickup; higher = less SQL pressure.
+- `kanban.failure_limit` — auto-block after this many consecutive
+  non-success attempts for the same task/profile (default `2`).
+- `kanban.worker_log_rotate_bytes` — worker stdout/stderr log rotation
+  size (default `2 MiB`).
+- `kanban.worker_log_backup_count` — rotated worker-log backups to keep
+  (default `1`).
+- `kanban.orchestrator_profile` — profile that decomposes Triage tasks;
+  empty falls back to the default profile.
+- `kanban.default_assignee` — fallback assignee when the orchestrator
+  can't match a child task to an installed profile; empty falls back to
+  the default profile.
+- `kanban.max_spawn` — **global dispatch-concurrency cap** (C-03; #28805):
+  a *live* cap on how many dispatcher-spawned workers may run at once
+  across the board, not a per-tick budget. Unset means no cap. The CLI
+  `--max` flag overrides this when both are present. This is the headline
+  knob the global-concurrency safety story rests on.
+- `kanban.max_in_progress` — alias-style global concurrency cap (#33488)
+  consulted alongside `max_spawn`; unset means no cap.
+- `kanban.max_in_progress_per_profile` — per-profile concurrency cap
+  (#21582). When a positive int, no single profile may run more than N
+  workers at once even if the global caps would allow it. Unset (`None`)
+  means no per-profile cap.
+- `kanban.global_max_running` — gateway-dispatcher global running cap;
+  defaults to `kanban.max_spawn` when unset (`gateway/run.py`).
+- `kanban.auto_decompose` — auto-run the decomposer on Triage tasks every
+  dispatcher tick (default `true`).
+- `kanban.auto_decompose_per_tick` — max Triage tasks decomposed per tick
+  (default `3`); excess defers to the next tick.
+- `kanban.dispatch_stale_timeout_seconds` — running tasks with no
+  heartbeat for this many seconds are auto-reclaimed to `ready` (default
+  `14400`; `0` disables stale detection).
+
 Full user-facing docs: `website/docs/user-guide/features/kanban.md`.
 
 ---
