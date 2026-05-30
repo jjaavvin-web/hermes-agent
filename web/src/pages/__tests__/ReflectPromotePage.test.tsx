@@ -1,3 +1,4 @@
+// @vitest-environment jsdom
 import React from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { createRoot } from "react-dom/client";
@@ -42,10 +43,11 @@ describe("ReflectPromotePage", () => {
     });
 
     const buttons = Array.from(document.querySelectorAll("button"));
-    buttons.find((button) => button.textContent === "Approve")?.click();
-    await vi.waitFor(() => {
-      expect(calls.some((call) => call.url.endsWith("/api/reflect-promote/candidates/lesson-1/approve"))).toBe(true);
-    });
+    const approveButton = buttons.find((button) => button.textContent === "Approve");
+    expect(approveButton?.disabled).toBe(true);
+    expect(approveButton?.title).toContain("Promotion to MVMS is not yet wired");
+    approveButton?.click();
+    expect(calls.some((call) => call.url.endsWith("/api/reflect-promote/candidates/lesson-1/approve"))).toBe(false);
 
     buttons.find((button) => button.textContent === "Reject")?.click();
     await vi.waitFor(() => {
