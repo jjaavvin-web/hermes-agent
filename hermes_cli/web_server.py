@@ -622,7 +622,10 @@ async def approve_reflect_promote_candidate(candidate_id: str):
     except KeyError:
         raise HTTPException(status_code=404, detail="reflect candidate not found")
     except RuntimeError as exc:
-        raise HTTPException(status_code=503, detail=str(exc))
+        # Promotion (the MEM-10 / MVMS write path) is not yet wired in this
+        # runtime. Surface 501 Not Implemented rather than 503 (which implies a
+        # transient outage the client should retry).
+        raise HTTPException(status_code=501, detail=f"reflect promotion not yet wired: {exc}")
     return {"ok": True, "candidate": candidate.to_row()}
 
 

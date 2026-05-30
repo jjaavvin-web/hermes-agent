@@ -76,8 +76,10 @@ export function ReflectPromotePage() {
             </dl>
             <div className="mt-4 flex gap-2">
               <button
-                className="rounded bg-emerald-500 px-3 py-2 text-sm font-semibold text-black hover:bg-emerald-400"
+                className="rounded bg-emerald-500 px-3 py-2 text-sm font-semibold text-black hover:bg-emerald-400 disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-emerald-500"
                 onClick={() => void approve(candidate.id)}
+                disabled
+                title="Promotion to MVMS is not yet wired (MEM-10 pending). Approval is disabled until the writer is configured; the API returns 501 in the meantime."
               >
                 Approve
               </button>
