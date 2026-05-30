@@ -68,8 +68,14 @@ def validate_janitor_repo_root(repo: str | Path) -> Path:
     operator/timer repo root must be durable and intentional.
     """
     path = Path(repo).expanduser().resolve(strict=False)
-    tmp_root = Path(os.environ.get("TMPDIR", "/tmp")).resolve(strict=False)
-    if path == tmp_root or tmp_root in path.parents:
+    # Ban BOTH the literal /tmp and the (possibly different) $TMPDIR root, so a
+    # real /tmp-rooted repo is rejected even when $TMPDIR points elsewhere
+    # (e.g. /tmp/claude-1000). Banning only $TMPDIR was a fail-open hole.
+    banned_roots = {Path("/tmp").resolve(strict=False)}
+    _tmpdir = os.environ.get("TMPDIR")
+    if _tmpdir:
+        banned_roots.add(Path(_tmpdir).resolve(strict=False))
+    if path in banned_roots or any(b in path.parents for b in banned_roots):
         raise ValueError(f"janitor repo root must not be under /tmp: {path}")
     return path
 
