@@ -4766,8 +4766,51 @@ class GatewayRunner:
                 # the first. See the matching comment in
                 # `_kanban_notifier_watcher` and issue #21378.
                 board_meta = _kb.read_board_metadata(slug)
+                def _lease_wrapped_spawn(
+                    task,
+                    workspace,
+                    *,
+                    board=None,
+                    base_branch=None,
+                    **spawn_kwargs,
+                ):
+                    """Spawn a kanban worker while maintaining run-registry lease files."""
+                    session_id = str(task.current_run_id or task.id)
+                    branch = task.branch_name or f"kanban/{task.id}"
+                    lease_home = get_hermes_home()
+                    wrote_lease = False
+                    if getattr(task, "workspace_kind", None) == "worktree":
+                        lease_worktree = type("LeaseWorktree", (), {
+                            "session_id": session_id,
+                            "branch": branch,
+                            "path": Path(workspace),
+                            "created_at": datetime.now().astimezone(),
+                        })()
+                        write_lease(
+                            lease_home,
+                            lease_worktree,
+                            repo_root=Path(board_meta.get("repo_root") or Path.cwd()),
+                            spawner="gateway_kanban",
+                            tmux_session=f"swarm-{task.assignee}" if task.assignee else None,
+                            kanban_card_id=task.id,
+                        )
+                        wrote_lease = True
+                    try:
+                        return _kb._default_spawn(
+                            task,
+                            workspace,
+                            board=board,
+                            base_branch=base_branch,
+                            **spawn_kwargs,
+                        )
+                    except Exception:
+                        if wrote_lease:
+                            remove_lease(lease_home, session_id)
+                        raise
+
                 return _kb.dispatch_once(
                     conn,
+                    spawn_fn=_lease_wrapped_spawn,
                     board=slug,
                     max_spawn=per_board_max_spawn,
                     failure_limit=failure_limit,

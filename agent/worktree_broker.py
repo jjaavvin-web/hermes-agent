@@ -12,12 +12,19 @@ from __future__ import annotations
 import fcntl
 import json
 import logging
+import os
 import re
 import subprocess
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Tuple
+from typing import Optional, Tuple
+
+try:
+    from hermes_cli.config import cfg_get, read_raw_config
+except Exception:  # pragma: no cover - keep broker importable in minimal contexts
+    cfg_get = None  # type: ignore[assignment]
+    read_raw_config = None  # type: ignore[assignment]
 
 log = logging.getLogger(__name__)
 
@@ -52,6 +59,92 @@ _LOCK_TYPE_FILES = [
 
 _SLUG_INVALID_RE = re.compile(r"[^a-z0-9-]+")
 _SLUG_REPEAT_DASH_RE = re.compile(r"-+")
+_TRUE_VALUES = {"1", "true", "yes", "on", "y"}
+
+
+def _lease_write_enabled() -> bool:
+    """Return True only when run-registry lease writing is explicitly enabled.
+
+    The registry is a cross-process janitor/dispatcher safety surface.  H-14
+    keeps production writes default-off so existing installs do not start
+    mutating ``$HERMES_HOME/run-registry`` until an operator opts in via one
+    of the supported config keys.
+    """
+    env_value = os.environ.get("HERMES_RUN_REGISTRY_WRITE")
+    if env_value is not None:
+        return env_value.strip().lower() in _TRUE_VALUES
+
+    if read_raw_config is None or cfg_get is None:
+        return False
+    try:
+        cfg = read_raw_config()
+    except Exception:
+        return False
+
+    candidates = (
+        cfg_get(cfg, "hermes", "run_registry_write", default=None),
+        cfg_get(cfg, "run_registry_write", default=None),
+    )
+    for value in candidates:
+        if value is None:
+            continue
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, (int, float)):
+            return value != 0
+        if isinstance(value, str):
+            return value.strip().lower() in _TRUE_VALUES
+    return False
+
+
+def _lease_path(hermes_home: Path, session_id: str) -> Path:
+    safe_sid = re.sub(r"[^A-Za-z0-9_.-]+", "-", session_id).strip(".-") or "session"
+    return Path(hermes_home) / "run-registry" / f"{safe_sid}.lock"
+
+
+def write_lease(
+    hermes_home: Path,
+    wt: object,
+    *,
+    repo_root: Path,
+    spawner: str = "worktree_broker",
+    tmux_session: Optional[str] = None,
+    kanban_card_id: Optional[str] = None,
+) -> None:
+    """Best-effort write of the janitor-compatible run-registry lease."""
+    if not _lease_write_enabled():
+        return
+    session_id = str(getattr(wt, "session_id"))
+    created_at = getattr(wt, "created_at")
+    try:
+        created_iso = created_at.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+    except AttributeError:
+        created_iso = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    lease = {
+        "branch": str(getattr(wt, "branch")),
+        "worktree_path": str(getattr(wt, "path")),
+        "spawner": spawner,
+        "tmux_session": tmux_session or f"codex-sess-{session_id}",
+        "kanban_card_id": kanban_card_id,
+        "repo_root": str(repo_root),
+        "created_at": created_iso,
+    }
+    path = _lease_path(hermes_home, session_id)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp_path = path.with_suffix(path.suffix + ".tmp")
+        tmp_path.write_text(json.dumps(lease, sort_keys=True), encoding="utf-8")
+        tmp_path.replace(path)
+    except OSError as exc:
+        log.warning("run-registry lease write failed for %s: %s", session_id, exc)
+
+
+def remove_lease(hermes_home: Path, session_id: str) -> None:
+    """Best-effort removal of a session's run-registry lease."""
+    try:
+        _lease_path(hermes_home, session_id).unlink(missing_ok=True)
+    except OSError as exc:
+        log.warning("run-registry lease removal failed for %s: %s", session_id, exc)
 
 
 def slugify_ref(value: str, *, fallback: str = "task", max_len: int = 40) -> str:
@@ -248,6 +341,7 @@ class WorktreeBroker:
             lock_type=lock_type,
         )
         self._registry[session_id] = wt
+        write_lease(self.hermes_home, wt, repo_root=self.repo_root)
         return wt
 
     def release(self, session_id: str) -> None:
