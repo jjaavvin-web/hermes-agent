@@ -125,9 +125,9 @@ def _check_dispatcher_presence() -> tuple[bool, str]:
     try:
         from hermes_cli.config import load_config
         cfg = load_config()
-        dispatch_on = bool(cfg.get("kanban", {}).get("dispatch_in_gateway", True))
+        dispatch_on = bool(cfg.get("kanban", {}).get("dispatch_in_gateway", False))
     except Exception:
-        dispatch_on = True  # can't tell — assume default
+        dispatch_on = False  # can't tell — assume fail-safe default (off)
 
     if pid and dispatch_on:
         return (True, f"gateway pid={pid}, dispatch enabled")
@@ -1751,7 +1751,7 @@ def _cmd_daemon(args: argparse.Namespace) -> int:
             "(default: every 60 seconds). Configure via config.yaml:\n"
             "\n"
             "    kanban:\n"
-            "      dispatch_in_gateway: true      # default\n"
+            "      dispatch_in_gateway: false     # default (opt-in)\n"
             "      dispatch_interval_seconds: 60\n"
             "      failure_limit: 2              # consecutive non-success attempts before auto-block\n"
             "\n"
@@ -1780,7 +1780,7 @@ def _cmd_daemon(args: argparse.Namespace) -> int:
         f"Kanban dispatcher running STANDALONE via --force "
         f"(interval={args.interval}s, pid={os.getpid()}). "
         f"Ctrl-C to stop. NOTE: if a gateway is also running with "
-        f"dispatch_in_gateway=true (default), you have two dispatchers "
+        f"dispatch_in_gateway=true, you have two dispatchers "
         f"racing for claims.",
         file=sys.stderr,
     )
