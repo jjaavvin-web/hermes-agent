@@ -725,7 +725,9 @@ def _create_daily_quick_snapshot_result(
     hermes_home: Optional[Path] = None,
     retain: int = _QUICK_DEFAULT_KEEP,
 ) -> tuple[Optional[str], int]:
-    snap_id = create_quick_snapshot(label="nightly", hermes_home=hermes_home)
+    # keep=retain so the create-time auto-prune does NOT cap at the default
+    # 20 before _finish prunes to `retain` (the retain>20 silent-cap bug).
+    snap_id = create_quick_snapshot(label="nightly", hermes_home=hermes_home, keep=retain)
     return _finish_daily_quick_snapshot(snap_id, hermes_home=hermes_home, retain=retain)
 
 
