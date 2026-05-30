@@ -159,9 +159,9 @@ def _check_dispatcher_presence() -> tuple[bool, str]:
     try:
         from hermes_cli.config import load_config
         cfg = load_config()
-        dispatch_on = bool(cfg.get("kanban", {}).get("dispatch_in_gateway", True))
+        dispatch_on = bool(cfg.get("kanban", {}).get("dispatch_in_gateway", False))
     except Exception:
-        dispatch_on = True  # can't tell — assume default
+        dispatch_on = False  # can't tell — assume fail-safe default (off)
 
     if pid and dispatch_on:
         return (True, f"gateway pid={pid}, dispatch enabled")
@@ -265,10 +265,12 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
                           help="Switch to the new board after creating it")
     b_create.add_argument("--default-workdir", default=None,
                           help="Default workspace path for tasks created on this board")
-    b_create.add_argument("--repo-root", required=True,
-                          help="Existing git repository root this board targets")
-    b_create.add_argument("--base-branch", required=True,
-                          help="Non-empty base branch for board worktrees")
+    b_create.add_argument("--repo-root", default=None,
+                          help="Existing git repository root this board targets "
+                               "(optional; omit for a legacy non-isolated board)")
+    b_create.add_argument("--base-branch", default=None,
+                          help="Base branch for board worktrees "
+                               "(optional; omit for a legacy non-isolated board)")
     b_create.add_argument("--vcs-kind", default="git", choices=["git"],
                           help="Version-control backend for this board (default: git)")
 
@@ -2232,7 +2234,7 @@ def _cmd_daemon(args: argparse.Namespace) -> int:
             "(default: every 60 seconds). Configure via config.yaml:\n"
             "\n"
             "    kanban:\n"
-            "      dispatch_in_gateway: true      # default\n"
+            "      dispatch_in_gateway: false     # default (opt-in)\n"
             "      dispatch_interval_seconds: 60\n"
             "      failure_limit: 2              # consecutive non-success attempts before auto-block\n"
             "\n"
@@ -2261,7 +2263,7 @@ def _cmd_daemon(args: argparse.Namespace) -> int:
         f"Kanban dispatcher running STANDALONE via --force "
         f"(interval={args.interval}s, pid={os.getpid()}). "
         f"Ctrl-C to stop. NOTE: if a gateway is also running with "
-        f"dispatch_in_gateway=true (default), you have two dispatchers "
+        f"dispatch_in_gateway=true, you have two dispatchers "
         f"racing for claims.",
         file=sys.stderr,
     )
