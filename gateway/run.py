@@ -53,6 +53,7 @@ from typing import Dict, Optional, Any, List, Union
 from agent.account_usage import fetch_account_usage, render_account_usage_lines
 from agent.async_utils import safe_schedule_threadsafe
 from agent.i18n import t
+from agent.worktree_broker import remove_lease, write_lease
 from hermes_cli.config import cfg_get
 from hermes_cli.fallback_config import get_fallback_chain
 from hermes_cli.auth import _file_lock
@@ -5642,8 +5643,51 @@ class GatewayRunner:
                 # the first. See the matching comment in
                 # `_kanban_notifier_watcher` and issue #21378.
                 board_meta = _kb.read_board_metadata(slug)
+                def _lease_wrapped_spawn(
+                    task,
+                    workspace,
+                    *,
+                    board=None,
+                    base_branch=None,
+                    **spawn_kwargs,
+                ):
+                    """Spawn a kanban worker while maintaining run-registry lease files."""
+                    session_id = str(task.current_run_id or task.id)
+                    branch = task.branch_name or f"kanban/{task.id}"
+                    lease_home = get_hermes_home()
+                    wrote_lease = False
+                    if getattr(task, "workspace_kind", None) == "worktree":
+                        lease_worktree = type("LeaseWorktree", (), {
+                            "session_id": session_id,
+                            "branch": branch,
+                            "path": Path(workspace),
+                            "created_at": datetime.now().astimezone(),
+                        })()
+                        write_lease(
+                            lease_home,
+                            lease_worktree,
+                            repo_root=Path(board_meta.get("repo_root") or Path.cwd()),
+                            spawner="gateway_kanban",
+                            tmux_session=f"swarm-{task.assignee}" if task.assignee else None,
+                            kanban_card_id=task.id,
+                        )
+                        wrote_lease = True
+                    try:
+                        return _kb._default_spawn(
+                            task,
+                            workspace,
+                            board=board,
+                            base_branch=base_branch,
+                            **spawn_kwargs,
+                        )
+                    except Exception:
+                        if wrote_lease:
+                            remove_lease(lease_home, session_id)
+                        raise
+
                 return _kb.dispatch_once(
                     conn,
+                    spawn_fn=_lease_wrapped_spawn,
                     board=slug,
                     base_branch=board_meta.get("base_branch") or None,
                     max_spawn=per_board_max_spawn if per_board_max_spawn is not None else max_spawn,
