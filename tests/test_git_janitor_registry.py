@@ -68,7 +68,7 @@ def test_malformed_lease_is_skipped_with_warning(hermes_home, caplog):
         },
     )
 
-    with caplog.at_level(logging.WARNING):
+    with caplog.at_level(logging.WARNING, logger="hermes_cli.git_janitor"):
         locks = gj._read_run_registry()
 
     assert [lock["branch"] for lock in locks] == ["worker/good"]

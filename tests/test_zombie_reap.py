@@ -129,25 +129,38 @@ def test_reap_zombie_sessions_preserves_trigram_fts_table_and_triggers(tmp_path)
         msg_id = db.append_message("fts-zombie", "user", "recall trigram survives")
         _set_message_timestamp(db, msg_id, started + 10)
 
-        before = {
-            row["name"]
-            for row in db._conn.execute(
-                "SELECT name FROM sqlite_master WHERE name LIKE 'messages_fts_trigram%'"
-            ).fetchall()
-        }
-        assert "messages_fts_trigram" in before
-        assert "messages_fts_trigram_insert" in before
-        assert "messages_fts_trigram_delete" in before
-        assert "messages_fts_trigram_update" in before
+        def _trigram_objects():
+            return {
+                row["name"]
+                for row in db._conn.execute(
+                    "SELECT name FROM sqlite_master WHERE name LIKE 'messages_fts_trigram%'"
+                ).fetchall()
+            }
+
+        def _fts_hits(term):
+            return len(
+                db._conn.execute(
+                    "SELECT rowid FROM messages_fts_trigram WHERE messages_fts_trigram MATCH ?",
+                    (term,),
+                ).fetchall()
+            )
+
+        before = _trigram_objects()
+        assert {
+            "messages_fts_trigram",
+            "messages_fts_trigram_insert",
+            "messages_fts_trigram_delete",
+            "messages_fts_trigram_update",
+        } <= before
+        # the append fired trigram_insert -> the row is genuinely indexed
+        assert _fts_hits("trigram") == 1
 
         assert db.reap_zombie_sessions(grace_days=7, inactive_days=7) == 1
 
-        after = {
-            row["name"]
-            for row in db._conn.execute(
-                "SELECT name FROM sqlite_master WHERE name LIKE 'messages_fts_trigram%'"
-            ).fetchall()
-        }
-        assert before <= after
+        # reap only marks sessions ended; it must drop NEITHER the trigram
+        # schema (exact set, not a subset) NOR the indexed FTS rows. The old
+        # `before <= after` could never fail; this guards the rail with content.
+        assert _trigram_objects() == before
+        assert _fts_hits("trigram") == 1
     finally:
         db.close()
