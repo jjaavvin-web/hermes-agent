@@ -551,6 +551,11 @@ def create_quick_snapshot(
                 dst.parent.mkdir(parents=True, exist_ok=True)
                 try:
                     shutil.copy2(sub, dst)
+                    # Pairing stores under pairing/ and platforms/pairing/
+                    # hold credentials; tighten any secret-named file so the
+                    # snapshot copy never inherits a permissive source mode.
+                    if dst.name in _SECRET_FILE_NAMES:
+                        os.chmod(dst, 0o600)
                     manifest[sub_rel] = dst.stat().st_size
                 except (OSError, PermissionError) as exc:
                     logger.warning("Could not snapshot %s: %s", sub_rel, exc)
@@ -568,6 +573,12 @@ def create_quick_snapshot(
                     continue
             else:
                 shutil.copy2(src, dst)
+            # Defense-in-depth: secret files (and state.db, which carries
+            # session tokens / pairing material) must not inherit a permissive
+            # source mode. state.db is world-readable (0644) on disk, so
+            # copy2 would otherwise leak a 0644 secret copy into the snapshot.
+            if dst.name in _SECRET_FILE_NAMES:
+                os.chmod(dst, 0o600)
             manifest[rel] = dst.stat().st_size
         except (OSError, PermissionError) as exc:
             logger.warning("Could not snapshot %s: %s", rel, exc)
