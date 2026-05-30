@@ -82,6 +82,41 @@ def test_daily_quick_snapshot_prunes_to_exact_retain_count(tmp_path, monkeypatch
     ]
 
 
+def test_daily_quick_snapshot_retain_above_twenty_is_not_capped(tmp_path, monkeypatch):
+    """Regression: retain > 20 must keep exactly ``retain``, not silently cap at 20.
+
+    A prior shape listed prune candidates through a default ``limit=20`` helper,
+    so retain>20 quietly behaved like retain=20. Build 25 snapshots, keep 22, and
+    assert all 22 (not 20) survive.
+    """
+    from hermes_cli import backup
+
+    home = _make_home(tmp_path)
+    root = home / "state-snapshots"
+    root.mkdir()
+    for i in range(25):
+        old = root / f"202601{i:02d}-000000-nightly"
+        old.mkdir()
+        (old / "manifest.json").write_text(json.dumps({"id": old.name, "files": {}}))
+
+    class FakeDateTime:
+        @classmethod
+        def now(cls, tz=None):
+            return datetime.strptime("20260201-000000", "%Y%m%d-%H%M%S").replace(tzinfo=tz)
+
+    monkeypatch.setattr(backup, "datetime", FakeDateTime)
+
+    snapshot_id = backup.create_daily_quick_snapshot(hermes_home=home, retain=22)
+
+    names = sorted(p.name for p in root.iterdir() if p.is_dir())
+    assert snapshot_id == "20260201-000000-nightly"
+    # 25 old + 1 new = 26; retain=22 -> 4 oldest pruned, 22 survive (NOT capped at 20).
+    assert len(names) == 22, f"retain=22 should keep 22, got {len(names)} (silently capped?)"
+    assert "20260201-000000-nightly" in names   # the new snapshot survives
+    assert "20260124-000000-nightly" in names   # a recent old one survives
+    assert "20260100-000000-nightly" not in names  # the oldest is pruned
+
+
 def test_quick_snapshot_goal_anchor_has_no_literal_secret_file_names():
     from hermes_cli import backup
 
@@ -110,8 +145,10 @@ def test_quick_snapshot_cli_reuses_helpers_for_nightly_snapshot(monkeypatch, cap
     rc = backup.main(["quick-snapshot", "--retain", "7"])
 
     assert rc == 0
+    # create_quick_snapshot must receive keep=retain (7), so its create-time
+    # auto-prune matches the explicit prune and never caps at the default 20.
     assert calls == [
-        ("create", "nightly", None, None),
+        ("create", "nightly", None, 7),
         ("prune", 7, None),
     ]
     out = capsys.readouterr().out
