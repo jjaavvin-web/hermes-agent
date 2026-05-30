@@ -628,5 +628,3 @@ class PeerReviewOrchestrator:
         # ("cap is on Opus pane time, not on APPROVE outcomes" — see ISA).
         self._persist_session_state(session_id, state, verdict)
         return verdict
-
-
