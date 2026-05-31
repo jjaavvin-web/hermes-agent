@@ -9685,7 +9685,7 @@ _BUILTIN_SUBCOMMANDS = frozenset(
         "config", "cron", "curator", "dashboard", "debug", "doctor",
         "dump", "fallback", "gateway", "git-health", "hooks", "import", "insights",
         "kanban", "login", "logout", "logs", "lsp", "mcp", "memory",
-        "model", "pairing", "plugins", "postinstall", "profile", "proxy", "sessions", "setup",
+        "model", "pairing", "plugins", "postinstall", "profile", "proxy", "resume", "sessions", "setup",
         "skills", "slack", "status", "tools", "uninstall", "update",
         "version", "webhook", "whatsapp", "chat",
         # Help-ish invocations — plugin commands not being listed in
@@ -9879,6 +9879,13 @@ def main():
         help="Remove all fallback entries",
     )
     fallback_parser.set_defaults(func=cmd_fallback)
+
+    # =========================================================================
+    # resume command — live project state from Honcho
+    # =========================================================================
+    from hermes_cli.resume import add_parser as add_resume_parser
+
+    add_resume_parser(subparsers)
 
     # =========================================================================
     # gateway command
