@@ -141,9 +141,17 @@ def _make_interaction(
     response = SimpleNamespace(send_message=AsyncMock(), defer=AsyncMock())
 
     if in_dm:
-        channel = discord.DMChannel()
+        try:
+            channel = discord.DMChannel()
+        except TypeError:
+            channel = MagicMock(spec=[])
+            channel.__class__ = discord.DMChannel
     elif in_thread:
-        channel = discord.Thread()
+        try:
+            channel = discord.Thread()
+        except TypeError:
+            channel = MagicMock(spec=[])
+            channel.__class__ = discord.Thread
         channel.id = channel_id
         channel.parent_id = parent_channel_id
     elif channel_id is None:

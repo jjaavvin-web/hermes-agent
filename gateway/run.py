@@ -4812,6 +4812,7 @@ class GatewayRunner:
                     conn,
                     spawn_fn=_lease_wrapped_spawn,
                     board=slug,
+                    base_branch=board_meta.get("base_branch"),
                     max_spawn=per_board_max_spawn,
                     failure_limit=failure_limit,
                 )

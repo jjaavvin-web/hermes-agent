@@ -378,7 +378,10 @@ class WorktreeBroker:
         # Step 3: free port
         self._free_port(session_id)
 
-        # Step 4: remove from registry
+        # Step 4: remove run-registry lease, if this broker wrote one.
+        remove_lease(self.hermes_home, session_id)
+
+        # Step 5: remove from registry
         del self._registry[session_id]
 
     def gc(

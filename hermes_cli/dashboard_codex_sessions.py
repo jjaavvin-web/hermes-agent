@@ -34,6 +34,7 @@ import threading
 import time
 from pathlib import Path
 from typing import Any, Optional
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, Body, HTTPException
 
@@ -70,9 +71,41 @@ def _load_json(path: Path) -> dict:
         return {}
 
 
+def _now_dt() -> datetime:
+    return datetime.now(timezone.utc)
+
+
 def _now_iso() -> str:
-    from datetime import datetime, timezone
-    return datetime.now(timezone.utc).isoformat()
+    return _now_dt().isoformat()
+
+
+def _parse_dt(value: Any) -> Optional[datetime]:
+    if not value:
+        return None
+    try:
+        dt = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
+
+
+def _session_liveness(row: dict, wt_alive: bool, now: datetime) -> tuple[str, Optional[int]]:
+    last = _parse_dt(row.get("last_message_at") or row.get("created_at"))
+    age = None
+    if last is not None:
+        age = max(0, int((now - last).total_seconds()))
+    state = str(row.get("state") or "").upper()
+    if state in {"COMPLETE", "DONE", "MERGED", "CLOSED"}:
+        return "green", age
+    if not wt_alive:
+        return "red", age
+    if age is not None and age >= 30 * 60:
+        return "red", age
+    if age is not None and age >= 15 * 60:
+        return "yellow", age
+    return "green", age
 
 
 def _build_snapshot() -> dict:
@@ -82,6 +115,7 @@ def _build_snapshot() -> dict:
     review_state = _load_json(_REVIEW_STATE_PATH).get("sessions", {})
     ports = _load_json(_PORTS_PATH)
     claimed_ports = sum(1 for v in ports.values() if v)
+    now = _now_dt()
 
     sessions = []
     state_counts: dict[str, int] = {}
@@ -90,6 +124,7 @@ def _build_snapshot() -> dict:
         review = review_state.get(sid, {})
         wt_path = row.get("worktree_path", "")
         wt_alive = Path(wt_path).is_dir() if wt_path else False
+        liveness, last_activity_age_seconds = _session_liveness(row, wt_alive, now)
         sessions.append({
             "thread_id": thread_id,
             "session_id": sid,
@@ -99,6 +134,8 @@ def _build_snapshot() -> dict:
             "isa_phase": row.get("isa_phase"),
             "worktree_path": wt_path,
             "worktree_alive": wt_alive,
+            "liveness": liveness,
+            "last_activity_age_seconds": last_activity_age_seconds,
             "port": row.get("port"),
             "channel_id": row.get("channel_id"),
             "last_message_at": row.get("last_message_at"),

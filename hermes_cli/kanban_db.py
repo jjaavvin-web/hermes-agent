@@ -75,6 +75,7 @@ import json
 import os
 import re
 import secrets
+import shutil
 import sqlite3
 import subprocess
 import sys
@@ -99,6 +100,12 @@ KNOWN_TOOLSET_NAMES = frozenset(name.casefold() for name in get_toolset_names())
 # ``heartbeat_claim(task_id)`` periodically.  In practice most kanban
 # workloads either finish within 15m or set a longer claim explicitly.
 DEFAULT_CLAIM_TTL_SECONDS = 15 * 60
+
+# Grace window before PID-liveness reclaim runs after a task is claimed.
+# Default stays zero to preserve the historical immediate-reclaim semantics
+# used by tests and by operators who rely on fast crash detection; installs
+# that see PID visibility races can opt in via HERMES_KANBAN_CRASH_GRACE_SECONDS.
+DEFAULT_CRASH_GRACE_SECONDS = 0.0
 
 
 # Worker-context caps so build_worker_context() stays bounded on
@@ -377,6 +384,41 @@ def worktrees_root(board: Optional[str] = None) -> Optional[Path]:
     return _repo_scoped_kanban_root(repo_root) / "worktrees"
 
 
+def _is_managed_scratch_path(path: Path | str) -> bool:
+    """Return True when ``path`` is inside a Hermes-managed scratch root.
+
+    This guard exists for cleanup paths: deleting an arbitrary user-provided
+    ``workspace_path`` would be unsafe, but scratch directories created below
+    ``.../kanban/workspaces/<task-id>`` or ``<repo>/.hermes/kanban/workspaces``
+    are owned by the kanban kernel and may be removed after completion.
+    """
+    try:
+        p = Path(path).expanduser().resolve(strict=False)
+    except OSError:
+        p = Path(path).expanduser()
+    parts = p.parts
+    for i in range(len(parts) - 2):
+        if parts[i:i + 2] == (".hermes", "kanban") and parts[i + 2] == "workspaces":
+            return len(parts) > i + 3
+    for i in range(len(parts) - 1):
+        if parts[i] == "kanban" and parts[i + 1] == "workspaces":
+            return len(parts) > i + 2
+    for i in range(len(parts) - 3):
+        if parts[i:i + 2] == ("kanban", "boards") and parts[i + 3] == "workspaces":
+            return len(parts) > i + 4
+    return False
+
+
+def _cleanup_managed_scratch_workspace(path: Optional[str]) -> None:
+    """Best-effort removal for kanban-owned scratch workspaces only."""
+    if not path:
+        return
+    p = Path(path).expanduser()
+    if not _is_managed_scratch_path(p):
+        return
+    shutil.rmtree(p, ignore_errors=True)
+
+
 def worker_logs_dir(board: Optional[str] = None) -> Path:
     """Return the directory under which per-task worker logs are written.
 
@@ -455,6 +497,9 @@ def write_board_metadata(
     icon: Optional[str] = None,
     color: Optional[str] = None,
     archived: Optional[bool] = None,
+    repo_root: Optional[str] = None,
+    base_branch: Optional[str] = None,
+    vcs_kind: Optional[str] = None,
 ) -> dict:
     """Create / update ``board.json`` for ``board``.
 
@@ -476,6 +521,26 @@ def write_board_metadata(
         meta["color"] = str(color)
     if archived is not None:
         meta["archived"] = bool(archived)
+    if repo_root is not None:
+        repo_path = Path(str(repo_root)).expanduser()
+        try:
+            repo_path = repo_path.resolve(strict=False)
+        except OSError:
+            repo_path = repo_path.absolute()
+        if not (repo_path / ".git").exists():
+            raise ValueError(f"repo_root must point to a git checkout: {repo_root}")
+        meta["repo_root"] = str(repo_path)
+        meta["vcs_kind"] = "git"
+    if vcs_kind is not None:
+        kind = str(vcs_kind).strip().lower()
+        if kind != "git":
+            raise ValueError("vcs_kind must be 'git'")
+        meta["vcs_kind"] = kind
+    if base_branch is not None:
+        branch = str(base_branch).strip()
+        if not branch:
+            raise ValueError("base_branch is required when repo_root is set")
+        meta["base_branch"] = branch
     if not meta.get("created_at"):
         meta["created_at"] = int(time.time())
     path = board_metadata_path(slug)
@@ -495,6 +560,9 @@ def create_board(
     description: Optional[str] = None,
     icon: Optional[str] = None,
     color: Optional[str] = None,
+    repo_root: Optional[str] = None,
+    base_branch: Optional[str] = None,
+    vcs_kind: str = "git",
 ) -> dict:
     """Create a new board directory + DB + metadata. Idempotent.
 
@@ -511,6 +579,9 @@ def create_board(
         description=description,
         icon=icon,
         color=color,
+        repo_root=repo_root,
+        base_branch=base_branch,
+        vcs_kind=vcs_kind if repo_root is not None else None,
     )
     # Touch the DB so list_boards() sees it immediately.
     init_db(board=normed)
@@ -626,6 +697,7 @@ class Task:
     claim_lock: Optional[str]
     claim_expires: Optional[int]
     tenant: Optional[str]
+    branch_name: Optional[str] = None
     result: Optional[str] = None
     idempotency_key: Optional[str] = None
     # Unified non-success counter. Incremented on any of:
@@ -687,6 +759,7 @@ class Task:
             claim_lock=row["claim_lock"],
             claim_expires=row["claim_expires"],
             tenant=row["tenant"] if "tenant" in keys else None,
+            branch_name=row["branch_name"] if "branch_name" in keys else None,
             result=row["result"] if "result" in keys else None,
             idempotency_key=row["idempotency_key"] if "idempotency_key" in keys else None,
             consecutive_failures=(
@@ -816,6 +889,7 @@ CREATE TABLE IF NOT EXISTS tasks (
     completed_at         INTEGER,
     workspace_kind       TEXT NOT NULL DEFAULT 'scratch',
     workspace_path       TEXT,
+    branch_name          TEXT,
     claim_lock           TEXT,
     claim_expires        INTEGER,
     tenant               TEXT,
@@ -1103,6 +1177,8 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
         _add_column_if_missing(
             conn, "tasks", "last_heartbeat_at", "last_heartbeat_at INTEGER"
         )
+    if "branch_name" not in cols:
+        _add_column_if_missing(conn, "tasks", "branch_name", "branch_name TEXT")
     if "current_run_id" not in cols:
         _add_column_if_missing(
             conn, "tasks", "current_run_id", "current_run_id INTEGER"
@@ -1267,6 +1343,23 @@ def _claimer_id() -> str:
     return f"{host}:{os.getpid()}"
 
 
+def _resolve_crash_grace_seconds() -> float:
+    """Return the launch-window grace before PID-liveness crash reclaim.
+
+    The opt-in environment variable is intentionally simple and local to the
+    dispatcher path. Invalid or negative values fall back to the historical
+    zero-second behavior instead of disabling crash detection accidentally.
+    """
+    raw = os.environ.get("HERMES_KANBAN_CRASH_GRACE_SECONDS")
+    if raw is None or raw == "":
+        return DEFAULT_CRASH_GRACE_SECONDS
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return DEFAULT_CRASH_GRACE_SECONDS
+    return value if value >= 0 else DEFAULT_CRASH_GRACE_SECONDS
+
+
 # ---------------------------------------------------------------------------
 # Task creation / mutation
 # ---------------------------------------------------------------------------
@@ -1289,6 +1382,8 @@ def create_task(
     created_by: Optional[str] = None,
     workspace_kind: str = "scratch",
     workspace_path: Optional[str] = None,
+    branch_name: Optional[str] = None,
+    board: Optional[str] = None,
     tenant: Optional[str] = None,
     priority: int = 0,
     parents: Iterable[str] = (),
@@ -1330,6 +1425,9 @@ def create_task(
             f"workspace_kind must be one of {sorted(VALID_WORKSPACE_KINDS)}, "
             f"got {workspace_kind!r}"
         )
+    branch_name = str(branch_name).strip() if branch_name is not None else None
+    if branch_name == "":
+        branch_name = None
     parents = tuple(p for p in parents if p)
 
     # Normalise + validate skills: strip whitespace, drop empties, dedupe
@@ -1429,9 +1527,9 @@ def create_task(
                     INSERT INTO tasks (
                         id, title, body, assignee, status, priority,
                         created_by, created_at, workspace_kind, workspace_path,
-                        tenant, idempotency_key, max_runtime_seconds, skills,
-                        max_retries
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        branch_name, tenant, idempotency_key, max_runtime_seconds,
+                        skills, max_retries
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         task_id,
@@ -1444,6 +1542,7 @@ def create_task(
                         now,
                         workspace_kind,
                         workspace_path,
+                        branch_name,
                         tenant,
                         idempotency_key,
                         int(max_runtime_seconds) if max_runtime_seconds else None,
@@ -1465,6 +1564,8 @@ def create_task(
                         "status": initial_status,
                         "parents": list(parents),
                         "tenant": tenant,
+                        "board": board,
+                        "branch_name": branch_name,
                         "skills": list(skills_list) if skills_list else None,
                     },
                 )
@@ -2440,6 +2541,7 @@ def complete_task(
     and never blocks.
     """
     now = int(time.time())
+    workspace_to_cleanup: Optional[str] = None
 
     # Gate: verify created_cards BEFORE the main write txn. A rejected
     # completion still needs an auditable event, so we emit it in a
@@ -2502,6 +2604,16 @@ def complete_task(
             )
         if cur.rowcount != 1:
             return False
+        task_row = conn.execute(
+            "SELECT workspace_kind, workspace_path FROM tasks WHERE id = ?",
+            (task_id,),
+        ).fetchone()
+        if (
+            task_row is not None
+            and task_row["workspace_kind"] == "scratch"
+            and task_row["workspace_path"]
+        ):
+            workspace_to_cleanup = task_row["workspace_path"]
         run_id = _end_run(
             conn, task_id,
             outcome="completed", status="done",
@@ -2562,6 +2674,8 @@ def complete_task(
     # just tracks "is there a current pathology the breaker should
     # care about", and a success resets that question.
     _clear_failure_counter(conn, task_id)
+    if workspace_to_cleanup:
+        _cleanup_managed_scratch_workspace(workspace_to_cleanup)
     # Recompute ready status for dependents (separate txn so children see done).
     recompute_ready(conn)
     return True
@@ -4777,6 +4891,7 @@ def dispatch_once(
     max_spawn: Optional[int] = None,
     failure_limit: int = DEFAULT_SPAWN_FAILURE_LIMIT,
     board: Optional[str] = None,
+    base_branch: Optional[str] = None,
 ) -> DispatchResult:
     """Run one dispatcher tick.
 
@@ -4870,7 +4985,7 @@ def dispatch_once(
         )
 
     ready_rows = conn.execute(
-        "SELECT id, assignee FROM tasks "
+        "SELECT id, assignee, branch_name FROM tasks "
         "WHERE status = 'ready' AND claim_lock IS NULL "
         "ORDER BY priority DESC, created_at ASC"
     ).fetchall()

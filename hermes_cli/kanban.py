@@ -227,6 +227,12 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
                           help="Optional emoji or single-character icon for the dashboard")
     b_create.add_argument("--color", default=None,
                           help="Optional hex color (e.g. '#8b5cf6') for the dashboard")
+    b_create.add_argument("--repo-root", default=None,
+                          help="Optional git checkout root for this board's isolated workspaces")
+    b_create.add_argument("--base-branch", default=None,
+                          help="Optional git base branch/ref used for managed worktree tasks")
+    b_create.add_argument("--vcs-kind", default="git", choices=["git"],
+                          help="Version-control backend for repo-root (currently: git)")
     b_create.add_argument("--switch", action="store_true",
                           help="Switch to the new board after creating it")
 
@@ -864,12 +870,22 @@ def _cmd_boards_create(args: argparse.Namespace) -> int:
         print("kanban boards create: slug is required", file=sys.stderr)
         return 2
     already = kb.board_exists(normed) and normed != kb.DEFAULT_BOARD
+    if not already and (not getattr(args, "repo_root", None) or not getattr(args, "base_branch", None)):
+        print(
+            "kanban boards create: --repo-root and --base-branch are required "
+            "for new isolated boards",
+            file=sys.stderr,
+        )
+        return 2
     meta = kb.create_board(
         normed,
         name=args.name,
         description=args.description,
         icon=args.icon,
         color=args.color,
+        repo_root=args.repo_root,
+        base_branch=args.base_branch,
+        vcs_kind=getattr(args, "vcs_kind", "git"),
     )
     verb = "already exists" if already else "created"
     print(f"Board {meta['slug']!r} {verb}.")

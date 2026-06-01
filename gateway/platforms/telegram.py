@@ -4945,11 +4945,29 @@ class TelegramAdapter(BasePlatformAdapter):
         chat = message.chat
         user = message.from_user
         
-        # Determine chat type
+        # Determine chat type.  Some test modules install lightweight Telegram
+        # mocks before the shared mock; compare both by object and by normalized
+        # value so group-topic behavior does not depend on collection order.
+        _chat_type_raw = getattr(chat, "type", None)
+        _chat_type_value = str(getattr(_chat_type_raw, "value", _chat_type_raw)).lower()
+        if "supergroup" in _chat_type_value:
+            _chat_type_value = "supergroup"
+        elif "group" in _chat_type_value:
+            _chat_type_value = "group"
+        elif "channel" in _chat_type_value:
+            _chat_type_value = "channel"
+        _chat_type_group = getattr(ChatType, "GROUP", "group")
+        _chat_type_supergroup = getattr(ChatType, "SUPERGROUP", "supergroup")
+        _chat_type_channel = getattr(ChatType, "CHANNEL", "channel")
+        _group_values = {
+            "group",
+            str(getattr(_chat_type_group, "value", _chat_type_group)).lower(),
+            str(getattr(_chat_type_supergroup, "value", _chat_type_supergroup)).lower(),
+        }
         chat_type = "dm"
-        if chat.type in {ChatType.GROUP, ChatType.SUPERGROUP}:
+        if _chat_type_raw in {_chat_type_group, _chat_type_supergroup} or _chat_type_value in _group_values:
             chat_type = "group"
-        elif chat.type == ChatType.CHANNEL:
+        elif _chat_type_raw == _chat_type_channel or _chat_type_value == str(getattr(_chat_type_channel, "value", _chat_type_channel)).lower():
             chat_type = "channel"
 
         # Resolve DM topic name and skill binding.
