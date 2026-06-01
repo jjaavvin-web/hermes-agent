@@ -78,6 +78,7 @@ import ExplorerPage from "@/pages/ExplorerPage";
 import PulsePage from "@/pages/PulsePage";
 import ReflectPromotePage from "@/pages/ReflectPromotePage";
 import CodexSessionsPage from "@/pages/CodexSessionsPage";
+import GetSomePage from "@/pages/GetSomePage";
 import WelcomePage from "@/pages/WelcomePage";
 import ChatPage from "@/pages/ChatPage";
 import { LanguageSwitcher } from "@/components/LanguageSwitcher";
@@ -134,6 +135,7 @@ const BUILTIN_ROUTES_CORE: Record<string, ComponentType> = {
   "/": RootRedirect,
   "/pulse": PulsePage,
   "/reflect-promote": ReflectPromotePage,
+  "/get-some": GetSomePage,
   "/sessions": SessionsPage,
   "/analytics": AnalyticsPage,
   "/models": ModelsPage,
@@ -171,6 +173,12 @@ const BUILTIN_NAV_REST: NavItem[] = [
     path: "/reflect-promote",
     labelKey: "reflect_promote",
     label: "Reflect Promote",
+    icon: Sparkles,
+  },
+  {
+    path: "/get-some",
+    labelKey: "get_some",
+    label: "Get Some",
     icon: Sparkles,
   },
   {
@@ -372,7 +380,7 @@ export default function App() {
   // canvas has vertical space to render. Without this, the page wrapper
   // collapses to its content's min-height and the canvas degenerates to a
   // 44px-tall strip.
-  const isPulseRoute = normalizedPath === "/pulse";
+  const isPulseRoute = normalizedPath === "/pulse" || normalizedPath === "/get-some";
   const embeddedChat = isDashboardEmbeddedChatEnabled();
 
   // `dashboard.show_token_analytics` gates the Analytics nav item.  The
