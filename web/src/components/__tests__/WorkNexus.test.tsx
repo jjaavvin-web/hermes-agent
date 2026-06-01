@@ -1,42 +1,65 @@
 // @vitest-environment jsdom
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
-import { act, type ReactNode } from "react";
+import { act, forwardRef, useImperativeHandle, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import * as forceGraphModule from "react-force-graph-2d";
 import WorkNexus from "../WorkNexus";
 
 vi.mock("react-force-graph-2d", () => {
   type Node = { id: string; label?: string };
   type Link = { id?: string; kind?: string; source: string; target: string };
-  return {
-    default: function MockForceGraph2D(props: {
-      graphData: { nodes: Node[]; links: Link[] };
-      onNodeClick?: (n: Node) => void;
-      onBackgroundClick?: () => void;
-    }) {
-      return (
-        <div data-testid="mock-work-nexus-graph" data-links={props.graphData.links.length}>
+  const refControls = {
+    pauseAnimation: vi.fn(() => refControls),
+    resumeAnimation: vi.fn(() => refControls),
+    d3ReheatSimulation: vi.fn(() => refControls),
+    zoomToFit: vi.fn(() => refControls),
+    d3Force: vi.fn((forceName: string) => {
+      if (forceName === "charge") return { strength: vi.fn() };
+      if (forceName === "link") return { distance: vi.fn() };
+      return undefined;
+    }),
+  };
+  const MockForceGraph2D = forwardRef(function MockForceGraph2D(props: {
+    graphData: { nodes: Node[]; links: Link[] };
+    onNodeClick?: (n: Node) => void;
+    onBackgroundClick?: () => void;
+    onEngineStop?: () => void;
+  }, ref) {
+    useImperativeHandle(ref, () => refControls);
+    return (
+      <div data-testid="mock-work-nexus-graph" data-links={props.graphData.links.length}>
+        <button
+          type="button"
+          data-testid="mock-engine-stop"
+          onClick={() => props.onEngineStop?.()}
+        >
+          stop
+        </button>
+        <button
+          type="button"
+          data-testid="mock-bg"
+          onClick={() => props.onBackgroundClick?.()}
+        >
+          bg
+        </button>
+        {props.graphData.nodes.map((n) => (
           <button
+            key={n.id}
             type="button"
-            data-testid="mock-bg"
-            onClick={() => props.onBackgroundClick?.()}
+            data-testid={`mock-node-${n.id}`}
+            onClick={() => props.onNodeClick?.(n)}
           >
-            bg
+            {n.label ?? n.id}
           </button>
-          {props.graphData.nodes.map((n) => (
-            <button
-              key={n.id}
-              type="button"
-              data-testid={`mock-node-${n.id}`}
-              onClick={() => props.onNodeClick?.(n)}
-            >
-              {n.label ?? n.id}
-            </button>
-          ))}
-        </div>
-      );
-    },
+        ))}
+      </div>
+    );
+  });
+  return {
+    __refControls: refControls,
+    default: MockForceGraph2D,
   };
 });
 
@@ -45,6 +68,16 @@ interface GraphResponse {
   edges: Array<Record<string, unknown>>;
   degraded_mode?: string[];
 }
+
+interface MockForceGraphControls {
+  pauseAnimation: ReturnType<typeof vi.fn>;
+  resumeAnimation: ReturnType<typeof vi.fn>;
+  d3ReheatSimulation: ReturnType<typeof vi.fn>;
+  zoomToFit: ReturnType<typeof vi.fn>;
+  d3Force: ReturnType<typeof vi.fn>;
+}
+
+const forceGraphControls = (forceGraphModule as unknown as { __refControls: MockForceGraphControls }).__refControls;
 
 const cleanupFns: Array<() => void> = [];
 
@@ -200,6 +233,7 @@ afterEach(() => {
   while (cleanupFns.length > 0) cleanupFns.pop()?.();
   vi.useRealTimers();
   vi.restoreAllMocks();
+  Object.values(forceGraphControls).forEach((fn) => fn.mockClear());
 });
 
 describe("WorkNexus", () => {
@@ -235,6 +269,22 @@ describe("WorkNexus", () => {
     await waitFor(() => {
       expect(container.querySelector('[data-testid="work-nexus-detail-panel"]')).toBeNull();
     });
+  });
+
+  it("pauses animation once the force layout converges", async () => {
+    globalThis.fetch = mockFetch(sampleResponse) as unknown as typeof fetch;
+    const { container } = render(<WorkNexus />);
+    const engineStop = await findByTestId(container, "mock-engine-stop");
+    await waitFor(() => {
+      expect(forceGraphControls.d3ReheatSimulation).toHaveBeenCalled();
+    });
+    expect(forceGraphControls.pauseAnimation).not.toHaveBeenCalled();
+
+    act(() => {
+      engineStop.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(forceGraphControls.pauseAnimation).toHaveBeenCalled();
   });
 
   it("polls every 15 seconds", async () => {

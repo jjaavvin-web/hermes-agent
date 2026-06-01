@@ -140,6 +140,43 @@ def test_work_nexus_returns_project_task_nodes_and_contains_blocks_edges(monkeyp
     assert ("blocks", f"task:alpha:{parent}", f"task:alpha:{child}") in edges
 
 
+def test_work_nexus_bounds_task_nodes_and_rolls_up_backlog(monkeypatch, tmp_path):
+    _setup_home(tmp_path, monkeypatch)
+    statuses = ["todo", "ready", "running", "blocked", "review", "done"]
+    slugs = [f"project-{idx:02d}" for idx in range(12)]
+    total_tasks = 0
+    for idx, slug in enumerate(slugs):
+        _create_board(slug, name=f"Project {idx:02d}", icon="✦", color="#76e4f7")
+        for task_idx in range(80):
+            _add_task(
+                slug,
+                f"{slug} task {task_idx:02d}",
+                status=statuses[task_idx % len(statuses)],
+                priority=task_idx % 5,
+                created_at=1_700_000_000 + task_idx,
+            )
+            total_tasks += 1
+    overlay_pr_nodes = [
+        {"id": f"pr:{idx}", "kind": "pr", "label": f"PR #{idx}"}
+        for idx in range(25)
+    ]
+    get_some = _import_module(monkeypatch)
+    monkeypatch.setattr(get_some, "_codex_pr_overlay", lambda *_args, **_kwargs: (overlay_pr_nodes, []))
+    monkeypatch.setattr(get_some, "_git_river_pr_overlay", lambda: ([], []))
+
+    payload = get_some.get_work_nexus()
+
+    assert len(payload["nodes"]) <= 150
+    project_nodes = [node for node in payload["nodes"] if node["kind"] == "project"]
+    task_nodes = [node for node in payload["nodes"] if str(node["id"]).startswith("task:")]
+    aggregate_nodes = [node for node in payload["nodes"] if node.get("aggregate") is True]
+    assert {node["board"] for node in project_nodes} == set(slugs)
+    assert len(project_nodes) == len(slugs)
+    assert {node["board"] for node in aggregate_nodes} == set(slugs)
+    assert all(node["label"] == f"+{node['hidden_count']} more" for node in aggregate_nodes)
+    assert sum(int(node["hidden_count"]) for node in aggregate_nodes) == total_tasks - len(task_nodes)
+
+
 def test_work_nexus_overlay_failures_degrade_without_raising(monkeypatch, tmp_path):
     _setup_home(tmp_path, monkeypatch)
     _create_board("alpha", name="Alpha Ship", icon="🚀", color="#76e4f7")

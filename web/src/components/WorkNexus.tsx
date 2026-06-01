@@ -353,9 +353,14 @@ export default function WorkNexus() {
     if (reducedMotionRef.current) {
       fg.pauseAnimation();
     } else {
+      fg.resumeAnimation();
       fg.d3ReheatSimulation();
     }
   }, [graph.nodes.length, graph.links.length]);
+
+  const handleEngineStop = useCallback(() => {
+    fgRef.current?.pauseAnimation();
+  }, []);
 
   useEffect(() => {
     if (zoomedRef.current || graph.nodes.length === 0) return;
@@ -499,6 +504,7 @@ export default function WorkNexus() {
           d3VelocityDecay={0.31}
           warmupTicks={reducedMotionRef.current ? 0 : 80}
           cooldownTicks={reducedMotionRef.current ? 0 : 320}
+          onEngineStop={handleEngineStop}
           onNodeHover={onNodeHover}
           onNodeClick={onNodeClick}
           onBackgroundClick={() => setSelected(null)}

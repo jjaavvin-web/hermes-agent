@@ -42,6 +42,18 @@ WEIGHT: dict[str, float] = {
     "archived": 1.0,
 }
 _COMPLETED_STATUSES = {"done", "archived"}
+_NEXUS_MAX_NODES = 150
+_TASK_STATUS_SORT_RANK: dict[str, int] = {
+    "running": 0,
+    "review": 1,
+    "blocked": 2,
+    "ready": 3,
+    "scheduled": 4,
+    "triage": 5,
+    "todo": 6,
+    "done": 7,
+    "archived": 8,
+}
 
 
 def _now_iso() -> str:
@@ -197,11 +209,85 @@ def _task_node(slug: str, row: sqlite3.Row) -> dict:
     }
 
 
+def _task_sort_key(row: sqlite3.Row) -> tuple[int, int, int, str]:
+    status = str(_row_get(row, "status") or "")
+    priority = int(_row_get(row, "priority") or 0)
+    ts_value = _task_ts(row) or 0
+    try:
+        ts = int(ts_value)
+    except (TypeError, ValueError):
+        ts = 0
+    return (_TASK_STATUS_SORT_RANK.get(status, 99), -priority, -ts, str(row["id"]))
+
+
+def _aggregate_task_node(slug: str, hidden_count: int) -> dict:
+    return {
+        "id": f"aggregate:{slug}:hidden-tasks",
+        "kind": "task",
+        "label": f"+{hidden_count} more",
+        "status": "aggregated",
+        "board": slug,
+        "priority": 0,
+        "completed": False,
+        "aggregate": True,
+        "hidden_count": hidden_count,
+    }
+
+
+def _selected_task_ids_by_board(
+    rows_by_board: dict[str, list[sqlite3.Row]],
+    *,
+    max_nodes: int = _NEXUS_MAX_NODES,
+) -> dict[str, set[str]]:
+    board_count = len(rows_by_board)
+    if board_count <= 0:
+        return {}
+    aggregate_count = sum(1 for rows in rows_by_board.values() if rows)
+    task_budget = max(0, max_nodes - board_count - aggregate_count)
+    selected: dict[str, set[str]] = {slug: set() for slug in rows_by_board}
+    if task_budget <= 0:
+        return selected
+
+    sorted_rows_by_board = {
+        slug: sorted(rows, key=_task_sort_key)
+        for slug, rows in rows_by_board.items()
+    }
+    base_per_board = max(1, task_budget // board_count)
+    remaining = task_budget
+    for slug in sorted(sorted_rows_by_board):
+        if remaining <= 0:
+            break
+        rows = sorted_rows_by_board[slug]
+        take = min(len(rows), base_per_board, remaining)
+        selected[slug].update(str(row["id"]) for row in rows[:take])
+        remaining -= take
+
+    next_index_by_board = {slug: len(ids) for slug, ids in selected.items()}
+    while remaining > 0:
+        added = False
+        for slug in sorted(sorted_rows_by_board):
+            rows = sorted_rows_by_board[slug]
+            idx = next_index_by_board[slug]
+            if idx >= len(rows):
+                continue
+            selected[slug].add(str(rows[idx]["id"]))
+            next_index_by_board[slug] = idx + 1
+            remaining -= 1
+            added = True
+            if remaining <= 0:
+                break
+        if not added:
+            break
+    return selected
+
+
 def _read_core_nexus() -> tuple[list[dict], list[dict], dict[str, list[str]], dict[str, list[str]]]:
     metadata = _metadata_by_slug()
     nodes: list[dict] = []
     edges: list[dict] = []
-    task_ids_by_board: dict[str, set[str]] = {}
+    rows_by_board: dict[str, list[sqlite3.Row]] = {}
+    links_by_board: dict[str, list[sqlite3.Row]] = {}
+    meta_by_board: dict[str, dict] = {}
     tasks_by_branch: dict[str, list[str]] = {}
     tasks_by_session: dict[str, list[str]] = {}
 
@@ -215,45 +301,66 @@ def _read_core_nexus() -> tuple[list[dict], list[dict], dict[str, list[str]], di
             log.warning("Could not open kanban board %s at %s: %s", slug, db_path, exc)
             continue
         try:
-            project_id = f"project:{slug}"
-            nodes.append(_project_node(slug, meta))
-            board_task_ids: set[str] = set()
-            for row in _task_rows(conn):
-                task_id = str(row["id"])
-                board_task_ids.add(task_id)
-                node = _task_node(slug, row)
-                nodes.append(node)
-                edges.append({
-                    "id": f"contains:{slug}:{task_id}",
-                    "kind": "contains",
-                    "source": project_id,
-                    "target": node["id"],
-                })
-                branch = node.get("branch_name")
-                if branch:
-                    tasks_by_branch.setdefault(str(branch), []).append(node["id"])
-                tasks_by_session.setdefault(task_id, []).append(node["id"])
-            task_ids_by_board[slug] = board_task_ids
-
+            meta_by_board[slug] = meta
+            rows_by_board[slug] = _task_rows(conn)
             try:
-                links = conn.execute("SELECT parent_id, child_id FROM task_links").fetchall()
+                links_by_board[slug] = conn.execute("SELECT parent_id, child_id FROM task_links").fetchall()
             except sqlite3.OperationalError:
-                links = []
-            for link in links:
-                parent_id = str(link["parent_id"])
-                child_id = str(link["child_id"])
-                if parent_id not in board_task_ids or child_id not in board_task_ids:
-                    continue
-                edges.append({
-                    "id": f"blocks:{slug}:{parent_id}:{child_id}",
-                    "kind": "blocks",
-                    "source": f"task:{slug}:{parent_id}",
-                    "target": f"task:{slug}:{child_id}",
-                })
+                links_by_board[slug] = []
         except sqlite3.Error as exc:
             log.warning("Could not build kanban nexus for board %s: %s", slug, exc)
         finally:
             conn.close()
+
+    selected_ids_by_board = _selected_task_ids_by_board(rows_by_board)
+
+    for slug in sorted(meta_by_board):
+        meta = meta_by_board[slug]
+        project_id = f"project:{slug}"
+        nodes.append(_project_node(slug, meta))
+        selected_ids = selected_ids_by_board.get(slug, set())
+        emitted_task_ids: set[str] = set()
+        rows = sorted(rows_by_board.get(slug, []), key=_task_sort_key)
+        for row in rows:
+            task_id = str(row["id"])
+            if task_id not in selected_ids:
+                continue
+            emitted_task_ids.add(task_id)
+            node = _task_node(slug, row)
+            nodes.append(node)
+            edges.append({
+                "id": f"contains:{slug}:{task_id}",
+                "kind": "contains",
+                "source": project_id,
+                "target": node["id"],
+            })
+            branch = node.get("branch_name")
+            if branch:
+                tasks_by_branch.setdefault(str(branch), []).append(node["id"])
+            tasks_by_session.setdefault(task_id, []).append(node["id"])
+
+        hidden_count = max(0, len(rows) - len(emitted_task_ids))
+        if hidden_count > 0:
+            aggregate = _aggregate_task_node(slug, hidden_count)
+            nodes.append(aggregate)
+            edges.append({
+                "id": f"contains:{slug}:hidden-tasks",
+                "kind": "contains",
+                "source": project_id,
+                "target": aggregate["id"],
+            })
+
+        for link in links_by_board.get(slug, []):
+            parent_id = str(link["parent_id"])
+            child_id = str(link["child_id"])
+            if parent_id not in emitted_task_ids or child_id not in emitted_task_ids:
+                continue
+            edges.append({
+                "id": f"blocks:{slug}:{parent_id}:{child_id}",
+                "kind": "blocks",
+                "source": f"task:{slug}:{parent_id}",
+                "target": f"task:{slug}:{child_id}",
+            })
 
     return nodes, edges, tasks_by_branch, tasks_by_session
 
@@ -344,13 +451,35 @@ def _git_river_pr_overlay() -> tuple[list[dict], list[dict]]:
     return nodes, []
 
 
+def _pr_sort_key(node: dict) -> tuple[int, str]:
+    merged_at = node.get("merged_at") or ""
+    return (0 if merged_at else 1, str(node.get("id") or ""))
+
+
+def _enforce_nexus_node_cap(nodes: list[dict], edges: list[dict], max_nodes: int = _NEXUS_MAX_NODES) -> tuple[list[dict], list[dict]]:
+    if len(nodes) <= max_nodes:
+        return nodes, edges
+    protected_nodes = [node for node in nodes if node.get("kind") == "project" or node.get("aggregate") is True]
+    protected_object_ids = {id(node) for node in protected_nodes}
+    optional_nodes = [node for node in nodes if id(node) not in protected_object_ids]
+    remaining = max(0, max_nodes - len(protected_nodes))
+    kept_object_ids = protected_object_ids | {id(node) for node in optional_nodes[:remaining]}
+    kept_nodes = [node for node in nodes if id(node) in kept_object_ids]
+    kept_ids = {str(node.get("id")) for node in kept_nodes}
+    kept_edges = [
+        edge for edge in edges
+        if str(edge.get("source")) in kept_ids and str(edge.get("target")) in kept_ids
+    ]
+    return kept_nodes, kept_edges
+
+
 def _build_nexus_snapshot() -> dict:
     nodes, edges, tasks_by_branch, tasks_by_session = _read_core_nexus()
     degraded_mode: list[str] = []
 
     try:
         pr_nodes, pr_edges = _codex_pr_overlay(tasks_by_branch, tasks_by_session)
-        nodes.extend(pr_nodes)
+        nodes.extend(sorted(pr_nodes, key=_pr_sort_key))
         edges.extend(pr_edges)
     except Exception as exc:
         log.warning("Codex PR overlay failed: %s", exc)
@@ -359,11 +488,13 @@ def _build_nexus_snapshot() -> dict:
     try:
         river_nodes, river_edges = _git_river_pr_overlay()
         existing_ids = {node["id"] for node in nodes}
-        nodes.extend(node for node in river_nodes if node["id"] not in existing_ids)
+        nodes.extend(sorted((node for node in river_nodes if node["id"] not in existing_ids), key=_pr_sort_key))
         edges.extend(river_edges)
     except Exception as exc:
         log.warning("Git river PR overlay failed: %s", exc)
         degraded_mode.append("git_river_overlay")
+
+    nodes, edges = _enforce_nexus_node_cap(nodes, edges)
 
     return {
         "scanned_at": _now_iso(),
