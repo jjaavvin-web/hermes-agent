@@ -102,6 +102,7 @@ def _ensure_discord_mock() -> None:
     from types import SimpleNamespace
 
     discord_mod = MagicMock()
+    discord_mod.__hermes_fake_discord__ = True
     discord_mod.Intents.default.return_value = MagicMock()
     discord_mod.Client = MagicMock
     discord_mod.File = MagicMock
@@ -110,6 +111,9 @@ def _ensure_discord_mock() -> None:
     discord_mod.ForumChannel = type("ForumChannel", (), {})
     discord_mod.Interaction = object
     discord_mod.Message = type("Message", (), {})
+    discord_mod.Forbidden = type("Forbidden", (Exception,), {})
+    discord_mod.NotFound = type("NotFound", (Exception,), {})
+    discord_mod.HTTPException = type("HTTPException", (Exception,), {})
 
     # Embed: accept the kwargs production code / tests use
     # (title, description, color). MagicMock auto-attributes work too,
@@ -138,8 +142,10 @@ def _ensure_discord_mock() -> None:
             self.children = []
         def add_item(self, item):
             self.children.append(item)
+            return item
         def clear_items(self):
             self.children.clear()
+            return self
 
     class _FakeSelect:
         def __init__(self, *, placeholder=None, options=None, custom_id=None, **_):

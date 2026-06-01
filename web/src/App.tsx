@@ -76,6 +76,7 @@ import NexusHealthPage from "@/pages/NexusHealthPage";
 import HivesPage from "@/pages/HivesPage";
 import ExplorerPage from "@/pages/ExplorerPage";
 import PulsePage from "@/pages/PulsePage";
+import ReflectPromotePage from "@/pages/ReflectPromotePage";
 import CodexSessionsPage from "@/pages/CodexSessionsPage";
 import WelcomePage from "@/pages/WelcomePage";
 import ChatPage from "@/pages/ChatPage";
@@ -132,6 +133,7 @@ const CHAT_NAV_ITEM: NavItem = {
 const BUILTIN_ROUTES_CORE: Record<string, ComponentType> = {
   "/": RootRedirect,
   "/pulse": PulsePage,
+  "/reflect-promote": ReflectPromotePage,
   "/sessions": SessionsPage,
   "/analytics": AnalyticsPage,
   "/models": ModelsPage,
@@ -164,6 +166,12 @@ const BUILTIN_NAV_REST: NavItem[] = [
     labelKey: "pulse",
     label: "Pulse",
     icon: Activity,
+  },
+  {
+    path: "/reflect-promote",
+    labelKey: "reflect_promote",
+    label: "Reflect Promote",
+    icon: Sparkles,
   },
   {
     path: "/sessions",

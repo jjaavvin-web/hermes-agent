@@ -52,6 +52,8 @@ from typing import Dict, Optional, Any, List, Union
 from agent.account_usage import fetch_account_usage, render_account_usage_lines
 from agent.async_utils import safe_schedule_threadsafe
 from agent.i18n import t
+from agent.worktree_broker import remove_lease, write_lease
+from hermes_cli.auth import _file_lock
 from hermes_cli.config import cfg_get
 
 # --- Agent cache tuning ---------------------------------------------------
@@ -3807,7 +3809,8 @@ class GatewayRunner:
         asyncio.create_task(self._kanban_notifier_watcher())
 
         # Start background kanban dispatcher — spawns workers for ready
-        # tasks. Gated by `kanban.dispatch_in_gateway` (default True).
+        # tasks. Gated by `kanban.dispatch_in_gateway` (default False;
+        # fail-safe, live config sets it explicitly).
         # When false, users run `hermes kanban daemon` externally or
         # simply don't use kanban; this loop becomes a no-op.
         asyncio.create_task(self._kanban_dispatcher_watcher())
@@ -4594,7 +4597,8 @@ class GatewayRunner:
     async def _kanban_dispatcher_watcher(self) -> None:
         """Embedded kanban dispatcher — one tick every `dispatch_interval_seconds`.
 
-        Gated by `kanban.dispatch_in_gateway` in config.yaml (default True).
+        Gated by `kanban.dispatch_in_gateway` in config.yaml (default False;
+        fail-safe, live config sets it explicitly).
         When true, the gateway hosts the single dispatcher for this profile:
         no separate `hermes kanban daemon` process needed. When false, the
         loop exits immediately and an external daemon is expected.
@@ -4629,7 +4633,7 @@ class GatewayRunner:
             logger.warning("kanban dispatcher: cannot load config (%s); disabled", exc)
             return
         kanban_cfg = cfg.get("kanban", {}) if isinstance(cfg, dict) else {}
-        if not kanban_cfg.get("dispatch_in_gateway", True):
+        if not kanban_cfg.get("dispatch_in_gateway", False):
             logger.info(
                 "kanban dispatcher: disabled via config kanban.dispatch_in_gateway=false"
             )
@@ -4648,6 +4652,40 @@ class GatewayRunner:
         max_spawn = kanban_cfg.get("max_spawn", None)
         if max_spawn is not None:
             logger.info(f"kanban dispatcher: max_spawn={max_spawn}")
+
+        # Machine-wide running-worker ceiling across all non-archived boards.
+        # Defaults to max_spawn so a single-board install behaves exactly as
+        # before while multi-board dispatch cannot fan out to max_spawn × N.
+        raw_global_max_running = kanban_cfg.get("global_max_running", max_spawn)
+        global_max_running = None
+        if raw_global_max_running is not None:
+            try:
+                global_max_running = int(raw_global_max_running)
+            except (TypeError, ValueError):
+                logger.warning(
+                    "kanban dispatcher: invalid kanban.global_max_running=%r; "
+                    "using max_spawn=%r",
+                    raw_global_max_running,
+                    max_spawn,
+                )
+                try:
+                    global_max_running = int(max_spawn) if max_spawn is not None else None
+                except (TypeError, ValueError):
+                    global_max_running = None
+            else:
+                if global_max_running < 1:
+                    logger.warning(
+                        "kanban dispatcher: kanban.global_max_running=%r is below 1; "
+                        "using max_spawn=%r",
+                        raw_global_max_running,
+                        max_spawn,
+                    )
+                    try:
+                        global_max_running = int(max_spawn) if max_spawn is not None else None
+                    except (TypeError, ValueError):
+                        global_max_running = None
+        if global_max_running is not None:
+            logger.info("kanban dispatcher: global_max_running=%d", global_max_running)
 
         raw_failure_limit = kanban_cfg.get("failure_limit", _kb.DEFAULT_FAILURE_LIMIT)
         try:
@@ -4679,7 +4717,37 @@ class GatewayRunner:
         bad_ticks = 0
         last_warn_at = 0
 
-        def _tick_once_for_board(slug: str) -> "Optional[object]":
+        def _running_count_for_board(slug: str) -> int:
+            conn = None
+            try:
+                conn = _kb.connect(board=slug)
+                row = conn.execute(
+                    "SELECT COUNT(*) FROM tasks WHERE status = 'running'"
+                ).fetchone()
+                return int(row[0] if row is not None else 0)
+            except Exception:
+                logger.debug(
+                    "kanban dispatcher: failed to count running tasks for board %s",
+                    slug,
+                    exc_info=True,
+                )
+                return 0
+            finally:
+                if conn is not None:
+                    try:
+                        conn.close()
+                    except Exception:
+                        pass
+
+        def _global_running_count(boards: "list[dict]") -> int:
+            total = 0
+            for b in boards:
+                slug = b.get("slug") or _kb.DEFAULT_BOARD
+                total += _running_count_for_board(slug)
+            logger.debug("kanban dispatcher: global running count=%d", total)
+            return total
+
+        def _tick_once_for_board(slug: str, per_board_max_spawn: "Optional[int]" = None) -> "Optional[object]":
             """Run one dispatch_once for a specific board.
 
             Runs in a worker thread via `asyncio.to_thread`. `board=slug`
@@ -4697,10 +4765,55 @@ class GatewayRunner:
                 # re-ran the migration on a second connection, racing
                 # the first. See the matching comment in
                 # `_kanban_notifier_watcher` and issue #21378.
+                board_meta = _kb.read_board_metadata(slug)
+                def _lease_wrapped_spawn(
+                    task,
+                    workspace,
+                    *,
+                    board=None,
+                    base_branch=None,
+                    **spawn_kwargs,
+                ):
+                    """Spawn a kanban worker while maintaining run-registry lease files."""
+                    session_id = str(task.current_run_id or task.id)
+                    branch = task.branch_name or f"kanban/{task.id}"
+                    lease_home = get_hermes_home()
+                    wrote_lease = False
+                    if getattr(task, "workspace_kind", None) == "worktree":
+                        lease_worktree = type("LeaseWorktree", (), {
+                            "session_id": session_id,
+                            "branch": branch,
+                            "path": Path(workspace),
+                            "created_at": datetime.now().astimezone(),
+                        })()
+                        write_lease(
+                            lease_home,
+                            lease_worktree,
+                            repo_root=Path(board_meta.get("repo_root") or Path.cwd()),
+                            spawner="gateway_kanban",
+                            tmux_session=f"swarm-{task.assignee}" if task.assignee else None,
+                            kanban_card_id=task.id,
+                        )
+                        wrote_lease = True
+                    try:
+                        return _kb._default_spawn(
+                            task,
+                            workspace,
+                            board=board,
+                            base_branch=base_branch,
+                            **spawn_kwargs,
+                        )
+                    except Exception:
+                        if wrote_lease:
+                            remove_lease(lease_home, session_id)
+                        raise
+
                 return _kb.dispatch_once(
                     conn,
+                    spawn_fn=_lease_wrapped_spawn,
                     board=slug,
-                    max_spawn=max_spawn,
+                    base_branch=board_meta.get("base_branch"),
+                    max_spawn=per_board_max_spawn,
                     failure_limit=failure_limit,
                 )
             except Exception:
@@ -4724,11 +4837,49 @@ class GatewayRunner:
                 boards = _kb.list_boards(include_archived=False)
             except Exception:
                 boards = [_kb.read_board_metadata(_kb.DEFAULT_BOARD)]
+            global_running = _global_running_count(boards) if global_max_running is not None else 0
             out: list[tuple[str, "Optional[object]"]] = []
             for b in boards:
                 slug = b.get("slug") or _kb.DEFAULT_BOARD
-                out.append((slug, _tick_once_for_board(slug)))
+                per_board_max_spawn = max_spawn
+                if global_max_running is not None:
+                    headroom = global_max_running - global_running
+                    if headroom <= 0:
+                        logger.debug(
+                            "kanban dispatcher: global_max_running reached (%d/%d); "
+                            "skipping board %s",
+                            global_running,
+                            global_max_running,
+                            slug,
+                        )
+                        break
+                    if per_board_max_spawn is None or per_board_max_spawn > headroom:
+                        per_board_max_spawn = headroom
+                result = _tick_once_for_board(slug, per_board_max_spawn)
+                out.append((slug, result))
+                if result is not None and getattr(result, "spawned", None):
+                    global_running += len(getattr(result, "spawned", []) or [])
             return out
+
+        def _locked_tick_once() -> "list[tuple[str, Optional[object]]] | None":
+            dispatch_lock = get_hermes_home() / "kanban" / "dispatch.lock"
+            try:
+                dispatch_lock.parent.mkdir(parents=True, exist_ok=True)
+                dispatch_lock.touch(mode=0o600, exist_ok=True)
+                try:
+                    dispatch_lock.chmod(0o600)
+                except OSError:
+                    pass
+                with _file_lock(
+                    dispatch_lock,
+                    threading.local(),
+                    0.0,
+                    "kanban dispatcher dispatch lock held",
+                ):
+                    return _tick_once()
+            except TimeoutError:
+                logger.info("kanban dispatcher: dispatch lock held; skipping tick")
+                return None
 
         def _ready_nonempty() -> bool:
             """Cheap probe: is there at least one ready+assigned+unclaimed
@@ -4768,7 +4919,7 @@ class GatewayRunner:
         )
         while self._running:
             try:
-                results = await asyncio.to_thread(_tick_once)
+                results = await asyncio.to_thread(_locked_tick_once)
                 any_spawned = False
                 for slug, res in (results or []):
                     if res is not None and getattr(res, "spawned", None):
@@ -16987,6 +17138,16 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
             _memory_monitor.start_memory_monitoring(interval_seconds=_mm_interval)
     except Exception as _mm_exc:
         logger.debug("Failed to start memory monitor: %s", _mm_exc)
+
+    try:
+        from agent.startup_safety import enforce_startup_role_invariants
+        from hermes_cli.config import load_config as _load_cli_config
+
+        enforce_startup_role_invariants(env=os.environ, cfg=_load_cli_config())
+    except Exception as exc:
+        if exc.__class__.__name__ == "StartupInvariantError":
+            raise
+        logger.debug("Startup role invariant guard failed: %s", exc)
 
     # Optional stderr handler — level driven by -v/-q flags on the CLI.
     # verbosity=None (-q/--quiet): no stderr output

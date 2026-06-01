@@ -10,6 +10,7 @@ No LLM, no real platform connections.
 """
 
 import asyncio
+import importlib.util
 import sys
 import uuid
 from datetime import datetime, timezone
@@ -36,7 +37,15 @@ def _ensure_telegram_mock():
     telegram_mod.Update = MagicMock()
     telegram_mod.Update.ALL_TYPES = []
     telegram_mod.Bot = MagicMock
-    telegram_mod.constants.ParseMode.MARKDOWN_V2 = "MarkdownV2"
+    telegram_mod.constants.ParseMode.MARKDOWN = "MARKDOWN"
+    telegram_mod.constants.ParseMode.MARKDOWN_V2 = "MARKDOWN_V2"
+    telegram_mod.constants.ParseMode.HTML = "HTML"
+    telegram_mod.constants.ChatType.PRIVATE = "private"
+    telegram_mod.constants.ChatType.GROUP = "group"
+    telegram_mod.constants.ChatType.SUPERGROUP = "supergroup"
+    telegram_mod.constants.ChatType.CHANNEL = "channel"
+    telegram_mod.ChatType = telegram_mod.constants.ChatType
+    telegram_mod.ParseMode = telegram_mod.constants.ParseMode
     telegram_mod.ext.Application = MagicMock()
     telegram_mod.ext.Application.builder = MagicMock
     telegram_mod.ext.ContextTypes.DEFAULT_TYPE = type(None)
@@ -53,23 +62,85 @@ def _ensure_telegram_mock():
         "telegram.request",
     ):
         sys.modules.setdefault(name, telegram_mod)
+    sys.modules.setdefault("telegram.error", telegram_mod.error)
 
 
 # Ensure discord module is available (mock it if not installed)
 def _ensure_discord_mock():
     """Install mock discord modules so DiscordAdapter can be imported."""
-    if "discord" in sys.modules and hasattr(sys.modules["discord"], "__file__"):
+    existing = sys.modules.get("discord")
+    if existing is not None and isinstance(getattr(existing, "__file__", None), str):
         return # Real library installed
+    if existing is None and importlib.util.find_spec("discord") is not None:
+        return # Let later imports load the real library when available
 
     discord_mod = MagicMock()
+    discord_mod.__hermes_fake_discord__ = True
     discord_mod.Intents.default.return_value = MagicMock()
     discord_mod.DMChannel = type("DMChannel", (), {})
     discord_mod.Thread = type("Thread", (), {})
     discord_mod.ForumChannel = type("ForumChannel", (), {})
     discord_mod.Forbidden = type("Forbidden", (Exception,), {})
+    discord_mod.NotFound = type("NotFound", (Exception,), {})
+    discord_mod.HTTPException = type("HTTPException", (Exception,), {})
     discord_mod.MessageType = SimpleNamespace(default=0, reply=19)
     discord_mod.Object = lambda *, id: SimpleNamespace(id=id)
     discord_mod.Interaction = object
+    discord_mod.Message = type("Message", (), {})
+
+    class _FakeView:
+        def __init__(self, timeout=None):
+            self.timeout = timeout
+            self.children = []
+        def add_item(self, item):
+            self.children.append(item)
+            return item
+        def clear_items(self):
+            self.children.clear()
+            return self
+
+    class _FakeSelect:
+        def __init__(self, *, placeholder=None, options=None, custom_id=None, **_):
+            self.placeholder = placeholder
+            self.options = options or []
+            self.custom_id = custom_id
+            self.callback = None
+            self.disabled = False
+
+    class _FakeButton:
+        def __init__(self, *, label=None, style=None, custom_id=None, emoji=None,
+                     url=None, disabled=False, row=None, sku_id=None, **_):
+            self.label = label
+            self.style = style
+            self.custom_id = custom_id
+            self.emoji = emoji
+            self.url = url
+            self.disabled = disabled
+            self.row = row
+            self.sku_id = sku_id
+            self.callback = None
+
+    class _FakeSelectOption:
+        def __init__(self, *, label=None, value=None, description=None, **_):
+            self.label = label
+            self.value = value
+            self.description = description
+
+    discord_mod.ui = SimpleNamespace(
+        View=_FakeView,
+        Select=_FakeSelect,
+        Button=_FakeButton,
+        button=lambda *a, **k: (lambda fn: fn),
+    )
+    discord_mod.ButtonStyle = SimpleNamespace(
+        success=1, primary=2, secondary=2, danger=3,
+        green=1, grey=2, blurple=2, red=3,
+    )
+    discord_mod.Color = SimpleNamespace(
+        orange=lambda: 1, green=lambda: 2, blue=lambda: 3,
+        red=lambda: 4, purple=lambda: 5, greyple=lambda: 6,
+    )
+    discord_mod.SelectOption = _FakeSelectOption
     discord_mod.app_commands = SimpleNamespace(
         describe=lambda **kwargs: (lambda fn: fn),
         choices=lambda **kwargs: (lambda fn: fn),
@@ -82,10 +153,10 @@ def _ensure_discord_mock():
     commands_mod.Bot = MagicMock
     ext_mod.commands = commands_mod
 
-    sys.modules.setdefault("discord", discord_mod)
-    sys.modules.setdefault("discord.ext", ext_mod)
-    sys.modules.setdefault("discord.ext.commands", commands_mod)
-    sys.modules.setdefault("discord.opus", discord_mod.opus)
+    sys.modules["discord"] = discord_mod
+    sys.modules["discord.ext"] = ext_mod
+    sys.modules["discord.ext.commands"] = commands_mod
+    sys.modules["discord.opus"] = discord_mod.opus
 
 
 def _ensure_slack_mock():
@@ -316,6 +387,17 @@ def _next_message_id() -> int:
     return 70000 + MESSAGE_ID_COUNTER
 
 
+def _sync_discord_mock_types():
+    """Align e2e helper type aliases when gateway tests replace fake discord."""
+    current = sys.modules.get("discord")
+    if current is not None and getattr(current, "__hermes_fake_discord__", False):
+        globals()["discord"] = current
+        gd = sys.modules.get("gateway.platforms.discord")
+        if gd is not None and getattr(getattr(gd, "discord", None), "__hermes_fake_discord__", False):
+            setattr(gd, "discord", current)
+    return globals()["discord"]
+
+
 def make_fake_bot_user():
     return SimpleNamespace(
         id=BOT_USER_ID, name=BOT_USER_NAME,
@@ -332,19 +414,22 @@ def make_fake_text_channel(channel_id: int = CHANNEL_ID, name: str = "general", 
         id=channel_id, name=name,
         guild=guild or make_fake_guild(),
         topic=None, type=0,
+        history=MagicMock(),
     )
 
 
 def make_fake_dm_channel(channel_id: int = 55555):
+    discord_mod = _sync_discord_mock_types()
     ch = MagicMock(spec=[])
     ch.id = channel_id
     ch.name = "DM"
     ch.topic = None
-    ch.__class__ = discord.DMChannel
+    ch.__class__ = discord_mod.DMChannel
     return ch
 
 
 def make_fake_thread(thread_id: int = THREAD_ID, name: str = "test-thread", parent=None):
+    discord_mod = _sync_discord_mock_types()
     th = MagicMock(spec=[])
     th.id = thread_id
     th.name = name
@@ -353,7 +438,7 @@ def make_fake_thread(thread_id: int = THREAD_ID, name: str = "test-thread", pare
     th.guild = th.parent.guild
     th.topic = None
     th.type = 11
-    th.__class__ = discord.Thread
+    th.__class__ = discord_mod.Thread
     return th
 
 
@@ -374,11 +459,12 @@ def make_discord_message(
     if attachments is None:
         attachments = []
 
+    discord_mod = _sync_discord_mock_types()
     return SimpleNamespace(
         id=message_id, content=content, author=author, channel=channel,
         guild=getattr(channel, "guild", None),
         mentions=mentions, attachments=attachments,
-        type=getattr(discord, "MessageType", SimpleNamespace()).default,
+        type=getattr(discord_mod, "MessageType", SimpleNamespace()).default,
         reference=None, created_at=datetime.now(timezone.utc),
         create_thread=AsyncMock(),
     )
@@ -397,6 +483,15 @@ def _make_discord_adapter_wired(runner=None):
         runner = make_runner(Platform.DISCORD)
 
     config = PlatformConfig(enabled=True, token="e2e-test-token")
+    # Keep e2e adapter session partitioning local to this fixture; some gateway
+    # unit tests instantiate DiscordAdapter after e2e imports in the same pytest
+    # process and must not inherit the singleton's temporary grouping override.
+    config.extra["group_sessions_per_user"] = True
+    from gateway.config import load_gateway_config as _load_gateway_config
+    try:
+        _load_gateway_config.cache_clear()
+    except AttributeError:
+        pass
     from gateway.platforms.helpers import ThreadParticipationTracker
     with patch.object(ThreadParticipationTracker, "_load", return_value=set()):
         adapter = DiscordAdapter(config)
@@ -410,6 +505,11 @@ def _make_discord_adapter_wired(runner=None):
 
     adapter.send = AsyncMock(return_value=SendResult(success=True, message_id="e2e-resp-1"))
     adapter.send_typing = AsyncMock()
+
+    async def _noop_fetch_channel_context(*_args, **_kwargs):
+        return ""
+
+    adapter._fetch_channel_context = _noop_fetch_channel_context
     adapter.set_message_handler(runner._handle_message)
     runner.adapters[Platform.DISCORD] = adapter
 

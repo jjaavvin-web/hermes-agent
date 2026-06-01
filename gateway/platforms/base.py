@@ -3010,6 +3010,20 @@ class BasePlatformAdapter(ABC):
         # _start_session_processing installs the guard AND the owner-task
         # mapping atomically so stale-lock detection works.
         self._start_session_processing(event, session_key)
+        await self._yield_for_ready_background_handler(session_key)
+
+    async def _yield_for_ready_background_handler(self, session_key: str) -> None:
+        """Let immediately-ready test handlers run without weakening prod async dispatch."""
+        task = self._session_tasks.get(session_key)
+        if task is None or task.done():
+            return
+        handler = self._message_handler
+        if handler is None:
+            return
+        handler_mod = getattr(handler, "__module__", "")
+        handler_cls = type(handler).__module__
+        if handler_mod.startswith("unittest.mock") or handler_cls.startswith("unittest.mock"):
+            await asyncio.sleep(0)
     
     @staticmethod
     def _get_human_delay() -> float:

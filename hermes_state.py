@@ -14,6 +14,7 @@ Key design decisions:
 - Session source tagging ('cli', 'telegram', 'discord', etc.) for filtering
 """
 
+import argparse
 import json
 import logging
 import random
@@ -350,6 +351,11 @@ class SessionDB:
                 isolation_level=None,
             )
             self._conn.row_factory = sqlite3.Row
+            # Incremental auto-vacuum must be enabled before tables are created
+            # for new DBs. For existing DBs this setting only becomes effective
+            # after a full VACUUM rebuild; do not run that expensive exclusive
+            # rewrite here during normal startup.
+            self._conn.execute("PRAGMA auto_vacuum=INCREMENTAL")
             apply_wal_with_fallback(self._conn, db_label="state.db")
             self._conn.execute("PRAGMA foreign_keys=ON")
 
@@ -2307,6 +2313,69 @@ class SessionDB:
             self._remove_session_files(sessions_dir, session_id)
         return deleted
 
+    def _zombie_reap_cutoffs(self, grace_days: int, inactive_days: int) -> tuple[float, float]:
+        now = time.time()
+        grace_cutoff = now - (max(0, int(grace_days)) * 86400)
+        inactive_cutoff = now - (max(0, int(inactive_days)) * 86400)
+        return grace_cutoff, inactive_cutoff
+
+    def _zombie_reap_candidate_count(self, conn: sqlite3.Connection, grace_days: int, inactive_days: int) -> int:
+        grace_cutoff, inactive_cutoff = self._zombie_reap_cutoffs(grace_days, inactive_days)
+        row = conn.execute(
+            """
+            SELECT COUNT(*)
+            FROM sessions s
+            WHERE s.ended_at IS NULL
+              AND s.started_at < ?
+              AND COALESCE(
+                    (SELECT MAX(m.timestamp) FROM messages m WHERE m.session_id = s.id),
+                    s.started_at
+                  ) < ?
+            """,
+            (grace_cutoff, inactive_cutoff),
+        ).fetchone()
+        return int(row[0] if row is not None else 0)
+
+    def count_zombie_sessions_to_reap(self, grace_days: int = 7, inactive_days: int = 7) -> int:
+        """Return how many zombie sessions would be reaped without writing."""
+        with self._lock:
+            return self._zombie_reap_candidate_count(self._conn, grace_days, inactive_days)
+
+    def reap_zombie_sessions(self, grace_days: int = 7, inactive_days: int = 7) -> int:
+        """Close old sessions stranded with ``ended_at IS NULL``.
+
+        ``prune_sessions`` only deletes ended rows, so crash/kill paths that
+        leave a session open forever also make that row permanently
+        unprunable.  A session is eligible only when both the start time is
+        outside the grace window and the last activity (max message timestamp,
+        or started_at when it has no messages) is outside the inactivity
+        window.  The end timestamp is the same last-activity value, preserving
+        historical ordering while marking the row prunable later.
+        """
+        grace_cutoff, inactive_cutoff = self._zombie_reap_cutoffs(grace_days, inactive_days)
+
+        def _do(conn: sqlite3.Connection) -> int:
+            cursor = conn.execute(
+                """
+                UPDATE sessions
+                   SET ended_at = COALESCE(
+                           (SELECT MAX(m.timestamp) FROM messages m WHERE m.session_id = sessions.id),
+                           started_at
+                       ),
+                       end_reason = 'reaped-zombie'
+                 WHERE ended_at IS NULL
+                   AND started_at < ?
+                   AND COALESCE(
+                         (SELECT MAX(m2.timestamp) FROM messages m2 WHERE m2.session_id = sessions.id),
+                         started_at
+                       ) < ?
+                """,
+                (grace_cutoff, inactive_cutoff),
+            )
+            return int(cursor.rowcount if cursor.rowcount is not None else 0)
+
+        return self._execute_write(_do)
+
     def prune_sessions(
         self,
         older_than_days: int = 90,
@@ -2791,6 +2860,25 @@ class SessionDB:
                 pass
             self._conn.execute("VACUUM")
 
+    def run_db_maintenance(self) -> List[str]:
+        """Run low-impact state.db maintenance in a fixed, auditable order.
+
+        ``PRAGMA auto_vacuum=INCREMENTAL`` is configured at DB init, but for
+        pre-existing databases SQLite only honors it after an operator-run full
+        ``VACUUM`` rebuild. This routine intentionally does not perform that
+        exclusive rewrite; it only checkpoints WAL, lets SQLite optimize planner
+        stats, and reclaims pages incrementally when available.
+        """
+        steps = [
+            "PRAGMA wal_checkpoint(TRUNCATE)",
+            "PRAGMA optimize",
+            "PRAGMA incremental_vacuum",
+        ]
+        with self._lock:
+            for statement in steps:
+                self._conn.execute(statement)
+        return steps
+
     def maybe_auto_prune_and_vacuum(
         self,
         retention_days: int = 90,
@@ -2813,11 +2901,17 @@ class SessionDB:
 
         Returns a dict with keys:
           - ``"skipped"`` (bool) — true if within min_interval_hours of last run
+          - ``"reaped_zombies"`` (int) — number of zombie sessions closed before prune
           - ``"pruned"`` (int)   — number of sessions deleted
           - ``"vacuumed"`` (bool) — true if VACUUM ran
           - ``"error"`` (str, optional) — present only on failure
         """
-        result: Dict[str, Any] = {"skipped": False, "pruned": 0, "vacuumed": False}
+        result: Dict[str, Any] = {
+            "skipped": False,
+            "reaped_zombies": 0,
+            "pruned": 0,
+            "vacuumed": False,
+        }
         try:
             # Skip if another process/call did maintenance recently.
             last_raw = self.get_meta("last_auto_prune")
@@ -2830,6 +2924,12 @@ class SessionDB:
                         return result
                 except (TypeError, ValueError):
                     pass  # corrupt meta; treat as no prior run
+
+            reaped_zombies = self.reap_zombie_sessions(
+                grace_days=retention_days,
+                inactive_days=retention_days,
+            )
+            result["reaped_zombies"] = reaped_zombies
 
             pruned = self.prune_sessions(
                 older_than_days=retention_days,
@@ -2964,3 +3064,61 @@ class SessionDB:
             )
         self._execute_write(_do)
 
+
+def main(argv: Optional[List[str]] = None) -> int:
+    """Small maintenance CLI for direct state.db operations."""
+    parser = argparse.ArgumentParser(description="Hermes state.db maintenance")
+    subparsers = parser.add_subparsers(dest="command", required=True)
+
+    reap = subparsers.add_parser(
+        "reap-zombies",
+        help="Close old ended_at-NULL zombie sessions so later pruning can remove them",
+    )
+    reap.add_argument("--db-path", type=Path, default=DEFAULT_DB_PATH)
+    reap.add_argument("--grace-days", type=int, default=7)
+    reap.add_argument("--inactive-days", type=int, default=7)
+    reap.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Report how many zombie sessions would be reaped without writing",
+    )
+
+    db_maintenance = subparsers.add_parser(
+        "db-maintenance",
+        help="Run WAL checkpoint, PRAGMA optimize, and incremental vacuum for state.db",
+    )
+    db_maintenance.add_argument("--db-path", type=Path, default=DEFAULT_DB_PATH)
+
+    args = parser.parse_args(argv)
+    if args.command == "reap-zombies":
+        db = SessionDB(db_path=args.db_path)
+        try:
+            if args.dry_run:
+                count = db.count_zombie_sessions_to_reap(
+                    grace_days=args.grace_days,
+                    inactive_days=args.inactive_days,
+                )
+                print(f"would reap {count} zombie session(s)")
+            else:
+                count = db.reap_zombie_sessions(
+                    grace_days=args.grace_days,
+                    inactive_days=args.inactive_days,
+                )
+                print(f"reaped {count} zombie session(s)")
+        finally:
+            db.close()
+        return 0
+    if args.command == "db-maintenance":
+        db = SessionDB(db_path=args.db_path)
+        try:
+            steps = db.run_db_maintenance()
+            print("db-maintenance complete: " + " -> ".join(steps))
+        finally:
+            db.close()
+        return 0
+    parser.error(f"unknown command: {args.command}")
+    return 2
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -4,8 +4,9 @@ Implements ``isas/P2-peer-review.md`` + ``module-specs/peer-review-orchestrator.
 
 When a Codex session transitions to ``phase: verify``, the dispatcher calls
 :meth:`PeerReviewOrchestrator.review` which acquires a warm tmux pane running
-interactive ``claude``, injects a review prompt via ``send-keys``, polls
-``capture-pane`` for a ``VERDICT:`` sentinel, and returns a structured verdict.
+interactive ``claude``, injects a review prompt via ``send-keys``, waits for
+the reviewer to write a verdict JSON file via the Write tool, and returns a
+structured verdict.
 
 Design principle: lineage diversity. Opus 4.7 reading a Codex-produced diff
 catches what Codex missed during write. Invocation is exclusively interactive
@@ -22,13 +23,14 @@ import asyncio
 import fcntl
 import json
 import logging
-import re
 import subprocess
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Literal, Optional
+
+from agent.role_defaults import REVIEWER_MODEL
 
 log = logging.getLogger(__name__)
 
@@ -43,14 +45,6 @@ _DEFAULT_IDLE_THRESHOLD_SEC = 15
 _DEFAULT_PANE_RECYCLE_AFTER = 50
 _DIFF_SUMMARY_THRESHOLD = 20480
 _STARTUP_DIALOG_TIMEOUT_SEC = 120
-_VERDICT_PATTERN = re.compile(
-    r"[*#\s]*VERDICT:\s+(APPROVE|REVISE|ESCALATE)\b",
-    re.MULTILINE,
-)
-_FUZZY_VERDICT_PATTERN = re.compile(
-    r"[*#\s]*VERDIC?T:\s+(APPROOVE|APROVE|APPROVE|REWISE|REVIESE|REVISE|ESCAATE|ESCALATE|ESCALAT)\b",
-    re.MULTILINE | re.IGNORECASE,
-)
 
 
 # ── Public types ─────────────────────────────────────────────────────────────
@@ -227,8 +221,24 @@ class PeerReviewOrchestrator:
         if kill.returncode == 0:
             log.debug("peer_review._spawn_pane: killed pre-existing %s", pane_id)
 
+        # Pre-approve the tools the reviewer needs and the directory the
+        # prompt + verdict files live in. Without these flags Claude Code
+        # v2.1.150+ blocks the Read/Write tools by default and the pane
+        # has to ask the operator — there is no operator on a headless
+        # reviewer pane, so the review just stalls. Write is needed so
+        # the reviewer can create the verdict JSON file for the orchestrator.
+        #
+        # Why not ``--dangerously-skip-permissions``: it triggers a
+        # "Bypass Permissions" confirmation dialog whose default
+        # selection is "No, exit". Our generic dialog_clear blindly
+        # presses Enter on that dialog and kills the pane. Discovered
+        # the hard way 2026-05-26.
         spawn = self._tmux(
-            "new-session", "-d", "-s", pane_id, "claude",
+            "new-session", "-d", "-s", pane_id,
+            "claude",
+            "--model", REVIEWER_MODEL,
+            "--allowed-tools", "Read,Bash,Write",
+            "--add-dir", "/tmp",
             check=False,
         )
         if spawn.returncode != 0:
@@ -314,13 +324,16 @@ class PeerReviewOrchestrator:
         start: float,
     ) -> Verdict:
         prompt_path = Path(f"/tmp/review-{session_id}.md")
+        verdict_path = Path(f"/tmp/review-{session_id}.verdict.json")
+        # Clear any stale verdict file from a previous run.
+        verdict_path.unlink(missing_ok=True)
         try:
             isa_text = isa_path.read_text(encoding="utf-8") if isa_path.exists() else ""
         except OSError as exc:
             isa_text = f"<could not read ISA: {exc}>"
         diff_payload, _ = self._maybe_summarize_diff(diff)
         prompt_path.write_text(
-            self._render_prompt(isa_path, isa_text, diff_payload),
+            self._render_prompt(isa_path, isa_text, diff_payload, verdict_path),
             encoding="utf-8",
         )
 
@@ -329,6 +342,7 @@ class PeerReviewOrchestrator:
         if self._tmux("has-session", "-t", pane.pane_id, check=False).returncode != 0:
             pane.state = "DEAD"
             self._cleanup_prompt(prompt_path)
+            self._cleanup_prompt(verdict_path)
             return Verdict(
                 kind="ESCALATE",
                 rationale=f"pane {pane.pane_id} dead before dispatch",
@@ -338,32 +352,47 @@ class PeerReviewOrchestrator:
                 pane_id=pane.pane_id,
             )
 
+        # Instruct the reviewer to read the prompt and write the verdict JSON
+        # file. The file handoff approach avoids screen-scraping pane captures
+        # entirely — the orchestrator simply polls for the file to appear.
         invocation = (
-            f"Review the diff and ISA at {prompt_path} and reply with "
-            f"VERDICT: APPROVE | REVISE | ESCALATE followed by the rationale."
+            f"Read the review document at {prompt_path}. "
+            f"Follow the instructions in that document and use the Write tool "
+            f"to create the verdict file at {verdict_path}."
         )
-        self._tmux("send-keys", "-t", pane.pane_id, invocation, "Enter", check=False)
+        # Claude Code v2.1.150 TUI swallows ``send-keys <text> Enter`` when
+        # both are passed in a single call (the text lands in the input box
+        # but Enter doesn't submit). Send Enter as a separate keystroke
+        # with a small settle delay. Matches the working pattern from the
+        # ``Tmux wake Claude TUI queen`` memory.
+        self._tmux("send-keys", "-t", pane.pane_id, invocation, check=False)
+        await self._sleep(0.5)
+        self._tmux("send-keys", "-t", pane.pane_id, "Enter", check=False)
 
-        verdict = await self._poll_for_verdict(
-            pane=pane,
-            session_id=session_id,
-            state=state,
-            start=start,
-        )
-        self._cleanup_prompt(prompt_path)
+        try:
+            verdict = await self._poll_for_verdict_file(
+                pane=pane,
+                verdict_path=verdict_path,
+                session_id=session_id,
+                state=state,
+                start=start,
+            )
+        finally:
+            self._cleanup_prompt(prompt_path)
+            self._cleanup_prompt(verdict_path)
         return verdict
 
-    async def _poll_for_verdict(
+    async def _poll_for_verdict_file(
         self,
         *,
         pane: _Pane,
+        verdict_path: Path,
         session_id: str,
         state: _ReviewState,
         start: float,
     ) -> Verdict:
+        """Poll for the verdict JSON file the reviewer writes via the Write tool."""
         deadline = time.monotonic() + self._review_timeout_sec
-        sentinel_ts: Optional[float] = None
-        last_capture = ""
         while time.monotonic() < deadline:
             await self._sleep(5)
             check = self._tmux("has-session", "-t", pane.pane_id, check=False)
@@ -373,78 +402,96 @@ class PeerReviewOrchestrator:
                     kind="ESCALATE",
                     rationale=f"pane {pane.pane_id} died mid-review",
                     iteration=state.iterations,
-                    raw_capture=last_capture,
+                    raw_capture="",
                     duration_sec=time.monotonic() - start,
                     pane_id=pane.pane_id,
                 )
-            cap = self._tmux("capture-pane", "-p", "-t", pane.pane_id, check=False)
-            text = cap.stdout or ""
-            if text != last_capture:
-                last_capture = text
-                if _VERDICT_PATTERN.search(text):
-                    sentinel_ts = time.monotonic()
-            elif sentinel_ts is not None:
-                if time.monotonic() - sentinel_ts >= self._idle_threshold_sec:
-                    return self._parse_verdict(
-                        capture=text,
-                        pane=pane,
-                        state=state,
-                        start=start,
-                    )
+            if verdict_path.exists():
+                result = self._read_verdict_file(verdict_path, pane, state, start)
+                if result is not None:
+                    return result
+                # File exists but not yet valid JSON — mid-write, keep polling.
         return Verdict(
             kind="ESCALATE",
-            rationale="review timeout",
+            rationale="review timeout (no verdict file)",
             iteration=state.iterations,
-            raw_capture=last_capture,
+            raw_capture="",
             duration_sec=time.monotonic() - start,
             pane_id=pane.pane_id,
         )
 
-    def _parse_verdict(
+    def _read_verdict_file(
         self,
-        *,
-        capture: str,
+        verdict_path: Path,
         pane: _Pane,
         state: _ReviewState,
         start: float,
-    ) -> Verdict:
-        matches = list(_VERDICT_PATTERN.finditer(capture))
-        if matches:
-            last = matches[-1]
-            kind = last.group(1).upper()
+    ) -> Optional[Verdict]:
+        """Parse the verdict JSON file written by the reviewer.
+
+        Returns None if the file is empty, unreadable, or not yet valid JSON
+        (mid-write) so the caller can keep polling.
+        """
+        try:
+            raw = verdict_path.read_text(encoding="utf-8")
+        except OSError:
+            return None
+        if not raw.strip():
+            return None
+        try:
+            data = json.loads(raw)
+        except json.JSONDecodeError:
+            return None
+        kind = str(data.get("verdict", "")).strip().upper()
+        if kind not in {"APPROVE", "REVISE", "ESCALATE"}:
+            return Verdict(
+                kind="ESCALATE",
+                rationale=f"verdict file contained unrecognised verdict value: {data.get('verdict')!r}",
+                iteration=state.iterations,
+                raw_capture=raw,
+                duration_sec=time.monotonic() - start,
+                pane_id=pane.pane_id,
+            )
+        summary = str(data.get("summary", "")).strip()
+        comments = data.get("comments", [])
+        if isinstance(comments, list) and comments:
+            bullet_lines = "\n".join(f"- {c}" for c in comments)
+            rationale = f"{summary}\n{bullet_lines}".strip() if summary else bullet_lines
         else:
-            fuzzy = list(_FUZZY_VERDICT_PATTERN.finditer(capture))
-            if not fuzzy:
-                return Verdict(
-                    kind="ESCALATE",
-                    rationale="no VERDICT sentinel in capture",
-                    iteration=state.iterations,
-                    raw_capture=capture,
-                    duration_sec=time.monotonic() - start,
-                    pane_id=pane.pane_id,
-                )
-            kind = _canonicalize_fuzzy_verdict(fuzzy[-1].group(1))
-            last = fuzzy[-1]
-        rationale = capture[last.end():].strip()
+            rationale = summary
         return Verdict(
             kind=kind,  # type: ignore[arg-type]
             rationale=rationale,
             iteration=state.iterations,
-            raw_capture=capture,
+            raw_capture=raw,
             duration_sec=time.monotonic() - start,
             pane_id=pane.pane_id,
         )
 
     # ── prompt assembly ─────────────────────────────────────────────────
 
-    def _render_prompt(self, isa_path: Path, isa_text: str, diff_payload: str) -> str:
+    def _render_prompt(
+        self, isa_path: Path, isa_text: str, diff_payload: str, verdict_path: Path
+    ) -> str:
         return (
-            f"You are reviewing diff produced by a Codex session for ISA at {isa_path}.\n"
-            f"Lineage: Codex wrote the code; you (Opus 4.7) are checking what Codex missed.\n\n"
-            f"ISA:\n{isa_text}\n\n"
-            f"Diff:\n{diff_payload}\n\n"
-            f"Reply with exactly one line starting with VERDICT: APPROVE | REVISE | ESCALATE\n"
-            f"followed by the rationale on subsequent lines.\n"
+            f"You are reviewing the diff produced by a Codex session for the ISA at {isa_path}.\n"
+            f"Lineage: GPT-5.5 (via the openai-codex backend) wrote the code in a per-thread\n"
+            f"worktree; you are the auto-reviewer checking what the implementer missed.\n\n"
+            f"## ISA\n\n{isa_text}\n\n"
+            f"## Diff\n\n```diff\n{diff_payload}\n```\n\n"
+            f"## How to deliver your verdict\n\n"
+            f"Use the Write tool to create the file at `{verdict_path}` containing exactly this "
+            f"JSON shape (no extra keys, no trailing text):\n\n"
+            f'{{"verdict": "APPROVE" | "REVISE" | "ESCALATE", "summary": "<one line>", '
+            f'"comments": ["<issue>", ...]}}\n\n'
+            f"Write ONLY that file — do NOT print the verdict in chat. "
+            f"The orchestrator reads the file to parse your decision.\n\n"
+            f"- **APPROVE**: the diff matches the ISA's stated goals + ISCs, has no obvious "
+            f"correctness/security regressions, and is mergeable as-is.\n"
+            f"- **REVISE**: there are addressable issues. List each one in the `comments` array "
+            f"so the implementer can fix and re-submit.\n"
+            f"- **ESCALATE**: the diff has fundamental problems or scope drift that need "
+            f"human triage. Explain why in `summary` and `comments`.\n"
         )
 
     def _maybe_summarize_diff(self, diff: str) -> tuple[str, bool]:
@@ -581,16 +628,3 @@ class PeerReviewOrchestrator:
         # ("cap is on Opus pane time, not on APPROVE outcomes" — see ISA).
         self._persist_session_state(session_id, state, verdict)
         return verdict
-
-
-# ── module helpers ───────────────────────────────────────────────────────
-
-
-def _canonicalize_fuzzy_verdict(raw: str) -> str:
-    """Map edit-distance-1 misspellings back to the three canonical verdicts."""
-    upper = raw.upper()
-    if upper.startswith("APP") or upper.startswith("APR"):
-        return "APPROVE"
-    if upper.startswith("REV") or upper.startswith("REW"):
-        return "REVISE"
-    return "ESCALATE"

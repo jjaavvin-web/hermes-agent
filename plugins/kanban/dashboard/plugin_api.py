@@ -1417,6 +1417,9 @@ class CreateBoardBody(BaseModel):
     description: Optional[str] = None
     icon: Optional[str] = None
     color: Optional[str] = None
+    repo_root: Optional[str] = None
+    base_branch: Optional[str] = None
+    vcs_kind: str = "git"
     switch: bool = False
 
 
@@ -1467,6 +1470,9 @@ def create_board_endpoint(payload: CreateBoardBody):
             description=payload.description,
             icon=payload.icon,
             color=payload.color,
+            repo_root=payload.repo_root,
+            base_branch=payload.base_branch,
+            vcs_kind=payload.vcs_kind,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))

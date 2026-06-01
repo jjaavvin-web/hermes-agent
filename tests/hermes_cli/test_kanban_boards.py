@@ -424,6 +424,15 @@ def _cli(args: list[str], env_extra: dict | None = None) -> subprocess.Completed
 
 
 class TestCLI:
+    def _init_repo(self, tmp_path: Path) -> Path:
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        subprocess.run(["git", "init"], cwd=repo, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        return repo
+
+    def _create_board_args(self, slug: str, repo: Path) -> list[str]:
+        return ["boards", "create", slug, "--repo-root", str(repo), "--base-branch", "main"]
+
     def test_boards_list_default_only(self, tmp_path):
         env = {"HERMES_HOME": str(tmp_path)}
         res = _cli(["boards", "list", "--json"], env_extra=env)
@@ -434,9 +443,10 @@ class TestCLI:
         assert data[0]["is_current"] is True
 
     def test_boards_create_and_switch(self, tmp_path):
-        env = {"HERMES_HOME": str(tmp_path)}
+        env = {"HERMES_HOME": str(tmp_path / "home")}
+        repo = self._init_repo(tmp_path)
         r1 = _cli(
-            ["boards", "create", "myproj", "--name", "My Project", "--switch"],
+            self._create_board_args("myproj", repo) + ["--name", "My Project", "--switch"],
             env_extra=env,
         )
         assert r1.returncode == 0, r1.stderr
@@ -449,9 +459,10 @@ class TestCLI:
         assert cur["slug"] == "myproj"
 
     def test_per_board_task_isolation_via_cli(self, tmp_path):
-        env = {"HERMES_HOME": str(tmp_path)}
-        assert _cli(["boards", "create", "projA"], env_extra=env).returncode == 0
-        assert _cli(["boards", "create", "projB"], env_extra=env).returncode == 0
+        env = {"HERMES_HOME": str(tmp_path / "home")}
+        repo = self._init_repo(tmp_path)
+        assert _cli(self._create_board_args("projA", repo), env_extra=env).returncode == 0
+        assert _cli(self._create_board_args("projB", repo), env_extra=env).returncode == 0
 
         # Create one task on each via --board.
         r = _cli(["--board", "projA", "create", "Task A", "--assignee", "dev"], env_extra=env)
@@ -481,8 +492,9 @@ class TestCLI:
         assert "does not exist" in r.stderr
 
     def test_boards_rm_archives(self, tmp_path):
-        env = {"HERMES_HOME": str(tmp_path)}
-        _cli(["boards", "create", "rmme"], env_extra=env)
+        env = {"HERMES_HOME": str(tmp_path / "home")}
+        repo = self._init_repo(tmp_path)
+        _cli(self._create_board_args("rmme", repo), env_extra=env)
         r = _cli(["boards", "rm", "rmme"], env_extra=env)
         assert r.returncode == 0, r.stderr
         assert "archived" in r.stdout

@@ -40,6 +40,7 @@ log = logging.getLogger(__name__)
 # ``gh pr list`` should be quick (<5 s in practice).  Cap defensively
 # so a hung call cannot stall the gc loop.
 _GH_TIMEOUT_SEC = 30
+_ACTIVE_SESSION_STATES = {"CLAIMED", "EXECUTING", "REVIEWING", "MERGING", "PAUSED"}
 
 
 def _gh_list_open_branches() -> set[str]:
@@ -101,12 +102,14 @@ class CodexGcWatcher:
         poll_interval_sec: float = 3600.0,
         reap_max_age_days: int = 7,
         gh_list_open_branches: Callable[[], set[str]] | None = None,
+        dry_run: bool = False,
     ) -> None:
         self._dispatcher = dispatcher
         self._broker = worktree_broker
         self._poll_interval = poll_interval_sec
         self._reap_max_age_days = reap_max_age_days
         self._gh_list_open_branches = gh_list_open_branches or _gh_list_open_branches
+        self._dry_run = dry_run
         self._task: Optional[asyncio.Task] = None
         self._stop_event: Optional[asyncio.Event] = None
 
@@ -159,6 +162,9 @@ class CodexGcWatcher:
         state = self._dispatcher._load_state()
         tracked_sids: set[str] = set()
         for row in state.get("sessions", {}).values():
+            state_name = str(row.get("state") or "").upper()
+            if state_name not in _ACTIVE_SESSION_STATES:
+                continue
             sid = row.get("session_id")
             if sid:
                 tracked_sids.add(sid)
@@ -176,10 +182,13 @@ class CodexGcWatcher:
             live_branches = set()
 
         try:
-            actions = self._broker.gc(
-                tracked_sids=tracked_sids,
-                live_branches=live_branches,
-            )
+            gc_kwargs: dict[str, Any] = {
+                "tracked_sids": tracked_sids,
+                "live_branches": live_branches,
+            }
+            if self._dry_run:
+                gc_kwargs["dry_run"] = True
+            actions = self._broker.gc(**gc_kwargs)
             if actions:
                 log.info(
                     "CodexGcWatcher: gc renamed %d orphan(s) to .deleted-<ts>",
@@ -187,6 +196,10 @@ class CodexGcWatcher:
                 )
         except Exception as exc:
             log.warning("CodexGcWatcher: broker.gc failed: %s", exc)
+
+        if self._dry_run:
+            log.info("CodexGcWatcher: dry-run enabled; skipping reap_deleted")
+            return
 
         try:
             purged = self._broker.reap_deleted(max_age_days=self._reap_max_age_days)

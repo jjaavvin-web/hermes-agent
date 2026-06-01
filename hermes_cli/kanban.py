@@ -125,9 +125,9 @@ def _check_dispatcher_presence() -> tuple[bool, str]:
     try:
         from hermes_cli.config import load_config
         cfg = load_config()
-        dispatch_on = bool(cfg.get("kanban", {}).get("dispatch_in_gateway", True))
+        dispatch_on = bool(cfg.get("kanban", {}).get("dispatch_in_gateway", False))
     except Exception:
-        dispatch_on = True  # can't tell — assume default
+        dispatch_on = False  # can't tell — assume fail-safe default (off)
 
     if pid and dispatch_on:
         return (True, f"gateway pid={pid}, dispatch enabled")
@@ -227,6 +227,12 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
                           help="Optional emoji or single-character icon for the dashboard")
     b_create.add_argument("--color", default=None,
                           help="Optional hex color (e.g. '#8b5cf6') for the dashboard")
+    b_create.add_argument("--repo-root", default=None,
+                          help="Optional git checkout root for this board's isolated workspaces")
+    b_create.add_argument("--base-branch", default=None,
+                          help="Optional git base branch/ref used for managed worktree tasks")
+    b_create.add_argument("--vcs-kind", default="git", choices=["git"],
+                          help="Version-control backend for repo-root (currently: git)")
     b_create.add_argument("--switch", action="store_true",
                           help="Switch to the new board after creating it")
 
@@ -864,12 +870,22 @@ def _cmd_boards_create(args: argparse.Namespace) -> int:
         print("kanban boards create: slug is required", file=sys.stderr)
         return 2
     already = kb.board_exists(normed) and normed != kb.DEFAULT_BOARD
+    if not already and (not getattr(args, "repo_root", None) or not getattr(args, "base_branch", None)):
+        print(
+            "kanban boards create: --repo-root and --base-branch are required "
+            "for new isolated boards",
+            file=sys.stderr,
+        )
+        return 2
     meta = kb.create_board(
         normed,
         name=args.name,
         description=args.description,
         icon=args.icon,
         color=args.color,
+        repo_root=args.repo_root,
+        base_branch=args.base_branch,
+        vcs_kind=getattr(args, "vcs_kind", "git"),
     )
     verb = "already exists" if already else "created"
     print(f"Board {meta['slug']!r} {verb}.")
@@ -1751,7 +1767,7 @@ def _cmd_daemon(args: argparse.Namespace) -> int:
             "(default: every 60 seconds). Configure via config.yaml:\n"
             "\n"
             "    kanban:\n"
-            "      dispatch_in_gateway: true      # default\n"
+            "      dispatch_in_gateway: false     # default (opt-in)\n"
             "      dispatch_interval_seconds: 60\n"
             "      failure_limit: 2              # consecutive non-success attempts before auto-block\n"
             "\n"
@@ -1780,7 +1796,7 @@ def _cmd_daemon(args: argparse.Namespace) -> int:
         f"Kanban dispatcher running STANDALONE via --force "
         f"(interval={args.interval}s, pid={os.getpid()}). "
         f"Ctrl-C to stop. NOTE: if a gateway is also running with "
-        f"dispatch_in_gateway=true (default), you have two dispatchers "
+        f"dispatch_in_gateway=true, you have two dispatchers "
         f"racing for claims.",
         file=sys.stderr,
     )
