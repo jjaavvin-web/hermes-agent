@@ -168,6 +168,11 @@ def _cmd_subscribe(args):
     if args.deliver_chat_id:
         route["deliver_extra"] = {"chat_id": args.deliver_chat_id}
 
+    if getattr(args, "worktree_branch", None):
+        route["worktree_branch"] = args.worktree_branch
+    if getattr(args, "worktree_base", None):
+        route["worktree_base"] = args.worktree_base
+
     subs[name] = route
     _save_subscriptions(subs)
 

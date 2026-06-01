@@ -31,9 +31,11 @@ import hashlib
 import hmac
 import json
 import logging
+import os
 import re
 import subprocess
 import time
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 try:
@@ -130,6 +132,19 @@ class WebhookAdapter(BasePlatformAdapter):
         self._max_body_bytes: int = int(
             config.extra.get("max_body_bytes", 1_048_576)
         )  # 1MB
+
+        # Phase 3: bind relayed (Platform.WEBHOOK) agent runs to a dedicated git
+        # worktree so an orchestrator's "hands" work on a branch, not the live
+        # tree. Gated OFF by default; rollback = unset HERMES_WEBHOOK_WORKTREE.
+        self._wt_enabled: bool = os.environ.get(
+            "HERMES_WEBHOOK_WORKTREE", ""
+        ).strip().lower() in ("1", "true", "yes")
+        self._wt_base_branch: str = (
+            os.environ.get("HERMES_WEBHOOK_BASE_BRANCH", "").strip() or "fork/main"
+        )
+        self._wt_branch: str = "relay/work"
+        self._wt_paths: Dict[str, str] = {}       # route_name -> worktree path
+        self._wt_init_failed: Dict[str, bool] = {}  # route_name -> latched failure
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -321,6 +336,69 @@ class WebhookAdapter(BasePlatformAdapter):
             )
         except Exception as e:
             logger.error("[webhook] Failed to reload dynamic routes: %s", e)
+
+    def _ensure_relay_worktree(self, route_name: str, route_config: dict) -> Optional[str]:
+        """Lazily create (or reuse) the persistent route git worktree.
+
+        Returns the absolute path, or None if it cannot be guaranteed — in
+        which case the caller MUST refuse the run rather than fall through to
+        the gateway's live cwd. gc-immune: lives OUTSIDE ~/.hermes/codex-wt/ so
+        CodexGcWatcher never scans it; uses no port (no codex pool contention).
+        """
+        cached_path = self._wt_paths.get(route_name)
+        if cached_path is not None and Path(cached_path).is_dir():
+            return cached_path
+        if self._wt_init_failed.get(route_name, False):
+            return None
+        try:
+            from hermes_constants import get_hermes_home
+            hermes_home = Path(get_hermes_home())
+            repo_root = os.environ.get(
+                "HERMES_REPO_ROOT", str(Path(__file__).resolve().parents[2])
+            )
+            branch = route_config.get("worktree_branch") or self._wt_branch
+            base = route_config.get("worktree_base") or self._wt_base_branch
+            wt_dir = (
+                Path(route_config["worktree_dir"])
+                if route_config.get("worktree_dir")
+                else hermes_home / "relay-wt" / route_name
+            )
+            if wt_dir.is_dir():
+                self._wt_paths[route_name] = str(wt_dir)
+                return self._wt_paths[route_name]
+            wt_dir.parent.mkdir(parents=True, exist_ok=True)
+            # Idempotent: re-attach to the branch if it already exists from a prior boot.
+            ref_check = subprocess.run(
+                ["git", "-C", repo_root, "rev-parse", "--verify", "--quiet",
+                 f"refs/heads/{branch}"],
+                capture_output=True, text=True,
+            )
+            add_cmd = ["git", "-C", repo_root, "worktree", "add", str(wt_dir)]
+            if ref_check.returncode == 0:
+                add_cmd.append(branch)
+            else:
+                add_cmd += ["-b", branch, base]
+            res = subprocess.run(add_cmd, capture_output=True, text=True)
+            if res.returncode != 0 or not wt_dir.is_dir():
+                logger.error(
+                    "[webhook] relay worktree add failed rc=%s: %s",
+                    res.returncode, (res.stderr or "").strip(),
+                )
+                self._wt_init_failed[route_name] = True
+                return None
+            self._wt_paths[route_name] = str(wt_dir)
+            logger.info(
+                "[webhook] relay worktree ready for route %s at %s on branch %s (base %s)",
+                route_name, self._wt_paths[route_name], branch, base,
+            )
+            return self._wt_paths[route_name]
+        except Exception:
+            logger.exception(
+                "[webhook] relay worktree init crashed; refusing write-capable relayed runs route=%s",
+                route_name,
+            )
+            self._wt_init_failed[route_name] = True
+            return None
 
     async def _handle_webhook(self, request: "web.Request") -> "web.Response":
         """POST /webhooks/{route_name} — receive and process a webhook event."""
@@ -567,8 +645,36 @@ class WebhookAdapter(BasePlatformAdapter):
             delivery_id,
         )
 
-        # Non-blocking — return 202 Accepted immediately
-        task = asyncio.create_task(self.handle_message(event))
+        # Non-blocking — return 202 Accepted immediately.
+        # Phase 3: when HERMES_WEBHOOK_WORKTREE is on, bind the run to the relay
+        # git worktree so it works on a branch, not the live tree. If a worktree
+        # can't be guaranteed, REFUSE (503) — NEVER fall through to the live cwd.
+        if self._wt_enabled:
+            _wt_for_run = self._ensure_relay_worktree(route_name, route_config)
+            if _wt_for_run is None:
+                logger.error(
+                    "[webhook] relay worktree unavailable; refusing run route=%s delivery=%s",
+                    route_name, delivery_id,
+                )
+                return web.json_response(
+                    {"status": "error", "error": "worktree_unavailable",
+                     "delivery_id": delivery_id},
+                    status=503,
+                )
+
+            async def _run_bound():
+                from agent.codex_session_context import (
+                    set_active_worktree, reset_active_worktree,
+                )
+                _tok = set_active_worktree(_wt_for_run)
+                try:
+                    await self.handle_message(event)
+                finally:
+                    reset_active_worktree(_tok)
+
+            task = asyncio.create_task(_run_bound())
+        else:
+            task = asyncio.create_task(self.handle_message(event))
         self._background_tasks.add(task)
         task.add_done_callback(self._background_tasks.discard)
 
