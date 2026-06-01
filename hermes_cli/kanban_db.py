@@ -4386,7 +4386,11 @@ def _error_fingerprint(error_text: str) -> str:
     return fp.lower().strip()
 
 
-def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
+def detect_crashed_workers(
+    conn: sqlite3.Connection,
+    *,
+    eligible_claims: Optional[set[tuple[str, Optional[int]]]] = None,
+) -> list[str]:
     """Reclaim ``running`` tasks whose worker PID is no longer alive.
 
     Appends a ``crashed`` event and drops the task back to ``ready``.
@@ -4397,6 +4401,13 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
     are meaningless here. The host-local check is enough because
     ``_default_spawn`` always runs the worker on the same host as the
     dispatcher (the whole design is single-host).
+
+    ``eligible_claims`` is used by ``dispatch_once`` to make a dispatcher
+    tick's maintenance phase a snapshot boundary: crash detection may reclaim
+    workers that were already running when this tick took its pre-maintenance
+    snapshot, but it must not steal a claim that a concurrent dispatcher just
+    created later in the same tick. Direct callers leave it unset and retain
+    the historical immediate liveness check.
 
     When the reap registry shows the worker exited cleanly (rc=0) but
     the task was still ``running`` in the DB, treat it as a protocol
@@ -4423,6 +4434,19 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
             # Only check liveness for claims owned by this host.
             lock = row["claim_lock"] or ""
             if not lock.startswith(host_prefix):
+                continue
+            # A dispatch tick's maintenance phase must not reclaim a task
+            # claimed by another dispatcher after this tick's snapshot. The
+            # claim CAS is atomic, but worker_pid is filled only after spawn_fn
+            # returns; a concurrent tick could otherwise see worker_pid from
+            # the first tick and reset that fresh claim before the first
+            # dispatcher returns, allowing a second claim/spawn of the same
+            # card in the same tick.
+            task_key = (
+                row["id"],
+                int(row["worker_pid"]) if row["worker_pid"] is not None else None,
+            )
+            if eligible_claims is not None and task_key not in eligible_claims:
                 continue
             # Skip liveness check inside the launch-window grace period
             # so a freshly-spawned worker isn't reclaimed before its PID
@@ -4956,8 +4980,31 @@ def dispatch_once(
             pass
 
     result = DispatchResult()
+    # Crash detection inside a dispatcher tick is intentionally limited to
+    # workers that predate a small launch window. ``claim_task`` commits before
+    # ``spawn_fn`` runs, and ``_set_worker_pid`` commits after it returns; a
+    # concurrent dispatcher must not mistake that fresh in-flight spawn for a
+    # dead worker and reset the card back to ready in the same race window.
+    dispatch_crash_grace = max(1.0, _resolve_crash_grace_seconds())
+    crash_scan_cutoff = int(time.time() - dispatch_crash_grace)
+    with write_txn(conn):
+        crash_eligible_claims = {
+            (
+                row["id"],
+                int(row["worker_pid"]) if row["worker_pid"] is not None else None,
+            )
+            for row in conn.execute(
+                "SELECT id, worker_pid FROM tasks "
+                "WHERE status = 'running' AND worker_pid IS NOT NULL "
+                "  AND (started_at IS NULL OR started_at < ?)",
+                (crash_scan_cutoff,),
+            ).fetchall()
+        }
     result.reclaimed = release_stale_claims(conn)
-    result.crashed = detect_crashed_workers(conn)
+    result.crashed = detect_crashed_workers(
+        conn,
+        eligible_claims=crash_eligible_claims,
+    )
     # detect_crashed_workers stashes protocol-violation auto-blocks on
     # itself so the public list-return stays stable. Pull them into the
     # DispatchResult here so telemetry / tests see the trip.
