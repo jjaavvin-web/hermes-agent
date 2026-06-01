@@ -10605,6 +10605,18 @@ def main():
     )
     wh_sub.add_argument("--description", default="", help="What this subscription does")
     wh_sub.add_argument(
+        "--worktree-branch",
+        dest="worktree_branch",
+        default=None,
+        help="Per-route worktree branch (default: relay/work)",
+    )
+    wh_sub.add_argument(
+        "--worktree-base",
+        dest="worktree_base",
+        default=None,
+        help="Per-route worktree base ref (default: fork/main)",
+    )
+    wh_sub.add_argument(
         "--skills", default="", help="Comma-separated skill names to load"
     )
     wh_sub.add_argument(
