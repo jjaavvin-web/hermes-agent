@@ -52,6 +52,14 @@ _SNAPSHOT_TTL = 15.0
 _SNAPSHOT_CACHE: tuple[dict, float] | None = None
 _SNAPSHOT_LOCK = threading.Lock()
 
+_GIT_HEALTH_TTL = 15.0
+_GIT_HEALTH_CACHE: tuple[dict, float] | None = None
+_GIT_HEALTH_LOCK = threading.Lock()
+
+_GIT_GRAPH_TTL = 15.0
+_GIT_GRAPH_CACHE: tuple[dict, float] | None = None
+_GIT_GRAPH_LOCK = threading.Lock()
+
 _KILL_TOKEN = "KILL_CODEX_SESSION"
 _FORCE_MERGE_TOKEN = "FORCE_MERGE_CODEX_SESSION"
 _LOG_TAIL_DEFAULT = 200
@@ -203,8 +211,7 @@ def _collect_diff(worktree_path: str) -> tuple[str, bool]:
 # ── routes ─────────────────────────────────────────────────────────────
 
 
-@router.get("/git-health", summary="Per-session git readiness + recommended next move")
-def git_health() -> dict:
+def _build_git_health() -> dict:
     """Per tracked codex session: uncommitted file count, reviewable diff size
     (3-dot vs fork/main), and a plain-English recommended next move. Powers the
     dashboard Git Health tab."""
@@ -328,8 +335,35 @@ def git_health() -> dict:
             "summary": summary, "rows": rows}
 
 
+@router.get("/git-health", summary="Per-session git readiness + recommended next move")
+def git_health() -> dict:
+    global _GIT_HEALTH_CACHE
+    now = time.monotonic()
+    with _GIT_HEALTH_LOCK:
+        if _GIT_HEALTH_CACHE is not None:
+            value, expires_at = _GIT_HEALTH_CACHE
+            if now < expires_at:
+                return value
+        snap = _build_git_health()
+        _GIT_HEALTH_CACHE = (snap, now + _GIT_HEALTH_TTL)
+        return snap
+
+
 @router.get("/git-graph", summary="Railroad graph: trunk + per-session diverging lanes")
 def git_graph() -> dict:
+    global _GIT_GRAPH_CACHE
+    now = time.monotonic()
+    with _GIT_GRAPH_LOCK:
+        if _GIT_GRAPH_CACHE is not None:
+            value, expires_at = _GIT_GRAPH_CACHE
+            if now < expires_at:
+                return value
+        snap = _build_git_graph()
+        _GIT_GRAPH_CACHE = (snap, now + _GIT_GRAPH_TTL)
+        return snap
+
+
+def _build_git_graph() -> dict:
     """A commit-graph (railroad) view of the repo. Returns the ``fork/main``
     trunk plus one *lane* per tracked unit of work — every codex-session
     worktree that exists on disk, **and** the local checkout where Claude works

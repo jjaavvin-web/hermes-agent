@@ -267,6 +267,129 @@ def test_build_river_empty_repo_degrades_without_raising(monkeypatch, tmp_path):
     assert river["error"] == "no trunk ref found"
 
 
+# ── expensive git endpoint caches ─────────────────────────────────────
+
+
+def test_git_health_reuses_cached_shortstats(monkeypatch, tmp_path):
+    wt = tmp_path / "wt"
+    wt.mkdir()
+    sessions_path = tmp_path / "codex_sessions.json"
+    sessions_path.write_text(
+        json.dumps({
+            "version": 1,
+            "sessions": {
+                "thread-1": _make_row(
+                    "sid-1",
+                    "thread-1",
+                    worktree_path=str(wt),
+                ),
+            },
+        }),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(mod, "_SESSIONS_PATH", sessions_path)
+    monkeypatch.setattr(mod, "_GIT_HEALTH_CACHE", None, raising=False)
+    calls = []
+
+    def fake_run(args, capture_output, text, timeout):
+        calls.append(tuple(args))
+        if args[3:] == ("status", "--porcelain"):
+            return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+        if args[3:] == ("diff", "--shortstat", "fork/main...HEAD"):
+            return subprocess.CompletedProcess(
+                args,
+                0,
+                stdout="1 file changed, 2 insertions(+), 1 deletion(-)\n",
+                stderr="",
+            )
+        if args[3:] == ("rev-list", "--count", "fork/main..HEAD"):
+            return subprocess.CompletedProcess(args, 0, stdout="1\n", stderr="")
+        return subprocess.CompletedProcess(args, 1, stdout="", stderr="unexpected")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    first = mod.git_health()
+    second = mod.git_health()
+
+    assert first == second
+    shortstats = [call for call in calls if call[3:] == ("diff", "--shortstat", "fork/main...HEAD")]
+    assert len(shortstats) == 1
+
+
+def test_git_graph_reuses_cached_lane_shortstats(monkeypatch, tmp_path):
+    repo = tmp_path / "repo"
+    wt = tmp_path / "wt"
+    (repo / "hermes_cli").mkdir(parents=True)
+    wt.mkdir()
+    sessions_path = tmp_path / "codex_sessions.json"
+    sessions_path.write_text(
+        json.dumps({
+            "version": 1,
+            "sessions": {
+                "thread-1": _make_row(
+                    "sid-1",
+                    "thread-1",
+                    worktree_path=str(wt),
+                    isa_slug="sid-one",
+                ),
+            },
+        }),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(mod, "__file__", str(repo / "hermes_cli" / "dashboard_codex_sessions.py"))
+    monkeypatch.setattr(mod, "_SESSIONS_PATH", sessions_path)
+    monkeypatch.setattr(mod, "_GIT_GRAPH_CACHE", None, raising=False)
+    calls = []
+
+    def fake_run(args, capture_output, text, timeout):
+        calls.append(tuple(args))
+        git_args = tuple(args[3:])
+        if git_args == ("rev-parse", "--verify", "main"):
+            return subprocess.CompletedProcess(args, 0, stdout="main\n", stderr="")
+        if git_args[:2] == ("rev-parse", "--verify"):
+            return subprocess.CompletedProcess(args, 1, stdout="", stderr="")
+        if git_args == ("log", "--max-count=6", "--pretty=%h\x1f%s\x1f%cI", "main"):
+            return subprocess.CompletedProcess(
+                args,
+                0,
+                stdout="abc123\x1ftrunk\x1f2026-01-01T00:00:00+00:00\n",
+                stderr="",
+            )
+        if git_args == ("rev-parse", "--short", "main"):
+            return subprocess.CompletedProcess(args, 0, stdout="abc123\n", stderr="")
+        if git_args == ("rev-parse", "--abbrev-ref", "HEAD"):
+            return subprocess.CompletedProcess(args, 0, stdout="feature/test\n", stderr="")
+        if git_args == ("rev-parse", "--short", "HEAD"):
+            return subprocess.CompletedProcess(args, 0, stdout="def456\n", stderr="")
+        if git_args == ("merge-base", "main", "HEAD"):
+            return subprocess.CompletedProcess(args, 0, stdout="abc123456\n", stderr="")
+        if git_args == ("rev-list", "--count", "main..HEAD"):
+            return subprocess.CompletedProcess(args, 0, stdout="1\n", stderr="")
+        if git_args == ("rev-list", "--count", "HEAD..main"):
+            return subprocess.CompletedProcess(args, 0, stdout="0\n", stderr="")
+        if git_args == ("diff", "--shortstat", "main...HEAD"):
+            return subprocess.CompletedProcess(args, 0, stdout="1 file changed, 2 insertions(+)\n", stderr="")
+        if git_args == ("status", "--porcelain"):
+            return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+        if git_args == ("log", "--max-count=6", "--pretty=%h\x1f%s\x1f%cI", "main..HEAD"):
+            return subprocess.CompletedProcess(
+                args,
+                0,
+                stdout="def456\x1fwork\x1f2026-01-01T00:01:00+00:00\n",
+                stderr="",
+            )
+        return subprocess.CompletedProcess(args, 1, stdout="", stderr="unexpected")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    first = mod.git_graph()
+    second = mod.git_graph()
+
+    assert first == second
+    shortstats = [call for call in calls if call[3:] == ("diff", "--shortstat", "main...HEAD")]
+    assert len(shortstats) == 2
+
+
 # ── snapshot ───────────────────────────────────────────────────────────
 
 
