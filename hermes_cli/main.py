@@ -11384,6 +11384,13 @@ def main():
     chat_parser.set_defaults(func=cmd_chat)
 
     # =========================================================================
+    # resume command (ported from fork/main PR #59 — Honcho where-did-we-leave-off)
+    # =========================================================================
+    from hermes_cli.resume import add_parser as add_resume_parser
+
+    add_resume_parser(subparsers)
+
+    # =========================================================================
     # model command
     # =========================================================================
     model_parser = subparsers.add_parser(
