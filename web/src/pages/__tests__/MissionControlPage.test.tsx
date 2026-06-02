@@ -4,7 +4,7 @@ import { MemoryRouter } from "react-router-dom";
 import MissionControlPage from "../MissionControlPage";
 
 vi.mock("../../contexts/usePageHeader", () => ({
-  usePageHeader: () => ({ setPageTitle: vi.fn() }),
+  usePageHeader: () => ({ setTitle: vi.fn() }),
 }));
 
 describe("MissionControlPage", () => {

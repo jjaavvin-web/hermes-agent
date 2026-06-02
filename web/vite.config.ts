@@ -1,3 +1,5 @@
+/// <reference types="vitest/config" />
+
 import { defineConfig, type Plugin } from "vite";
 import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
@@ -92,6 +94,15 @@ export default defineConfig({
   build: {
     outDir: "../hermes_cli/web_dist",
     emptyOutDir: true,
+  },
+  test: {
+    environment: "jsdom",
+    globals: true,
+    setupFiles: ["./src/test-setup.ts"],
+    include: ["src/**/*.test.{ts,tsx}"],
+    fakeTimers: {
+      shouldAdvanceTime: true,
+    },
   },
   server: {
     proxy: {

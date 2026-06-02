@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { render } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { describe, it, expect, vi } from "vitest";

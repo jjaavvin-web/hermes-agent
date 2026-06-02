@@ -86,6 +86,17 @@ const sampleResponse: GraphResponse = {
 
 beforeEach(() => {
   vi.useFakeTimers();
+  Element.prototype.getBoundingClientRect = vi.fn(() => ({
+    x: 0,
+    y: 0,
+    top: 0,
+    left: 0,
+    right: 900,
+    bottom: 520,
+    width: 900,
+    height: 520,
+    toJSON: () => ({}),
+  })) as unknown as typeof Element.prototype.getBoundingClientRect;
   (globalThis as { window?: unknown }).window =
     (globalThis as { window?: unknown }).window ?? {};
 });
@@ -108,7 +119,7 @@ describe("PulseConstellation", () => {
   it("renders one marker per node returned by the API", async () => {
     globalThis.fetch = mockFetch(sampleResponse) as unknown as typeof fetch;
     const { findAllByTestId } = render(<PulseConstellation />);
-    const markers = await findAllByTestId(/^mock-node-/);
+    const markers = await findAllByTestId("pulse-node-marker");
     expect(markers).toHaveLength(2);
   });
 
