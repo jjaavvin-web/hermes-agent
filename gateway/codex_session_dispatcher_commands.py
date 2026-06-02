@@ -53,6 +53,9 @@ class _CommandsMixin:
         event = ThreadEvent(
             thread_id=ctx.thread_id,
             channel_id=ctx.channel_id,
+            kanban_card_id=ctx.options.get("kanban_card_id") or ctx.options.get("card_id"),
+            kanban_board=ctx.options.get("kanban_board") or ctx.options.get("board"),
+            isa_path=isa_path_str or None,
         )
         event.isa_slug = Path(isa_path_str).stem if isa_path_str else "task"  # type: ignore[attr-defined]
 

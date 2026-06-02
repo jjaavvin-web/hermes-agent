@@ -645,6 +645,7 @@ class DiscordAdapter(BasePlatformAdapter):
             from agent.worktree_broker import WorktreeBroker  # noqa: PLC0415
             from gateway.codex_session_dispatcher import (  # noqa: PLC0415
                 CodexSessionDispatcher,
+                _complete_kanban_via_bridge,
             )
         except Exception as exc:
             logger.warning(
@@ -728,7 +729,7 @@ class DiscordAdapter(BasePlatformAdapter):
             peer_review_orchestrator=peer_review,
             merge_broker=merge_broker,
             discord_send=_discord_send,
-            kanban_complete=None,            # wired by operator path
+            kanban_complete=_complete_kanban_via_bridge,
             discord_archive_thread=_discord_archive_thread,
         )
 

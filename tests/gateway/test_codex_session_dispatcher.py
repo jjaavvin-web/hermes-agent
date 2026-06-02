@@ -42,13 +42,20 @@ def _make_dispatcher(tmp_path, *, kanban_complete=None):
     return dispatcher, broker, discord_send
 
 
-def _make_event(thread_id="tid-1", channel_id="ch-1", message_id="msg-1", text="hello"):
+def _make_event(
+    thread_id="tid-1",
+    channel_id="ch-1",
+    message_id="msg-1",
+    text="hello",
+    **kwargs,
+):
     from gateway.codex_session_dispatcher import ThreadEvent
     return ThreadEvent(
         thread_id=thread_id,
         channel_id=channel_id,
         message_id=message_id,
         text=text,
+        **kwargs,
     )
 
 
@@ -128,6 +135,88 @@ class TestOnThreadCreate:
         sent_text = discord_send.await_args[0][1]
         assert "worktree" in sent_text.lower()
         assert "Hermes will process" in sent_text
+
+    def test_create_persists_explicit_kanban_card_id(self, tmp_path):
+        dispatcher, broker, discord_send = _make_dispatcher(tmp_path)
+        event = _make_event(
+            thread_id="thread-card",
+            kanban_card_id="card-9",
+            kanban_board="board-explicit",
+        )
+
+        _run(dispatcher.on_thread_create(event))
+
+        state = json.loads((tmp_path / "codex_sessions.json").read_text())
+        row = state["sessions"]["thread-card"]
+        assert row["kanban_card_id"] == "card-9"
+        assert row["kanban_board"] == "board-explicit"
+
+        isa_text = Path(row["isa_path"]).read_text(encoding="utf-8")
+        assert 'card:     "card-9"' in isa_text
+        assert 'board:    "board-explicit"' in isa_text
+
+    def test_create_persists_kanban_card_id_from_associated_isa(self, tmp_path):
+        isa_path = tmp_path / "work" / "prelinked" / "ISA.md"
+        isa_path.parent.mkdir(parents=True)
+        isa_path.write_text(
+            """---
+isa:      prelinked
+task:     "fixture"
+tier:     E1
+phase:    scaffold
+progress: 0/1
+card:     "card-isa"
+board:    "board-1"
+branch:   b
+hive:     "-"
+owner:    test
+started:  2026-01-01T00:00:00Z
+updated:  2026-01-01T00:00:00Z
+---
+""",
+            encoding="utf-8",
+        )
+        dispatcher, broker, discord_send = _make_dispatcher(tmp_path)
+        event = _make_event(thread_id="thread-isa", isa_path=str(isa_path))
+
+        _run(dispatcher.on_thread_create(event))
+
+        state = json.loads((tmp_path / "codex_sessions.json").read_text())
+        row = state["sessions"]["thread-isa"]
+        assert row["kanban_card_id"] == "card-isa"
+        assert row["kanban_board"] == "board-1"
+
+    def test_create_persists_kanban_card_id_from_thread_linked_isa(self, tmp_path):
+        isa_path = tmp_path / "work" / "thread-linked" / "ISA.md"
+        isa_path.parent.mkdir(parents=True)
+        isa_path.write_text(
+            """---
+isa:      thread-linked
+task:     "fixture"
+tier:     E1
+phase:    scaffold
+progress: 0/1
+card:     "card-thread"
+board:    "board-thread"
+thread:   "thread-linked"
+branch:   b
+hive:     "-"
+owner:    test
+started:  2026-01-01T00:00:00Z
+updated:  2026-01-01T00:00:00Z
+---
+""",
+            encoding="utf-8",
+        )
+        dispatcher, broker, discord_send = _make_dispatcher(tmp_path)
+        event = _make_event(thread_id="thread-linked")
+
+        _run(dispatcher.on_thread_create(event))
+
+        state = json.loads((tmp_path / "codex_sessions.json").read_text())
+        row = state["sessions"]["thread-linked"]
+        assert row["kanban_card_id"] == "card-thread"
+        assert row["kanban_board"] == "board-thread"
 
 
 # ── Tests: on_thread_message ──────────────────────────────────────────────────
@@ -238,6 +327,49 @@ class TestOnThreadArchive:
         kanban.assert_called_once_with("card-42")
         state = json.loads(sessions_path.read_text())
         assert "t1" not in state["sessions"]
+
+    def test_archive_complete_defaults_to_claude_kanban_bridge_seam(self, tmp_path):
+        dispatcher, broker, discord_send = _make_dispatcher(tmp_path)
+        self._create_session(dispatcher, "t1")
+
+        sessions_path = tmp_path / "codex_sessions.json"
+        state = json.loads(sessions_path.read_text())
+        state["sessions"]["t1"]["state"] = "COMPLETE"
+        state["sessions"]["t1"]["kanban_card_id"] = "card-42"
+        state["sessions"]["t1"]["kanban_board"] = "board-42"
+        sessions_path.write_text(json.dumps(state))
+
+        fake_bridge = MagicMock()
+        fake_bridge.run.return_value = 0
+        with patch(
+            "gateway.codex_session_dispatcher._load_claude_kanban_bridge",
+            return_value=fake_bridge,
+        ):
+            _run(dispatcher.on_thread_archive(_make_event(thread_id="t1")))
+
+        fake_bridge.run.assert_called_once_with(
+            "card-42",
+            "board-42",
+            summary="Codex session completed by dispatcher.",
+        )
+        state = json.loads(sessions_path.read_text())
+        assert "t1" not in state["sessions"]
+
+    def test_archive_complete_without_card_skips_default_kanban_bridge(self, tmp_path):
+        dispatcher, broker, discord_send = _make_dispatcher(tmp_path)
+        self._create_session(dispatcher, "t1")
+
+        sessions_path = tmp_path / "codex_sessions.json"
+        state = json.loads(sessions_path.read_text())
+        state["sessions"]["t1"]["state"] = "COMPLETE"
+        state["sessions"]["t1"]["kanban_card_id"] = None
+        sessions_path.write_text(json.dumps(state))
+
+        with patch("gateway.codex_session_dispatcher._load_claude_kanban_bridge") as loader:
+            _run(dispatcher.on_thread_archive(_make_event(thread_id="t1")))
+
+        loader.assert_not_called()
+        broker.release.assert_called_once()
 
     def test_archive_no_row_is_noop(self, tmp_path):
         dispatcher, broker, discord_send = _make_dispatcher(tmp_path)
@@ -483,6 +615,23 @@ class TestSlashCommands:
             resp = _run(dispatcher.slash_command("spawn", ctx))
         assert "spawned" in resp.content.lower()
         broker.allocate.assert_called_once()
+
+    def test_spawn_persists_explicit_kanban_card_id(self, tmp_path):
+        dispatcher, broker, discord_send = _make_dispatcher(tmp_path)
+        ctx = self._make_ctx(
+            tmp_path,
+            thread_id="spawn-card",
+            task="build feature",
+            kanban_card_id="card-spawn",
+            board="board-spawn",
+        )
+
+        resp = _run(dispatcher.slash_command("spawn", ctx))
+
+        assert "spawned" in resp.content.lower()
+        state = json.loads((tmp_path / "codex_sessions.json").read_text())
+        assert state["sessions"]["spawn-card"]["kanban_card_id"] == "card-spawn"
+        assert state["sessions"]["spawn-card"]["kanban_board"] == "board-spawn"
 
     def test_pause_and_resume_cycle(self, tmp_path):
         dispatcher, broker, discord_send = _make_dispatcher(tmp_path)
