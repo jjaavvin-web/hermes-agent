@@ -7,6 +7,7 @@ Slash command sub-handlers delegated to _CommandsMixin (codex_session_dispatcher
 from __future__ import annotations
 
 import fcntl
+import importlib.util
 import json
 import logging
 import os
@@ -26,6 +27,91 @@ CURRENT_VERSION = 1
 
 # _MIGRATIONS: (from_ver, to_ver) → fn. No migrations needed at v1.
 _MIGRATIONS: dict[tuple[int, int], Any] = {}
+_KANBAN_COMPLETION_SUMMARY = "Codex session completed by dispatcher."
+
+
+def _clean_optional_ref(value: Any) -> str | None:
+    """Normalize optional cross-system ids from slash args / ISA fields."""
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text or text == "-":
+        return None
+    return text
+
+
+def _read_isa_frontmatter(path: Path) -> dict[str, str]:
+    """Read the flat YAML-ish ISA frontmatter without importing script modules."""
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except (OSError, UnicodeDecodeError):
+        return {}
+    if not lines or lines[0].strip() != "---":
+        return {}
+    frontmatter: dict[str, str] = {}
+    for line in lines[1:]:
+        if line.strip() == "---":
+            break
+        if ":" not in line:
+            continue
+        key, value = line.split(":", 1)
+        key = key.strip()
+        value = value.strip()
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
+            value = value[1:-1]
+        if key:
+            frontmatter[key] = value
+    return frontmatter
+
+
+def _find_isa_frontmatter_for_thread(
+    hermes_home: Path,
+    thread_id: str,
+) -> tuple[Path, dict[str, str]] | None:
+    """Find an existing ISA whose frontmatter ``thread:`` links this Discord thread."""
+    if not thread_id:
+        return None
+    work_root = hermes_home / "work"
+    if not work_root.is_dir():
+        return None
+    for isa_path in sorted(work_root.glob("*/ISA.md")):
+        frontmatter = _read_isa_frontmatter(isa_path)
+        if str(frontmatter.get("thread", "")).strip() == thread_id:
+            return isa_path, frontmatter
+    return None
+
+
+def _load_claude_kanban_bridge() -> Any:
+    """Load ``scripts/claude_kanban_bridge.py`` from this checkout."""
+    repo_root = Path(__file__).resolve().parents[1]
+    bridge_path = repo_root / "scripts" / "claude_kanban_bridge.py"
+    spec = importlib.util.spec_from_file_location("hermes_claude_kanban_bridge", bridge_path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"could not load claude_kanban_bridge from {bridge_path}")
+    module = importlib.util.module_from_spec(spec)
+    previous_repo_root = os.environ.get("HERMES_REPO_ROOT")
+    os.environ["HERMES_REPO_ROOT"] = str(repo_root)
+    try:
+        spec.loader.exec_module(module)
+    finally:
+        if previous_repo_root is None:
+            os.environ.pop("HERMES_REPO_ROOT", None)
+        else:
+            os.environ["HERMES_REPO_ROOT"] = previous_repo_root
+    return module
+
+
+def _complete_kanban_via_bridge(
+    card_id: str,
+    board: str | None = None,
+    *,
+    summary: str = _KANBAN_COMPLETION_SUMMARY,
+) -> None:
+    """Complete a Kanban card via the ISA-gated claude bridge seam."""
+    bridge = _load_claude_kanban_bridge()
+    rc = bridge.run(card_id, board, summary=summary)
+    if rc != 0:
+        raise RuntimeError(f"claude_kanban_bridge returned exit code {rc} for {card_id}")
 
 
 def _canonical_isa_id(slug: str, sid: str, created_at_iso: str) -> str:
@@ -97,6 +183,8 @@ def _bootstrap_isa(
     worktree: str,
     thread_id: str,
     started: str,
+    card_id: str | None = None,
+    board: str | None = None,
 ) -> None:
     """Write an ISA stub if one doesn't already exist at ``isa_path``.
 
@@ -116,6 +204,10 @@ def _bootstrap_isa(
             thread_id=thread_id,
             started=started,
         )
+        if card_id:
+            text = text.replace('card:     "-"', f'card:     "{card_id}"', 1)
+        if board:
+            text = text.replace('board:    "-"', f'board:    "{board}"', 1)
         isa_path.write_text(text, encoding="utf-8")
         log.info("bootstrap_isa: wrote %s", isa_path)
     except Exception as exc:
@@ -160,6 +252,9 @@ class ThreadEvent:
     text: str = ""
     author_id: str = ""
     isa_slug: str = "task"
+    kanban_card_id: str | None = None
+    kanban_board: str | None = None
+    isa_path: str | None = None
 
 
 @dataclass
@@ -213,7 +308,7 @@ class CodexSessionDispatcher(_CommandsMixin):
         peer_review_orchestrator: Any,
         merge_broker: Any,
         discord_send: Callable[[str, str], Awaitable[None]],
-        kanban_complete: Callable[[str], Any] | None = None,
+        kanban_complete: Callable[..., Any] | None = None,
         discord_archive_thread: Callable[[str], Awaitable[None]] | None = None,
         base_branch: str | None = None,
     ) -> None:
@@ -235,7 +330,10 @@ class CodexSessionDispatcher(_CommandsMixin):
         self._peer_review = peer_review_orchestrator  # P2+ — stored, not called in P1
         self._merge_broker = merge_broker              # P3+ — stored, not called in P1
         self._discord_send = discord_send
-        self._kanban_complete = kanban_complete
+        self._kanban_complete = kanban_complete or _complete_kanban_via_bridge
+        self._kanban_complete_uses_bridge = (
+            kanban_complete is None or kanban_complete is _complete_kanban_via_bridge
+        )
         self._discord_archive_thread = discord_archive_thread  # P3.5+ — closeout archive
         if base_branch is None:
             base_branch = os.environ.get("HERMES_CODEX_BASE_BRANCH", "").strip() or "fork/main"
@@ -297,6 +395,22 @@ class CodexSessionDispatcher(_CommandsMixin):
             raise WorktreeAllocationError(str(exc)) from exc
 
         now = _now_iso()
+        linked_isa_meta: dict[str, str] = {}
+        explicit_isa_path = _clean_optional_ref(getattr(event, "isa_path", None))
+        if explicit_isa_path:
+            linked_isa_meta = _read_isa_frontmatter(Path(explicit_isa_path))
+        else:
+            linked = _find_isa_frontmatter_for_thread(self._hermes_home, thread_id)
+            if linked is not None:
+                _, linked_isa_meta = linked
+
+        kanban_card_id = _clean_optional_ref(getattr(event, "kanban_card_id", None))
+        if kanban_card_id is None:
+            kanban_card_id = _clean_optional_ref(linked_isa_meta.get("card"))
+        kanban_board = _clean_optional_ref(getattr(event, "kanban_board", None))
+        if kanban_board is None:
+            kanban_board = _clean_optional_ref(linked_isa_meta.get("board"))
+
         # Per ISA-SPEC §2 the canonical isa-id is
         # ``YYYYMMDD-HHMM_<slug>-<sid8>``. The bare-slug path used in P1
         # collided across same-slug sessions and never existed on disk.
@@ -314,12 +428,15 @@ class CodexSessionDispatcher(_CommandsMixin):
             worktree=str(wt.path),
             thread_id=thread_id,
             started=now,
+            card_id=kanban_card_id,
+            board=kanban_board,
         )
         row = {
             "session_id": sid,
             "thread_id": thread_id,
             "channel_id": event.channel_id,
-            "kanban_card_id": None,
+            "kanban_card_id": kanban_card_id,
+            "kanban_board": kanban_board,
             "worktree_path": str(wt.path),
             "tmux_session": None,  # deprecated — kept for schema back-compat
             "isa_id": isa_id,
@@ -472,7 +589,14 @@ class CodexSessionDispatcher(_CommandsMixin):
         try:
             if row["state"] in terminal_states and self._kanban_complete and row.get("kanban_card_id"):
                 try:
-                    self._kanban_complete(row["kanban_card_id"])
+                    if self._kanban_complete_uses_bridge:
+                        self._kanban_complete(
+                            row["kanban_card_id"],
+                            row.get("kanban_board"),
+                            summary=_KANBAN_COMPLETION_SUMMARY,
+                        )
+                    else:
+                        self._kanban_complete(row["kanban_card_id"])
                 except Exception as exc:
                     log.warning("on_thread_archive: kanban_complete failed: %s", exc)
             try:
@@ -647,7 +771,14 @@ class CodexSessionDispatcher(_CommandsMixin):
         card_id = row.get("kanban_card_id")
         if card_id and self._kanban_complete is not None:
             try:
-                self._kanban_complete(card_id)
+                if self._kanban_complete_uses_bridge:
+                    self._kanban_complete(
+                        card_id,
+                        row.get("kanban_board"),
+                        summary=_KANBAN_COMPLETION_SUMMARY,
+                    )
+                else:
+                    self._kanban_complete(card_id)
             except Exception as exc:
                 log.warning(
                     "on_pr_merged: kanban_complete failed for %s: %s", card_id, exc,
