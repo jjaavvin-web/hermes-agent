@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import os
+import subprocess
 from pathlib import Path
 from unittest.mock import patch
 
@@ -71,7 +73,202 @@ def _make_row(sid: str, thread_id: str, **overrides) -> dict:
     return row
 
 
+def _git(repo: Path, *args: str, env: dict[str, str] | None = None) -> str:
+    merged_env = os.environ.copy()
+    if env:
+        merged_env.update(env)
+    result = subprocess.run(
+        ["git", *args],
+        cwd=str(repo),
+        check=True,
+        capture_output=True,
+        text=True,
+        env=merged_env,
+    )
+    return result.stdout.strip()
+
+
+def _git_date(ts: int) -> str:
+    return f"{ts} +0000"
+
+
+def _commit(repo: Path, filename: str, body: str, message: str, ts: int) -> str:
+    path = repo / filename
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(body, encoding="utf-8")
+    _git(repo, "add", filename)
+    env = {"GIT_AUTHOR_DATE": _git_date(ts), "GIT_COMMITTER_DATE": _git_date(ts)}
+    _git(repo, "commit", "-q", "-m", message, env=env)
+    return _git(repo, "rev-parse", "HEAD")
+
+
+def _init_git_repo(repo: Path) -> None:
+    repo.mkdir(parents=True, exist_ok=True)
+    _git(repo, "init", "-q", "-b", "main")
+    _git(repo, "config", "user.email", "t@example.com")
+    _git(repo, "config", "user.name", "Tester")
+
+
+def _river_repo(tmp_path: Path) -> Path:
+    repo = tmp_path / "river-repo"
+    _init_git_repo(repo)
+    _commit(repo, "trunk.txt", "one\n", "initial trunk", 1_700_000_000)
+    _commit(repo, "trunk.txt", "one\ntwo\n", "second trunk", 1_700_000_100)
+
+    _git(repo, "checkout", "-q", "-b", "feature/merged-pr")
+    _commit(repo, "merged.txt", "merged work\n", "merged branch work", 1_700_000_200)
+    _git(repo, "checkout", "-q", "main")
+    _git(
+        repo,
+        "merge",
+        "--no-ff",
+        "feature/merged-pr",
+        "-m",
+        "Merge pull request #123 from feature/merged-pr",
+        env={"GIT_COMMITTER_DATE": _git_date(1_700_000_300)},
+    )
+
+    _git(repo, "checkout", "-q", "-b", "feature/closed-lane")
+    _commit(repo, "closed.txt", "closed lane\n", "closed lane work", 1_700_000_400)
+    _git(repo, "checkout", "-q", "main")
+
+    _git(repo, "checkout", "-q", "-b", "feature/open-lane")
+    _commit(repo, "open.txt", "open lane\n", "open lane work", 1_700_000_500)
+    _git(repo, "checkout", "-q", "main")
+    return repo
+
+
+def _point_river_at_repo(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    repo: Path,
+    sessions: dict | None = None,
+) -> None:
+    monkeypatch.setattr(mod, "__file__", str(repo / "hermes_cli" / "dashboard_codex_sessions.py"))
+    sessions_path = tmp_path / "codex_sessions.json"
+    sessions_path.write_text(
+        json.dumps({"version": 1, "sessions": sessions or {}}),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(mod, "_SESSIONS_PATH", sessions_path)
+    monkeypatch.setattr(mod, "_RIVER_CACHE", None)
+
+
+# ── git river ─────────────────────────────────────────────────────────
+
+
+def test_build_river_returns_current_shape_and_parses_pr_number(monkeypatch, tmp_path):
+    repo = _river_repo(tmp_path)
+    _point_river_at_repo(monkeypatch, tmp_path, repo)
+
+    river = mod._build_river(trunk_n=8, branch_n=8)
+
+    assert set(river) == {"scanned_at", "base", "trunk", "branches", "counts"}
+    assert set(river["base"]) == {"ref", "sha", "total_commits"}
+    assert river["base"]["ref"] == "main"
+    assert river["base"]["total_commits"] == 4
+    assert river["counts"] == {"trunk": 3, "branches": 2, "active": 0}
+
+    trunk = river["trunk"]
+    assert len(trunk) == 3
+    assert {"sha", "full", "ts", "author", "subject", "pr", "age_rank"} <= set(trunk[0])
+    assert trunk[0]["subject"] == "Merge pull request #123 from feature/merged-pr"
+    assert trunk[0]["pr"] == 123
+    assert [commit["age_rank"] for commit in trunk] == [0, 1, 2]
+
+    branches = river["branches"]
+    assert {branch["name"] for branch in branches} == {"feature/open-lane", "feature/closed-lane"}
+    first_branch = branches[0]
+    assert {
+        "name",
+        "short",
+        "ahead",
+        "fork_rank",
+        "lead_commits",
+        "ts",
+        "recency",
+        "active",
+        "is_current",
+        "thread_id",
+        "pr_number",
+        "pr_url",
+        "merged",
+    } <= set(first_branch)
+
+
+def test_build_river_orders_branches_by_most_recent_commit_timestamp(monkeypatch, tmp_path):
+    repo = _river_repo(tmp_path)
+    _point_river_at_repo(monkeypatch, tmp_path, repo)
+
+    branches = mod._build_river(trunk_n=8, branch_n=8)["branches"]
+
+    assert [branch["name"] for branch in branches] == ["feature/open-lane", "feature/closed-lane"]
+    assert [branch["ts"] for branch in branches] == [1_700_000_500, 1_700_000_400]
+    assert all(branch["fork_rank"] == 0 for branch in branches)
+    assert all(branch["ahead"] == 1 for branch in branches)
+
+
+def test_build_river_sets_active_and_merged_flags_from_session_metadata(monkeypatch, tmp_path):
+    repo = _river_repo(tmp_path)
+    sessions = {
+        "thread-closed": _make_row(
+            "sid-closed",
+            "thread-closed",
+            head_branch="feature/closed-lane",
+            pr_number=456,
+            pr_url="https://example.invalid/pr/456",
+            merged_at="2026-05-25T17:00:00Z",
+        ),
+        "thread-open": _make_row(
+            "sid-open",
+            "thread-open",
+            head_branch="feature/open-lane",
+            pr_number=789,
+            pr_url="https://example.invalid/pr/789",
+        ),
+    }
+    _point_river_at_repo(monkeypatch, tmp_path, repo, sessions)
+
+    river = mod._build_river(trunk_n=8, branch_n=8)
+    by_name = {branch["name"]: branch for branch in river["branches"]}
+
+    closed = by_name["feature/closed-lane"]
+    assert closed["active"] is True
+    assert closed["merged"] is True
+    assert closed["thread_id"] == "thread-closed"
+    assert closed["pr_number"] == 456
+    assert closed["pr_url"] == "https://example.invalid/pr/456"
+
+    open_branch = by_name["feature/open-lane"]
+    assert open_branch["active"] is True
+    assert open_branch["merged"] is False
+    assert open_branch["thread_id"] == "thread-open"
+    assert open_branch["pr_number"] == 789
+    assert open_branch["pr_url"] == "https://example.invalid/pr/789"
+
+    # The current implementation only includes local branches ahead of trunk;
+    # a branch already merged into first-parent trunk is represented by the
+    # trunk merge commit, not by a branch lane.
+    assert "feature/merged-pr" not in by_name
+    assert river["counts"]["active"] == 2
+
+
+def test_build_river_empty_repo_degrades_without_raising(monkeypatch, tmp_path):
+    repo = tmp_path / "empty-repo"
+    _init_git_repo(repo)
+    _point_river_at_repo(monkeypatch, tmp_path, repo)
+
+    river = mod._build_river(trunk_n=8, branch_n=8)
+
+    assert set(river) == {"scanned_at", "base", "trunk", "branches", "error"}
+    assert river["base"] is None
+    assert river["trunk"] == []
+    assert river["branches"] == []
+    assert river["error"] == "no trunk ref found"
+
+
 # ── snapshot ───────────────────────────────────────────────────────────
+
 
 
 class TestSnapshot:
