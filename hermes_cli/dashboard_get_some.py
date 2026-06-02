@@ -25,6 +25,7 @@ router = APIRouter(prefix="/api/dashboard", tags=["dashboard-get-some"])
 
 _PROJECTS_TTL = 10.0
 _NEXUS_TTL = 10.0
+_REMAINING_WORK_LIMIT = 20
 _PROJECTS_CACHE: tuple[dict, float] | None = None
 _NEXUS_CACHE: tuple[dict, float] | None = None
 _PROJECTS_LOCK = threading.Lock()
@@ -103,6 +104,37 @@ def _last_activity(conn: sqlite3.Connection) -> int | None:
         return None
 
 
+def _remaining_work(conn: sqlite3.Connection, *, limit: int = _REMAINING_WORK_LIMIT) -> dict[str, Any]:
+    cols = {row["name"] for row in conn.execute("PRAGMA table_info(tasks)").fetchall()}
+    required = ["id", "title", "status"]
+    optional = ["priority", "created_at", "started_at", "completed_at"]
+    select_cols = required + [col for col in optional if col in cols]
+    rows = conn.execute(
+        f"SELECT {', '.join(select_cols)} FROM tasks WHERE status NOT IN ('done', 'archived')"
+    ).fetchall()
+    sorted_rows = sorted(rows, key=_task_sort_key)
+    by_status: dict[str, int] = {}
+    for row in sorted_rows:
+        status = str(row["status"] or "")
+        by_status[status] = by_status.get(status, 0) + 1
+    capped_rows = sorted_rows[: max(0, limit)]
+    remaining = [
+        {
+            "id": str(row["id"]),
+            "status": str(row["status"] or ""),
+            "title": _truncate_label(_row_get(row, "title"), limit=86),
+        }
+        for row in capped_rows
+    ]
+    total = len(sorted_rows)
+    return {
+        "remaining": remaining,
+        "remaining_count": total,
+        "remaining_by_status": by_status,
+        "remaining_more": max(0, total - len(remaining)),
+    }
+
+
 def _completion_pct(by_status: dict[str, int]) -> int:
     total = sum(by_status.values())
     if total <= 0:
@@ -124,6 +156,7 @@ def _build_projects_snapshot() -> dict:
         try:
             by_status = _status_counts(conn)
             total = sum(by_status.values())
+            remaining_work = _remaining_work(conn)
             projects.append({
                 "slug": slug,
                 "name": meta["name"],
@@ -138,6 +171,7 @@ def _build_projects_snapshot() -> dict:
                 + int(by_status.get("review", 0)),
                 "blocked": int(by_status.get("blocked", 0)),
                 "last_activity": _last_activity(conn),
+                **remaining_work,
             })
         except sqlite3.Error as exc:
             log.warning("Could not summarize kanban board %s: %s", slug, exc)

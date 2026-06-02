@@ -132,11 +132,20 @@ function easeOutCubic(t: number): number {
   return 1 - Math.pow(1 - t, 3);
 }
 
+function isCompletedNode(node: WorkNexusNode): boolean {
+  return Boolean(node.completed || node.status === "done" || node.status === "archived");
+}
+
+function isActiveWorkNode(node: WorkNexusNode): boolean {
+  if (node.kind !== "task" || node.aggregate === true) return false;
+  return !isCompletedNode(node);
+}
+
 function nodeColor(node: WorkNexusNode, palette: typeof FALLBACK_COLORS): string {
   if (node.kind === "project") return node.color || palette.project;
   if (node.kind === "pr") return palette.pr;
   if (node.aggregate === true) return palette.aggregate;
-  if (node.completed || node.status === "done" || node.status === "archived") {
+  if (isCompletedNode(node)) {
     return palette.completed;
   }
   switch (node.status) {
@@ -157,7 +166,7 @@ function nodeRadius(node: WorkNexusNode): number {
   if (node.aggregate === true) return 9.5;
   if (node.status === "blocked") return 8.5;
   if (node.status === "running" || node.status === "review") return 8;
-  if (node.completed || node.status === "done" || node.status === "archived") return 7;
+  if (isCompletedNode(node)) return 5.8;
   return 6;
 }
 
@@ -165,8 +174,9 @@ function nodeImportance(node: WorkNexusNode): number {
   if (node.kind === "project") return 1;
   if (node.aggregate === true) return 0.82;
   if (node.kind === "pr") return 0.78;
-  if (node.status === "running" || node.status === "review" || node.status === "blocked") return 0.72;
-  return 0.48;
+  if (node.status === "running" || node.status === "review" || node.status === "blocked") return 0.66;
+  if (isCompletedNode(node)) return 0.22;
+  return 0.42;
 }
 
 function stableHash(value: string): number {
@@ -313,7 +323,7 @@ export default function WorkNexus() {
       }
     }
     const projectNodes = nextNodes.filter((node) => node.kind === "project");
-    const anchorRadius = Math.max(62, Math.min(138, projectNodes.length * 15));
+    const anchorRadius = Math.max(118, Math.min(230, projectNodes.length * 24));
     const projectByBoard = new Map<string, SimNode>();
     projectNodes.forEach((node, idx) => {
       const angle = (idx / Math.max(1, projectNodes.length)) * Math.PI * 2 - Math.PI / 2;
@@ -331,7 +341,7 @@ export default function WorkNexus() {
       if (typeof node.x === "number" && typeof node.y === "number") return;
       const hash = stableHash(node.id);
       const angle = ((hash % 360) / 360) * Math.PI * 2;
-      const orbit = node.aggregate === true ? 48 : 16 + ((hash >>> 8) % 26);
+      const orbit = node.aggregate === true ? 70 : 28 + ((hash >>> 8) % 46);
       node.x = project.fx + Math.cos(angle) * orbit;
       node.y = project.fy + Math.sin(angle) * orbit;
     });
@@ -395,20 +405,20 @@ export default function WorkNexus() {
       iterations?: (v: number) => unknown;
     };
     const charge = fg.d3Force("charge") as unknown as ForceTuner | undefined;
-    if (charge?.strength) charge.strength(-18);
+    if (charge?.strength) charge.strength(-34);
     const link = fg.d3Force("link") as unknown as ForceTuner | undefined;
     if (link?.distance) {
       link.distance((edge: SimLink) => {
-        if (edge.kind === "contains") return isAggregateLink(edge) ? 32 : 16;
-        if (edge.kind === "blocks") return 24;
-        return 22;
+        if (edge.kind === "contains") return isAggregateLink(edge) ? 58 : 38;
+        if (edge.kind === "blocks") return 48;
+        return 42;
       });
     }
     if (link?.strength) {
       link.strength((edge: SimLink) => {
-        if (edge.kind === "contains") return isAggregateLink(edge) ? 0.66 : 0.92;
-        if (edge.kind === "blocks") return 0.82;
-        return 0.58;
+        if (edge.kind === "contains") return isAggregateLink(edge) ? 0.42 : 0.54;
+        if (edge.kind === "blocks") return 0.48;
+        return 0.36;
       });
     }
     if (link?.iterations) link.iterations(3);
@@ -430,7 +440,7 @@ export default function WorkNexus() {
       const fg = fgRef.current;
       if (!fg) return;
       try {
-        fg.zoomToFit(600, 56);
+        fg.zoomToFit(600, 86);
         zoomedRef.current = true;
       } catch {
         // Optional in test/mocked renderers.
@@ -448,31 +458,37 @@ export default function WorkNexus() {
       const grow = reducedMotionRef.current ? 1 : easeOutCubic(Math.max(0.15, Math.min(1, age / 1100)));
       const r = nodeRadius(node) * grow;
       const importance = nodeImportance(node);
+      const activeWork = isActiveWorkNode(node);
+      const completed = isCompletedNode(node);
       ctx.save();
-      ctx.globalCompositeOperation = "lighter";
-      const halo = node.kind === "project" ? 74 : node.aggregate === true ? 52 : node.kind === "pr" ? 44 : node.completed ? 34 : 40;
-      ctx.shadowColor = color;
-      ctx.shadowBlur = halo;
-      ctx.globalAlpha = 0.36 + importance * 0.24;
-      ctx.fillStyle = color;
-      ctx.beginPath();
-      ctx.arc(node.x, node.y, r * 1.68, 0, 2 * Math.PI);
-      ctx.fill();
-      ctx.globalAlpha = 0.8;
-      ctx.shadowBlur = halo * 0.75;
-      ctx.beginPath();
-      ctx.arc(node.x, node.y, r * 1.18, 0, 2 * Math.PI);
-      ctx.fill();
+      if (node.kind === "project" || node.aggregate === true || node.kind === "pr" || activeWork) {
+        ctx.globalCompositeOperation = "lighter";
+        const halo = node.kind === "project" ? 24 : node.aggregate === true ? 18 : node.kind === "pr" ? 16 : 14;
+        ctx.shadowColor = color;
+        ctx.shadowBlur = halo;
+        ctx.globalAlpha = node.kind === "project" ? 0.28 : 0.16 + importance * 0.12;
+        ctx.fillStyle = color;
+        ctx.beginPath();
+        ctx.arc(node.x, node.y, r * (node.kind === "project" ? 1.42 : 1.34), 0, 2 * Math.PI);
+        ctx.fill();
+        ctx.globalAlpha = node.kind === "project" ? 0.58 : 0.42;
+        ctx.shadowBlur = halo * 0.62;
+        ctx.beginPath();
+        ctx.arc(node.x, node.y, r * 1.08, 0, 2 * Math.PI);
+        ctx.fill();
+      }
       ctx.globalAlpha = 1;
-      ctx.shadowBlur = halo * 0.42;
+      ctx.globalCompositeOperation = "source-over";
+      ctx.shadowColor = color;
+      ctx.shadowBlur = completed ? 0 : activeWork ? 5 : node.kind === "project" ? 7 : 3;
       ctx.fillStyle = color;
       ctx.beginPath();
       ctx.arc(node.x, node.y, r, 0, 2 * Math.PI);
       ctx.fill();
-      ctx.shadowBlur = 8;
+      ctx.shadowBlur = completed ? 0 : 2;
       ctx.beginPath();
       ctx.arc(node.x, node.y, Math.max(2.8, r * 0.44), 0, 2 * Math.PI);
-      ctx.fillStyle = node.kind === "project" ? palette.white : hexWithAlpha(palette.white, 0.86);
+      ctx.fillStyle = completed ? hexWithAlpha(palette.white, 0.48) : node.kind === "project" ? palette.white : hexWithAlpha(palette.white, 0.78);
       ctx.fill();
       ctx.globalCompositeOperation = "source-over";
       ctx.globalAlpha = 1;
@@ -488,10 +504,10 @@ export default function WorkNexus() {
           : "";
       if (label) {
         const projectLabel = node.kind === "project";
-        ctx.shadowColor = projectLabel ? palette.project : color;
-        ctx.shadowBlur = projectLabel ? 14 : 9;
-        ctx.fillStyle = projectLabel ? "rgba(248,253,255,0.98)" : "rgba(238,246,255,0.86)";
-        ctx.font = `${projectLabel ? 13 : node.aggregate === true ? 11.5 : 10.5}px ui-monospace, "JetBrains Mono", monospace`;
+        ctx.shadowColor = "rgba(0,0,0,0.92)";
+        ctx.shadowBlur = projectLabel ? 5 : 4;
+        ctx.fillStyle = projectLabel ? "rgba(248,253,255,0.98)" : "rgba(238,246,255,0.9)";
+        ctx.font = `${projectLabel ? 14 : node.aggregate === true ? 12 : 11}px ui-monospace, "JetBrains Mono", monospace`;
         ctx.textAlign = "center";
         ctx.textBaseline = "top";
         ctx.fillText(label.slice(0, projectLabel ? 30 : 24), node.x, node.y + r + 7);
@@ -503,18 +519,18 @@ export default function WorkNexus() {
 
   const linkColor = useCallback(
     (edge: SimLink) => {
-      if (edge.kind === "blocks") return hexWithAlpha(palette.blocked, 0.86);
-      if (edge.kind === "delivered_by") return hexWithAlpha(palette.pr, 0.84);
-      if (isAggregateLink(edge)) return hexWithAlpha(palette.aggregate, 0.72);
-      return hexWithAlpha(palette.completed, 0.62);
+      if (edge.kind === "blocks") return hexWithAlpha(palette.blocked, 0.58);
+      if (edge.kind === "delivered_by") return hexWithAlpha(palette.pr, 0.5);
+      if (isAggregateLink(edge)) return hexWithAlpha(palette.aggregate, 0.42);
+      return hexWithAlpha(palette.completed, 0.34);
     },
     [palette],
   );
 
   const linkWidth = useCallback((edge: SimLink) => {
-    if (edge.kind === "blocks") return 2.2;
-    if (edge.kind === "delivered_by") return 1.9;
-    return isAggregateLink(edge) ? 1.65 : 1.28;
+    if (edge.kind === "blocks") return 1.55;
+    if (edge.kind === "delivered_by") return 1.35;
+    return isAggregateLink(edge) ? 1.2 : 0.92;
   }, []);
   const linkLineDash = useCallback((edge: SimLink) => (edge.kind === "blocks" ? [6, 4] : null), []);
   const linkCurvature = useCallback((edge: SimLink) => {
@@ -536,20 +552,20 @@ export default function WorkNexus() {
       ctx.strokeStyle = color;
       ctx.lineCap = "round";
       ctx.shadowColor = color;
-      ctx.shadowBlur = edge.kind === "contains" ? 18 : 24;
+      ctx.shadowBlur = edge.kind === "contains" ? 7 : 10;
       if (edge.kind === "blocks") ctx.setLineDash([6, 4]);
       const dx = target.x - source.x;
       const dy = target.y - source.y;
       const curve = linkCurvature(edge);
       const cx = (source.x + target.x) / 2 - dy * curve;
       const cy = (source.y + target.y) / 2 + dx * curve;
-      ctx.globalAlpha = edge.kind === "contains" ? 0.28 : 0.34;
-      ctx.lineWidth = width * 4.2;
+      ctx.globalAlpha = edge.kind === "contains" ? 0.12 : 0.16;
+      ctx.lineWidth = width * 2.6;
       ctx.beginPath();
       ctx.moveTo(source.x, source.y);
       ctx.quadraticCurveTo(cx, cy, target.x, target.y);
       ctx.stroke();
-      ctx.globalAlpha = edge.kind === "contains" ? 0.86 : 0.95;
+      ctx.globalAlpha = edge.kind === "contains" ? 0.62 : 0.74;
       ctx.lineWidth = width;
       ctx.beginPath();
       ctx.moveTo(source.x, source.y);
@@ -572,10 +588,10 @@ export default function WorkNexus() {
       ctx.save();
       ctx.globalCompositeOperation = "lighter";
       ctx.lineCap = "round";
-      ctx.shadowColor = hexWithAlpha(palette.completed, 0.78);
-      ctx.shadowBlur = 16 * hairline;
-      ctx.strokeStyle = hexWithAlpha(palette.completed, 0.28);
-      ctx.lineWidth = 1.25 * hairline;
+      ctx.shadowColor = hexWithAlpha(palette.completed, 0.38);
+      ctx.shadowBlur = 6 * hairline;
+      ctx.strokeStyle = hexWithAlpha(palette.completed, 0.14);
+      ctx.lineWidth = 0.8 * hairline;
       sorted.forEach((node) => {
         if (typeof node.x !== "number" || typeof node.y !== "number") return;
         ctx.beginPath();
@@ -583,8 +599,8 @@ export default function WorkNexus() {
         ctx.lineTo(node.x, node.y);
         ctx.stroke();
       });
-      ctx.strokeStyle = hexWithAlpha(palette.pr, 0.3);
-      ctx.lineWidth = 1.35 * hairline;
+      ctx.strokeStyle = hexWithAlpha(palette.pr, 0.16);
+      ctx.lineWidth = 0.9 * hairline;
       sorted.forEach((node, idx) => {
         const next = sorted[(idx + 1) % sorted.length];
         if (typeof node.x !== "number" || typeof node.y !== "number") return;
@@ -596,8 +612,8 @@ export default function WorkNexus() {
         ctx.quadraticCurveTo(cx, cy, next.x, next.y);
         ctx.stroke();
       });
-      ctx.strokeStyle = hexWithAlpha(palette.aggregate, 0.26);
-      ctx.lineWidth = 1.05 * hairline;
+      ctx.strokeStyle = hexWithAlpha(palette.aggregate, 0.14);
+      ctx.lineWidth = 0.72 * hairline;
       sorted.forEach((node, idx) => {
         const next = sorted[(idx + 2) % sorted.length];
         if (!next || typeof node.x !== "number" || typeof node.y !== "number") return;
@@ -609,15 +625,15 @@ export default function WorkNexus() {
       });
       const yValues = sorted.map((node) => node.y ?? 0);
       ctx.shadowColor = palette.completed;
-      ctx.shadowBlur = 22 * hairline;
-      ctx.strokeStyle = hexWithAlpha(palette.completed, 0.42);
-      ctx.lineWidth = 1.8 * hairline;
+      ctx.shadowBlur = 7 * hairline;
+      ctx.strokeStyle = hexWithAlpha(palette.completed, 0.2);
+      ctx.lineWidth = 1.05 * hairline;
       ctx.beginPath();
       ctx.moveTo(0, Math.min(...yValues) - 34);
       ctx.lineTo(0, Math.max(...yValues) + 34);
       ctx.stroke();
-      ctx.fillStyle = hexWithAlpha(palette.white, 0.76);
-      ctx.shadowBlur = 18 * hairline;
+      ctx.fillStyle = hexWithAlpha(palette.white, 0.44);
+      ctx.shadowBlur = 6 * hairline;
       ctx.beginPath();
       ctx.arc(0, 0, 5.5 * hairline, 0, Math.PI * 2);
       ctx.fill();
@@ -734,7 +750,13 @@ export default function WorkNexus() {
       <DetailPanel node={selected} onClose={() => setSelected(null)} />
       <ul className="pulse-constellation__sr-list" aria-hidden="true" hidden>
         {graph.nodes.map((n) => (
-          <li key={n.id} data-testid="work-nexus-node-marker" data-node-id={n.id}>
+          <li
+            key={n.id}
+            data-testid="work-nexus-node-marker"
+            data-node-id={n.id}
+            data-node-active-work={isActiveWorkNode(n) ? "true" : "false"}
+            data-node-completed={isCompletedNode(n) ? "true" : "false"}
+          >
             {n.label}
           </li>
         ))}

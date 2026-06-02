@@ -139,6 +139,16 @@ async function findByTestId(container: Element, testId: string): Promise<Element
   return match as Element;
 }
 
+async function findMarkerByNodeId(container: Element, nodeId: string): Promise<Element> {
+  let match: Element | null = null;
+  await waitFor(() => {
+    match = container.querySelector(`[data-testid="work-nexus-node-marker"][data-node-id="${nodeId}"]`);
+    expect(match).not.toBeNull();
+  });
+  if (!match) throw new Error(`Node marker not found: ${nodeId}`);
+  return match;
+}
+
 async function findByText(container: Element, pattern: RegExp): Promise<Element> {
   let match: Element | null = null;
   await waitFor(() => {
@@ -252,6 +262,18 @@ describe("WorkNexus", () => {
     const markers = await findAllByTestId(container, "work-nexus-node-marker");
     expect(markers).toHaveLength(3);
     expect(await findByText(container, /Overlay degraded: codex_pr_overlay/)).toBeTruthy();
+  });
+
+  it("marks active task nodes for subtle glow while completed tasks stay plain", async () => {
+    globalThis.fetch = mockFetch(sampleResponse) as unknown as typeof fetch;
+    const { container } = render(<WorkNexus />);
+    const active = await findMarkerByNodeId(container, "task:alpha:parent");
+    const completed = await findMarkerByNodeId(container, "task:alpha:child");
+
+    expect(active.getAttribute("data-node-active-work")).toBe("true");
+    expect(active.getAttribute("data-node-completed")).toBe("false");
+    expect(completed.getAttribute("data-node-active-work")).toBe("false");
+    expect(completed.getAttribute("data-node-completed")).toBe("true");
   });
 
   it("opens the detail panel on node click and closes it on background click", async () => {

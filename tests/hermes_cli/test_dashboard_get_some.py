@@ -112,6 +112,45 @@ def test_projects_weighted_pct_and_excludes_archived_boards(monkeypatch, tmp_pat
     assert project["active"] == 2
     assert project["blocked"] == 1
     assert project["last_activity"] == 1_700_001_000
+    assert project["remaining_count"] == 4
+    assert project["remaining_by_status"] == {
+        "review": 1,
+        "running": 1,
+        "blocked": 1,
+        "todo": 1,
+    }
+    assert project["remaining_more"] == 0
+    assert {item["title"] for item in project["remaining"]} == {
+        "review task",
+        "running task",
+        "blocked task",
+        "todo task",
+    }
+    assert all(item["status"] != "done" for item in project["remaining"])
+
+
+def test_projects_remaining_work_is_capped_and_reports_more(monkeypatch, tmp_path):
+    _setup_home(tmp_path, monkeypatch)
+    _create_board("alpha", name="Alpha Ship", icon="🚀", color="#76e4f7")
+    for idx in range(24):
+        _add_task(
+            "alpha",
+            f"ready task {idx:02d}",
+            status="ready",
+            priority=idx % 3,
+            created_at=1_700_000_000 + idx,
+        )
+    _add_task("alpha", "already shipped", status="done", completed_at=1_700_001_000)
+    get_some = _import_module(monkeypatch)
+
+    project = get_some.get_projects()["projects"][0]
+
+    assert project["remaining_count"] == 24
+    assert project["remaining_by_status"] == {"ready": 24}
+    assert len(project["remaining"]) == 20
+    assert project["remaining_more"] == 4
+    assert all(item["status"] == "ready" for item in project["remaining"])
+    assert "already shipped" not in {item["title"] for item in project["remaining"]}
 
 
 def test_work_nexus_returns_project_task_nodes_and_contains_blocks_edges(monkeypatch, tmp_path):
