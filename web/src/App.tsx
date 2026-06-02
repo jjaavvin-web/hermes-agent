@@ -83,6 +83,7 @@ import ExplorerPage from "@/pages/ExplorerPage";
 import PulsePage from "@/pages/PulsePage";
 import CodexSessionsPage from "@/pages/CodexSessionsPage";
 import GitHealthPage from "@/pages/GitHealthPage";
+import GetSomePage from "@/pages/GetSomePage";
 import WelcomePage from "@/pages/WelcomePage";
 import ChatPage from "@/pages/ChatPage";
 import { LanguageSwitcher } from "@/components/LanguageSwitcher";
@@ -151,6 +152,7 @@ const BUILTIN_ROUTES_CORE: Record<string, ComponentType> = {
   "/hives": HivesPage,
   "/codex-sessions": CodexSessionsPage,
   "/git-health": GitHealthPage,
+  "/get-some": GetSomePage,
   "/profiles": ProfilesPage,
   "/config": ConfigPage,
   "/env": EnvPage,
@@ -198,6 +200,7 @@ const BUILTIN_NAV_REST: NavItem[] = [
   { path: "/nexus-health", labelKey: "system_health", label: "System Health", icon: Shield },
   { path: "/hives", labelKey: "hives", label: "Hives", icon: Workflow },
   { path: "/codex-sessions", labelKey: "codex_sessions", label: "Codex Sessions", icon: GitBranch },
+  { path: "/get-some", labelKey: "get_some", label: "Get Some", icon: Sparkles },
   { path: "/git-health", labelKey: "git_health", label: "Git Health", icon: Heart },
   { path: "/plugins", labelKey: "plugins", label: "Plugins", icon: Puzzle },
   { path: "/profiles", labelKey: "profiles", label: "Profiles", icon: Users },
