@@ -62,7 +62,9 @@ const TEAL: RGB = [60, 224, 204];
 const VIOLET: RGB = [168, 124, 255];
 const PINK: RGB = [240, 122, 200];
 
-const CANVAS_H = 760;
+const CANVAS_H = 780;
+const SETTLE_MS = 14000;
+const MAX_BRANCH_LABELS = 14;
 const TOP_PAD = 44;
 const BASE_PAD = 70;
 const CHIP_W = 220;
@@ -78,7 +80,7 @@ function easeOutCubic(x: number): number {
 }
 // tip/bead radius by limb depth (primary biggest, twigs smaller)
 function depthSize(depth: number): number {
-  return depth === 0 ? 4.2 : depth === 1 ? 2.8 : 2.0;
+  return depth === 0 ? 5.6 : depth === 1 ? 3.8 : depth === 2 ? 2.8 : 2.1;
 }
 function mix(a: RGB, b: RGB, t: number): RGB {
   return [lerp(a[0], b[0], t), lerp(a[1], b[1], t), lerp(a[2], b[2], t)];
@@ -149,6 +151,7 @@ function glow(c: RGB): HTMLCanvasElement {
 
 // ── geometry ────────────────────────────────────────────────────────────────
 interface BeadPt { x: number; y: number; ageT: number; commit: TrunkCommit }
+interface FoliagePt { x: number; y: number; r: number; color: RGB; alpha: number; phase: number }
 interface BranchGeo {
   branch: RiverBranch;
   pts: { x: number; y: number }[];
@@ -158,6 +161,7 @@ interface BranchGeo {
   glowK: number;     // brightness 0..1
   width: number;
   side: number;
+  rank: number;
   depth: number;        // 0 = primary limb off the artery, 1+ = twigs
   interactive: boolean; // only primary limbs are hover/click targets
   showTip: boolean;     // draw a ringed tip node
@@ -169,6 +173,7 @@ interface Layout {
   botY: number;
   trunkBeads: BeadPt[];
   branchGeo: BranchGeo[];
+  foliage: FoliagePt[];
   laneTip: Map<string, { x: number; y: number }>;
 }
 
@@ -178,9 +183,10 @@ function buildRiver(W: number, data: River | null): Layout {
   const botY = CANVAS_H - BASE_PAD;
   const trunkBeads: BeadPt[] = [];
   const branchGeo: BranchGeo[] = [];
+  const foliage: FoliagePt[] = [];
   const laneTip = new Map<string, { x: number; y: number }>();
   if (!data || data.trunk.length === 0) {
-    return { cx, topY, botY, trunkBeads, branchGeo, laneTip };
+    return { cx, topY, botY, trunkBeads, branchGeo, foliage, laneTip };
   }
 
   const N = data.trunk.length;
@@ -200,19 +206,23 @@ function buildRiver(W: number, data: River | null): Layout {
   function emitLimb(
     sx: number, sy: number, ang: number, len: number, depth: number,
     color: RGB, glowK: number, width: number, rng: () => number,
-    b: RiverBranch, interactive: boolean,
+    b: RiverBranch, interactive: boolean, rank: number,
   ) {
-    // A limb is a SHORT, nearly-straight diagonal that honours the caller's `ang`
-    // (so the spread varies per branch instead of a rigid herringbone). It always
-    // climbs: rise is forced negative-y by at least 35% of len.
+    // Organic, compact neon limbs: each one honours the caller's `ang`, but the
+    // control points bow slightly outward/upward so a dense set of short limbs
+    // reads like a living canopy instead of a rigid herringbone.
     const reachX = Math.cos(ang) * len;
     let riseY = Math.sin(ang) * len;        // ang up = sin negative → up
     if (riseY > -len * 0.35) riseY = -len * 0.35; // guarantee an upward climb
-    const clampedX = clamp(sx + reachX, 22, W - 22);
+    const clampedX = clamp(sx + reachX, 34, W - 34);
     const clampedY = clamp(sy + riseY, topY + 4, botY);
-    // near-straight: control points sit ON the line, with a tiny upward bow
-    const c1 = { x: sx + (clampedX - sx) * 0.33, y: sy + (clampedY - sy) * 0.42 };
-    const c2 = { x: sx + (clampedX - sx) * 0.66, y: sy + (clampedY - sy) * 0.74 };
+    const dx = clampedX - sx, dy = clampedY - sy;
+    const dist = Math.max(1, Math.hypot(dx, dy));
+    const nx = -dy / dist, ny = dx / dist;
+    const bow = (rng() - 0.5) * len * 0.16 + Math.sign(dx || Math.cos(ang) || 1) * len * 0.05;
+    const lift = len * (0.06 + rng() * 0.08);
+    const c1 = { x: sx + dx * 0.34 + nx * bow, y: sy + dy * 0.32 + ny * bow - lift };
+    const c2 = { x: sx + dx * 0.68 + nx * bow * 0.45, y: sy + dy * 0.72 + ny * bow * 0.45 - lift * 0.42 };
     const K = 14;
     const pts: { x: number; y: number }[] = [];
     for (let s = 0; s <= K; s++) {
@@ -230,22 +240,35 @@ function buildRiver(W: number, data: River | null): Layout {
       beads.push(pts[Math.round(0.6 * K)]);
     }
     const sideNorm = (clampedX - cx) / Math.max(1, halfW);
+    const leafCount = depth === 0 ? 6 : depth === 1 ? 5 : depth === 2 ? 4 : 2;
+    for (let q = 0; q < leafCount; q++) {
+      const p = pts[Math.min(K, Math.max(0, Math.round((0.48 + rng() * 0.52) * K)))];
+      const sideBias = Math.sign(sideNorm || Math.cos(ang) || 1);
+      foliage.push({
+        x: clamp(p.x + (rng() - 0.5) * (18 + depth * 8) + sideBias * rng() * 9, 18, W - 18),
+        y: clamp(p.y + (rng() - 0.5) * (14 + depth * 5), topY + 2, botY - 2),
+        r: (depth === 0 ? 7.6 : depth === 1 ? 6.2 : 4.9) * (0.7 + rng() * 1.35),
+        color: mix(color, WHITE, 0.08 + rng() * 0.18),
+        alpha: (0.045 + rng() * 0.095) * (0.55 + glowK * 0.75),
+        phase: rng() * Math.PI * 2,
+      });
+    }
     branchGeo.push({
       branch: b, pts, beads, tipX: clampedX, tipY: clampedY, color, glowK,
-      width, side: sideNorm, depth, interactive,
+      width, side: sideNorm, rank, depth, interactive,
       showTip: depth === 0 || rng() < 0.6, mergeBack: null,
     });
     if (interactive && (b.thread_id || b.pr_url)) laneTip.set(b.name, { x: clampedX, y: clampedY });
 
-    // recurse: short child twigs that curl UPWARD into a small local bush
-    if (depth < 2 && len > 24) {
-      const kids = depth === 0 ? 2 : rng() < 0.55 ? 2 : 1;
+    // recurse: short child twigs that curl UPWARD into a full local bush.
+    if (depth < 3 && len > 16) {
+      const kids = depth === 0 ? 3 : depth === 1 ? 2 + (rng() < 0.38 ? 1 : 0) : rng() < 0.52 ? 2 : 1;
       for (let c = 0; c < kids; c++) {
-        const splay = (c - (kids - 1) / 2) * (0.7 + rng() * 0.3);
+        const splay = (c - (kids - 1) / 2) * (0.45 + rng() * 0.34) + Math.sign(sideNorm || 1) * (depth === 0 ? 0.12 : 0.06);
         // children bias strongly upward (toward -PI/2) so twigs reach for the sky
-        const childAng = ang * 0.35 + (-Math.PI / 2) * 0.65 + splay;
-        emitLimb(clampedX, clampedY, childAng, len * (0.52 + rng() * 0.1),
-          depth + 1, color, glowK * 0.85, Math.max(0.6, width * 0.62), rng, b, false);
+        const childAng = ang * 0.38 + (-Math.PI / 2) * 0.62 + splay;
+        emitLimb(clampedX, clampedY, childAng, len * (0.46 + rng() * 0.13),
+          depth + 1, color, glowK * (0.78 + rng() * 0.12), Math.max(0.55, width * 0.62), rng, b, false, rank);
       }
     }
   }
@@ -271,18 +294,18 @@ function buildRiver(W: number, data: River | null): Layout {
     // Rounded-crown envelope: limbs longer + flung wider in the upper-middle,
     // short + near-vertical at the very top and bottom → a fat oval canopy.
     const env = Math.sin(clamp(hf, 0, 1) * Math.PI);        // 0 ends → 1 middle
-    const len = lerp(40, 135, env) * (0.85 + 0.25 * b.recency);
+    const len = lerp(54, Math.min(185, halfW * 0.42), env) * (0.92 + 0.26 * b.recency);
     // outward angle from vertical grows with env (wide middle), plus real jitter
-    const outward = lerp(0.32, 1.0, env) + (rng() - 0.5) * 0.45;
+    const outward = lerp(0.34, 1.12, env) + (rng() - 0.5) * 0.42;
     const ang = -Math.PI / 2 + dir * outward;
     const baseHue = sideHue(dir * lerp(0.4, 1, topness));
     const color = mix(DIM, baseHue, clamp(0.3 + 0.7 * b.recency, 0, 1));
     const glowK = clamp(0.3 + 0.7 * topness + (b.active ? 0.25 : 0), 0, 1);
-    const width = lerp(1.0, 3.0, topness) + (b.active ? 0.8 : 0);
-    emitLimb(cx, sy, ang, len, 0, color, glowK, width, rng, b, true);
+    const width = lerp(1.45, 4.25, topness) + (b.active ? 1.0 : 0);
+    emitLimb(cx, sy, ang, len, 0, color, glowK, width, rng, b, true, i);
   });
 
-  return { cx, topY, botY, trunkBeads, branchGeo, laneTip };
+  return { cx, topY, botY, trunkBeads, branchGeo, foliage, laneTip };
 }
 
 // ── component ────────────────────────────────────────────────────────────
@@ -354,11 +377,12 @@ export default function GitTree({ reloadKey }: { reloadKey?: number }) {
     };
 
     const render = (nowMs: number) => {
-      const t = reduce ? 4000 : nowMs - start;
+      const elapsed = reduce ? SETTLE_MS : Math.min(nowMs - start, SETTLE_MS);
+      const t = elapsed;
       const L = layoutRef.current;
       const w = wrap.clientWidth || 900;
       const hov = hoverRef.current;
-      const { cx, topY, botY, trunkBeads, branchGeo } = L;
+      const { cx, topY, botY, trunkBeads, branchGeo, foliage } = L;
       ctx.clearRect(0, 0, w, CANVAS_H);
 
       // OLED background w/ faint vertical core glow
@@ -370,6 +394,12 @@ export default function GitTree({ reloadKey }: { reloadKey?: number }) {
       core.addColorStop(1, "rgba(70,92,130,0.0)");
       ctx.fillStyle = core;
       ctx.fillRect(cx - 60, topY, 120, botY - topY);
+      const crown = ctx.createRadialGradient(cx, topY + 250, 20, cx, topY + 250, Math.min(w * 0.48, 470));
+      crown.addColorStop(0, "rgba(104,210,255,0.095)");
+      crown.addColorStop(0.48, "rgba(168,124,255,0.045)");
+      crown.addColorStop(1, "rgba(4,6,13,0)");
+      ctx.fillStyle = crown;
+      ctx.fillRect(0, 0, w, CANVAS_H);
 
       if (trunkBeads.length === 0) {
         ctx.globalCompositeOperation = "source-over";
@@ -377,7 +407,7 @@ export default function GitTree({ reloadKey }: { reloadKey?: number }) {
         ctx.font = "13px ui-monospace, monospace";
         ctx.textAlign = "center";
         ctx.fillText(data ? "no commits" : "loading git history…", cx, CANVAS_H / 2);
-        if (!reduce) raf = requestAnimationFrame(render);
+        if (!reduce && elapsed < SETTLE_MS) raf = requestAnimationFrame(render);
         return;
       }
 
@@ -385,6 +415,28 @@ export default function GitTree({ reloadKey }: { reloadKey?: number }) {
       // grow-in rises from the bottom (oldest) upward
       const grow = reduce ? 1 : easeOutCubic(clamp(t / 1100, 0, 1));
       const growY = lerp(botY, topY, grow); // everything below growY is revealed
+
+      // ── canopy atmosphere: deterministic low-alpha leaves + fine lattice rays ──
+      if (foliage.length > 0) {
+        foliage.forEach((leaf) => {
+          if (leaf.y < growY) return;
+          const breathe = reduce ? 1 : 0.86 + 0.14 * Math.sin(t * 0.0011 + leaf.phase);
+          ctx.globalAlpha = leaf.alpha * breathe;
+          ctx.drawImage(glow(leaf.color), leaf.x - leaf.r, leaf.y - leaf.r, leaf.r * 2, leaf.r * 2);
+        });
+      }
+      branchGeo.forEach((bg) => {
+        if (!bg.interactive || bg.rank > 20 || bg.pts[0].y < growY || bg.tipY < growY) return;
+        const pull = 0.18 + bg.glowK * 0.08;
+        const ctrlY = lerp(bg.pts[0].y, bg.tipY, 0.48) - 28;
+        ctx.globalAlpha = (0.035 + bg.glowK * 0.055) * (bg.rank < 10 ? 1 : 0.55);
+        ctx.strokeStyle = `rgba(${rgbStr(bg.color)},1)`;
+        ctx.lineWidth = Math.max(0.7, bg.width * 0.55);
+        ctx.beginPath();
+        ctx.moveTo(cx, bg.pts[0].y);
+        ctx.quadraticCurveTo(lerp(cx, bg.tipX, pull), ctrlY, bg.tipX, bg.tipY);
+        ctx.stroke();
+      });
 
       // ── radial portal at the origin (oldest / bottom) ──
       const portalY = botY + 18;
@@ -401,17 +453,22 @@ export default function GitTree({ reloadKey }: { reloadKey?: number }) {
       }
 
       // ── trunk artery: dim(old,bottom) → bright(new,top) ──
+      ctx.lineCap = "round";
+      ctx.lineJoin = "round";
       for (let i = trunkBeads.length - 1; i > 0; i--) {
         const a = trunkBeads[i], b = trunkBeads[i - 1];
         if (a.y < growY && b.y < growY) continue;
         const colA = mix(WHITE, DIM, a.ageT);
+        ctx.strokeStyle = `rgba(${rgbStr(CYAN)},${0.15 * (1 - a.ageT * 0.72)})`;
+        ctx.lineWidth = lerp(15, 5.5, a.ageT);
+        ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke();
         ctx.strokeStyle = `rgba(${rgbStr(colA)},${0.85 * (1 - a.ageT * 0.5)})`;
-        ctx.lineWidth = lerp(3.4, 1.2, a.ageT);
+        ctx.lineWidth = lerp(5.2, 2.0, a.ageT);
         ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke();
         // soft wide glow on the bright (recent) section
         if (a.ageT < 0.5) {
-          ctx.strokeStyle = `rgba(${rgbStr(CYAN)},${0.12 * (1 - a.ageT * 2)})`;
-          ctx.lineWidth = 9;
+          ctx.strokeStyle = `rgba(${rgbStr(CYAN)},${0.2 * (1 - a.ageT * 2)})`;
+          ctx.lineWidth = 14;
           ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke();
         }
       }
@@ -444,9 +501,24 @@ export default function GitTree({ reloadKey }: { reloadKey?: number }) {
         // branch curve, grown along its length
         const rv = reduce ? 1 : easeOutCubic(clamp((grow - 0.2) / 0.8, 0, 1));
         const last = Math.max(1, Math.floor(rv * (bg.pts.length - 1)));
-        const sway = reduce ? 0 : Math.sin(t * 0.0006 + bg.tipX) * (bg.branch.active ? 1.6 : 0.6);
-        ctx.strokeStyle = `rgba(${rgbStr(bg.color)},${(isHover ? 1 : 0.5 + 0.4 * bg.glowK) * dim})`;
-        ctx.lineWidth = bg.width * (isHover ? 1.6 : 1);
+        const sway = reduce ? 0 : Math.sin(t * 0.0006 + bg.tipX) * (bg.branch.active ? 1.45 : 0.55);
+        const strokeAlpha = (isHover ? 1 : 0.58 + 0.36 * bg.glowK) * dim;
+        ctx.lineCap = "round";
+        ctx.lineJoin = "round";
+        // bloom stroke first, crisp neon artery second. Lighter blend keeps the
+        // canopy lush while the thin core line preserves readable structure.
+        ctx.strokeStyle = `rgba(${rgbStr(bg.color)},${(0.12 + 0.18 * bg.glowK) * dim})`;
+        ctx.lineWidth = (bg.width * 4.2 + 4) * (isHover ? 1.25 : 1);
+        ctx.beginPath();
+        for (let i = 0; i <= last; i++) {
+          const p = bg.pts[i];
+          const k = i / (bg.pts.length - 1);
+          const x = p.x + sway * k;
+          if (i === 0) ctx.moveTo(x, p.y); else ctx.lineTo(x, p.y);
+        }
+        ctx.stroke();
+        ctx.strokeStyle = `rgba(${rgbStr(bg.color)},${strokeAlpha})`;
+        ctx.lineWidth = bg.width * (isHover ? 1.55 : 1);
         ctx.beginPath();
         for (let i = 0; i <= last; i++) {
           const p = bg.pts[i];
@@ -474,14 +546,47 @@ export default function GitTree({ reloadKey }: { reloadKey?: number }) {
         if (bd.y < growY) return;
         const col = mix(WHITE, DIM, bd.ageT);
         const isHover = hov === `c:${bd.commit.sha}`;
-        const r = lerp(4.4, 1.8, bd.ageT) * (isHover ? 1.4 : 1);
+        const r = lerp(5.4, 2.3, bd.ageT) * (isHover ? 1.4 : 1);
         const pulse = reduce || bd.ageT > 0.4 ? 1 : 0.8 + 0.2 * Math.sin(t * 0.0026 + i);
-        ringNode(bd.x, bd.y, r * pulse, col, 1 - bd.ageT * 0.35, 2.2);
+        ringNode(bd.x, bd.y, r * pulse, col, 1 - bd.ageT * 0.35, 2.35);
       });
+
+      // ── readable primary labels, after glow is complete ──
+      ctx.globalCompositeOperation = "source-over";
+      ctx.textBaseline = "middle";
+      ctx.font = "600 10.5px ui-monospace, SFMono-Regular, Menlo, monospace";
+      const labelRows = new Set<string>();
+      branchGeo
+        .filter((bg) => bg.interactive && bg.rank < MAX_BRANCH_LABELS && bg.tipY >= growY)
+        .forEach((bg) => {
+          const isHover = hov === `b:${bg.branch.name}`;
+          const text = `${bg.branch.pr_number != null ? `#${bg.branch.pr_number} ` : ""}${bg.branch.short}`;
+          const side = bg.tipX < cx ? -1 : 1;
+          const sway = reduce ? 0 : Math.sin(t * 0.0006 + bg.tipX) * (bg.branch.active ? 1.45 : 0.55);
+          const lx = clamp(bg.tipX + sway + side * 11, 8, w - 8);
+          const row = `${side}:${Math.round(bg.tipY / 22)}`;
+          if (!isHover && labelRows.has(row)) return;
+          labelRows.add(row);
+          const labelW = Math.min(176, Math.max(42, ctx.measureText(text).width + 13));
+          const x = side < 0 ? lx - labelW : lx;
+          const y = clamp(bg.tipY, 28, CANVAS_H - 28);
+          ctx.globalAlpha = isHover ? 0.98 : bg.rank < 8 ? 0.82 : 0.66;
+          ctx.fillStyle = "rgba(2,6,14,0.84)";
+          ctx.strokeStyle = `rgba(${rgbStr(bg.color)},${isHover ? 0.72 : 0.34})`;
+          ctx.lineWidth = 1;
+          ctx.beginPath();
+          ctx.roundRect(x, y - 8.5, labelW, 17, 7);
+          ctx.fill();
+          ctx.stroke();
+          ctx.fillStyle = `rgba(232,246,255,${isHover ? 0.96 : bg.rank < 8 ? 0.84 : 0.72})`;
+          ctx.textAlign = side < 0 ? "right" : "left";
+          const tx = side < 0 ? x + labelW - 6 : x + 6;
+          ctx.fillText(text, tx, y + 0.5, labelW - 12);
+        });
 
       ctx.globalCompositeOperation = "source-over";
       ctx.globalAlpha = 1;
-      if (!reduce) raf = requestAnimationFrame(render);
+      if (!reduce && elapsed < SETTLE_MS) raf = requestAnimationFrame(render);
     };
     let raf = requestAnimationFrame(render);
 
@@ -546,8 +651,8 @@ export default function GitTree({ reloadKey }: { reloadKey?: number }) {
   return (
     <div
       ref={wrapRef}
-      className="relative w-full rounded-2xl border border-white/10 overflow-hidden"
-      style={{ height: CANVAS_H, background: "#04060d" }}
+      className="relative w-full min-w-0 rounded-2xl border border-white/10 overflow-hidden"
+      style={{ height: CANVAS_H, background: "#04060d", boxShadow: "inset 0 0 90px rgba(104,210,255,0.08), 0 0 44px rgba(104,210,255,0.08)" }}
     >
       {(["tl", "tr", "bl", "br"] as const).map((corner) => (
         <span

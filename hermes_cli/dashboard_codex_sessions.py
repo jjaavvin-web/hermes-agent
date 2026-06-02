@@ -507,7 +507,7 @@ def _git_out(repo: str, *args: str, timeout: float = 20.0):
         return None
 
 
-def _build_river(trunk_n: int = 40, branch_n: int = 30) -> dict:
+def _build_river(trunk_n: int = 56, branch_n: int = 30) -> dict:
     """Real git-history 'river': the mainline as a time-ordered spine (oldest →
     newest) plus real branches that fork from it (and, where detectable, merge
     back). Powers the Git Health river visualization. Only real branch names and
@@ -553,7 +553,26 @@ def _build_river(trunk_n: int = 40, branch_n: int = 30) -> dict:
     base_sha = trunk[0]["sha"] if trunk else None
 
     # ── branches: real local branches that are ahead of the trunk ──
-    names = (_git_out(repo, "for-each-ref", "--format=%(refname:short)", "refs/heads") or "").splitlines()
+    names_with_ts: list[tuple[str, int]] = []
+    refs_raw = _git_out(
+        repo,
+        "for-each-ref",
+        "--sort=-committerdate",
+        "--format=%(refname:short)\t%(committerdate:unix)",
+        "refs/heads",
+    ) or ""
+    for line in refs_raw.splitlines():
+        parts = line.split("\t", 1)
+        if len(parts) != 2:
+            continue
+        ref_name, ref_ts = parts
+        ref_name = ref_name.strip()
+        if not ref_name or ref_name in ("main", base_ref):
+            continue
+        names_with_ts.append((ref_name, int(ref_ts) if ref_ts.isdigit() else 0))
+    # Only probe enough recent refs to fill the canopy; this endpoint feeds a
+    # visual, and walking every local branch's history can take tens of seconds.
+    names_with_ts = names_with_ts[:max(branch_n * 3, branch_n + 18)]
     # codex session worktrees → which are live, by branch name
     state = _load_json(_SESSIONS_PATH)
     sess = state.get("sessions", state) if isinstance(state, dict) else {}
@@ -569,19 +588,15 @@ def _build_river(trunk_n: int = 40, branch_n: int = 30) -> dict:
     cur_branch = (_git_out(repo, "rev-parse", "--abbrev-ref", "HEAD") or "").strip()
 
     cand: list[dict] = []
-    for name in names:
-        name = name.strip()
-        if not name or name in ("main", base_ref):
-            continue
+    for name, lc_ts in names_with_ts:
         ahead_raw = _git_out(repo, "rev-list", "--count", f"{base_ref}..{name}")
         ahead = _safe_int(ahead_raw.strip() if ahead_raw else None)
         if ahead <= 0:
             continue
         mb = (_git_out(repo, "merge-base", base_ref, name) or "").strip()
-        lc = (_git_out(repo, "log", "-1", "--pretty=%ct", name) or "").strip()
         cand.append({
             "name": name, "ahead": ahead, "merge_base": mb,
-            "ts": int(lc) if lc.isdigit() else 0,
+            "ts": lc_ts,
         })
 
     # keep the most-recently-active branches (these render bright near the top)

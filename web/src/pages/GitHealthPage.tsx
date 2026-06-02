@@ -241,7 +241,7 @@ export default function GitHealthPage() {
   const lanes = useMemo(() => graph?.lanes ?? [], [graph]);
 
   return (
-    <div className="px-6 py-4 max-w-[1180px] mx-auto">
+    <div className="px-4 sm:px-6 py-4 max-w-[1320px] mx-auto">
       <div className="flex items-center gap-3 mb-4 text-sm">
         <button
           onClick={() => setReloadKey((k) => k + 1)}
