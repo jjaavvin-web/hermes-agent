@@ -5042,6 +5042,12 @@ try:
     _log.info("Mounted Get Some dashboard API routes at /api/dashboard/projects + /work-nexus")
 except Exception as _exc:
     _log.warning("Failed to load dashboard_get_some routes: %s", _exc)
+try:
+    from hermes_cli.dashboard_command_center import router as _command_center_router
+    app.include_router(_command_center_router)
+    _log.info("Mounted Command Center dashboard API route at /api/dashboard/command-center")
+except Exception as _exc:
+    _log.warning("Failed to load dashboard_command_center routes: %s", _exc)
 # ---------------------------------------------------------------------------
 # GitNexus Explorer — serve the production web UI under /_gitnexus-app/.
 # Mounted at a non-React path so the dashboard React route `/explorer`
