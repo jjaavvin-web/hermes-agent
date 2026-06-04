@@ -760,6 +760,18 @@ def run_conversation(
             should_review_memory=_should_review_memory,
         )
 
+    # Claude CLI subprocess runtime: hand the turn to an interactive local
+    # Claude Code TTY session on claude.ai OAuth/Max. No HTTP transport, no API
+    # key, and no `claude -p` / `--print` path — see agent/claude_cli_runtime.py.
+    if agent.api_mode == "claude_cli_subprocess":
+        return agent._run_claude_cli_turn(
+            user_message=user_message,
+            original_user_message=original_user_message,
+            messages=messages,
+            effective_task_id=effective_task_id,
+            should_review_memory=_should_review_memory,
+        )
+
     while (api_call_count < agent.max_iterations and agent.iteration_budget.remaining > 0) or agent._budget_grace_call:
         # Reset per-turn checkpoint dedup so each iteration can take one snapshot
         agent._checkpoint_mgr.new_turn()

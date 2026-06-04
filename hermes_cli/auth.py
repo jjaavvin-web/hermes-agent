@@ -330,6 +330,16 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         api_key_env_vars=("ANTHROPIC_API_KEY", "ANTHROPIC_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN"),
         base_url_env_var="ANTHROPIC_BASE_URL",
     ),
+    # Delegates an entire turn to the local interactive `claude` CLI (Claude
+    # Code), which runs on the user's logged-in claude.ai OAuth/Max session.
+    # No Anthropic paid API, no API key, and no Claude print mode: the runtime
+    # strips API-key env vars and drives Claude through a tmux-backed TTY.
+    "claude-cli-subprocess": ProviderConfig(
+        id="claude-cli-subprocess",
+        name="Claude Code CLI (OAuth subprocess)",
+        auth_type="cli_subprocess",
+        inference_base_url="",  # subprocess transport — no HTTP endpoint
+    ),
     "alibaba": ProviderConfig(
         id="alibaba",
         name="Qwen Cloud",
@@ -1512,6 +1522,10 @@ def resolve_provider(
         "alibaba_coding": "alibaba-coding-plan", "alibaba-coding": "alibaba-coding-plan",
         "alibaba_coding_plan": "alibaba-coding-plan",
         "claude": "anthropic", "claude-code": "anthropic",
+        # Provider aliases for the Max-preserving interactive Claude CLI runtime.
+        "claude-via-cli": "claude-cli-subprocess",
+        "claude-cli": "claude-cli-subprocess",
+        "claude-code-cli": "claude-cli-subprocess",
         "github": "copilot", "github-copilot": "copilot",
         "github-models": "copilot", "github-model": "copilot",
         "github-copilot-acp": "copilot-acp", "copilot-acp-agent": "copilot-acp",
@@ -6013,6 +6027,24 @@ def get_external_process_provider_status(provider_id: str) -> Dict[str, Any]:
     }
 
 
+def get_claude_cli_subprocess_status() -> Dict[str, Any]:
+    """Status snapshot for the interactive Claude CLI subprocess provider."""
+    resolved = shutil.which("claude")
+    return {
+        "configured": bool(resolved),
+        "provider": "claude-cli-subprocess",
+        "name": "Claude Code CLI (OAuth subprocess)",
+        "command": "claude",
+        "resolved_command": resolved,
+        "logged_in": bool(resolved),
+        "note": (
+            "Runs turns through an interactive tmux-backed `claude` session on "
+            "Claude Code's claude.ai OAuth/Max login; Hermes does not store or "
+            "probe Claude credentials. Run `claude /login` if turns fail."
+        ),
+    }
+
+
 def get_auth_status(provider_id: Optional[str] = None) -> Dict[str, Any]:
     """Generic auth status dispatcher."""
     target = (provider_id or get_active_provider() or "").strip().lower()
@@ -6034,6 +6066,8 @@ def get_auth_status(provider_id: Optional[str] = None) -> Dict[str, Any]:
         return get_minimax_oauth_auth_status()
     if target == "copilot-acp":
         return get_external_process_provider_status(target)
+    if target == "claude-cli-subprocess":
+        return get_claude_cli_subprocess_status()
     if target == "azure-foundry":
         return _get_azure_foundry_auth_status()
     # API-key providers
