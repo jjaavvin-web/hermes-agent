@@ -985,6 +985,309 @@
 .pulse-root .get-some-chip--cyan { color: var(--pulse-cyan); border-color: rgba(118, 228, 247, 0.28); }
 .pulse-root .get-some-chip--red  { color: var(--pulse-red);  border-color: rgba(252, 129, 129, 0.28); }
 
+.pulse-root .get-some-hero__poll {
+  flex: 0 0 auto;
+  padding: 6px 9px;
+  border: 1px solid rgba(118, 228, 247, 0.18);
+  border-radius: 999px;
+  color: rgba(118, 228, 247, 0.78);
+  background: rgba(118, 228, 247, 0.06);
+  font-size: 10px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.pulse-root .get-some-resume-strip {
+  flex: 0 0 auto;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 12px;
+  padding: 10px 12px;
+  border: 1px solid rgba(183, 148, 244, 0.26);
+  border-radius: 12px;
+  background:
+    radial-gradient(circle at 10% 0%, rgba(183, 148, 244, 0.14), transparent 46%),
+    linear-gradient(135deg, rgba(8, 12, 28, 0.88), rgba(4, 6, 16, 0.78));
+  box-shadow: inset 0 0 24px rgba(183, 148, 244, 0.04), 0 0 18px rgba(0, 0, 0, 0.32);
+}
+
+.pulse-root .get-some-resume-strip span {
+  color: var(--pulse-purple);
+  font-size: 10px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+}
+
+.pulse-root .get-some-resume-strip strong {
+  min-width: 0;
+  color: rgba(248, 253, 255, 0.92);
+  font-size: 13px;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pulse-root .get-some-command-grid {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: minmax(220px, 0.72fr) minmax(420px, 1.6fr) minmax(260px, 0.9fr);
+  grid-template-rows: auto minmax(0, 1fr);
+  grid-template-areas:
+    "topology projects decisions"
+    "live projects decisions";
+  gap: 8px;
+}
+
+.pulse-root .get-some-zone {
+  min-width: 0;
+  min-height: 0;
+  border: 1px solid rgba(118, 228, 247, 0.16);
+  border-radius: 14px;
+  background:
+    linear-gradient(145deg, rgba(5, 16, 34, 0.82), rgba(3, 6, 16, 0.72)),
+    radial-gradient(circle at 14% 0%, rgba(118, 228, 247, 0.07), transparent 52%);
+  box-shadow: inset 0 0 20px rgba(118, 228, 247, 0.035), 0 0 15px rgba(0, 0, 0, 0.34);
+  overflow: hidden;
+}
+
+.pulse-root .get-some-zone__header {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.075);
+}
+
+.pulse-root .get-some-zone__header > span {
+  padding: 3px 6px;
+  border: 1px solid rgba(118, 228, 247, 0.22);
+  border-radius: 999px;
+  color: var(--pulse-cyan);
+  background: rgba(118, 228, 247, 0.055);
+  font-size: 9px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.pulse-root .get-some-zone__header h2 {
+  margin: 0;
+  color: rgba(248, 253, 255, 0.92);
+  font-size: 12px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pulse-root .get-some-zone__header small {
+  color: rgba(229, 229, 229, 0.48);
+  font-size: 10px;
+  white-space: nowrap;
+}
+
+.pulse-root .get-some-topology {
+  grid-area: topology;
+  display: flex;
+  flex-direction: column;
+}
+
+.pulse-root .get-some-topology p {
+  margin: 0;
+  padding: 12px;
+  color: rgba(229, 229, 229, 0.62);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.pulse-root .get-some-topology__link {
+  margin: auto 12px 12px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 36px;
+  border: 1px solid rgba(118, 228, 247, 0.3);
+  border-radius: 10px;
+  color: rgba(248, 253, 255, 0.92);
+  background: linear-gradient(135deg, rgba(118, 228, 247, 0.15), rgba(183, 148, 244, 0.1));
+  text-decoration: none;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+}
+
+.pulse-root .get-some-project-zone {
+  grid-area: projects;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-bottom: 8px;
+}
+
+.pulse-root .get-some-project-zone > .get-some-roster,
+.pulse-root .get-some-project-zone > .get-some-nexus {
+  padding-inline: 8px;
+}
+
+.pulse-root .get-some-decisions {
+  grid-area: decisions;
+  display: flex;
+  flex-direction: column;
+}
+
+.pulse-root .get-some-live {
+  grid-area: live;
+  display: flex;
+  flex-direction: column;
+}
+
+.pulse-root .get-some-empty {
+  margin: 12px;
+  padding: 14px;
+  border: 1px dashed rgba(118, 228, 247, 0.16);
+  border-radius: 12px;
+  color: rgba(229, 229, 229, 0.58);
+  background: rgba(0, 0, 0, 0.18);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.pulse-root .get-some-empty--compact {
+  margin: 0;
+  padding: 10px;
+}
+
+.pulse-root .get-some-action-list,
+.pulse-root .get-some-live__sessions ul,
+.pulse-root .get-some-live__stalled ul {
+  margin: 0;
+  padding: 10px;
+  list-style: none;
+  overflow-y: auto;
+}
+
+.pulse-root .get-some-action-list {
+  min-height: 0;
+}
+
+.pulse-root .get-some-action-list li,
+.pulse-root .get-some-live__sessions li,
+.pulse-root .get-some-live__stalled li {
+  margin-bottom: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.09);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.035);
+  overflow: hidden;
+}
+
+.pulse-root .get-some-action-list a,
+.pulse-root .get-some-action-list div,
+.pulse-root .get-some-live__stalled li,
+.pulse-root .get-some-live__sessions li {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 10px;
+  color: inherit;
+  text-decoration: none;
+}
+
+.pulse-root .get-some-action-list strong,
+.pulse-root .get-some-live__stalled strong {
+  color: rgba(248, 253, 255, 0.92);
+  font-size: 12px;
+  line-height: 1.25;
+}
+
+.pulse-root .get-some-action-list span,
+.pulse-root .get-some-live__stalled span {
+  color: var(--pulse-red);
+  font-size: 10px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.pulse-root .get-some-action-list small,
+.pulse-root .get-some-live__stalled small {
+  color: rgba(229, 229, 229, 0.48);
+  font-size: 10px;
+}
+
+.pulse-root .get-some-action-list a:hover,
+.pulse-root .get-some-action-list a:focus-visible {
+  background: rgba(118, 228, 247, 0.065);
+  outline: none;
+}
+
+.pulse-root .get-some-live__runtimes,
+.pulse-root .get-some-live__sessions,
+.pulse-root .get-some-live__stalled {
+  padding: 10px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.pulse-root .get-some-live__stalled {
+  border-bottom: 0;
+}
+
+.pulse-root .get-some-live__runtimes {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.pulse-root .get-some-runtime {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 7px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 999px;
+  color: rgba(229, 229, 229, 0.78);
+  background: rgba(0, 0, 0, 0.28);
+  font-size: 10px;
+}
+
+.pulse-root .get-some-runtime i {
+  width: 7px;
+  height: 7px;
+  border-radius: 999px;
+  background: rgba(229, 229, 229, 0.5);
+}
+
+.pulse-root .get-some-runtime small {
+  color: rgba(229, 229, 229, 0.42);
+}
+
+.pulse-root .get-some-runtime--ok i { background: var(--pulse-green); box-shadow: 0 0 8px rgba(104, 211, 145, 0.7); }
+.pulse-root .get-some-runtime--warn i { background: var(--pulse-yellow); box-shadow: 0 0 8px rgba(246, 224, 94, 0.7); }
+.pulse-root .get-some-runtime--bad i { background: var(--pulse-red); box-shadow: 0 0 8px rgba(252, 129, 129, 0.7); }
+
+.pulse-root .get-some-live__sessions h3,
+.pulse-root .get-some-live__stalled h3 {
+  margin: 0 0 8px;
+  color: rgba(248, 253, 255, 0.72);
+  font-size: 10px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
+.pulse-root .get-some-live__sessions ul,
+.pulse-root .get-some-live__stalled ul {
+  max-height: 180px;
+  padding: 0;
+}
+
+.pulse-root .get-some-live__sessions li {
+  color: rgba(229, 229, 229, 0.74);
+  font-size: 11px;
+  line-height: 1.35;
+}
+
 .pulse-root .get-some-state {
   min-height: 92px;
   display: flex;
@@ -1218,6 +1521,25 @@
 @media (max-width: 860px) {
   .pulse-root.get-some-root {
     overflow-y: auto;
+  }
+  .pulse-root .get-some-hero,
+  .pulse-root .get-some-resume-strip,
+  .pulse-root .get-some-zone__header {
+    grid-template-columns: minmax(0, 1fr);
+    flex-direction: column;
+    align-items: flex-start;
+  }
+  .pulse-root .get-some-command-grid {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto auto auto auto;
+    grid-template-areas:
+      "topology"
+      "projects"
+      "decisions"
+      "live";
+  }
+  .pulse-root .get-some-resume-strip strong {
+    white-space: normal;
   }
   .pulse-root .get-some-roster__scroller {
     grid-auto-columns: minmax(230px, 86vw);
