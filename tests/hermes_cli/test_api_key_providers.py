@@ -29,6 +29,7 @@ class TestProviderRegistry:
     """Test that new providers are correctly registered."""
 
     @pytest.mark.parametrize("provider_id,name,auth_type", [
+        ("claude-cli-subprocess", "Claude Code CLI (OAuth subprocess)", "cli_subprocess"),
         ("copilot-acp", "GitHub Copilot ACP", "external_process"),
         ("copilot", "GitHub Copilot", "api_key"),
         ("huggingface", "Hugging Face", "api_key"),
@@ -47,7 +48,10 @@ class TestProviderRegistry:
         pconfig = PROVIDER_REGISTRY[provider_id]
         assert pconfig.name == name
         assert pconfig.auth_type == auth_type
-        assert pconfig.inference_base_url  # must have a default base URL
+        if auth_type == "cli_subprocess":
+            assert pconfig.inference_base_url == ""
+        else:
+            assert pconfig.inference_base_url  # must have a default base URL
 
     def test_zai_env_vars(self):
         pconfig = PROVIDER_REGISTRY["zai"]
@@ -177,6 +181,14 @@ class TestResolveProvider:
 
     def test_explicit_gmi(self):
         assert resolve_provider("gmi") == "gmi"
+
+    def test_explicit_claude_cli_subprocess(self):
+        assert resolve_provider("claude-cli-subprocess") == "claude-cli-subprocess"
+
+    def test_alias_claude_cli_subprocess(self):
+        assert resolve_provider("claude-via-cli") == "claude-cli-subprocess"
+        assert resolve_provider("claude-cli") == "claude-cli-subprocess"
+        assert resolve_provider("claude-code-cli") == "claude-cli-subprocess"
 
     def test_alias_glm(self):
         assert resolve_provider("glm") == "zai"

@@ -277,6 +277,10 @@ _VALID_API_MODES = {
     # `model.openai_runtime == "codex_app_server"` AND provider in
     # {"openai", "openai-codex"}. Default is unchanged.
     "codex_app_server",
+    # Hand the entire turn to the local interactive `claude` CLI (Claude Code)
+    # running on claude.ai OAuth/Max via a tmux-backed TTY. Used exclusively
+    # by the `claude-cli-subprocess` provider — no HTTP transport, no API key.
+    "claude_cli_subprocess",
 }
 
 
@@ -1244,6 +1248,31 @@ def resolve_runtime_provider(
     behavior (api_mode derived from config).
     """
     requested_provider = resolve_requested_provider(requested)
+
+    # claude-cli-subprocess short-circuit: this provider delegates the whole
+    # turn to the local interactive `claude` CLI (Claude Code) on claude.ai
+    # OAuth/Max. There is no HTTP endpoint and no API key — resolve it
+    # directly to api_mode="claude_cli_subprocess" before credential-pool or
+    # OpenRouter fallback machinery. Use a local alias set instead of calling
+    # resolve_provider() here so named custom-provider resolution remains able
+    # to run before the generic provider resolver.
+    _claude_cli_aliases = {
+        "claude-cli-subprocess",
+        "claude_cli_subprocess",
+        "claude-via-cli",
+        "claude-cli",
+        "claude-code-cli",
+    }
+    if requested_provider in _claude_cli_aliases:
+        return {
+            "provider": "claude-cli-subprocess",
+            "api_mode": "claude_cli_subprocess",
+            "base_url": "",
+            # Placeholder only; never sent to an HTTP client on this runtime.
+            "api_key": "***",
+            "source": "claude-cli-subprocess",
+            "requested_provider": requested_provider,
+        }
 
     # Azure Anthropic short-circuit: when explicitly targeting an Azure endpoint
     # with provider="anthropic", bypass _resolve_named_custom_runtime (which would
