@@ -129,3 +129,45 @@ def test_run_claude_cli_turn_uses_interactive_file_handoff(tmp_path, monkeypatch
     assert killed == [started["session_id"]]
     assert "memory" in started
     assert "review" in started
+
+
+def test_run_claude_oneshot_uses_interactive_file_handoff(tmp_path, monkeypatch):
+    import agent.claude_cli_runtime as runtime
+
+    handoff_dir = tmp_path / "oneshot"
+    started = {}
+    killed = []
+
+    monkeypatch.setattr(runtime, "_find_claude_binary", lambda: "/usr/bin/claude")
+    monkeypatch.setattr(runtime, "_find_tmux_binary", lambda: "/usr/bin/tmux")
+    monkeypatch.setattr(runtime.tempfile, "mkdtemp", lambda prefix: str(handoff_dir))
+    monkeypatch.setattr(runtime, "_resolve_timeout", lambda: 30)
+    monkeypatch.setattr(runtime, "_wait_for_claude_ready", lambda *args, **kwargs: None)
+
+    def fake_start(tmux_bin, session_id, command, *, env, cwd):
+        started["command"] = command
+        started["cwd"] = cwd
+        # Must stay on the interactive Max path — never headless print mode.
+        assert "--print" not in command
+        assert "-p" not in command
+        handoff_dir.mkdir(parents=True, exist_ok=True)
+
+    def fake_send(tmux_bin, session_id, text):
+        assert "Write" in text
+        assert "result.md" in text
+        (handoff_dir / "result.md").write_text("ONESHOT OUTPUT\n", encoding="utf-8")
+
+    monkeypatch.setattr(runtime, "_start_tmux_session", fake_start)
+    monkeypatch.setattr(runtime, "_send_tmux_text", fake_send)
+    monkeypatch.setattr(runtime, "_kill_tmux_session", lambda tmux_bin, session_id: killed.append(session_id))
+
+    out = runtime.run_claude_oneshot(
+        "Extract X as JSON.", model="claude-via-cli", cwd=str(tmp_path)
+    )
+
+    assert out == "ONESHOT OUTPUT"
+    # The raw prompt is handed off verbatim (no agent transcript wrapping).
+    assert (handoff_dir / "turn.md").read_text(encoding="utf-8") == "Extract X as JSON."
+    assert started["cwd"] == str(tmp_path)
+    assert "--print" not in started["command"]
+    assert len(killed) == 1

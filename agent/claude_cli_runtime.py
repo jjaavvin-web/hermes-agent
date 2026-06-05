@@ -466,6 +466,66 @@ def run_claude_cli_turn(
     }
 
 
+def run_claude_oneshot(
+    prompt: str,
+    *,
+    model: Optional[str] = None,
+    system_prompt: Optional[str] = None,
+    cwd: Optional[str] = None,
+    timeout: Optional[int] = None,
+) -> str:
+    """Run a single headless Claude turn on the Max/OAuth plan and return its text.
+
+    A one-shot convenience wrapper around the same interactive-tmux mechanism the
+    ``claude-cli-subprocess`` provider uses for agent turns — intended as the
+    Max-preserving replacement for standalone scripts that currently shell out to
+    ``claude -p`` (which moves to a metered API pool after the 2026-06-15 billing
+    split). Drives the *interactive* Claude CLI through a tmux TTY with paid-API
+    env vars stripped, so it can only authenticate via the user's claude.ai
+    OAuth / Max session. Returns the assistant's final text verbatim (the caller
+    parses any JSON itself). Raises ``ClaudeCliError`` on failure.
+    """
+    resolved_timeout = timeout if timeout is not None else _resolve_timeout()
+    work_cwd = cwd or os.getcwd()
+
+    handoff_dir = Path(tempfile.mkdtemp(prefix="hermes-claude-oneshot-"))
+    handoff_dir.mkdir(parents=True, exist_ok=True)
+    turn_path = handoff_dir / "turn.md"
+    result_path = handoff_dir / "result.md"
+    turn_path.write_text(prompt, encoding="utf-8")
+
+    claude_bin = _find_claude_binary()
+    tmux_bin = _find_tmux_binary()
+    session_id = f"hermes-claude-oneshot-{uuid.uuid4().hex[:12]}"
+    cmd = build_claude_command(
+        claude_bin,
+        model=model,
+        add_dirs=[str(handoff_dir)],
+        system_prompt=system_prompt,
+    )
+    env = _claude_subprocess_env()
+
+    logger.info(
+        "claude-cli-subprocess oneshot: session=%s cwd=%s handoff=%s",
+        session_id,
+        work_cwd,
+        handoff_dir,
+    )
+    _start_tmux_session(tmux_bin, session_id, cmd, env=env, cwd=work_cwd)
+    try:
+        _wait_for_claude_ready(tmux_bin, session_id)
+        invocation = (
+            f"Read the prompt at {turn_path}. "
+            f"Write ONLY the final answer to {result_path} using the Write tool. "
+            "Do not write analysis, metadata, markdown fences, or any commentary "
+            "outside the requested answer."
+        )
+        _send_tmux_text(tmux_bin, session_id, invocation)
+        return _wait_for_result_file(result_path, timeout=resolved_timeout)
+    finally:
+        _kill_tmux_session(tmux_bin, session_id)
+
+
 def _error_turn(messages: List[Dict[str, Any]], error: str) -> Dict[str, Any]:
     return {
         "final_response": f"claude-cli-subprocess runtime error: {error}",
