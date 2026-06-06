@@ -555,6 +555,12 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
     p_block.add_argument("--ids", nargs="+", default=None,
                          help="Additional task ids to block with the same reason (bulk mode)")
 
+    p_open_pr = sub.add_parser(
+        "open-pr",
+        help="Open a needs-human PR for a completed CODE card's worktree (code→PR layer)",
+    )
+    p_open_pr.add_argument("task_id")
+
     p_schedule = sub.add_parser("schedule", help="Park one or more tasks in Scheduled (waiting on time, not human input)")
     p_schedule.add_argument("task_id")
     p_schedule.add_argument("reason", nargs="*", help="Reason/timing note (also appended as a comment)")
@@ -939,6 +945,7 @@ def kanban_command(args: argparse.Namespace) -> int:
             "complete": _cmd_complete,
             "edit":     _cmd_edit,
             "block":    _cmd_block,
+            "open-pr":  _cmd_open_pr,
             "schedule": _cmd_schedule,
             "unblock":  _cmd_unblock,
             "promote":  _cmd_promote,
@@ -1956,6 +1963,90 @@ def _cmd_block(args: argparse.Namespace) -> int:
             else:
                 print(f"Blocked {tid}" + (f": {reason}" if reason else ""))
     return 0 if not failed else 1
+
+
+def _hermes_base_branch() -> str:
+    """Branch that kanban code PRs target = the hermes repo's current branch
+    (the live deploy branch), falling back to ``main``."""
+    import subprocess
+    root = kb._hermes_repo_root()
+    if root is not None:
+        try:
+            r = subprocess.run(
+                ["git", "-C", str(root), "branch", "--show-current"],
+                capture_output=True, text=True, check=False,
+            )
+            if r.stdout.strip():
+                return r.stdout.strip()
+        except Exception:
+            pass
+    return "main"
+
+
+def _cmd_open_pr(args: argparse.Namespace) -> int:
+    """Open a needs-human PR for a completed CODE card's worktree (code→PR layer).
+
+    Resolves the card's worktree + branch, pushes + opens a PR via
+    ``kanban_pr.open_pr`` (remoteless repo → records a local branch instead),
+    records the PR url as a comment, and blocks the card ``review-required:`` so
+    a human reviews + merges. The merge gate stays human."""
+    from hermes_cli import kanban_pr
+
+    tid = args.task_id
+    author = _profile_author()
+    with kb.connect_closing() as conn:
+        task = kb.get_task(conn, tid)
+    if task is None:
+        print(f"no such task {tid}", file=sys.stderr)
+        return 1
+    try:
+        worktree = kb.resolve_workspace(task)
+    except Exception as exc:
+        print(f"cannot resolve workspace for {tid}: {exc}", file=sys.stderr)
+        return 1
+    branch = task.branch_name or f"kanban/{task.id}"
+    title = f"kanban({task.id}): {task.title}"[:72]
+    body = (
+        f"Automated PR for kanban card `{task.id}` — {task.title}\n\n"
+        f"Branch `{branch}`, opened by the kanban code→PR layer. "
+        f"Merge stays human (needs-human)."
+    )
+    res = kanban_pr.open_pr(
+        worktree=worktree, branch=branch, title=title, body=body,
+        base_branch=_hermes_base_branch(),
+    )
+
+    run_id = _worker_run_id_for(tid)
+    mode = res.get("mode")
+    with kb.connect_closing() as conn:
+        if mode == "pr" and res.get("pr_url"):
+            kb.add_comment(conn, tid, author,
+                           f"PR opened: {res['pr_url']} "
+                           f"({res.get('classification', '?')} → {res.get('label', '?')})")
+            kb.block_task(conn, tid,
+                          reason=f"review-required: PR {res['pr_url']} — human review + merge",
+                          expected_run_id=run_id)
+            print(f"open-pr {tid}: {res['pr_url']} [{res.get('label')}]")
+            return 0
+        if mode == "local-branch":
+            kb.add_comment(conn, tid, author,
+                           f"Committed to local branch `{branch}` (remoteless repo; no PR).")
+            kb.block_task(conn, tid,
+                          reason=f"review-required: local branch {branch} (remoteless; review locally)",
+                          expected_run_id=run_id)
+            print(f"open-pr {tid}: local-branch {branch} (remoteless, no PR)")
+            return 0
+        if mode == "noop":
+            kb.add_comment(conn, tid, author, f"open-pr: {res.get('note', 'no changes to PR')}")
+            print(f"open-pr {tid}: noop ({res.get('note')})")
+            return 0
+        err = res.get("error", "unknown error")
+        kb.add_comment(conn, tid, author, f"open-pr failed: {err}")
+        kb.block_task(conn, tid,
+                      reason=f"review-required: open-pr failed — {err}",
+                      expected_run_id=run_id)
+        print(f"open-pr {tid}: ERROR {err}", file=sys.stderr)
+        return 1
 
 
 def _cmd_schedule(args: argparse.Namespace) -> int:

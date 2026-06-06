@@ -4619,6 +4619,53 @@ def delete_task(conn: sqlite3.Connection, task_id: str) -> bool:
 # Workspace resolution
 # ---------------------------------------------------------------------------
 
+def _hermes_repo_root() -> Optional[Path]:
+    """The Hermes git repo root (parent of this ``hermes_cli`` package), or
+    ``None`` if not a git checkout (pip install). Default base repo for
+    code-card worktrees."""
+    root = Path(__file__).resolve().parent.parent
+    return root if (root / ".git").exists() else None
+
+
+def _kanban_worktree_root() -> Path:
+    """Directory holding kanban code-card worktrees (sibling of codex-wt)."""
+    home = os.environ.get("HERMES_HOME") or str(Path.home() / ".hermes")
+    return Path(home) / "kanban-wt"
+
+
+def _ensure_kanban_worktree(
+    path: Path, branch: str, *, repo_root: Optional[Path] = None
+) -> bool:
+    """Idempotently create a git worktree at ``path`` on ``branch`` off the
+    repo's current HEAD (the live code), so the code→PR layer has a real
+    branch+commits to push. Best-effort: returns True on success/already-there,
+    False if it couldn't be created (the kanban-worker skill still documents the
+    worker-side ``git worktree add`` fallback). Default base repo is the hermes
+    checkout; a per-card target repo (``repo:`` hint) is a future extension."""
+    try:
+        path = Path(path)
+        if (path / ".git").exists():
+            return True  # already a worktree
+        repo_root = repo_root or _hermes_repo_root()
+        if repo_root is None:
+            return False
+        path.parent.mkdir(parents=True, exist_ok=True)
+        ref_check = subprocess.run(
+            ["git", "-C", str(repo_root), "rev-parse", "--verify", "--quiet",
+             f"refs/heads/{branch}"],
+            capture_output=True, text=True, check=False,
+        )
+        add = ["git", "-C", str(repo_root), "worktree", "add", str(path)]
+        if ref_check.returncode == 0:
+            add.append(branch)            # reuse an existing branch
+        else:
+            add += ["-b", branch, "HEAD"]  # new branch off live HEAD
+        res = subprocess.run(add, capture_output=True, text=True, check=False)
+        return res.returncode == 0 and path.is_dir()
+    except Exception:
+        return False
+
+
 def resolve_workspace(task: Task, *, board: Optional[str] = None) -> Path:
     """Resolve (and create if needed) the workspace for a task.
 
@@ -4670,15 +4717,21 @@ def resolve_workspace(task: Task, *, board: Optional[str] = None) -> Path:
         p.mkdir(parents=True, exist_ok=True)
         return p
     if kind == "worktree":
-        if not task.workspace_path:
-            # Default: .worktrees/<id>/ under CWD.  Worker skill creates it.
-            return Path.cwd() / ".worktrees" / task.id
-        p = Path(task.workspace_path).expanduser()
-        if not p.is_absolute():
-            raise ValueError(
-                f"task {task.id} has non-absolute worktree path "
-                f"{task.workspace_path!r}; use an absolute path"
-            )
+        branch = task.branch_name or f"kanban/{task.id}"
+        if task.workspace_path:
+            p = Path(task.workspace_path).expanduser()
+            if not p.is_absolute():
+                raise ValueError(
+                    f"task {task.id} has non-absolute worktree path "
+                    f"{task.workspace_path!r}; use an absolute path"
+                )
+        else:
+            # Anchored, deterministic location (not the dispatcher's CWD).
+            p = _kanban_worktree_root() / task.id
+        # Create the worktree off the live HEAD so the code→PR layer has a real
+        # branch+commits to push. Best-effort — the kanban-worker skill still
+        # documents the worker-side `git worktree add` fallback if this no-ops.
+        _ensure_kanban_worktree(p, branch)
         return p
     raise ValueError(f"unknown workspace_kind: {kind}")
 
@@ -4916,6 +4969,16 @@ def _hive_registry_conflict(
             continue
         if not isinstance(data, dict):
             continue
+        # Self-clean stale locks: a worker whose pid is gone has finished or
+        # crashed, so its lock must not block a re-dispatch forever. Unlink
+        # and skip. (No ``pid`` key → legacy/observability lock; treat as live.)
+        lock_pid = data.get("pid")
+        if lock_pid is not None and not _pid_alive(lock_pid):
+            try:
+                lock.unlink()
+            except OSError:
+                pass
+            continue
         lock_branch = data.get("branch")
         lock_card = data.get("tracking_card")
         if (branch and lock_branch and branch == lock_branch) or (
@@ -4943,6 +5006,55 @@ def _notify_guardrail_block(task_id: str, conflict: str) -> None:
         )
     except Exception:
         pass
+
+
+# ---------------------------------------------------------------------------
+# Run-registry lock writer (Gate-2 collision guard — WRITE side / PREREQ-A)
+# ---------------------------------------------------------------------------
+# ``_hive_registry_conflict`` (above) refuses to dispatch a ready card whose
+# branch/id already appears in a live ``<id>.lock`` under ``~/.hermes/
+# run-registry``. For that READ side to mean anything, the spawn launcher must
+# WRITE a lock per running worker — done by ``_write_run_lock`` below, called
+# from ``_default_spawn`` right after a successful Popen. Writes are
+# best-effort: a failure must never block a dispatch (the guard then just
+# fails open, the prior behaviour). Stale locks (worker pid dead) self-clean
+# inside the reader so the registry can never wedge the dispatcher.
+
+def _run_registry_dir() -> Path:
+    """``<HERMES_HOME or ~/.hermes>/run-registry`` — the lock directory.
+
+    Mirrors ``kanban-pipeline.py:_run_registry_dir`` so the driver preflight
+    (which asserts this dir is writable) and the writer agree on one path.
+    """
+    home = os.environ.get("HERMES_HOME") or str(Path.home() / ".hermes")
+    return Path(home) / "run-registry"
+
+
+def _write_run_lock(
+    task: Any, pid: int, *, board: Optional[str] = None
+) -> Optional[Path]:
+    """Write a ``<task-id>.lock`` for a freshly spawned worker so the dispatch
+    collision guard can see the live run. Best-effort: returns the lock path,
+    or ``None`` on any failure (a registry write must never break a dispatch).
+    """
+    try:
+        reg = _run_registry_dir()
+        reg.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "slug": task.id,
+            "tracking_card": task.id,
+            "branch": getattr(task, "branch_name", None) or None,
+            "pid": int(pid),
+            "board": _normalize_board_slug(board) if board else None,
+            "started_at": int(time.time()),
+        }
+        lock_path = reg / f"{task.id}.lock"
+        tmp = lock_path.with_name(lock_path.name + ".tmp")
+        tmp.write_text(json.dumps(payload))
+        os.replace(tmp, lock_path)  # atomic publish
+        return lock_path
+    except Exception:
+        return None
 
 
 # Bounded registry of recently-reaped worker child exits, populated by the
@@ -6897,6 +7009,11 @@ def _default_spawn(
     # handle is kept alive by the child's inheritance.  The parent's
     # reference goes out of scope and is GC'd, but the OS-level FD stays
     # open in the child until the child exits.
+    #
+    # PREREQ-A / Gate-2: publish a run-registry lock for this live worker so
+    # ``_hive_registry_conflict`` refuses a colliding re-dispatch while it
+    # runs. Best-effort — a registry failure never blocks the spawn.
+    _write_run_lock(task, proc.pid, board=board)
     return proc.pid
 
 

@@ -52,7 +52,9 @@ _SENSITIVE_PREFIXES: tuple[str, ...] = (
     ".github/",
     "scripts/isa_",
     "hermes_state.py",
-    "hermes_cli/web_server.py",
+    "hermes_cli/",  # whole CLI + dispatch engine (kanban_db.py, main.py …): an
+                    # engine bug must never self-classify safe-to-merge.
+                    # Subsumes the prior narrow hermes_cli/web_server.py entry.
 )
 
 
