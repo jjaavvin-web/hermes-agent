@@ -44,6 +44,26 @@ def test_build_claude_command_normalizes_real_anthropic_model():
     assert cmd[cmd.index("--model") + 1] == "claude-sonnet-4-6"
 
 
+def test_build_claude_command_supports_effort_and_permission_mode_without_print():
+    from agent.claude_cli_runtime import build_claude_command
+
+    cmd = build_claude_command(
+        "/usr/bin/claude",
+        model="anthropic/claude-opus-4.8",
+        add_dirs=[],
+        allowed_tools="Read,Write,Edit",
+        effort="max",
+        permission_mode="acceptEdits",
+    )
+
+    assert "--print" not in cmd
+    assert "-p" not in cmd
+    assert cmd[cmd.index("--model") + 1] == "claude-opus-4-8"
+    assert cmd[cmd.index("--effort") + 1] == "max"
+    assert cmd[cmd.index("--permission-mode") + 1] == "acceptEdits"
+    assert cmd[cmd.index("--allowed-tools") + 1] == "Read,Write,Edit"
+
+
 def test_claude_subprocess_env_strips_paid_api_vars(monkeypatch):
     from agent.claude_cli_runtime import _claude_subprocess_env
 
@@ -129,6 +149,72 @@ def test_run_claude_cli_turn_uses_interactive_file_handoff(tmp_path, monkeypatch
     assert killed == [started["session_id"]]
     assert "memory" in started
     assert "review" in started
+
+
+def test_run_claude_cli_turn_applies_effort_and_workflow_trigger(tmp_path, monkeypatch):
+    import agent.claude_cli_runtime as runtime
+
+    handoff_dir = tmp_path / "workflow-handoff"
+    started = {}
+    sent = {}
+
+    monkeypatch.setattr(runtime, "_find_claude_binary", lambda: "/usr/bin/claude")
+    monkeypatch.setattr(runtime, "_find_tmux_binary", lambda: "/usr/bin/tmux")
+    monkeypatch.setattr(runtime.tempfile, "mkdtemp", lambda prefix: str(handoff_dir))
+    monkeypatch.setattr(runtime, "_resolve_timeout", lambda configured=None: 30)
+    monkeypatch.setattr(runtime, "_wait_for_claude_ready", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        runtime,
+        "_load_claude_cli_options",
+        lambda: runtime.ClaudeCliOptions(
+            effort="max",
+            permission_mode="acceptEdits",
+            allowed_tools="Read,Write,Edit",
+            workflow_mode="on_request",
+            timeout_seconds=30,
+            ready_timeout_seconds=10,
+        ),
+    )
+
+    def fake_start(tmux_bin, session_id, command, *, env, cwd):
+        started["command"] = command
+        assert "--print" not in command
+        assert command[command.index("--model") + 1] == "claude-opus-4-8"
+        assert command[command.index("--effort") + 1] == "max"
+        assert command[command.index("--permission-mode") + 1] == "acceptEdits"
+        handoff_dir.mkdir(parents=True, exist_ok=True)
+
+    def fake_send(tmux_bin, session_id, text):
+        sent["text"] = text
+        assert text.startswith("ultracode:")
+        assert "Dynamic Workflows" in text
+        (handoff_dir / "result.md").write_text("WORKFLOW RESULT\n", encoding="utf-8")
+
+    monkeypatch.setattr(runtime, "_start_tmux_session", fake_start)
+    monkeypatch.setattr(runtime, "_send_tmux_text", fake_send)
+    monkeypatch.setattr(runtime, "_kill_tmux_session", lambda *args, **kwargs: None)
+
+    agent = SimpleNamespace(
+        model="claude-opus-4.8",
+        session_cwd=str(tmp_path),
+        _cached_system_prompt="SYSTEM RULES",
+        _sync_external_memory_for_turn=lambda **kwargs: None,
+        _spawn_background_review=lambda **kwargs: None,
+    )
+    messages = [{"role": "user", "content": "Use a workflow to design this agent."}]
+
+    result = runtime.run_claude_cli_turn(
+        agent,
+        user_message="Use a workflow to design this agent.",
+        original_user_message="Use a workflow to design this agent.",
+        messages=messages,
+        effective_task_id="task-workflow",
+        should_review_memory=False,
+    )
+
+    assert result["completed"] is True
+    assert result["final_response"] == "WORKFLOW RESULT"
+    assert "ultracode:" in sent["text"]
 
 
 def test_run_claude_oneshot_uses_interactive_file_handoff(tmp_path, monkeypatch):

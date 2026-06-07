@@ -39,11 +39,13 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import shutil
 import subprocess
 import tempfile
 import time
 import uuid
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence
 
@@ -70,6 +72,36 @@ _SYNTHETIC_MODEL_NAMES = {
     "claude-cli-subprocess",
     "claude-code-cli",
 }
+
+_VALID_EFFORTS = {"low", "medium", "high", "max", "auto"}
+_VALID_PERMISSION_MODES = {"default", "acceptEdits", "plan", "auto", "dontAsk"}
+_VALID_WORKFLOW_MODES = {"off", "on_request", "always"}
+_WORKFLOW_TRIGGER_TERMS = (
+    "ultracode",
+    "/workflows",
+    "/deep-research",
+    "deep research",
+    "workflow",
+    "workflows",
+    "multi-agent",
+    "multi agent",
+    "agent team",
+    "subagent",
+    "subagents",
+    "orchestration",
+)
+
+
+@dataclass(frozen=True)
+class ClaudeCliOptions:
+    """Config-backed options for the Max/OAuth Claude Code subprocess bridge."""
+
+    allowed_tools: str = "Read,Write"
+    effort: Optional[str] = None
+    permission_mode: Optional[str] = None
+    workflow_mode: str = "off"
+    timeout_seconds: Optional[int] = None
+    ready_timeout_seconds: int = _DEFAULT_READY_TIMEOUT_SECONDS
 
 
 class ClaudeCliError(RuntimeError):
@@ -129,6 +161,132 @@ def _find_tmux_binary() -> str:
             "Claude must run through an interactive TTY to stay on the Max/OAuth path. "
             "Install tmux or set HERMES_TMUX_PATH."
         ) from exc
+
+
+def _coerce_positive_int(value: Any) -> Optional[int]:
+    if value in (None, ""):
+        return None
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed > 0 else None
+
+
+def _normalize_effort(value: Any) -> Optional[str]:
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    lowered = raw.lower()
+    if lowered not in _VALID_EFFORTS:
+        raise ClaudeCliError(
+            f"Unsupported claude_cli.effort={raw!r}; expected one of {sorted(_VALID_EFFORTS)}."
+        )
+    return lowered
+
+
+def _normalize_permission_mode(value: Any) -> Optional[str]:
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    canonical = {mode.lower(): mode for mode in _VALID_PERMISSION_MODES}
+    lowered = raw.lower()
+    if lowered not in canonical:
+        raise ClaudeCliError(
+            "Unsupported claude_cli.permission_mode="
+            f"{raw!r}; expected one of {sorted(_VALID_PERMISSION_MODES)}. "
+            "The subprocess bridge intentionally does not expose bypassPermissions "
+            "because it would auto-approve shell/file/network actions beyond the safe workflow lane."
+        )
+    return canonical[lowered]
+
+
+def _normalize_workflow_mode(value: Any) -> str:
+    raw = str(value or "off").strip().lower().replace("-", "_")
+    aliases = {
+        "false": "off",
+        "0": "off",
+        "none": "off",
+        "disabled": "off",
+        "true": "always",
+        "1": "always",
+        "enabled": "always",
+        "onrequest": "on_request",
+        "on_request": "on_request",
+        "request": "on_request",
+        "auto": "on_request",
+        "always": "always",
+        "off": "off",
+    }
+    normalized = aliases.get(raw, raw)
+    if normalized not in _VALID_WORKFLOW_MODES:
+        raise ClaudeCliError(
+            f"Unsupported claude_cli.workflow_mode={value!r}; expected one of {sorted(_VALID_WORKFLOW_MODES)}."
+        )
+    return normalized
+
+
+def _read_claude_cli_config() -> Dict[str, Any]:
+    try:
+        from hermes_cli.config import load_config
+
+        cfg = load_config() or {}
+    except Exception:
+        return {}
+    for section_name in ("claude_cli", "claude_cli_subprocess", "claude_code"):
+        section = cfg.get(section_name) if isinstance(cfg, dict) else None
+        if isinstance(section, dict):
+            return section
+    return {}
+
+
+def _load_claude_cli_options() -> ClaudeCliOptions:
+    """Load non-secret Claude Code bridge options from config/env."""
+    cfg = _read_claude_cli_config()
+    allowed_tools = str(
+        os.environ.get("HERMES_CLAUDE_CLI_ALLOWED_TOOLS")
+        or cfg.get("allowed_tools")
+        or cfg.get("allowedTools")
+        or "Read,Write"
+    ).strip()
+    effort = _normalize_effort(
+        os.environ.get("HERMES_CLAUDE_CLI_EFFORT")
+        or cfg.get("effort")
+        or cfg.get("reasoning_effort")
+    )
+    permission_mode = _normalize_permission_mode(
+        os.environ.get("HERMES_CLAUDE_CLI_PERMISSION_MODE")
+        or cfg.get("permission_mode")
+        or cfg.get("permissionMode")
+    )
+    workflow_mode = _normalize_workflow_mode(
+        os.environ.get("HERMES_CLAUDE_CLI_WORKFLOW_MODE")
+        or cfg.get("workflow_mode")
+        or cfg.get("workflowMode")
+    )
+    timeout_seconds = _coerce_positive_int(
+        os.environ.get("HERMES_CLAUDE_CLI_TIMEOUT")
+        or cfg.get("timeout_seconds")
+        or cfg.get("timeoutSeconds")
+        or cfg.get("timeout")
+    )
+    ready_timeout_seconds = (
+        _coerce_positive_int(
+            os.environ.get("HERMES_CLAUDE_CLI_READY_TIMEOUT")
+            or cfg.get("ready_timeout_seconds")
+            or cfg.get("readyTimeoutSeconds")
+            or cfg.get("ready_timeout")
+        )
+        or _DEFAULT_READY_TIMEOUT_SECONDS
+    )
+    return ClaudeCliOptions(
+        allowed_tools=allowed_tools,
+        effort=effort,
+        permission_mode=permission_mode,
+        workflow_mode=workflow_mode,
+        timeout_seconds=timeout_seconds,
+        ready_timeout_seconds=ready_timeout_seconds,
+    )
 
 
 def _resolve_timeout() -> int:
@@ -217,6 +375,8 @@ def build_claude_command(
     add_dirs: Optional[Sequence[str]] = None,
     allowed_tools: str = "Read,Write",
     system_prompt: Optional[str] = None,
+    effort: Optional[str] = None,
+    permission_mode: Optional[str] = None,
 ) -> List[str]:
     """Assemble the interactive ``claude`` argv.
 
@@ -228,6 +388,12 @@ def build_claude_command(
     normalized_model = _normalize_model_for_claude_cli(model)
     if normalized_model:
         cmd.extend(["--model", normalized_model])
+    normalized_effort = _normalize_effort(effort)
+    if normalized_effort:
+        cmd.extend(["--effort", normalized_effort])
+    normalized_permission_mode = _normalize_permission_mode(permission_mode)
+    if normalized_permission_mode:
+        cmd.extend(["--permission-mode", normalized_permission_mode])
     if allowed_tools:
         cmd.extend(["--allowed-tools", allowed_tools])
     for directory in add_dirs or []:
@@ -253,6 +419,51 @@ def _render_turn_packet(*, system_prompt: Optional[str], transcript: str, user_m
         "## Conversation / user request\n\n"
         f"{body}\n"
     )
+
+
+def _workflow_requested(*, workflow_mode: str, transcript: str, user_message: Any) -> bool:
+    mode = _normalize_workflow_mode(workflow_mode)
+    if mode == "always":
+        return True
+    if mode != "on_request":
+        return False
+    haystack = "\n".join(
+        part.lower()
+        for part in (transcript, _coerce_content_to_text(user_message))
+        if isinstance(part, str) and part
+    )
+    return any(term in haystack for term in _WORKFLOW_TRIGGER_TERMS)
+
+
+def _render_invocation(*, turn_path: Path, result_path: Path, workflow_requested: bool) -> str:
+    base = (
+        f"Read the Hermes turn packet at {turn_path}. "
+        f"Write only the final assistant response to {result_path} using the Write tool. "
+        "Do not write analysis, metadata, markdown fences, or any extra commentary outside the requested answer."
+    )
+    if not workflow_requested:
+        return base
+    return (
+        "ultracode: "
+        + base
+        + " Use Claude Code Dynamic Workflows / Ultracode natively for the requested "
+        "workflow or multi-agent orchestration when useful, but still finish by writing "
+        "only the final assistant response to the result file."
+    )
+
+
+def _redact_pane_for_error(text: str) -> str:
+    if not text:
+        return ""
+    redacted = text
+    for pattern in (
+        r"(?i)(api[_-]?key|token|secret|password)\s*[:=]\s*\S+",
+        r"sk-[A-Za-z0-9_-]{20,}",
+        r"[A-Za-z0-9_=-]{32,}\.[A-Za-z0-9_=-]{16,}\.[A-Za-z0-9_=-]{16,}",
+    ):
+        redacted = re.sub(pattern, "[REDACTED]", redacted)
+    lines = [line.rstrip() for line in redacted.splitlines() if line.strip()]
+    return "\n".join(lines[-20:])
 
 
 # ---------------------------------------------------------------------------
@@ -340,11 +551,23 @@ def _wait_for_claude_ready(tmux_bin: str, session_id: str, *, timeout: int = _DE
     logger.warning("claude-cli-subprocess: did not see Claude ready banner before timeout; proceeding")
 
 
-def _wait_for_result_file(result_path: Path, *, timeout: int) -> str:
+def _wait_for_result_file(
+    result_path: Path,
+    *,
+    timeout: int,
+    tmux_bin: Optional[str] = None,
+    session_id: Optional[str] = None,
+) -> str:
     deadline = time.monotonic() + max(1, timeout)
     last_size = -1
     stable_since: Optional[float] = None
+    last_pane = ""
     while time.monotonic() < deadline:
+        if tmux_bin and session_id:
+            try:
+                last_pane = _capture_tmux_pane(tmux_bin, session_id)
+            except Exception:
+                pass
         if result_path.exists():
             try:
                 size = result_path.stat().st_size
@@ -360,7 +583,14 @@ def _wait_for_result_file(result_path: Path, *, timeout: int) -> str:
             except OSError:
                 pass
         time.sleep(0.5)
-    raise ClaudeCliError(f"Claude did not write a non-empty result file at {result_path} within {timeout}s.")
+    detail = ""
+    pane_tail = _redact_pane_for_error(last_pane)
+    if pane_tail:
+        detail = f" Last Claude pane tail (redacted):\n{pane_tail}"
+    raise ClaudeCliError(
+        f"Claude did not write a non-empty result file at {result_path} within {timeout}s."
+        + detail
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -381,7 +611,8 @@ def run_claude_cli_turn(
     system_prompt = getattr(agent, "_cached_system_prompt", None) or None
     transcript = _serialize_conversation(messages)
     cwd = getattr(agent, "session_cwd", None) or os.getcwd()
-    timeout = _resolve_timeout()
+    options = _load_claude_cli_options()
+    timeout = options.timeout_seconds or _resolve_timeout()
 
     handoff_dir = Path(tempfile.mkdtemp(prefix="hermes-claude-cli-"))
     handoff_dir.mkdir(parents=True, exist_ok=True)
@@ -404,7 +635,10 @@ def run_claude_cli_turn(
             claude_bin,
             model=getattr(agent, "model", None),
             add_dirs=[str(handoff_dir)],
+            allowed_tools=options.allowed_tools,
             system_prompt=system_prompt,
+            effort=options.effort,
+            permission_mode=options.permission_mode,
         )
         env = _claude_subprocess_env()
 
@@ -416,14 +650,27 @@ def run_claude_cli_turn(
         )
         _start_tmux_session(tmux_bin, session_id, cmd, env=env, cwd=cwd)
         try:
-            _wait_for_claude_ready(tmux_bin, session_id)
-            invocation = (
-                f"Read the Hermes turn packet at {turn_path}. "
-                f"Write only the final assistant response to {result_path} using the Write tool. "
-                "Do not write analysis, metadata, markdown fences, or any extra commentary outside the requested answer."
+            _wait_for_claude_ready(
+                tmux_bin,
+                session_id,
+                timeout=options.ready_timeout_seconds,
+            )
+            invocation = _render_invocation(
+                turn_path=turn_path,
+                result_path=result_path,
+                workflow_requested=_workflow_requested(
+                    workflow_mode=options.workflow_mode,
+                    transcript=transcript,
+                    user_message=user_message,
+                ),
             )
             _send_tmux_text(tmux_bin, session_id, invocation)
-            final_text = _wait_for_result_file(result_path, timeout=timeout)
+            final_text = _wait_for_result_file(
+                result_path,
+                timeout=timeout,
+                tmux_bin=tmux_bin,
+                session_id=session_id,
+            )
         finally:
             _kill_tmux_session(tmux_bin, session_id)
     except ClaudeCliError as exc:
@@ -473,6 +720,10 @@ def run_claude_oneshot(
     system_prompt: Optional[str] = None,
     cwd: Optional[str] = None,
     timeout: Optional[int] = None,
+    effort: Optional[str] = None,
+    permission_mode: Optional[str] = None,
+    allowed_tools: Optional[str] = None,
+    workflow_mode: Optional[str] = None,
 ) -> str:
     """Run a single headless Claude turn on the Max/OAuth plan and return its text.
 
@@ -485,8 +736,17 @@ def run_claude_oneshot(
     OAuth / Max session. Returns the assistant's final text verbatim (the caller
     parses any JSON itself). Raises ``ClaudeCliError`` on failure.
     """
-    resolved_timeout = timeout if timeout is not None else _resolve_timeout()
+    options = _load_claude_cli_options()
+    resolved_timeout = (
+        timeout if timeout is not None else options.timeout_seconds or _resolve_timeout()
+    )
     work_cwd = cwd or os.getcwd()
+    effective_effort = effort if effort is not None else options.effort
+    effective_permission_mode = (
+        permission_mode if permission_mode is not None else options.permission_mode
+    )
+    effective_allowed_tools = allowed_tools if allowed_tools is not None else options.allowed_tools
+    effective_workflow_mode = workflow_mode if workflow_mode is not None else options.workflow_mode
 
     handoff_dir = Path(tempfile.mkdtemp(prefix="hermes-claude-oneshot-"))
     handoff_dir.mkdir(parents=True, exist_ok=True)
@@ -501,7 +761,10 @@ def run_claude_oneshot(
         claude_bin,
         model=model,
         add_dirs=[str(handoff_dir)],
+        allowed_tools=effective_allowed_tools,
         system_prompt=system_prompt,
+        effort=effective_effort,
+        permission_mode=effective_permission_mode,
     )
     env = _claude_subprocess_env()
 
@@ -513,15 +776,27 @@ def run_claude_oneshot(
     )
     _start_tmux_session(tmux_bin, session_id, cmd, env=env, cwd=work_cwd)
     try:
-        _wait_for_claude_ready(tmux_bin, session_id)
-        invocation = (
-            f"Read the prompt at {turn_path}. "
-            f"Write ONLY the final answer to {result_path} using the Write tool. "
-            "Do not write analysis, metadata, markdown fences, or any commentary "
-            "outside the requested answer."
+        _wait_for_claude_ready(
+            tmux_bin,
+            session_id,
+            timeout=options.ready_timeout_seconds,
+        )
+        invocation = _render_invocation(
+            turn_path=turn_path,
+            result_path=result_path,
+            workflow_requested=_workflow_requested(
+                workflow_mode=effective_workflow_mode,
+                transcript=prompt,
+                user_message=prompt,
+            ),
         )
         _send_tmux_text(tmux_bin, session_id, invocation)
-        return _wait_for_result_file(result_path, timeout=resolved_timeout)
+        return _wait_for_result_file(
+            result_path,
+            timeout=resolved_timeout,
+            tmux_bin=tmux_bin,
+            session_id=session_id,
+        )
     finally:
         _kill_tmux_session(tmux_bin, session_id)
 
@@ -539,6 +814,8 @@ def _error_turn(messages: List[Dict[str, Any]], error: str) -> Dict[str, Any]:
 
 __all__ = [
     "ClaudeCliError",
+    "ClaudeCliOptions",
     "build_claude_command",
     "run_claude_cli_turn",
+    "run_claude_oneshot",
 ]

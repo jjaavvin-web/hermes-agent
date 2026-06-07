@@ -4925,6 +4925,11 @@ class HermesCLI:
         resolved_acp_command = runtime.get("command")
         resolved_acp_args = list(runtime.get("args") or [])
         resolved_credential_pool = runtime.get("credential_pool")
+        # Non-HTTP runtimes intentionally do not have a base URL. The
+        # claude-cli-subprocess bridge delegates the whole turn to local
+        # interactive Claude Code through tmux on the user's Max/OAuth login;
+        # validating an HTTP base_url here blocks the safe subprocess route.
+        _is_non_http_runtime = resolved_api_mode in {"claude_cli_subprocess"}
         # A callable api_key is a bearer-token provider (Azure Foundry
         # Entra ID — ``azure_identity_adapter.build_token_provider``).
         # The OpenAI SDK accepts ``Callable[[], str]`` for ``api_key`` and
@@ -4949,7 +4954,7 @@ class HermesCLI:
                 print("\n⚠️  Provider resolver returned an empty API key. "
                       "Set OPENROUTER_API_KEY or run: hermes setup")
                 return False
-        if not isinstance(base_url, str) or not base_url:
+        if (not _is_non_http_runtime) and (not isinstance(base_url, str) or not base_url):
             print("\n⚠️  Provider resolver returned an empty base URL. "
                   "Check your provider config or run: hermes setup")
             return False
