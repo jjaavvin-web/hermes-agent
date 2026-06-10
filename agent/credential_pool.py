@@ -1554,21 +1554,14 @@ class CredentialPool:
     def acquire_lease(self, credential_id: Optional[str] = None) -> Optional[str]:
         """Acquire a soft lease on a credential.
 
-        If a specific credential_id is provided, lease that entry directly.
-        Otherwise prefer the least-leased available credential, using priority as
-        a stable tie-breaker. When every credential is already at the soft cap,
-        still return the least-leased one instead of blocking.
+        If a specific credential_id is provided, lease that entry directly only
+        when it is selectable under the same auth-type, exhaustion/dead-status,
+        and refresh guards as the normal selection path. Otherwise prefer the
+        least-leased available credential, using priority as a stable tie-breaker.
+        When every credential is already at the soft cap, still return the
+        least-leased one instead of blocking.
         """
         with self._lock:
-            if credential_id:
-                if self._selection_auth_type is not None:
-                    entry = next((entry for entry in self._entries if entry.id == credential_id), None)
-                    if entry is None or entry.auth_type != self._selection_auth_type:
-                        return None
-                self._active_leases[credential_id] = self._active_leases.get(credential_id, 0) + 1
-                self._current_id = credential_id
-                return credential_id
-
             available = self._available_entries(
                 clear_expired=True,
                 refresh=True,
@@ -1576,6 +1569,14 @@ class CredentialPool:
             )
             if not available:
                 return None
+
+            if credential_id:
+                chosen = next((entry for entry in available if entry.id == credential_id), None)
+                if chosen is None:
+                    return None
+                self._active_leases[chosen.id] = self._active_leases.get(chosen.id, 0) + 1
+                self._current_id = chosen.id
+                return chosen.id
 
             below_cap = [
                 entry for entry in available
