@@ -42,7 +42,6 @@ def _provider_info(
 @pytest.mark.parametrize(
     ("raw", "expected"),
     [
-        (" OpenAI ", "openrouter"),
         ("GLM", "zai"),
         ("z.ai", "zai"),
         ("claude-code", "anthropic"),
@@ -53,6 +52,11 @@ def _provider_info(
 )
 def test_normalize_provider_trims_lowercases_and_resolves_aliases(raw, expected):
     assert providers.normalize_provider(raw) == expected
+
+
+def test_normalize_provider_maps_openai_to_openrouter_KNOWN_GAP_C2():
+    """Current behavior: vendor-to-aggregator aliasing is pinned, not endorsed."""
+    assert providers.normalize_provider(" OpenAI ") == "openrouter"
 
 
 def test_registry_contains_load_bearing_overlay_capabilities():

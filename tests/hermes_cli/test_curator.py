@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import importlib
+import os
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -27,6 +28,8 @@ class _NoopLogger:
 @pytest.fixture(autouse=True)
 def isolated_curator_environment(tmp_path, monkeypatch):
     """Redirect Hermes home/log-related state to tmp_path for every test."""
+    original_hermes_home = os.environ.get("HERMES_HOME")
+    original_path_home = Path.home
     home = tmp_path / "hermes-home"
     skills = home / "skills"
     logs = home / "logs"
@@ -49,7 +52,15 @@ def isolated_curator_environment(tmp_path, monkeypatch):
 
     monkeypatch.setattr(curator_backup, "logger", _NoopLogger())
 
-    yield {"home": home, "skills": skills, "logs": logs, "cron": cron}
+    try:
+        yield {"home": home, "skills": skills, "logs": logs, "cron": cron}
+    finally:
+        if original_hermes_home is None:
+            monkeypatch.delenv("HERMES_HOME", raising=False)
+        else:
+            monkeypatch.setenv("HERMES_HOME", original_hermes_home)
+        monkeypatch.setattr(Path, "home", original_path_home)
+        importlib.reload(hermes_constants)
 
 
 def _args(**kwargs):
