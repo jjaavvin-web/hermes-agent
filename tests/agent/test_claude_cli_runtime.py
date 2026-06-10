@@ -114,6 +114,8 @@ def test_run_claude_cli_turn_uses_interactive_file_handoff(tmp_path, monkeypatch
         # The invocation should ask interactive Claude to write the result file.
         assert "Write" in text
         assert "result.md" in text
+        # Capture the turn packet here: the handoff dir is cleaned up after the call.
+        sent["payload"] = (handoff_dir / "turn.md").read_text(encoding="utf-8")
         (handoff_dir / "result.md").write_text("REAL CLAUDE RESULT\n", encoding="utf-8")
 
     monkeypatch.setattr(runtime, "_start_tmux_session", fake_start)
@@ -142,10 +144,11 @@ def test_run_claude_cli_turn_uses_interactive_file_handoff(tmp_path, monkeypatch
     assert result["final_response"] == "REAL CLAUDE RESULT"
     assert result["api_calls"] == 1
     assert messages[-1] == {"role": "assistant", "content": "REAL CLAUDE RESULT"}
-    assert (handoff_dir / "turn.md").exists()
-    payload = (handoff_dir / "turn.md").read_text(encoding="utf-8")
+    payload = sent["payload"]
     assert "SYSTEM RULES" in payload
     assert "Return a short answer." in payload
+    # Prompt residue must not linger after the turn completes.
+    assert not handoff_dir.exists()
     assert killed == [started["session_id"]]
     assert "memory" in started
     assert "review" in started
@@ -238,9 +241,13 @@ def test_run_claude_oneshot_uses_interactive_file_handoff(tmp_path, monkeypatch)
         assert "-p" not in command
         handoff_dir.mkdir(parents=True, exist_ok=True)
 
+    captured = {}
+
     def fake_send(tmux_bin, session_id, text):
         assert "Write" in text
         assert "result.md" in text
+        # Capture before the post-call cleanup removes the handoff dir.
+        captured["turn"] = (handoff_dir / "turn.md").read_text(encoding="utf-8")
         (handoff_dir / "result.md").write_text("ONESHOT OUTPUT\n", encoding="utf-8")
 
     monkeypatch.setattr(runtime, "_start_tmux_session", fake_start)
@@ -253,10 +260,12 @@ def test_run_claude_oneshot_uses_interactive_file_handoff(tmp_path, monkeypatch)
 
     assert out == "ONESHOT OUTPUT"
     # The raw prompt is handed off verbatim (no agent transcript wrapping).
-    assert (handoff_dir / "turn.md").read_text(encoding="utf-8") == "Extract X as JSON."
+    assert captured["turn"] == "Extract X as JSON."
     assert started["cwd"] == str(tmp_path)
     assert "--print" not in started["command"]
     assert len(killed) == 1
+    # Prompt residue must not linger after the call.
+    assert not handoff_dir.exists()
 
 
 def test_run_claude_oneshot_system_prompt_rides_handoff_file(tmp_path, monkeypatch):
@@ -276,7 +285,10 @@ def test_run_claude_oneshot_system_prompt_rides_handoff_file(tmp_path, monkeypat
         started["command"] = command
         handoff_dir.mkdir(parents=True, exist_ok=True)
 
+    captured = {}
+
     def fake_send(tmux_bin, session_id, text):
+        captured["turn"] = (handoff_dir / "turn.md").read_text(encoding="utf-8")
         (handoff_dir / "result.md").write_text("SYSTEM OUTPUT\n", encoding="utf-8")
 
     monkeypatch.setattr(runtime, "_start_tmux_session", fake_start)
@@ -291,9 +303,40 @@ def test_run_claude_oneshot_system_prompt_rides_handoff_file(tmp_path, monkeypat
     )
 
     assert out == "SYSTEM OUTPUT"
-    turn_text = (handoff_dir / "turn.md").read_text(encoding="utf-8")
+    turn_text = captured["turn"]
     # Both halves must be present in the handoff file...
     assert "SCHEMA CONTRACT: return strict JSON." in turn_text
     assert "Extract the chunk." in turn_text
     # ...and the system prompt must never ride the argv.
     assert all("SCHEMA CONTRACT" not in part for part in started["command"])
+    # ...and the handoff dir (with the full system prompt) must be cleaned up.
+    assert not handoff_dir.exists()
+
+
+def test_run_claude_oneshot_retain_handoff_flag(tmp_path, monkeypatch):
+    """HERMES_CLAUDE_CLI_RETAIN_HANDOFF=1 keeps handoff dirs for debugging."""
+    import agent.claude_cli_runtime as runtime
+
+    handoff_dir = tmp_path / "oneshot-retained"
+
+    monkeypatch.setattr(runtime, "_find_claude_binary", lambda: "/usr/bin/claude")
+    monkeypatch.setattr(runtime, "_find_tmux_binary", lambda: "/usr/bin/tmux")
+    monkeypatch.setattr(runtime.tempfile, "mkdtemp", lambda prefix: str(handoff_dir))
+    monkeypatch.setattr(runtime, "_resolve_timeout", lambda: 30)
+    monkeypatch.setattr(runtime, "_wait_for_claude_ready", lambda *args, **kwargs: None)
+    monkeypatch.setenv("HERMES_CLAUDE_CLI_RETAIN_HANDOFF", "1")
+
+    def fake_start(tmux_bin, session_id, command, *, env, cwd):
+        handoff_dir.mkdir(parents=True, exist_ok=True)
+
+    def fake_send(tmux_bin, session_id, text):
+        (handoff_dir / "result.md").write_text("RETAINED\n", encoding="utf-8")
+
+    monkeypatch.setattr(runtime, "_start_tmux_session", fake_start)
+    monkeypatch.setattr(runtime, "_send_tmux_text", fake_send)
+    monkeypatch.setattr(runtime, "_kill_tmux_session", lambda *args, **kwargs: None)
+
+    out = runtime.run_claude_oneshot("Keep my artifacts.", cwd=str(tmp_path))
+
+    assert out == "RETAINED"
+    assert (handoff_dir / "turn.md").read_text(encoding="utf-8") == "Keep my artifacts."

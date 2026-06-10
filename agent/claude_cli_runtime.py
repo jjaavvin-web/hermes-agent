@@ -421,6 +421,16 @@ def _render_turn_packet(*, system_prompt: Optional[str], transcript: str, user_m
     )
 
 
+def _cleanup_handoff_dir(path: Path) -> None:
+    """Remove a turn handoff dir so prompt/result content doesn't linger in /tmp.
+
+    Set HERMES_CLAUDE_CLI_RETAIN_HANDOFF=1 to keep dirs for debugging failed turns.
+    """
+    if os.getenv("HERMES_CLAUDE_CLI_RETAIN_HANDOFF"):
+        return
+    shutil.rmtree(path, ignore_errors=True)
+
+
 def _workflow_requested(*, workflow_mode: str, transcript: str, user_message: Any) -> bool:
     mode = _normalize_workflow_mode(workflow_mode)
     if mode == "always":
@@ -673,6 +683,7 @@ def run_claude_cli_turn(
             )
         finally:
             _kill_tmux_session(tmux_bin, session_id)
+            _cleanup_handoff_dir(handoff_dir)
     except ClaudeCliError as exc:
         logger.error("claude-cli-subprocess: %s", exc)
         return _error_turn(messages, str(exc))
@@ -811,6 +822,7 @@ def run_claude_oneshot(
         )
     finally:
         _kill_tmux_session(tmux_bin, session_id)
+        _cleanup_handoff_dir(handoff_dir)
 
 
 def _error_turn(messages: List[Dict[str, Any]], error: str) -> Dict[str, Any]:
