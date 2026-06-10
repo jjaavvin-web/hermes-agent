@@ -134,6 +134,19 @@ def test_default_gh_helper_absorbs_missing_gh(monkeypatch):
     assert mod._gh_list_open_branches() == set()
 
 
+def test_default_gh_helper_runs_gh_from_repo_root(monkeypatch):
+    """gh pr list must run from the Hermes repo root, not the gateway CWD."""
+    from gateway import codex_gc_watcher as mod
+    from unittest.mock import MagicMock
+
+    fake_proc = MagicMock(returncode=0, stdout="[]", stderr="")
+    run = MagicMock(return_value=fake_proc)
+    monkeypatch.setattr(mod.subprocess, "run", run)
+
+    assert mod._gh_list_open_branches() == set()
+    assert run.call_args.kwargs["cwd"] == mod._REPO_ROOT
+
+
 def test_default_gh_helper_absorbs_timeout(monkeypatch):
     """_gh_list_open_branches must return empty set when gh times out."""
     from gateway import codex_gc_watcher as mod
