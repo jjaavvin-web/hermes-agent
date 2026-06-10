@@ -4,8 +4,10 @@ Runs asynchronously after the first response is delivered so it never
 adds latency to the user-facing reply.
 """
 
+import atexit
 import logging
 import threading
+import time
 from typing import Callable, Optional
 
 from agent.auxiliary_client import call_llm
@@ -19,11 +21,74 @@ logger = logging.getLogger(__name__)
 FailureCallback = Callable[[str, BaseException], None]
 TitleCallback = Callable[[str], None]
 
+# Background title generation must stay auxiliary: it should never block the
+# user-facing answer, and it must not leave live network I/O racing Python
+# interpreter teardown in one-shot CLI processes.  Keep the background request
+# short, then drain active workers briefly at process exit.
+_BACKGROUND_TITLE_TIMEOUT = 3.0
+_SHUTDOWN_JOIN_TIMEOUT = 3.5
+_active_title_threads: set[threading.Thread] = set()
+_active_title_threads_lock = threading.Lock()
+_shutdown_registered = False
+
 _TITLE_PROMPT = (
     "Generate a short, descriptive title (3-7 words) for a conversation that starts with the "
     "following exchange. The title should capture the main topic or intent. "
     "Return ONLY the title text, nothing else. No quotes, no punctuation at the end, no prefixes."
 )
+
+
+def _register_shutdown_hook() -> None:
+    global _shutdown_registered
+    if _shutdown_registered:
+        return
+    with _active_title_threads_lock:
+        if _shutdown_registered:
+            return
+        atexit.register(_drain_title_threads_at_shutdown)
+        _shutdown_registered = True
+
+
+def _track_title_thread(thread: threading.Thread) -> None:
+    with _active_title_threads_lock:
+        _active_title_threads.add(thread)
+
+
+def _untrack_title_thread(thread: threading.Thread) -> None:
+    with _active_title_threads_lock:
+        _active_title_threads.discard(thread)
+
+
+def _drain_title_threads_at_shutdown(timeout: float = _SHUTDOWN_JOIN_TIMEOUT) -> None:
+    """Bounded drain for auxiliary title threads during interpreter shutdown.
+
+    The title worker is best-effort.  Joining briefly lets normal short
+    auxiliary failures finish and report their warning before process exit, but
+    a stuck client must not hold one-shot CLI teardown open indefinitely.
+    """
+    deadline = time.monotonic() + max(timeout, 0.0)
+    while True:
+        with _active_title_threads_lock:
+            threads = [thread for thread in _active_title_threads if thread.is_alive()]
+        if not threads:
+            return
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            logger.debug(
+                "Auto-title shutdown drain timed out with %d worker(s) still active",
+                len(threads),
+            )
+            return
+        per_thread = max(0.0, remaining / len(threads))
+        for thread in threads:
+            thread.join(timeout=per_thread)
+
+
+def _run_auto_title_thread(*args, **kwargs) -> None:
+    try:
+        auto_title_session(*args, **kwargs)
+    finally:
+        _untrack_title_thread(threading.current_thread())
 
 
 def generate_title(
@@ -92,6 +157,7 @@ def auto_title_session(
     failure_callback: Optional[FailureCallback] = None,
     main_runtime: dict = None,
     title_callback: Optional[TitleCallback] = None,
+    generation_timeout: Optional[float] = None,
 ) -> None:
     """Generate and set a session title if one doesn't already exist.
 
@@ -113,7 +179,11 @@ def auto_title_session(
         return
 
     title = generate_title(
-        user_message, assistant_response, failure_callback=failure_callback, main_runtime=main_runtime
+        user_message,
+        assistant_response,
+        timeout=generation_timeout if generation_timeout is not None else 30.0,
+        failure_callback=failure_callback,
+        main_runtime=main_runtime,
     )
     if not title:
         return
@@ -139,6 +209,7 @@ def maybe_auto_title(
     failure_callback: Optional[FailureCallback] = None,
     main_runtime: dict = None,
     title_callback: Optional[TitleCallback] = None,
+    generation_timeout: Optional[float] = None,
 ) -> None:
     """Fire-and-forget title generation after the first exchange.
 
@@ -157,15 +228,18 @@ def maybe_auto_title(
     if user_msg_count > 2:
         return
 
+    _register_shutdown_hook()
     thread = threading.Thread(
-        target=auto_title_session,
+        target=_run_auto_title_thread,
         args=(session_db, session_id, user_message, assistant_response),
         kwargs={
             "failure_callback": failure_callback,
             "main_runtime": main_runtime,
             "title_callback": title_callback,
+            "generation_timeout": generation_timeout or _BACKGROUND_TITLE_TIMEOUT,
         },
         daemon=True,
         name="auto-title",
     )
+    _track_title_thread(thread)
     thread.start()

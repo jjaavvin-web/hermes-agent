@@ -1,8 +1,9 @@
 """Tests for agent.title_generator — auto-generated session titles."""
 
+import threading
 from unittest.mock import MagicMock, patch
 
-
+import agent.title_generator as title_generator
 from agent.title_generator import (
     generate_title,
     auto_title_session,
@@ -157,6 +158,25 @@ class TestAutoTitleSession:
             auto_title_session(db, "sess-1", "hi", "hello")
             db.set_session_title.assert_not_called()
 
+    def test_generation_failure_does_not_propagate_to_auto_title_session(self):
+        """A failing auxiliary client leaves the session untouched and returns."""
+        db = MagicMock()
+        db.get_session_title.return_value = None
+        captured = []
+        exc = RuntimeError("peer closed connection without complete body")
+
+        with patch("agent.title_generator.call_llm", side_effect=exc):
+            auto_title_session(
+                db,
+                "sess-1",
+                "hi",
+                "hello",
+                failure_callback=lambda task, err: captured.append((task, err)),
+            )
+
+        db.set_session_title.assert_not_called()
+        assert captured == [("title generation", exc)]
+
 
 class TestMaybeAutoTitle:
     """Tests for maybe_auto_title() — the fire-and-forget entry point."""
@@ -202,6 +222,7 @@ class TestMaybeAutoTitle:
                 failure_callback=None,
                 main_runtime=None,
                 title_callback=None,
+                generation_timeout=title_generator._BACKGROUND_TITLE_TIMEOUT,
             )
 
     def test_forwards_failure_callback_to_worker(self):
@@ -228,6 +249,7 @@ class TestMaybeAutoTitle:
                 failure_callback=_cb,
                 main_runtime=None,
                 title_callback=None,
+                generation_timeout=title_generator._BACKGROUND_TITLE_TIMEOUT,
             )
 
     def test_skips_if_no_response(self):
@@ -236,3 +258,58 @@ class TestMaybeAutoTitle:
 
     def test_skips_if_no_session_db(self):
         maybe_auto_title(None, "sess-1", "hello", "response", [])  # no db
+
+    def test_shutdown_drain_waits_for_in_flight_title_task_without_raising(self):
+        """Shutdown drains in-flight title work briefly instead of racing teardown."""
+        db = MagicMock()
+        db.get_session_title.return_value = None
+        started = threading.Event()
+        release = threading.Event()
+
+        def _hung_generate(*args, **kwargs):
+            started.set()
+            release.wait(timeout=1.0)
+            return None
+
+        history = [
+            {"role": "user", "content": "hello"},
+            {"role": "assistant", "content": "hi there"},
+        ]
+
+        with patch("agent.title_generator.generate_title", side_effect=_hung_generate):
+            maybe_auto_title(db, "sess-1", "hello", "hi there", history)
+            assert started.wait(timeout=1.0)
+            title_generator._drain_title_threads_at_shutdown(timeout=0.05)
+            release.set()
+            title_generator._drain_title_threads_at_shutdown(timeout=1.0)
+
+        assert not any(thread.is_alive() for thread in title_generator._active_title_threads)
+        db.set_session_title.assert_not_called()
+
+    def test_shutdown_drain_tolerates_failing_in_flight_title_task(self):
+        """A teardown-time auxiliary failure is isolated and cleaned up."""
+        db = MagicMock()
+        db.get_session_title.return_value = None
+        captured = []
+        history = [
+            {"role": "user", "content": "hello"},
+            {"role": "assistant", "content": "hi there"},
+        ]
+
+        def _fail(*args, **kwargs):
+            raise RuntimeError("incomplete chunked read")
+
+        with patch("agent.title_generator.call_llm", side_effect=_fail):
+            maybe_auto_title(
+                db,
+                "sess-1",
+                "hello",
+                "hi there",
+                history,
+                failure_callback=lambda task, err: captured.append((task, str(err))),
+            )
+            title_generator._drain_title_threads_at_shutdown(timeout=1.0)
+
+        assert captured == [("title generation", "incomplete chunked read")]
+        assert not any(thread.is_alive() for thread in title_generator._active_title_threads)
+        db.set_session_title.assert_not_called()
