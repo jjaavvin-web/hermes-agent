@@ -30,6 +30,7 @@ from hermes_cli.profiles import (
     import_profile,
     _get_profiles_root,
     _get_default_hermes_home,
+    _get_active_profile_path,
     seed_profile_skills,
     has_bundled_skills_opt_out,
     NO_BUNDLED_SKILLS_MARKER,
@@ -45,10 +46,15 @@ def profile_env(tmp_path, monkeypatch):
     """Set up an isolated environment for profile tests.
 
     * Path.home() -> tmp_path  (so _get_profiles_root() = tmp_path/.hermes/profiles)
-    * HERMES_HOME  -> tmp_path/.hermes  (so get_hermes_home() agrees)
+    * HOME        -> tmp_path  (so subprocesses and any unpatched expansions stay isolated)
+    * HERMES_HOME -> tmp_path/.hermes  (so get_hermes_home() agrees)
     * Creates the bare-minimum ~/.hermes directory.
+
+    CRITICAL: ~/.hermes/active_profile is live production state on Josep's box.
+    Every test in this module routes the sticky pointer through tmp_path.
     """
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setenv("HOME", str(tmp_path))
     default_home = tmp_path / ".hermes"
     default_home.mkdir(exist_ok=True)
     monkeypatch.setenv("HERMES_HOME", str(default_home))
@@ -485,33 +491,74 @@ class TestListProfiles:
 class TestActiveProfile:
     """Tests for set_active_profile() / get_active_profile()."""
 
+    def test_no_file_returns_default(self, profile_env):
+        active_path = _get_active_profile_path()
+        assert active_path == profile_env / ".hermes" / "active_profile"
+        assert not active_path.exists()
+        assert get_active_profile() == "default"
+
+    @pytest.mark.parametrize("content", ["", "\n", "   \t\n"])
+    def test_empty_or_whitespace_file_returns_default(self, profile_env, content):
+        active_path = _get_active_profile_path()
+        active_path.write_text(content)
+        assert get_active_profile() == "default"
+
     def test_set_and_get_roundtrip(self, profile_env):
         create_profile("coder", no_alias=True)
         set_active_profile("coder")
+        active_path = _get_active_profile_path()
+        assert active_path.read_text() == "coder\n"
         assert get_active_profile() == "coder"
 
-    def test_no_file_returns_default(self, profile_env):
-        assert get_active_profile() == "default"
-
-    def test_empty_file_returns_default(self, profile_env):
-        tmp_path = profile_env
-        active_path = tmp_path / ".hermes" / "active_profile"
-        active_path.write_text("")
-        assert get_active_profile() == "default"
+    def test_set_normalizes_profile_name_before_writing(self, profile_env):
+        create_profile("coder", no_alias=True)
+        set_active_profile("  Coder  ")
+        assert _get_active_profile_path().read_text() == "coder\n"
+        assert get_active_profile() == "coder"
 
     def test_set_to_default_removes_file(self, profile_env):
-        tmp_path = profile_env
         create_profile("coder", no_alias=True)
         set_active_profile("coder")
-        active_path = tmp_path / ".hermes" / "active_profile"
+        active_path = _get_active_profile_path()
         assert active_path.exists()
 
         set_active_profile("default")
         assert not active_path.exists()
+        assert get_active_profile() == "default"
 
     def test_set_nonexistent_raises(self, profile_env):
         with pytest.raises(FileNotFoundError):
             set_active_profile("nonexistent")
+
+    @pytest.mark.parametrize("name", ["INVALID!", "has space", "hermes"])
+    def test_set_invalid_profile_name_raises(self, profile_env, name):
+        with pytest.raises(ValueError):
+            set_active_profile(name)
+
+    def test_delete_clears_active_profile_pointer_when_it_matches(self, profile_env):
+        create_profile("coder", no_alias=True)
+        set_active_profile("coder")
+        active_path = _get_active_profile_path()
+        assert active_path.read_text() == "coder\n"
+
+        with patch("hermes_cli.profiles._cleanup_gateway_service"):
+            delete_profile("coder", yes=True)
+
+        assert not get_profile_dir("coder").exists()
+        assert not active_path.exists()
+        assert get_active_profile() == "default"
+
+    def test_delete_leaves_active_profile_pointer_when_it_does_not_match(self, profile_env):
+        create_profile("active", no_alias=True)
+        create_profile("deleted", no_alias=True)
+        set_active_profile("active")
+        active_path = _get_active_profile_path()
+
+        with patch("hermes_cli.profiles._cleanup_gateway_service"):
+            delete_profile("deleted", yes=True)
+
+        assert active_path.read_text() == "active\n"
+        assert get_active_profile() == "active"
 
 
 # ===================================================================
@@ -1197,6 +1244,7 @@ class TestInternalHelpers:
         docker_home = tmp_path / "opt" / "data"
         docker_home.mkdir(parents=True)
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setenv("HOME", str(tmp_path))
         monkeypatch.setenv("HERMES_HOME", str(docker_home))
         root = _get_profiles_root()
         assert root == docker_home / "profiles"
@@ -1206,6 +1254,7 @@ class TestInternalHelpers:
         docker_home = tmp_path / "opt" / "data"
         docker_home.mkdir(parents=True)
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setenv("HOME", str(tmp_path))
         monkeypatch.setenv("HERMES_HOME", str(docker_home))
         home = _get_default_hermes_home()
         assert home == docker_home
@@ -1216,9 +1265,13 @@ class TestInternalHelpers:
         profile_dir = native / "profiles" / "coder"
         profile_dir.mkdir(parents=True)
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setenv("HOME", str(tmp_path))
         monkeypatch.setenv("HERMES_HOME", str(profile_dir))
         root = _get_profiles_root()
         assert root == native / "profiles"
+
+    def test_active_profile_path_standard_home(self, profile_env):
+        assert _get_active_profile_path() == profile_env / ".hermes" / "active_profile"
 
     def test_active_profile_path_docker(self, tmp_path, monkeypatch):
         """In Docker, active_profile file lives under HERMES_HOME."""
@@ -1226,15 +1279,28 @@ class TestInternalHelpers:
         docker_home = tmp_path / "opt" / "data"
         docker_home.mkdir(parents=True)
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setenv("HOME", str(tmp_path))
         monkeypatch.setenv("HERMES_HOME", str(docker_home))
         path = _get_active_profile_path()
         assert path == docker_home / "active_profile"
+
+    def test_active_profile_path_profile_mode_uses_root_not_profile_dir(self, tmp_path, monkeypatch):
+        """A named profile's HERMES_HOME still stores the sticky pointer at the profile root."""
+        native = tmp_path / ".hermes"
+        profile_dir = native / "profiles" / "coder"
+        profile_dir.mkdir(parents=True)
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.setenv("HERMES_HOME", str(profile_dir))
+        assert _get_default_hermes_home() == native
+        assert _get_active_profile_path() == native / "active_profile"
 
     def test_create_profile_docker(self, tmp_path, monkeypatch):
         """Profile created in Docker lands under HERMES_HOME/profiles/."""
         docker_home = tmp_path / "opt" / "data"
         docker_home.mkdir(parents=True)
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setenv("HOME", str(tmp_path))
         monkeypatch.setenv("HERMES_HOME", str(docker_home))
         result = create_profile("orchestrator", no_alias=True)
         expected = docker_home / "profiles" / "orchestrator"
@@ -1246,6 +1312,7 @@ class TestInternalHelpers:
         docker_home = tmp_path / "opt" / "data"
         docker_home.mkdir(parents=True)
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setenv("HOME", str(tmp_path))
         monkeypatch.setenv("HERMES_HOME", str(docker_home))
         assert get_active_profile_name() == "default"
 
