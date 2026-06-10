@@ -752,7 +752,19 @@ def run_claude_oneshot(
     handoff_dir.mkdir(parents=True, exist_ok=True)
     turn_path = handoff_dir / "turn.md"
     result_path = handoff_dir / "result.md"
-    turn_path.write_text(prompt, encoding="utf-8")
+    if system_prompt:
+        # build_claude_command intentionally never puts the system prompt on
+        # the argv; the handoff file is its only route to the model.
+        turn_path.write_text(
+            _render_turn_packet(
+                system_prompt=system_prompt,
+                transcript="",
+                user_message=prompt,
+            ),
+            encoding="utf-8",
+        )
+    else:
+        turn_path.write_text(prompt, encoding="utf-8")
 
     claude_bin = _find_claude_binary()
     tmux_bin = _find_tmux_binary()

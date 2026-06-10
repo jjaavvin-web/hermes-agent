@@ -257,3 +257,43 @@ def test_run_claude_oneshot_uses_interactive_file_handoff(tmp_path, monkeypatch)
     assert started["cwd"] == str(tmp_path)
     assert "--print" not in started["command"]
     assert len(killed) == 1
+
+
+def test_run_claude_oneshot_system_prompt_rides_handoff_file(tmp_path, monkeypatch):
+    """system_prompt must reach the model via turn.md — argv drops it by design."""
+    import agent.claude_cli_runtime as runtime
+
+    handoff_dir = tmp_path / "oneshot-system"
+    started = {}
+
+    monkeypatch.setattr(runtime, "_find_claude_binary", lambda: "/usr/bin/claude")
+    monkeypatch.setattr(runtime, "_find_tmux_binary", lambda: "/usr/bin/tmux")
+    monkeypatch.setattr(runtime.tempfile, "mkdtemp", lambda prefix: str(handoff_dir))
+    monkeypatch.setattr(runtime, "_resolve_timeout", lambda: 30)
+    monkeypatch.setattr(runtime, "_wait_for_claude_ready", lambda *args, **kwargs: None)
+
+    def fake_start(tmux_bin, session_id, command, *, env, cwd):
+        started["command"] = command
+        handoff_dir.mkdir(parents=True, exist_ok=True)
+
+    def fake_send(tmux_bin, session_id, text):
+        (handoff_dir / "result.md").write_text("SYSTEM OUTPUT\n", encoding="utf-8")
+
+    monkeypatch.setattr(runtime, "_start_tmux_session", fake_start)
+    monkeypatch.setattr(runtime, "_send_tmux_text", fake_send)
+    monkeypatch.setattr(runtime, "_kill_tmux_session", lambda *args, **kwargs: None)
+
+    big_system = "SCHEMA CONTRACT: return strict JSON. " + "REGISTRY-ENTRY; " * 4000
+    out = runtime.run_claude_oneshot(
+        "Extract the chunk.",
+        system_prompt=big_system,
+        cwd=str(tmp_path),
+    )
+
+    assert out == "SYSTEM OUTPUT"
+    turn_text = (handoff_dir / "turn.md").read_text(encoding="utf-8")
+    # Both halves must be present in the handoff file...
+    assert "SCHEMA CONTRACT: return strict JSON." in turn_text
+    assert "Extract the chunk." in turn_text
+    # ...and the system prompt must never ride the argv.
+    assert all("SCHEMA CONTRACT" not in part for part in started["command"])
