@@ -256,9 +256,10 @@ def test_pool_entry_without_api_key_exhausts_pool_then_uses_provider_resolver(
     assert resolved.get("credential_pool") is None
 
 
-def test_auto_oauth_failure_falls_through_to_openrouter(
+def test_auto_oauth_failure_falls_through_to_openrouter_KNOWN_GAP_C2(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """Current behavior: auto OAuth failure reaches OpenRouter; audit C2 retires this fallback chain."""
     monkeypatch.setenv("OPENROUTER_API_KEY", "fake-openrouter-key")
     monkeypatch.setattr(rp, "resolve_provider", lambda *args, **kwargs: "qwen-oauth")
     monkeypatch.setattr(rp, "load_pool", lambda provider: _EmptyPool())
