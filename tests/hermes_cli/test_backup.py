@@ -1237,15 +1237,18 @@ class TestQuickSnapshot:
         snap_id = create_quick_snapshot(hermes_home=hermes_home)
         assert (hermes_home / "state-snapshots" / snap_id / "cron" / "jobs.json").exists()
 
-    def test_quick_snapshot_never_copies_planted_secret_files(self, hermes_home):
+    @pytest.mark.parametrize("label", [None, "pre-update"])
+    def test_quick_snapshot_never_copies_planted_secret_files(self, hermes_home, label):
         from hermes_cli.backup import create_quick_snapshot
 
         _plant_fake_secret_files(hermes_home)
         (hermes_home / "gateway_state.json").write_text('{"ok": true}\n')
         (hermes_home / "channel_directory.json").write_text('{"channels": []}\n')
 
-        snap_id = create_quick_snapshot(hermes_home=hermes_home)
+        snap_id = create_quick_snapshot(label=label, hermes_home=hermes_home)
         assert snap_id is not None
+        if label:
+            assert label in snap_id
         snap_dir = hermes_home / "state-snapshots" / snap_id
         assert (snap_dir / "config.yaml").exists()
         assert (snap_dir / "cron" / "jobs.json").exists()
@@ -1258,6 +1261,12 @@ class TestQuickSnapshot:
         assert not (snap_dir / "certificate.pem").exists()
         assert not (snap_dir / "profiles" / "coder" / ".env").exists()
         assert not (snap_dir / "profiles" / "coder" / "auth.json").exists()
+        with open(snap_dir / "manifest.json") as f:
+            files = json.load(f)["files"]
+        assert ".env" not in files
+        assert "auth.json" not in files
+        assert "config.yaml" in files
+        assert "gateway_state.json" in files
         _assert_no_planted_markers_in_tree(snap_dir)
 
     def test_missing_files_skipped(self, hermes_home):
