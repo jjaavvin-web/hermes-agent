@@ -33,12 +33,13 @@ import threading
 import time
 import uuid
 import webbrowser
+from argparse import Namespace
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, HTTPServer, ThreadingHTTPServer
 from pathlib import Path
-from typing import Any, Callable, Dict, FrozenSet, List, Optional, Tuple
+from typing import TYPE_CHECKING, Any, Callable, Dict, FrozenSet, List, Optional, Tuple
 from urllib.parse import parse_qs, urlencode, urlparse
 
 import httpx
@@ -47,6 +48,9 @@ from hermes_cli.config import get_hermes_home, get_config_path, read_raw_config
 from hermes_constants import OPENROUTER_BASE_URL, secure_parent_dir
 from agent.credential_persistence import sanitize_borrowed_credential_payload
 from utils import atomic_replace, atomic_yaml_write, is_truthy_value
+
+if TYPE_CHECKING:
+    from agent.credential_pool import PooledCredential
 
 logger = logging.getLogger(__name__)
 
@@ -739,6 +743,14 @@ class AuthError(RuntimeError):
         code: Optional[str] = None,
         relogin_required: bool = False,
     ) -> None:
+        """Initialize an auth error with provider-specific recovery metadata.
+
+        Args:
+            message: Human-readable failure detail.
+            provider: Provider identifier associated with the failure.
+            code: Stable machine-readable error code, when available.
+            relogin_required: Whether the user should re-authenticate.
+        """
         super().__init__(message)
         self.provider = provider
         self.code = code
@@ -1193,11 +1205,28 @@ def _store_provider_state(
 
 
 def is_known_auth_provider(provider_id: str) -> bool:
+    """Return whether a provider ID is recognized by auth commands.
+
+    Args:
+        provider_id: Provider identifier to normalize and check.
+
+    Returns:
+        True when the provider is registered or handled as a service-only
+        auth provider.
+    """
     normalized = (provider_id or "").strip().lower()
     return normalized in PROVIDER_REGISTRY or normalized in SERVICE_PROVIDER_NAMES
 
 
 def get_auth_provider_display_name(provider_id: str) -> str:
+    """Return a user-facing display name for an auth provider.
+
+    Args:
+        provider_id: Provider identifier to normalize and resolve.
+
+    Returns:
+        The registry display name when known, or the original provider ID.
+    """
     normalized = (provider_id or "").strip().lower()
     if normalized in PROVIDER_REGISTRY:
         return PROVIDER_REGISTRY[normalized].name
@@ -2075,7 +2104,21 @@ def resolve_qwen_runtime_credentials(
     force_refresh: bool = False,
     refresh_if_expiring: bool = True,
     refresh_skew_seconds: int = QWEN_ACCESS_TOKEN_REFRESH_SKEW_SECONDS,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
+    """Resolve Qwen OAuth credentials from the Qwen CLI token store.
+
+    Args:
+        force_refresh: Refresh the access token even if it does not appear
+            close to expiry.
+        refresh_if_expiring: Refresh when the cached token expires within the
+            configured skew window.
+        refresh_skew_seconds: Number of seconds before expiry that should be
+            treated as already expiring.
+
+    Returns:
+        Runtime credential fields for the Qwen provider, including the
+        access token as ``api_key`` and the backing auth file path.
+    """
     tokens = _read_qwen_cli_tokens()
     access_token = str(tokens.get("access_token", "") or "").strip()
     should_refresh = bool(force_refresh)
@@ -2102,7 +2145,13 @@ def resolve_qwen_runtime_credentials(
     }
 
 
-def get_qwen_auth_status() -> Dict[str, Any]:
+def get_qwen_auth_status() -> dict[str, Any]:
+    """Return the current Qwen OAuth login status.
+
+    Returns:
+        A status dictionary with ``logged_in`` plus auth-file, token, expiry,
+        or error details for CLI display.
+    """
     auth_path = _qwen_cli_auth_path()
     try:
         # Validate the runtime credentials, including refresh when the cached
@@ -2827,7 +2876,21 @@ def resolve_spotify_runtime_credentials(
     force_refresh: bool = False,
     refresh_if_expiring: bool = True,
     refresh_skew_seconds: int = SPOTIFY_ACCESS_TOKEN_REFRESH_SKEW_SECONDS,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
+    """Resolve Spotify OAuth credentials for runtime tool use.
+
+    Args:
+        force_refresh: Refresh the access token even if the stored token is
+            still valid.
+        refresh_if_expiring: Refresh when the stored token is within the skew
+            window.
+        refresh_skew_seconds: Number of seconds before expiry that should
+            trigger proactive refresh.
+
+    Returns:
+        Runtime Spotify credential fields, including the access token,
+        resolved API base URL, scope, and refresh metadata.
+    """
     with _auth_store_lock():
         auth_store = _load_auth_store()
         state = _load_provider_state(auth_store, "spotify")
@@ -2870,7 +2933,13 @@ def resolve_spotify_runtime_credentials(
     }
 
 
-def get_spotify_auth_status() -> Dict[str, Any]:
+def get_spotify_auth_status() -> dict[str, Any]:
+    """Return the current Spotify OAuth login status.
+
+    Returns:
+        A status dictionary with login state, OAuth metadata, expiry, and
+        refresh-token availability.
+    """
     state = get_provider_auth_state("spotify")
     if not state:
         return {"logged_in": False}
@@ -2950,7 +3019,13 @@ def _spotify_interactive_setup(redirect_uri_hint: str) -> str:
     return raw
 
 
-def login_spotify_command(args) -> None:
+def login_spotify_command(args: Namespace) -> None:
+    """Run the interactive Spotify OAuth login command.
+
+    Args:
+        args: Parsed CLI namespace with optional Spotify OAuth settings such
+            as ``client_id``, ``redirect_uri``, ``scope``, and ``no_browser``.
+    """
     existing_state = get_provider_auth_state("spotify") or {}
 
     # Interactive wizard: if no client_id is configured anywhere, walk the
@@ -3977,7 +4052,21 @@ def refresh_xai_oauth_pure(
     *,
     token_endpoint: str = "",
     timeout_seconds: float = 20.0,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
+    """Refresh xAI OAuth tokens without reading or writing auth state.
+
+    Args:
+        access_token: Existing access token; accepted for API symmetry but
+            not sent during refresh.
+        refresh_token: Refresh token to exchange at xAI's token endpoint.
+        token_endpoint: Cached token endpoint from OIDC discovery, or empty
+            to discover it before refreshing.
+        timeout_seconds: HTTP timeout for discovery and token refresh calls.
+
+    Returns:
+        Refreshed token fields and ``last_refresh`` timestamp to persist by
+        the caller.
+    """
     del access_token
     if not isinstance(refresh_token, str) or not refresh_token.strip():
         raise AuthError(
@@ -4105,7 +4194,21 @@ def resolve_xai_oauth_runtime_credentials(
     force_refresh: bool = False,
     refresh_if_expiring: bool = True,
     refresh_skew_seconds: int = XAI_ACCESS_TOKEN_REFRESH_SKEW_SECONDS,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
+    """Resolve xAI OAuth credentials from the Hermes auth store.
+
+    Args:
+        force_refresh: Refresh the access token even if it does not appear
+            close to expiry.
+        refresh_if_expiring: Refresh when the access token is within the skew
+            window.
+        refresh_skew_seconds: Number of seconds before expiry that should be
+            treated as expiring.
+
+    Returns:
+        Runtime credential fields for xAI OAuth, including ``api_key`` and
+        the validated inference base URL.
+    """
     data = _read_xai_oauth_tokens()
     tokens = dict(data["tokens"])
     access_token = str(tokens.get("access_token", "") or "").strip()
@@ -5114,7 +5217,7 @@ def persist_nous_credentials(
     creds: Dict[str, Any],
     *,
     label: Optional[str] = None,
-):
+) -> PooledCredential | None:
     """Persist Nous OAuth credentials as the singleton provider state
     and ensure the credential pool is in sync.
 
@@ -5650,7 +5753,13 @@ def get_codex_auth_status() -> Dict[str, Any]:
         }
 
 
-def get_xai_oauth_auth_status() -> Dict[str, Any]:
+def get_xai_oauth_auth_status() -> dict[str, Any]:
+    """Return the current xAI OAuth login status.
+
+    Returns:
+        A status dictionary with login state, auth-store path, refresh source,
+        token, or error details for CLI display.
+    """
     try:
         from agent.credential_pool import load_pool
 
@@ -6312,8 +6421,13 @@ def _save_model_choice(model_id: str) -> None:
     save_config(config)
 
 
-def login_command(args) -> None:
-    """Deprecated: use 'hermes model' or 'hermes setup' instead."""
+def login_command(args: Namespace) -> None:
+    """Deprecated shim for the removed ``hermes login`` command.
+
+    Args:
+        args: Parsed CLI namespace; accepted for command-handler parity and
+            currently unused.
+    """
     print("The 'hermes login' command has been removed.")
     print("Use 'hermes auth' to manage credentials,")
     print("'hermes model' to select a provider, or 'hermes setup' for full setup.")
@@ -7708,8 +7822,12 @@ def _login_nous(args, pconfig: ProviderConfig) -> None:
         raise SystemExit(1)
 
 
-def logout_command(args) -> None:
-    """Clear auth state for a provider."""
+def logout_command(args: Namespace) -> None:
+    """Clear persisted auth state for a provider.
+
+    Args:
+        args: Parsed CLI namespace with optional ``provider`` attribute.
+    """
     provider_id = getattr(args, "provider", None)
 
     if provider_id and not is_known_auth_provider(provider_id):
