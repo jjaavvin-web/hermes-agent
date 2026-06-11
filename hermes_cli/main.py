@@ -12673,10 +12673,12 @@ _AGENT_SUBCOMMANDS = {
 
 
 def _is_tui_chat_launch(args) -> bool:
+    """Return whether this invocation should launch the TUI chat path."""
     return bool(getattr(args, "tui", False) or os.environ.get("HERMES_TUI") == "1")
 
 
 def _command_has_dedicated_mcp_startup(args) -> bool:
+    """Return whether the command owns its own MCP startup path."""
     if args.command == "acp":
         return True
     if args.command == "gateway" and getattr(args, "gateway_command", None) == "run":
@@ -12687,6 +12689,7 @@ def _command_has_dedicated_mcp_startup(args) -> bool:
 
 
 def _should_background_mcp_startup(args) -> bool:
+    """Return whether MCP discovery should start in the background."""
     if _is_tui_chat_launch(args):
         return False
     return args.command in {None, "chat", "rl"}
@@ -12760,6 +12763,7 @@ def _prepare_agent_startup(args) -> None:
 
 
 def _set_chat_arg_defaults(args) -> None:
+    """Populate missing chat argparse attributes with default values."""
     for attr, default in [
         ("query", None),
         ("model", None),
@@ -13049,6 +13053,7 @@ def main():
     _secrets_cli.register_cli(secrets_bw)
 
     def _dispatch_secrets(args):  # noqa: ANN001
+        """Dispatch nested secret-manager subcommands or show help."""
         sub = getattr(args, "secrets_command", None)
         bw_sub = getattr(args, "secrets_bw_command", None)
         if sub in ("bitwarden", "bw") and bw_sub is not None:
@@ -14292,6 +14297,7 @@ Examples:
     pairing_sub.add_parser("clear-pending", help="Clear all pending codes")
 
     def cmd_pairing(args):
+        """Dispatch pairing-code management commands."""
         from hermes_cli.pairing import pairing_command
 
         pairing_command(args)
@@ -14558,6 +14564,7 @@ Examples:
     )
 
     def cmd_skills(args):
+        """Dispatch skill hub and interactive skill configuration commands."""
         # Route 'config' action to skills_config module
         if getattr(args, "skills_action", None) == "config":
             _require_tty("skills config")
@@ -14672,6 +14679,7 @@ Examples:
     plugins_disable.add_argument("name", help="Plugin name to disable")
 
     def cmd_plugins(args):
+        """Dispatch plugin management commands."""
         from hermes_cli.plugins_cmd import plugins_command
 
         plugins_command(args)
@@ -14788,6 +14796,7 @@ Examples:
     )
 
     def cmd_memory(args):
+        """Dispatch memory provider setup, disable, and reset actions."""
         sub = getattr(args, "memory_command", None)
         if sub == "off":
             from hermes_cli.config import load_config, save_config
@@ -14937,6 +14946,7 @@ Examples:
     )
 
     def cmd_tools(args):
+        """Dispatch tool configuration and post-setup commands."""
         action = getattr(args, "tools_action", None)
         if action in {"list", "disable", "enable"}:
             from hermes_cli.tools_config import tools_disable_enable_command
@@ -14992,6 +15002,7 @@ Examples:
     )
 
     def cmd_computer_use(args):
+        """Dispatch Computer Use install and status commands."""
         action = getattr(args, "computer_use_action", None)
         if action == "install":
             from hermes_cli.tools_config import install_cua_driver
@@ -15116,6 +15127,7 @@ Examples:
     _add_accept_hooks_flag(mcp_parser)
 
     def cmd_mcp(args):
+        """Dispatch MCP server management commands."""
         from hermes_cli.mcp_config import mcp_command
 
         mcp_command(args)
@@ -15201,6 +15213,7 @@ Examples:
             return False
 
     def cmd_sessions(args):
+        """Dispatch session history management commands."""
         import json as _json
 
         try:
@@ -15411,6 +15424,7 @@ Examples:
     )
 
     def cmd_insights(args):
+        """Generate and print usage insights for session history."""
         try:
             from hermes_state import SessionDB
             from agent.insights import InsightsEngine
@@ -15508,6 +15522,7 @@ Examples:
     )
 
     def cmd_claw(args):
+        """Dispatch OpenClaw migration commands."""
         from hermes_cli.claw import claw_command
 
         claw_command(args)
