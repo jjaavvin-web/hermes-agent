@@ -3900,11 +3900,102 @@ class AIAgent:
                 drop_context_1m_beta=_drop_1m,
             )
 
+    def _try_codex_stale_timeout_recovery(
+        self, api_kwargs: dict, stale_timeout: float
+    ) -> Any | None:
+        """Try one silent Codex streaming recovery after a non-stream stale kill."""
+        if getattr(self, "api_mode", None) != "codex_responses" or getattr(self, "provider", None) != "openai-codex":
+            return None
+
+        recovery_timeout = min(60.0, stale_timeout / 2.0)
+        recovery_result: dict[str, Any] = {"response": None, "error": None}
+        recovery_client = None
+        recovered_silently = False
+        try:
+            recovery_client = self._create_request_openai_client(
+                reason="codex_stale_recovery",
+                api_kwargs=api_kwargs,
+            )
+            logger.warning(
+                "Codex stale-timeout recovery: retrying via "
+                "create(stream=True) with fresh client (cap=%.0fs). model=%s",
+                recovery_timeout,
+                api_kwargs.get("model", "unknown"),
+            )
+
+            def _recovery_call() -> None:
+                try:
+                    recovery_result["response"] = self._run_codex_create_stream_fallback(
+                        api_kwargs,
+                        client=recovery_client,
+                    )
+                except Exception as exc:  # noqa: BLE001 - fall through to main retry
+                    recovery_result["error"] = exc
+
+            recovery_thread = threading.Thread(target=_recovery_call, daemon=True)
+            recovery_start = time.time()
+            recovery_thread.start()
+            while recovery_thread.is_alive():
+                recovery_thread.join(timeout=0.3)
+                if time.time() - recovery_start > recovery_timeout:
+                    try:
+                        self._abort_request_openai_client(
+                            recovery_client,
+                            reason="codex_stale_recovery_kill",
+                        )
+                    except Exception:
+                        pass
+                    recovery_thread.join(timeout=2.0)
+                    break
+
+            if recovery_result["response"] is not None:
+                recovered_silently = True
+                logger.info(
+                    "Codex stale-timeout recovery succeeded silently after %.1fs "
+                    "(no user-visible abort).",
+                    time.time() - recovery_start,
+                )
+                return recovery_result["response"]
+        except Exception as exc:  # noqa: BLE001 - recovery is best-effort only
+            logger.warning(
+                "Codex stale-timeout recovery raised %s; falling through to main retry loop.",
+                type(exc).__name__,
+            )
+        finally:
+            if recovery_client is not None:
+                try:
+                    self._close_request_openai_client(
+                        recovery_client,
+                        reason="codex_stale_recovery_cleanup",
+                    )
+                except Exception:
+                    pass
+
+        return None
+
     def _interruptible_api_call(self, api_kwargs: dict):
 
         """Forwarder — see ``agent.chat_completion_helpers.interruptible_api_call``."""
         from agent.chat_completion_helpers import interruptible_api_call
-        return interruptible_api_call(self, api_kwargs)
+        try:
+            return interruptible_api_call(self, api_kwargs)
+        except Exception as exc:
+            stale_status_buffered = any(
+                kind == "status"
+                and "No response from provider" in msg
+                and "non-streaming" in msg
+                for kind, msg in (getattr(self, "_retry_status_buffer", None) or [])
+            )
+            if not stale_status_buffered and "Non-streaming API call timed out" not in str(exc):
+                raise
+            response = self._try_codex_stale_timeout_recovery(
+                api_kwargs,
+                self._compute_non_stream_stale_timeout(api_kwargs),
+            )
+            if response is None:
+                raise
+            self._clear_status_buffer()
+            return response
 
 
     # ── Unified streaming API call ─────────────────────────────────────────

@@ -207,3 +207,77 @@ def test_streaming_call_recreates_closed_shared_client_before_request(monkeypatc
     assert stale_shared.close_calls >= 1
     assert request_client.close_calls >= 1
     assert len(factory.calls) == 2
+
+class FakeCodexRequestClient:
+    def __init__(self):
+        self.close_calls = 0
+
+    def close(self):
+        self.close_calls += 1
+
+
+def test_codex_stale_timeout_recovery_is_openai_codex_only(monkeypatch):
+    def run_case(provider, recovery_client_expected):
+        stream_release = threading.Event()
+        stream_client = FakeCodexRequestClient()
+        clients = [stream_client]
+        recovery_client = None
+        if recovery_client_expected:
+            recovery_client = FakeCodexRequestClient()
+            clients.append(recovery_client)
+        factory = OpenAIFactory(clients)
+        monkeypatch.setattr(run_agent, "OpenAI", factory)
+
+        agent = _build_agent()
+        agent.api_mode = "codex_responses"
+        agent.provider = provider
+        agent._compute_non_stream_stale_timeout = lambda api_payload: 0.01
+        statuses = []
+        monkeypatch.setattr(agent, "_emit_status", lambda msg: statuses.append(msg))
+
+        def hung_codex_stream(api_kwargs, client=None, on_first_delta=None):
+            stream_release.wait(timeout=10.0)
+            raise RuntimeError("stream aborted")
+
+        fallback_calls = []
+        fallback_response = SimpleNamespace(output=[])
+
+        def fallback(api_kwargs, client=None):
+            fallback_calls.append(client)
+            return fallback_response
+
+        monkeypatch.setattr(agent, "_run_codex_stream", hung_codex_stream)
+        monkeypatch.setattr(agent, "_run_codex_create_stream_fallback", fallback)
+
+        try:
+            if recovery_client_expected:
+                response = agent._interruptible_api_call({"model": agent.model, "input": "hi"})
+                assert response is fallback_response
+            else:
+                with pytest.raises(TimeoutError):
+                    agent._interruptible_api_call({"model": agent.model, "input": "hi"})
+        finally:
+            stream_release.set()
+
+        return stream_client, recovery_client, factory, fallback_calls, statuses
+
+    stream_client, recovery_client, factory, fallback_calls, statuses = run_case(
+        "openai-codex",
+        recovery_client_expected=True,
+    )
+    assert fallback_calls == [recovery_client]
+    assert len(factory.calls) == 2
+    for _ in range(50):
+        if stream_client.close_calls >= 1:
+            break
+        time.sleep(0.02)
+    assert stream_client.close_calls >= 1
+    assert recovery_client.close_calls == 1
+    assert not any("Aborting call" in status for status in statuses)
+
+    _stream_client, _recovery_client, factory, fallback_calls, _statuses = run_case(
+        "xai-oauth",
+        recovery_client_expected=False,
+    )
+    assert fallback_calls == []
+    assert len(factory.calls) == 1
