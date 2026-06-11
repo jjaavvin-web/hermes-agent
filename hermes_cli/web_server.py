@@ -96,6 +96,20 @@ except ImportError:
 WEB_DIST = Path(os.environ["HERMES_WEB_DIST"]) if "HERMES_WEB_DIST" in os.environ else Path(__file__).parent / "web_dist"
 _log = logging.getLogger(__name__)
 
+# REPORT-ONLY: browsers log violations; enforcement is a later,
+# separately gated step.
+_DASHBOARD_CSP_REPORT_ONLY_POLICY = (
+    "default-src 'self'; "
+    "script-src 'self'; "
+    "style-src 'self' 'unsafe-inline'; "
+    "img-src 'self' data: blob:; "
+    "connect-src 'self' ws: wss:; "
+    "font-src 'self' data:; "
+    "frame-ancestors 'none'"
+)
+_DASHBOARD_CSP_REPORT_ONLY_HEADER = "Content-Security-Policy-Report-Only"
+_HTML_DOCUMENT_CONTENT_TYPES = ("text/html", "application/xhtml+xml")
+
 # ---------------------------------------------------------------------------
 # Per-channel subscriber registry used by /api/pub (PTY-side gateway → dashboard)
 # and /api/events (dashboard → browser sidebar).  Keyed by an opaque channel id
@@ -168,6 +182,18 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.middleware("http")
+async def csp_report_only_middleware(request: Request, call_next):
+    """Attach report-only CSP to HTML document responses."""
+    response = await call_next(request)
+    content_type = response.headers.get("content-type", "").lower()
+    if content_type.startswith(_HTML_DOCUMENT_CONTENT_TYPES):
+        response.headers[_DASHBOARD_CSP_REPORT_ONLY_HEADER] = (
+            _DASHBOARD_CSP_REPORT_ONLY_POLICY
+        )
+    return response
 
 # ---------------------------------------------------------------------------
 # Endpoints that do NOT require the session token.  Everything else under
