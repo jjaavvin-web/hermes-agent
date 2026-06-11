@@ -19,6 +19,10 @@ def _make_hermes_tree(root: Path) -> None:
     """Create a realistic ~/.hermes directory structure for testing."""
     (root / "config.yaml").write_text("model:\n  provider: openrouter\n")
     (root / ".env").write_text("OPENROUTER_API_KEY=sk-test-123\n")
+    (root / "auth.json").write_text('{"providers": {"test": "token"}}\n')
+    (root / "relay.secret").write_text("relay-secret\n")
+    (root / "private.key").write_text("private-key\n")
+    (root / "certificate.pem").write_text("certificate\n")
     (root / "memory_store.db").write_bytes(b"fake-sqlite")
     (root / "hermes_state.db").write_bytes(b"fake-state")
 
@@ -75,6 +79,47 @@ def _symlink_file_or_skip(link: Path, target: Path) -> None:
         pytest.skip(f"symlinks unavailable in test environment: {exc}")
 
 
+_PLANTED_MARKERS = (
+    "PLANTED_ROOT_ENV_VALUE",
+    "PLANTED_ROOT_AUTH_VALUE",
+    "PLANTED_RELAY_VALUE",
+    "PLANTED_ROOT_KEY_VALUE",
+    "PLANTED_ROOT_PEM_VALUE",
+    "PLANTED_PROFILE_ENV_VALUE",
+    "PLANTED_PROFILE_AUTH_VALUE",
+)
+
+
+def _plant_fake_secret_files(root: Path) -> None:
+    """Plant fake credential files that backup/snapshot paths must exclude."""
+    (root / ".env").write_text("OPENROUTER_API_KEY=PLANTED_ROOT_ENV_VALUE\n")
+    (root / "auth.json").write_text('{"token": "PLANTED_ROOT_AUTH_VALUE"}\n')
+    (root / "relay.secret").write_text("PLANTED_RELAY_VALUE\n")
+    (root / "private.key").write_text("PLANTED_ROOT_KEY_VALUE\n")
+    (root / "certificate.pem").write_text("PLANTED_ROOT_PEM_VALUE\n")
+    profile = root / "profiles" / "coder"
+    profile.mkdir(parents=True, exist_ok=True)
+    (profile / ".env").write_text("ANTHROPIC_API_KEY=PLANTED_PROFILE_ENV_VALUE\n")
+    (profile / "auth.json").write_text('{"token": "PLANTED_PROFILE_AUTH_VALUE"}\n')
+
+
+def _assert_no_planted_markers(label: str, data: bytes) -> None:
+    for marker in _PLANTED_MARKERS:
+        assert marker.encode() not in data, f"{marker} leaked via {label}"
+
+
+def _assert_no_planted_markers_in_zip(zip_path: Path) -> None:
+    with zipfile.ZipFile(zip_path) as zf:
+        for name in zf.namelist():
+            _assert_no_planted_markers(name, zf.read(name))
+
+
+def _assert_no_planted_markers_in_tree(root: Path) -> None:
+    for path in root.rglob("*"):
+        if path.is_file():
+            _assert_no_planted_markers(path.relative_to(root).as_posix(), path.read_bytes())
+
+
 # ---------------------------------------------------------------------------
 # _should_exclude tests
 # ---------------------------------------------------------------------------
@@ -126,9 +171,20 @@ class TestShouldExclude:
         from hermes_cli.backup import _should_exclude
         assert not _should_exclude(Path("config.yaml"))
 
-    def test_includes_env(self):
+    def test_excludes_secret_bearing_files(self):
         from hermes_cli.backup import _should_exclude
-        assert not _should_exclude(Path(".env"))
+        for rel in (
+            ".env",
+            "auth.json",
+            "relay.secret",
+            "private.key",
+            "certificate.pem",
+            "profiles/coder/.env",
+            "profiles/coder/auth.json",
+            "profiles/coder/private.key",
+            "platforms/pairing/oauth.key",
+        ):
+            assert _should_exclude(Path(rel)), f"{rel} should be excluded"
 
     def test_includes_skills(self):
         from hermes_cli.backup import _should_exclude
@@ -171,14 +227,18 @@ class TestBackup:
         assert out_zip.exists()
         with zipfile.ZipFile(out_zip, "r") as zf:
             names = zf.namelist()
-            # Config should be present
+            # Config should be present; secret-bearing files should not.
             assert "config.yaml" in names
-            assert ".env" in names
+            assert ".env" not in names
+            assert "auth.json" not in names
+            assert "relay.secret" not in names
+            assert "private.key" not in names
+            assert "certificate.pem" not in names
             # Skills
             assert "skills/my-skill/SKILL.md" in names
             # Profiles
             assert "profiles/coder/config.yaml" in names
-            assert "profiles/coder/.env" in names
+            assert "profiles/coder/.env" not in names
             # Sessions
             assert "sessions/abc123.json" in names
             # Logs
@@ -286,6 +346,35 @@ class TestBackup:
             names = zf.namelist()
             assert "skills/outside-link.txt" not in names
             assert all(zf.read(name) != b"outside secret\n" for name in names)
+
+    def test_full_backup_never_copies_planted_secret_files(self, tmp_path, monkeypatch):
+        """Full backups must use the shared secret exclusion authority."""
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        _make_hermes_tree(hermes_home)
+        _plant_fake_secret_files(hermes_home)
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+        out_zip = tmp_path / "backup.zip"
+        from hermes_cli.backup import run_backup
+
+        run_backup(Namespace(output=str(out_zip)))
+
+        with zipfile.ZipFile(out_zip) as zf:
+            names = set(zf.namelist())
+        assert "config.yaml" in names
+        assert "profiles/coder/config.yaml" in names
+        assert "cron/jobs.json" in names
+        assert ".env" not in names
+        assert "auth.json" not in names
+        assert "relay.secret" not in names
+        assert "private.key" not in names
+        assert "certificate.pem" not in names
+        assert "profiles/coder/.env" not in names
+        assert "profiles/coder/auth.json" not in names
+        _assert_no_planted_markers_in_zip(out_zip)
 
 
 # ---------------------------------------------------------------------------
@@ -558,9 +647,11 @@ class TestRoundTrip:
 
         run_import(Namespace(zipfile=str(out_zip), force=True))
 
-        # Verify key files
+        # Verify key files; secret-bearing files are intentionally not round-tripped.
         assert (dst_home / "config.yaml").read_text() == "model:\n  provider: openrouter\n"
-        assert (dst_home / ".env").read_text() == "OPENROUTER_API_KEY=sk-test-123\n"
+        assert not (dst_home / ".env").exists()
+        assert not (dst_home / "auth.json").exists()
+        assert not (dst_home / "profiles" / "coder" / ".env").exists()
         assert (dst_home / "skills" / "my-skill" / "SKILL.md").exists()
         assert (dst_home / "profiles" / "coder" / "config.yaml").exists()
         assert (dst_home / "sessions" / "abc123.json").exists()
@@ -1121,6 +1212,8 @@ class TestQuickSnapshot:
         snap_dir = hermes_home / "state-snapshots" / snap_id
         assert snap_dir.is_dir()
         assert (snap_dir / "manifest.json").exists()
+        assert not (snap_dir / ".env").exists()
+        assert not (snap_dir / "auth.json").exists()
 
     def test_label_in_id(self, hermes_home):
         from hermes_cli.backup import create_quick_snapshot
@@ -1143,6 +1236,38 @@ class TestQuickSnapshot:
         from hermes_cli.backup import create_quick_snapshot
         snap_id = create_quick_snapshot(hermes_home=hermes_home)
         assert (hermes_home / "state-snapshots" / snap_id / "cron" / "jobs.json").exists()
+
+    @pytest.mark.parametrize("label", [None, "pre-update"])
+    def test_quick_snapshot_never_copies_planted_secret_files(self, hermes_home, label):
+        from hermes_cli.backup import create_quick_snapshot
+
+        _plant_fake_secret_files(hermes_home)
+        (hermes_home / "gateway_state.json").write_text('{"ok": true}\n')
+        (hermes_home / "channel_directory.json").write_text('{"channels": []}\n')
+
+        snap_id = create_quick_snapshot(label=label, hermes_home=hermes_home)
+        assert snap_id is not None
+        if label:
+            assert label in snap_id
+        snap_dir = hermes_home / "state-snapshots" / snap_id
+        assert (snap_dir / "config.yaml").exists()
+        assert (snap_dir / "cron" / "jobs.json").exists()
+        assert (snap_dir / "gateway_state.json").exists()
+        assert (snap_dir / "channel_directory.json").exists()
+        assert not (snap_dir / ".env").exists()
+        assert not (snap_dir / "auth.json").exists()
+        assert not (snap_dir / "relay.secret").exists()
+        assert not (snap_dir / "private.key").exists()
+        assert not (snap_dir / "certificate.pem").exists()
+        assert not (snap_dir / "profiles" / "coder" / ".env").exists()
+        assert not (snap_dir / "profiles" / "coder" / "auth.json").exists()
+        with open(snap_dir / "manifest.json") as f:
+            files = json.load(f)["files"]
+        assert ".env" not in files
+        assert "auth.json" not in files
+        assert "config.yaml" in files
+        assert "gateway_state.json" in files
+        _assert_no_planted_markers_in_tree(snap_dir)
 
     def test_missing_files_skipped(self, hermes_home):
         from hermes_cli.backup import create_quick_snapshot
@@ -1205,6 +1330,21 @@ class TestQuickSnapshot:
     def test_restore_nonexistent(self, hermes_home):
         from hermes_cli.backup import restore_quick_snapshot
         assert restore_quick_snapshot("nonexistent", hermes_home=hermes_home) is False
+
+    def test_restore_gracefully_ignores_absent_auth_json(self, hermes_home):
+        from hermes_cli.backup import create_quick_snapshot, restore_quick_snapshot
+
+        snap_id = create_quick_snapshot(hermes_home=hermes_home)
+        assert snap_id is not None
+        snap_dir = hermes_home / "state-snapshots" / snap_id
+        assert not (snap_dir / "auth.json").exists()
+
+        (hermes_home / "config.yaml").write_text("model: changed\n")
+        (hermes_home / "auth.json").unlink()
+
+        assert restore_quick_snapshot(snap_id, hermes_home=hermes_home) is True
+        assert "openrouter" in (hermes_home / "config.yaml").read_text()
+        assert not (hermes_home / "auth.json").exists()
 
     def test_auto_prune(self, hermes_home):
         from hermes_cli.backup import create_quick_snapshot, list_quick_snapshots, _QUICK_DEFAULT_KEEP
@@ -1330,9 +1470,14 @@ class TestPreUpdateBackup:
         assert out is not None
         with zipfile.ZipFile(out) as zf:
             names = set(zf.namelist())
-        # User data present
+        # User data present; secret-bearing files absent
         assert "config.yaml" in names
-        assert ".env" in names
+        assert ".env" not in names
+        assert "auth.json" not in names
+        assert "relay.secret" not in names
+        assert "private.key" not in names
+        assert "certificate.pem" not in names
+        assert "profiles/coder/.env" not in names
         assert "sessions/abc123.json" in names
         assert "skills/my-skill/SKILL.md" in names
         assert "profiles/coder/config.yaml" in names
@@ -1342,6 +1487,26 @@ class TestPreUpdateBackup:
         assert not any("__pycache__" in n for n in names)
         # pid files excluded
         assert "gateway.pid" not in names
+
+    def test_pre_update_backup_never_copies_planted_secret_files(self, hermes_home):
+        from hermes_cli.backup import create_pre_update_backup
+
+        _plant_fake_secret_files(hermes_home)
+        out = create_pre_update_backup(hermes_home=hermes_home)
+        assert out is not None
+        with zipfile.ZipFile(out) as zf:
+            names = set(zf.namelist())
+        assert "config.yaml" in names
+        assert "profiles/coder/config.yaml" in names
+        assert "cron/jobs.json" in names
+        assert ".env" not in names
+        assert "auth.json" not in names
+        assert "relay.secret" not in names
+        assert "private.key" not in names
+        assert "certificate.pem" not in names
+        assert "profiles/coder/.env" not in names
+        assert "profiles/coder/auth.json" not in names
+        _assert_no_planted_markers_in_zip(out)
 
     def test_does_not_recurse_into_prior_backups(self, hermes_home):
         """The ``backups/`` directory must be excluded so that each backup
@@ -1615,14 +1780,39 @@ class TestPreMigrationBackup:
         assert out is not None
         with zipfile.ZipFile(out) as zf:
             names = set(zf.namelist())
-        # User data present
+        # User data present; secret-bearing files absent
         assert "config.yaml" in names
-        assert ".env" in names
+        assert ".env" not in names
+        assert "auth.json" not in names
+        assert "relay.secret" not in names
+        assert "private.key" not in names
+        assert "certificate.pem" not in names
+        assert "profiles/coder/.env" not in names
         assert "skills/my-skill/SKILL.md" in names
         # Same exclusions as the shared helper
         assert not any(n.startswith("hermes-agent/") for n in names)
         assert not any("__pycache__" in n for n in names)
         assert "gateway.pid" not in names
+
+    def test_pre_migration_backup_never_copies_planted_secret_files(self, hermes_home):
+        from hermes_cli.backup import create_pre_migration_backup
+
+        _plant_fake_secret_files(hermes_home)
+        out = create_pre_migration_backup(hermes_home=hermes_home)
+        assert out is not None
+        with zipfile.ZipFile(out) as zf:
+            names = set(zf.namelist())
+        assert "config.yaml" in names
+        assert "profiles/coder/config.yaml" in names
+        assert "cron/jobs.json" in names
+        assert ".env" not in names
+        assert "auth.json" not in names
+        assert "relay.secret" not in names
+        assert "private.key" not in names
+        assert "certificate.pem" not in names
+        assert "profiles/coder/.env" not in names
+        assert "profiles/coder/auth.json" not in names
+        _assert_no_planted_markers_in_zip(out)
 
     def test_restorable_with_hermes_import(self, hermes_home, tmp_path):
         """The zip produced by pre-migration backup must be a valid Hermes

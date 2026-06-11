@@ -61,28 +61,58 @@ _EXCLUDED_NAMES = {
     "cron.pid",
 }
 
-# zipfile.open() drops Unix mode bits on extract; restore tightens these to 0600.
-_SECRET_FILE_NAMES = {".env", "auth.json", "state.db"}
+# Secret-bearing files must not be copied into any backup/snapshot artifact.
+# Keep this as the single path-based authority used by full zip backups,
+# quick-state snapshots, and pre-update/pre-migration snapshots. Config stays
+# included unless callers add a separate scrubber for a concrete credential
+# embedding case; credentials belong in .env/auth.json/keys instead.
+_SECRET_FILE_NAMES = {".env", "auth.json", "relay.secret"}
+_SECRET_SUFFIXES = (".key", ".pem")
+
+# zipfile.open() drops Unix mode bits on extract; restore tightens these to
+# 0600 for sensitive files that may exist in older backups, plus state.db which
+# carries session/pairing state and is intentionally still snapshotted.
+_PRIVATE_RESTORE_FILE_NAMES = _SECRET_FILE_NAMES | {"state.db"}
 
 
 def _should_exclude(rel_path: Path) -> bool:
     """Return True if *rel_path* (relative to hermes root) should be skipped."""
     parts = rel_path.parts
 
-    # Any path component matches an excluded dir name
+    # Any path component matches an excluded dir name, or is itself a
+    # secret-bearing file/extension. Checking every component prevents future
+    # recursive snapshot entries from bypassing the central deny-set.
     for part in parts:
         if part in _EXCLUDED_DIRS:
             return True
+        part_lower = part.lower()
+        if part_lower in _SECRET_FILE_NAMES:
+            return True
+        if part_lower.endswith(_SECRET_SUFFIXES):
+            return True
 
     name = rel_path.name
+    name_lower = name.lower()
 
     if name in _EXCLUDED_NAMES:
+        return True
+
+    if name_lower in _SECRET_FILE_NAMES:
+        return True
+
+    if name_lower.endswith(_SECRET_SUFFIXES):
         return True
 
     if name.endswith(_EXCLUDED_SUFFIXES):
         return True
 
     return False
+
+
+def _is_private_restore_file(rel_path: Path) -> bool:
+    """Return True when a restored legacy backup member should be chmod 0600."""
+    name_lower = rel_path.name.lower()
+    return name_lower in _PRIVATE_RESTORE_FILE_NAMES or name_lower.endswith(_SECRET_SUFFIXES)
 
 
 def _should_skip_backup_file(abs_path: Path, rel_path: Path, out_path: Path) -> bool:
@@ -180,7 +210,7 @@ def run_backup(args) -> None:
         orig_dirnames = dirnames[:]
         dirnames[:] = [
             d for d in dirnames
-            if d not in _EXCLUDED_DIRS
+            if not _should_exclude(rel_dir / d)
         ]
         for removed in set(orig_dirnames) - set(dirnames):
             skipped_dirs.add(str(rel_dir / removed))
@@ -393,7 +423,7 @@ def run_import(args) -> None:
                 target.parent.mkdir(parents=True, exist_ok=True)
                 with zf.open(member) as src, open(target, "wb") as dst:
                     dst.write(src.read())
-                if target.name in _SECRET_FILE_NAMES:
+                if _is_private_restore_file(Path(rel)):
                     os.chmod(target, 0o600)
                 restored += 1
             except (PermissionError, OSError) as exc:
@@ -479,6 +509,8 @@ def run_import(args) -> None:
 # Critical state files to include in quick snapshots (relative to HERMES_HOME).
 # Everything else is either regeneratable (logs, cache) or managed separately
 # (skills, repo, sessions/).
+# Credential carriers are intentionally omitted; _should_exclude() also blocks
+# them here if a future edit accidentally re-adds one to this tuple.
 #
 # Entries may be individual files OR directories.  Directories are captured
 # recursively; missing entries are silently skipped.  Pairing data lives in
@@ -488,8 +520,6 @@ def run_import(args) -> None:
 _QUICK_STATE_FILES = (
     "state.db",
     "config.yaml",
-    ".env",
-    "auth.json",
     "cron/jobs.json",
     "gateway_state.json",
     "channel_directory.json",
@@ -516,7 +546,7 @@ def create_quick_snapshot(
 ) -> Optional[str]:
     """Create a quick state snapshot of critical files.
 
-    Copies STATE_FILES to a timestamped directory under state-snapshots/.
+    Copies non-excluded STATE_FILES to a timestamped directory under state-snapshots/.
     Auto-prunes old snapshots beyond the keep limit.
 
     Returns:
@@ -537,26 +567,39 @@ def create_quick_snapshot(
         if not src.exists():
             continue
 
+        rel_path = Path(rel)
+        if _should_exclude(rel_path):
+            continue
+        if src.is_symlink():
+            continue
+
         if src.is_dir():
             # Walk the directory and record each file individually in the
             # manifest so restore can treat them uniformly.  Empty dirs are
             # skipped (nothing to snapshot).
-            for sub in src.rglob("*"):
-                if not sub.is_file():
-                    continue
-                sub_rel = sub.relative_to(home).as_posix()
-                dst = snap_dir / sub_rel
-                dst.parent.mkdir(parents=True, exist_ok=True)
-                try:
-                    shutil.copy2(sub, dst)
-                    # Pairing stores under pairing/ and platforms/pairing/
-                    # hold credentials; tighten any secret-named file so the
-                    # snapshot copy never inherits a permissive source mode.
-                    if dst.name in _SECRET_FILE_NAMES:
-                        os.chmod(dst, 0o600)
-                    manifest[sub_rel] = dst.stat().st_size
-                except (OSError, PermissionError) as exc:
-                    logger.warning("Could not snapshot %s: %s", sub_rel, exc)
+            for dirpath, dirnames, filenames in os.walk(src, followlinks=False):
+                dp = Path(dirpath)
+                rel_dir = dp.relative_to(home)
+                dirnames[:] = [
+                    d for d in dirnames
+                    if not _should_exclude(rel_dir / d)
+                ]
+                for fname in filenames:
+                    sub = dp / fname
+                    sub_rel = sub.relative_to(home).as_posix()
+                    if _should_exclude(Path(sub_rel)) or sub.is_symlink() or not sub.is_file():
+                        continue
+                    dst = snap_dir / sub_rel
+                    dst.parent.mkdir(parents=True, exist_ok=True)
+                    try:
+                        shutil.copy2(sub, dst)
+                        # Private state copies must not inherit permissive source
+                        # modes. Secret-bearing files are excluded before this.
+                        if dst.name in _PRIVATE_RESTORE_FILE_NAMES:
+                            os.chmod(dst, 0o600)
+                        manifest[sub_rel] = dst.stat().st_size
+                    except (OSError, PermissionError) as exc:
+                        logger.warning("Could not snapshot %s: %s", sub_rel, exc)
             continue
 
         if not src.is_file():
@@ -571,11 +614,10 @@ def create_quick_snapshot(
                     continue
             else:
                 shutil.copy2(src, dst)
-            # Defense-in-depth: secret files (and state.db, which carries
-            # session tokens / pairing material) must not inherit a permissive
+            # Defense-in-depth: private state files must not inherit a permissive
             # source mode. state.db is world-readable (0644) on disk, so
             # copy2 would otherwise leak a 0644 secret copy into the snapshot.
-            if dst.name in _SECRET_FILE_NAMES:
+            if dst.name in _PRIVATE_RESTORE_FILE_NAMES:
                 os.chmod(dst, 0o600)
             manifest[rel] = dst.stat().st_size
         except (OSError, PermissionError) as exc:
@@ -839,7 +881,8 @@ def _write_full_zip_backup(out_path: Path, hermes_root: Path) -> Optional[Path]:
         for dirpath, dirnames, filenames in os.walk(hermes_root, followlinks=False):
             dp = Path(dirpath)
             # Prune excluded directories in-place so os.walk doesn't descend
-            dirnames[:] = [d for d in dirnames if d not in _EXCLUDED_DIRS]
+            rel_dir = dp.relative_to(hermes_root)
+            dirnames[:] = [d for d in dirnames if not _should_exclude(rel_dir / d)]
 
             for fname in filenames:
                 fpath = dp / fname
