@@ -24,6 +24,56 @@ def kanban_home(tmp_path, monkeypatch):
     return home
 
 
+def _build_cli_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(prog="hermes")
+    sub = parser.add_subparsers(dest="command")
+    kc.build_parser(sub)
+    return parser
+
+
+def _task_rows() -> list[dict[str, object]]:
+    with kb.connect_closing() as conn:
+        return [kc._task_to_dict(t) for t in kb.list_tasks(conn, limit=100)]
+
+
+# ---------------------------------------------------------------------------
+# Argument parsing / registration
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize(
+    "argv,expected",
+    [
+        (["kanban", "list"], {"command": "kanban", "kanban_action": "list"}),
+        (["kanban", "ls"], {"command": "kanban", "kanban_action": "ls"}),
+        (["kanban", "boards", "list"], {"kanban_action": "boards", "boards_action": "list"}),
+        (["kanban", "boards", "create", "alpha"], {"kanban_action": "boards", "boards_action": "create", "slug": "alpha"}),
+        (["kanban", "specify", "t_deadbeef"], {"kanban_action": "specify", "task_id": "t_deadbeef"}),
+        (["kanban", "claim", "t_deadbeef"], {"kanban_action": "claim", "task_id": "t_deadbeef"}),
+        (["kanban", "complete", "t_deadbeef", "--result", "done"], {"kanban_action": "complete", "task_ids": ["t_deadbeef"], "result": "done"}),
+        (["kanban", "block", "t_deadbeef", "needs", "input"], {"kanban_action": "block", "task_id": "t_deadbeef", "reason": ["needs", "input"]}),
+        (["kanban", "unblock", "t_deadbeef"], {"kanban_action": "unblock", "task_ids": ["t_deadbeef"]}),
+        (["kanban", "open-pr", "t_deadbeef"], {"kanban_action": "open-pr", "task_id": "t_deadbeef"}),
+    ],
+)
+def test_parser_registers_main_kanban_subcommands(argv, expected):
+    args = _build_cli_parser().parse_args(argv)
+
+    for attr, value in expected.items():
+        assert getattr(args, attr) == value
+
+
+def test_parser_rejects_malformed_args_without_dispatching():
+    parser = _build_cli_parser()
+
+    with pytest.raises(SystemExit) as missing_task:
+        parser.parse_args(["kanban", "open-pr"])
+    assert missing_task.value.code == 2
+
+    with pytest.raises(SystemExit) as invalid_status:
+        parser.parse_args(["kanban", "list", "--status", "bogus"])
+    assert invalid_status.value.code == 2
+
+
 # ---------------------------------------------------------------------------
 # Workspace flag parsing
 # ---------------------------------------------------------------------------
@@ -89,6 +139,35 @@ def test_run_slash_create_and_list(kanban_home):
     out = kc.run_slash("list")
     assert "ship feature" in out
     assert "alice" in out
+
+
+def test_cli_read_only_commands_use_tmp_board_without_task_mutation(kanban_home, tmp_path):
+    """Read-only list/show/context/boards run entirely against tmp HERMES_HOME."""
+    workspace = tmp_path / "fixture-workspace"
+    with kb.connect_closing() as conn:
+        tid = kb.create_task(
+            conn,
+            title="fixture readonly task",
+            body="worker-visible body",
+            assignee="alice",
+            workspace_kind="dir",
+            workspace_path=str(workspace),
+        )
+        kb.add_comment(conn, tid, "tester", "read-only fixture comment")
+        before_comments = [c.body for c in kb.list_comments(conn, tid)]
+    before_tasks = _task_rows()
+
+    assert "fixture readonly task" in kc.run_slash("list")
+    assert "read-only fixture comment" in kc.run_slash(f"show {tid}")
+    assert "worker-visible body" in kc.run_slash(f"context {tid}")
+    boards = kc.run_slash("boards list")
+    assert "default" in boards
+
+    with kb.connect_closing() as conn:
+        after_comments = [c.body for c in kb.list_comments(conn, tid)]
+    assert _task_rows() == before_tasks
+    assert after_comments == before_comments
+    assert str(kanban_home) != "/home/josep/.hermes"
 
 
 def test_run_slash_create_worktree_path_and_branch(kanban_home, tmp_path):
@@ -308,6 +387,142 @@ def test_board_override_is_isolated_per_concurrent_call(kanban_home, monkeypatch
 
     assert alpha_titles == ["alpha-task"]
     assert beta_titles == ["beta-task"]
+
+
+# ---------------------------------------------------------------------------
+# open-pr outcome routing
+# ---------------------------------------------------------------------------
+
+def test_open_pr_pr_outcome_comments_and_blocks_task(kanban_home, monkeypatch, tmp_path, capsys):
+    worktree = tmp_path / "code-wt"
+    worktree.mkdir()
+    with kb.connect_closing() as conn:
+        tid = kb.create_task(
+            conn,
+            title="ship code",
+            workspace_kind="dir",
+            workspace_path=str(worktree),
+        )
+
+    calls = []
+
+    def fake_open_pr(**kwargs):
+        calls.append(kwargs)
+        return {
+            "ok": True,
+            "mode": "pr",
+            "pr_url": "https://github.com/acme/hermes/pull/123",
+            "classification": "sensitive",
+            "label": "needs-human",
+        }
+
+    monkeypatch.setattr("hermes_cli.kanban_pr.open_pr", fake_open_pr)
+    monkeypatch.setattr(kc, "_hermes_base_branch", lambda: "relay/work")
+
+    rc = kc.kanban_command(_build_cli_parser().parse_args(["kanban", "open-pr", tid]))
+
+    captured = capsys.readouterr()
+    assert rc == 0
+    assert "https://github.com/acme/hermes/pull/123" in captured.out
+    assert calls[0]["worktree"] == worktree
+    assert calls[0]["branch"] == f"kanban/{tid}"
+    assert calls[0]["base_branch"] == "relay/work"
+    with kb.connect_closing() as conn:
+        task = kb.get_task(conn, tid)
+        comments = [c.body for c in kb.list_comments(conn, tid)]
+    assert task is not None
+    assert task.status == "blocked"
+    assert any("PR opened: https://github.com/acme/hermes/pull/123" in c for c in comments)
+    assert any("sensitive → needs-human" in c for c in comments)
+
+
+def test_open_pr_local_branch_outcome_comments_and_blocks_task(kanban_home, monkeypatch, tmp_path):
+    worktree = tmp_path / "local-wt"
+    worktree.mkdir()
+    with kb.connect_closing() as conn:
+        tid = kb.create_task(conn, title="local only", workspace_kind="dir", workspace_path=str(worktree))
+
+    monkeypatch.setattr(
+        "hermes_cli.kanban_pr.open_pr",
+        lambda **kwargs: {"ok": True, "mode": "local-branch", "branch": kwargs["branch"]},
+    )
+    monkeypatch.setattr(kc, "_hermes_base_branch", lambda: "main")
+
+    rc = kc.kanban_command(_build_cli_parser().parse_args(["kanban", "open-pr", tid]))
+
+    assert rc == 0
+    with kb.connect_closing() as conn:
+        task = kb.get_task(conn, tid)
+        comments = [c.body for c in kb.list_comments(conn, tid)]
+    assert task is not None
+    assert task.status == "blocked"
+    assert any("local branch `kanban/" in c and "remoteless repo" in c for c in comments)
+
+
+def test_open_pr_noop_outcome_comments_without_blocking(kanban_home, monkeypatch, tmp_path):
+    worktree = tmp_path / "noop-wt"
+    worktree.mkdir()
+    with kb.connect_closing() as conn:
+        tid = kb.create_task(conn, title="nothing changed", workspace_kind="dir", workspace_path=str(worktree))
+
+    monkeypatch.setattr(
+        "hermes_cli.kanban_pr.open_pr",
+        lambda **kwargs: {"ok": True, "mode": "noop", "note": "no commits ahead"},
+    )
+    monkeypatch.setattr(kc, "_hermes_base_branch", lambda: "main")
+
+    rc = kc.kanban_command(_build_cli_parser().parse_args(["kanban", "open-pr", tid]))
+
+    assert rc == 0
+    with kb.connect_closing() as conn:
+        task = kb.get_task(conn, tid)
+        comments = [c.body for c in kb.list_comments(conn, tid)]
+    assert task is not None
+    assert task.status == "ready"
+    assert any("open-pr: no commits ahead" in c for c in comments)
+
+
+def test_open_pr_error_outcome_comments_blocks_and_returns_nonzero(kanban_home, monkeypatch, tmp_path, capsys):
+    worktree = tmp_path / "error-wt"
+    worktree.mkdir()
+    with kb.connect_closing() as conn:
+        tid = kb.create_task(conn, title="push fails", workspace_kind="dir", workspace_path=str(worktree))
+
+    monkeypatch.setattr(
+        "hermes_cli.kanban_pr.open_pr",
+        lambda **kwargs: {"ok": False, "mode": "error", "error": "git push failed"},
+    )
+    monkeypatch.setattr(kc, "_hermes_base_branch", lambda: "main")
+
+    rc = kc.kanban_command(_build_cli_parser().parse_args(["kanban", "open-pr", tid]))
+
+    captured = capsys.readouterr()
+    assert rc == 1
+    assert "ERROR git push failed" in captured.err
+    with kb.connect_closing() as conn:
+        task = kb.get_task(conn, tid)
+        comments = [c.body for c in kb.list_comments(conn, tid)]
+    assert task is not None
+    assert task.status == "blocked"
+    assert any("open-pr failed: git push failed" in c for c in comments)
+
+
+# ---------------------------------------------------------------------------
+# Error paths
+# ---------------------------------------------------------------------------
+
+def test_cli_unknown_task_id_errors_are_nonzero(kanban_home, capsys):
+    rc = kc.kanban_command(_build_cli_parser().parse_args(["kanban", "show", "t_missing"]))
+
+    captured = capsys.readouterr()
+    assert rc == 1
+    assert "no such task: t_missing" in captured.err
+
+
+def test_run_slash_open_pr_unknown_task_id_reports_error(kanban_home):
+    out = kc.run_slash("open-pr t_missing")
+
+    assert "no such task t_missing" in out
 
 
 # ---------------------------------------------------------------------------
