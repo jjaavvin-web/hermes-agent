@@ -166,6 +166,7 @@ def _wants_tui_early(argv: "list[str] | None" = None) -> bool:
 # `entry.tsx`; this is just the earlier cousin. ``HERMES_TUI_NO_EARLY_DISABLE``
 # escapes the behaviour for diagnostics.
 def _suppress_mouse_residue_early() -> None:
+    """Disable terminal mouse tracking before the TUI imports begin."""
     if os.environ.get("HERMES_TUI_NO_EARLY_DISABLE") == "1":
         return
     if not _wants_tui_early():
@@ -201,6 +202,7 @@ def _is_termux_startup_environment_fast() -> bool:
 
 
 def _is_termux_fast_version_argv(argv: list[str]) -> bool:
+    """Return whether argv requests the lightweight version path."""
     return argv in (["--version"], ["-V"], ["version"])
 
 
@@ -225,6 +227,7 @@ def _read_openai_version_fast() -> str | None:
 
 
 def _print_fast_version_info() -> None:
+    """Print version details without importing the full CLI stack."""
     from hermes_cli import __release_date__, __version__
 
     project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir))
@@ -302,6 +305,7 @@ def _require_tty(command_name: str) -> None:
 # missing every route, plugin, and asset added since. Detect that case and
 # prefer the source checkout if one exists at a recognizable layout.
 def _resolve_project_root() -> Path:
+    """Return the source checkout root preferred for runtime imports."""
     here = Path(__file__).resolve()
     if "site-packages" in here.parts:
         for candidate in here.parents:
@@ -593,10 +597,12 @@ def _termux_bundled_skills_fingerprint() -> str:
 
 
 def _termux_bundled_skills_stamp_path() -> Path:
+    """Return the Termux bundled-skill sync stamp path."""
     return get_hermes_home() / "skills" / ".termux_bundled_sync_stamp"
 
 
 def _termux_bundled_skills_sync_needed() -> bool:
+    """Return whether bundled skills need a startup sync on Termux."""
     if not _is_termux_startup_environment():
         return True
     if os.environ.get("HERMES_TERMUX_FORCE_SKILLS_SYNC") == "1":
@@ -609,6 +615,7 @@ def _termux_bundled_skills_sync_needed() -> bool:
 
 
 def _mark_termux_bundled_skills_synced() -> None:
+    """Persist the current bundled-skill fingerprint for Termux."""
     if not _is_termux_startup_environment():
         return
     try:
@@ -637,6 +644,7 @@ def _sync_bundled_skills_for_startup() -> bool:
 
 
 def _termux_should_prefetch_update_check() -> bool:
+    """Return whether startup should prefetch the update check on Termux."""
     if not _is_termux_startup_environment():
         return True
     return os.environ.get("HERMES_TERMUX_PREFETCH_UPDATES") == "1"
@@ -824,6 +832,7 @@ def _session_browse_picker(sessions: list) -> Optional[str]:
             )
 
         def _curses_browse(stdscr):
+            """Render the interactive curses session picker."""
             curses.curs_set(0)
             if curses.has_colors():
                 curses.start_color()
@@ -1187,6 +1196,7 @@ def _resolve_session_by_name_or_id(name_or_id: str) -> Optional[str]:
 
 
 def _read_tui_active_session_file(path: Optional[str]) -> Optional[str]:
+    """Read the active TUI session ID from a handoff file."""
     if not path:
         return None
     try:
@@ -1382,6 +1392,7 @@ def _tui_need_npm_install(root: Path) -> bool:
         return lock.stat().st_mtime > marker.stat().st_mtime
 
     def comparable(pkg: dict) -> dict:
+        """Return lockfile package data with npm runtime keys removed."""
         return {k: v for k, v in pkg.items() if k not in _NPM_LOCK_RUNTIME_KEYS}
 
     for name, pkg in wanted.items():
@@ -1539,6 +1550,7 @@ def _make_tui_argv(tui_dir: Path, tui_dev: bool) -> tuple[list[str], Path]:
     _ensure_tui_node()
 
     def _node_bin(bin: str) -> str:
+        """Resolve a Node tool executable, installing Node if available."""
         if bin == "node":
             env_node = os.environ.get("HERMES_NODE")
             if env_node and os.path.isfile(env_node) and os.access(env_node, os.X_OK):
@@ -2530,6 +2542,7 @@ def select_provider_and_model(args=None):
     )
     compatible_custom_providers = get_compatible_custom_providers(config)
     def _named_custom_provider_map(cfg) -> dict[str, dict[str, str]]:
+        """Build custom-provider metadata keyed by provider ID."""
         from hermes_cli.config import read_raw_config
 
         # Build lookups of raw (un-expanded) templates keyed by a
@@ -2551,6 +2564,7 @@ def select_provider_and_model(args=None):
             api_key: str,
             base_url: str,
         ) -> None:
+            """Index raw env-reference templates by provider identity."""
             template = str(api_key or "").strip()
             base_template = str(base_url or "").strip()
             name = str(name or "").strip()
@@ -2609,6 +2623,7 @@ def select_provider_and_model(args=None):
             provider_key: str,
             model: str,
         ) -> str:
+            """Find a raw env-reference template for a provider identity."""
             name_lc = str(name or "").strip().lower()
             pkey_lc = str(provider_key or "").strip().lower()
             model = str(model or "").strip()
@@ -2657,6 +2672,7 @@ def select_provider_and_model(args=None):
         return custom_provider_map
 
     def _norm_base_url(url: str) -> str:
+        """Normalize base URLs for custom-provider identity checks."""
         return str(url or "").strip().rstrip("/").lower()
 
     # Add user-defined custom providers from config.yaml
@@ -2665,6 +2681,7 @@ def select_provider_and_model(args=None):
     )  # key → {name, base_url, api_key}
 
     def _active_custom_key_from_base_url() -> str:
+        """Return the custom provider key matching the active base URL."""
         if effective_provider != "custom" or not isinstance(model_cfg, dict):
             return ""
         current_base = _norm_base_url(model_cfg.get("base_url", ""))
@@ -5019,6 +5036,7 @@ def __getattr__(name):
 
 
 def _current_reasoning_effort(config) -> str:
+    """Return the configured reasoning effort, if any."""
     agent_cfg = config.get("agent")
     if isinstance(agent_cfg, dict):
         return str(agent_cfg.get("reasoning_effort") or "").strip().lower()
@@ -5026,6 +5044,7 @@ def _current_reasoning_effort(config) -> str:
 
 
 def _set_reasoning_effort(config, effort: str) -> None:
+    """Store the selected reasoning effort in the agent config."""
     agent_cfg = config.get("agent")
     if not isinstance(agent_cfg, dict):
         agent_cfg = {}
@@ -5047,6 +5066,7 @@ def _prompt_reasoning_effort_selection(efforts, current_effort=""):
         return None
 
     def _label(effort):
+        """Label a reasoning effort choice for display."""
         if effort == current_effort:
             return f"{effort}  ← currently in use"
         return effort
@@ -5439,6 +5459,7 @@ def _prompt_api_key(pconfig, existing_key: str, provider_id: str = "") -> tuple:
     key_env = pconfig.api_key_env_vars[0] if pconfig.api_key_env_vars else ""
 
     def _prompt_new_key(*, allow_lmstudio_default: bool) -> str:
+        """Prompt for and normalize a replacement API key."""
         if provider_id == "lmstudio" and allow_lmstudio_default:
             prompt = f"{key_env} (Enter for no-auth default {LMSTUDIO_NOAUTH_PLACEHOLDER!r}): "
         else:
