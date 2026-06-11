@@ -4407,6 +4407,62 @@ def test_acquire_lease_prefers_unleased_entry(tmp_path, monkeypatch):
 
 
 
+def test_acquire_lease_with_credential_id_respects_availability_guards(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    _write_auth_store(
+        tmp_path,
+        {
+            "version": 1,
+            "credential_pool": {
+                "anthropic": [
+                    {
+                        "id": "api-key-cred",
+                        "label": "paid-api-key",
+                        "auth_type": "api_key",
+                        "priority": 0,
+                        "source": "manual",
+                        "access_token": "***",
+                    },
+                    {
+                        "id": "exhausted-oauth",
+                        "label": "exhausted-oauth",
+                        "auth_type": "oauth",
+                        "priority": 1,
+                        "source": "manual",
+                        "access_token": "***",
+                        "last_status": "exhausted",
+                        "last_status_at": time.time(),
+                        "last_error_code": 429,
+                    },
+                    {
+                        "id": "fresh-oauth",
+                        "label": "fresh-oauth",
+                        "auth_type": "oauth",
+                        "priority": 2,
+                        "source": "manual",
+                        "access_token": "***",
+                    },
+                ]
+            },
+        },
+    )
+
+    from agent.credential_pool import AUTH_TYPE_OAUTH, load_pool
+
+    pool = load_pool("anthropic")
+    pool._selection_auth_type = AUTH_TYPE_OAUTH
+
+    assert pool.acquire_lease(credential_id="api-key-cred") is None
+    assert pool.acquire_lease(credential_id="exhausted-oauth") is None
+    assert pool.acquire_lease(credential_id="missing") is None
+    assert pool._active_leases == {}
+
+    assert pool.acquire_lease(credential_id="fresh-oauth") == "fresh-oauth"
+    assert pool._active_leases == {"fresh-oauth": 1}
+    assert pool.current().id == "fresh-oauth"
+
+
+
 def test_release_lease_decrements_counter(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
     _write_auth_store(

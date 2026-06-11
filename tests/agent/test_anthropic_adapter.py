@@ -12,6 +12,7 @@ from agent.prompt_caching import apply_anthropic_cache_control
 from agent.anthropic_adapter import (
     _is_azure_anthropic_endpoint,
     _is_oauth_token,
+    _is_third_party_anthropic_endpoint,
     _refresh_oauth_token,
     _to_plain_data,
     _write_claude_code_credentials,
@@ -136,6 +137,21 @@ class TestBuildAnthropicClient:
         assert _is_azure_anthropic_endpoint(
             "https://management.azure.com/anthropic"
         ) is False
+
+    @pytest.mark.parametrize(
+        ("base_url", "expected"),
+        [
+            (None, False),
+            ("", False),
+            ("https://anthropic.com", False),
+            ("https://api.anthropic.com", False),
+            ("https://ANTHROPIC.com/v1/messages", False),
+            ("https://anthropic.com.evil.io", True),
+            ("https://notanthropic.com", True),
+        ],
+    )
+    def test_third_party_anthropic_endpoint_uses_hostname_boundary(self, base_url, expected):
+        assert _is_third_party_anthropic_endpoint(base_url) is expected
 
     def test_bedrock_client_keeps_context_1m_beta(self):
         with patch("agent.anthropic_adapter._anthropic_sdk") as mock_sdk:
