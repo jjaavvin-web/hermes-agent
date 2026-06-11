@@ -5631,6 +5631,7 @@ def _infer_stepfun_region(base_url: str) -> str:
 
 
 def _stepfun_base_url_for_region(region: str) -> str:
+    """Return the StepFun API base URL for a region key."""
     from hermes_cli.auth import (
         STEPFUN_STEP_PLAN_CN_BASE_URL,
         STEPFUN_STEP_PLAN_INTL_BASE_URL,
@@ -5963,6 +5964,7 @@ def _model_flow_bedrock(config, current_model=""):
         ]
 
         def _sort_key(m):
+            """Rank Bedrock models with recommended choices first."""
             mid = m["id"]
             for i, rec in enumerate(_RECOMMENDED):
                 if mid.startswith(rec):
@@ -6320,6 +6322,7 @@ def _run_anthropic_oauth_flow(save_env_value):
     )
 
     def _activate_claude_code_credentials_if_available() -> bool:
+        """Link usable Claude Code credentials when they are available."""
         try:
             creds = read_claude_code_credentials()
         except Exception:
@@ -6708,6 +6711,7 @@ def cmd_import(args):
 
 
 def _print_version_info(*, check_updates: bool = True) -> None:
+    """Print Hermes version, runtime, dependency, and update details."""
     from hermes_cli.banner import format_banner_version_label
 
     print(format_banner_version_label())
@@ -7003,6 +7007,7 @@ def _run_with_idle_timeout(
         return subprocess.CompletedProcess(cmd, 127, stdout="", stderr=str(exc))
 
     def _reader() -> None:
+        """Relay subprocess output while tracking the idle timer."""
         nonlocal last_output_ts
         assert proc.stdout is not None
         for line in proc.stdout:
@@ -7121,6 +7126,7 @@ def _build_web_ui(web_dir: Path, *, fatal: bool = False) -> bool:
     # in this function through _say() with errors="replace" keeps the
     # build path usable on a stock `py -m hermes_cli.main web` invocation.
     def _say(text: str) -> None:
+        """Print text safely on consoles with limited encodings."""
         try:
             print(text)
         except UnicodeEncodeError:
@@ -7254,6 +7260,7 @@ def _compute_desktop_content_hash(project_root: Path) -> str:
     h = hashlib.sha256()
 
     def _hash_file(path: Path) -> None:
+        """Add a file path and contents to the desktop cache hash."""
         rel = str(path.relative_to(project_root))
         h.update(rel.encode())
         h.update(b"\0")
@@ -8253,6 +8260,7 @@ def _update_via_zip(args):
 
 
 def _stash_local_changes_if_needed(git_cmd: list[str], cwd: Path) -> Optional[str]:
+    """Stash dirty working-tree changes before an update if needed."""
     status = subprocess.run(
         git_cmd + ["status", "--porcelain"],
         cwd=cwd,
@@ -8301,6 +8309,7 @@ def _stash_local_changes_if_needed(git_cmd: list[str], cwd: Path) -> Optional[st
 def _resolve_stash_selector(
     git_cmd: list[str], cwd: Path, stash_ref: str
 ) -> Optional[str]:
+    """Return the stash selector for a saved stash commit hash."""
     stash_list = subprocess.run(
         git_cmd + ["stash", "list", "--format=%gd %H"],
         cwd=cwd,
@@ -8318,6 +8327,7 @@ def _resolve_stash_selector(
 def _print_stash_cleanup_guidance(
     stash_ref: str, stash_selector: Optional[str] = None
 ) -> None:
+    """Print commands for locating and removing a preserved stash."""
     print(
         "  Check `git status` first so you don't accidentally reapply the same change twice."
     )
@@ -8337,6 +8347,7 @@ def _restore_stashed_changes(
     prompt_user: bool = False,
     input_fn=None,
 ) -> bool:
+    """Restore previously stashed local changes after an update."""
     if prompt_user:
         print()
         print("⚠ Local changes were stashed before updating.")
@@ -8798,6 +8809,7 @@ def _run_install_with_heartbeat(
     start = _time.time()
 
     def _heartbeat() -> None:
+        """Emit periodic install progress while the command is quiet."""
         # Wait first, then print, so short installs don't emit noise.
         while not done.wait(heartbeat_interval_seconds):
             elapsed = int(_time.time() - start)
@@ -8822,6 +8834,7 @@ def _run_install_with_heartbeat(
 
 
 def _is_windows() -> bool:
+    """Return whether the current Python runtime is on Windows."""
     return sys.platform == "win32"
 
 
@@ -9282,6 +9295,7 @@ def _install_python_dependencies_with_optional_fallback(
     scripts_dir = _venv_scripts_dir() if _is_windows() else None
 
     def _install(args: list[str]) -> None:
+        """Run one pip install attempt with Windows shim quarantine."""
         moved: list[tuple[Path, Path]] = []
         if scripts_dir is not None:
             moved = _quarantine_running_hermes_exe(scripts_dir)
@@ -9425,6 +9439,7 @@ def _verify_core_dependencies_installed(
         return
 
     def _missing_deps() -> list[str]:
+        """Return required distributions missing from the target environment."""
         check_script = (
             "import importlib.metadata as md, sys\n"
             "missing=[]\n"
@@ -9542,10 +9557,12 @@ def _resolve_install_target_python(
 
 
 def _is_termux_env(env: dict[str, str] | None = None) -> bool:
+    """Return whether the environment appears to be Termux startup."""
     return _is_termux_startup_environment(env)
 
 
 def _is_android_python() -> bool:
+    """Return whether Python reports the Android platform."""
     return sys.platform == "android"
 
 
@@ -9610,6 +9627,7 @@ def _ensure_uv_for_termux(pip_cmd: list[str]) -> str | None:
 
 
 def _update_node_dependencies() -> None:
+    """Update root and runtime Node.js workspace dependencies."""
     npm = shutil.which("npm")
     if not npm:
         return
@@ -9679,11 +9697,13 @@ class _UpdateOutputStream:
     """
 
     def __init__(self, original, log_file):
+        """Initialize the stream wrapper and output mirrors."""
         self._original = original
         self._log = log_file
         self._original_broken = False
 
     def write(self, data):
+        """Write data to the log mirror and live stream when available."""
         # Mirror to the log file first — it's the most reliable destination.
         if self._log is not None:
             try:
@@ -9704,6 +9724,7 @@ class _UpdateOutputStream:
             return len(data) if isinstance(data, (str, bytes)) else 0
 
     def flush(self):
+        """Flush mirrored streams while tolerating closed terminals."""
         if self._log is not None:
             try:
                 self._log.flush()
@@ -9717,6 +9738,7 @@ class _UpdateOutputStream:
             self._original_broken = True
 
     def isatty(self):
+        """Return whether the wrapped live stream is still a TTY."""
         if self._original_broken:
             return False
         try:
@@ -9725,11 +9747,13 @@ class _UpdateOutputStream:
             return False
 
     def fileno(self):
+        """Return the file descriptor of the wrapped stream."""
         # Some tools probe fileno(); defer to the underlying stream and let
         # callers handle failures (same behaviour as the unwrapped stream).
         return self._original.fileno()
 
     def __getattr__(self, name):
+        """Delegate unknown attributes to the wrapped stream."""
         return getattr(self._original, name)
 
 
@@ -10915,6 +10939,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
             # Show WHAT changed, not just a count, so the user can make an
             # informed yes/no decision (previously the prompt named nothing).
             def _print_items(items, label, key, fallback_key=None):
+                """Print a capped list of migration items with descriptions."""
                 if not items:
                     return
                 print(f"  {label}:")
@@ -12669,10 +12694,12 @@ _AGENT_SUBCOMMANDS = {
 
 
 def _is_tui_chat_launch(args) -> bool:
+    """Return whether this invocation should launch the TUI chat path."""
     return bool(getattr(args, "tui", False) or os.environ.get("HERMES_TUI") == "1")
 
 
 def _command_has_dedicated_mcp_startup(args) -> bool:
+    """Return whether the command owns its own MCP startup path."""
     if args.command == "acp":
         return True
     if args.command == "gateway" and getattr(args, "gateway_command", None) == "run":
@@ -12683,6 +12710,7 @@ def _command_has_dedicated_mcp_startup(args) -> bool:
 
 
 def _should_background_mcp_startup(args) -> bool:
+    """Return whether MCP discovery should start in the background."""
     if _is_tui_chat_launch(args):
         return False
     return args.command in {None, "chat", "rl"}
@@ -12756,6 +12784,7 @@ def _prepare_agent_startup(args) -> None:
 
 
 def _set_chat_arg_defaults(args) -> None:
+    """Populate missing chat argparse attributes with default values."""
     for attr, default in [
         ("query", None),
         ("model", None),
@@ -13045,6 +13074,7 @@ def main():
     _secrets_cli.register_cli(secrets_bw)
 
     def _dispatch_secrets(args):  # noqa: ANN001
+        """Dispatch nested secret-manager subcommands or show help."""
         sub = getattr(args, "secrets_command", None)
         bw_sub = getattr(args, "secrets_bw_command", None)
         if sub in ("bitwarden", "bw") and bw_sub is not None:
@@ -14288,6 +14318,7 @@ Examples:
     pairing_sub.add_parser("clear-pending", help="Clear all pending codes")
 
     def cmd_pairing(args):
+        """Dispatch pairing-code management commands."""
         from hermes_cli.pairing import pairing_command
 
         pairing_command(args)
@@ -14554,6 +14585,7 @@ Examples:
     )
 
     def cmd_skills(args):
+        """Dispatch skill hub and interactive skill configuration commands."""
         # Route 'config' action to skills_config module
         if getattr(args, "skills_action", None) == "config":
             _require_tty("skills config")
@@ -14668,6 +14700,7 @@ Examples:
     plugins_disable.add_argument("name", help="Plugin name to disable")
 
     def cmd_plugins(args):
+        """Dispatch plugin management commands."""
         from hermes_cli.plugins_cmd import plugins_command
 
         plugins_command(args)
@@ -14784,6 +14817,7 @@ Examples:
     )
 
     def cmd_memory(args):
+        """Dispatch memory provider setup, disable, and reset actions."""
         sub = getattr(args, "memory_command", None)
         if sub == "off":
             from hermes_cli.config import load_config, save_config
@@ -14933,6 +14967,7 @@ Examples:
     )
 
     def cmd_tools(args):
+        """Dispatch tool configuration and post-setup commands."""
         action = getattr(args, "tools_action", None)
         if action in {"list", "disable", "enable"}:
             from hermes_cli.tools_config import tools_disable_enable_command
@@ -14988,6 +15023,7 @@ Examples:
     )
 
     def cmd_computer_use(args):
+        """Dispatch Computer Use install and status commands."""
         action = getattr(args, "computer_use_action", None)
         if action == "install":
             from hermes_cli.tools_config import install_cua_driver
@@ -15112,6 +15148,7 @@ Examples:
     _add_accept_hooks_flag(mcp_parser)
 
     def cmd_mcp(args):
+        """Dispatch MCP server management commands."""
         from hermes_cli.mcp_config import mcp_command
 
         mcp_command(args)
@@ -15197,6 +15234,7 @@ Examples:
             return False
 
     def cmd_sessions(args):
+        """Dispatch session history management commands."""
         import json as _json
 
         try:
@@ -15407,6 +15445,7 @@ Examples:
     )
 
     def cmd_insights(args):
+        """Generate and print usage insights for session history."""
         try:
             from hermes_state import SessionDB
             from agent.insights import InsightsEngine
@@ -15504,6 +15543,7 @@ Examples:
     )
 
     def cmd_claw(args):
+        """Dispatch OpenClaw migration commands."""
         from hermes_cli.claw import claw_command
 
         claw_command(args)
