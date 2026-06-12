@@ -2083,12 +2083,90 @@ export interface OSGraphEdge {
   state: OSEdgeState;
 }
 
+export interface OSAttentionChip {
+  source: string;
+  status: OSStatus;
+  label: string;
+  detail: string;
+  section_id: string;
+}
+
+export interface OSRepoSnapshot {
+  scanned_at?: string;
+  readiness_pct: number;
+  summary: {
+    total?: number;
+    ready?: number;
+    actionable?: number;
+    total_uncommitted?: number;
+    total_files_changed?: number;
+    by_severity?: Record<string, number>;
+  };
+  best_move?: { text?: string; severity?: string; slug?: string | null; thread_id?: string | null };
+  counts?: Record<string, number>;
+  rows?: Array<Record<string, unknown>>;
+  lanes?: Array<Record<string, unknown>>;
+}
+
+export interface OSProjectSummary {
+  slug: string;
+  name: string;
+  icon: string;
+  color?: string;
+  archived?: boolean;
+  total: number;
+  completion_pct: number;
+  active?: number;
+  blocked: number;
+  remaining_count: number;
+  remaining?: Array<{ id?: string; status: string; title: string }>;
+  remaining_by_status?: Record<string, number>;
+}
+
+export interface OSDecisionItem {
+  title: string;
+  source: string;
+  reason: string;
+  link_or_id?: string | null;
+}
+
+export interface OSStalledItem {
+  title: string;
+  project: string;
+  status: string;
+  idle_for: string;
+  why: string;
+}
+
+export interface OSWorkSnapshot {
+  projects: OSProjectSummary[];
+  live: { runtimes?: Array<{ name?: string; label?: string; status?: string; detail?: string }> };
+  decisions: OSDecisionItem[];
+  stalled: OSStalledItem[];
+  projects_completion_pct: number;
+  live_runtimes: number;
+  counts: { projects: number; decisions: number; live_runtimes: number; stalled: number };
+}
+
+export interface OSActivitySnapshot {
+  queue_7d: { range: string; points: Array<{ date?: string; count?: number }>; openNow?: number };
+  queue?: { cards?: Array<{ id?: string; board?: string; title?: string; status?: string }> };
+  kpis?: Record<string, unknown>;
+  created_7d: number;
+  open_now: number;
+  cards: Array<{ id?: string; board?: string; title?: string; status?: string }>;
+}
+
 export interface OSSnapshot {
   generated_at: string;
   overall: OSStatus;
   sections: OSSection[];
   /** Every non-green item, pre-sorted red→amber by the backend. */
   diagnostics: OSDiagnostic[];
+  attention?: { posture: OSStatus; chips: OSAttentionChip[] };
+  repo?: OSRepoSnapshot;
+  work?: OSWorkSnapshot;
+  activity?: OSActivitySnapshot;
   /** Static architecture topology with live health bound onto the nodes. */
   graph: { nodes: OSGraphNode[]; edges: OSGraphEdge[] };
 }
