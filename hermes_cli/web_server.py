@@ -10,6 +10,7 @@ Usage:
 """
 
 import asyncio
+import base64
 import hmac
 import importlib.util
 import json
@@ -176,6 +177,27 @@ def _require_token(request: Request) -> None:
         raise HTTPException(status_code=401, detail="Unauthorized")
 
 
+def _new_csp_nonce() -> str:
+    """Return a compact per-request nonce suitable for CSP headers."""
+    return base64.b64encode(secrets.token_bytes(16)).decode("ascii")
+
+
+def _dashboard_csp_report_only(nonce: str) -> str:
+    """Build the report-only dashboard CSP for the current request nonce."""
+    return "; ".join(
+        (
+            "default-src 'self'",
+            f"script-src 'self' 'nonce-{nonce}'",
+            "style-src 'self' 'unsafe-inline'",
+            "img-src 'self' data: blob:",
+            "font-src 'self' data:",
+            "connect-src 'self' ws: wss:",
+            "object-src 'none'",
+            "frame-ancestors 'none'",
+        )
+    )
+
+
 # Accepted Host header values for loopback binds. DNS rebinding attacks
 # point a victim browser at an attacker-controlled hostname (evil.test)
 # which resolves to 127.0.0.1 after a TTL flip — bypassing same-origin
@@ -272,6 +294,18 @@ async def auth_middleware(request: Request, call_next):
                 content={"detail": "Unauthorized"},
             )
     return await call_next(request)
+
+
+@app.middleware("http")
+async def security_headers_middleware(request: Request, call_next):
+    """Attach dashboard security headers to every HTTP response."""
+    nonce = _new_csp_nonce()
+    request.state.csp_nonce = nonce
+    response = await call_next(request)
+    response.headers["Content-Security-Policy-Report-Only"] = _dashboard_csp_report_only(nonce)
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    return response
 
 
 # ---------------------------------------------------------------------------
@@ -3606,7 +3640,7 @@ def mount_spa(application: FastAPI):
 
     _index_path = WEB_DIST / "index.html"
 
-    def _serve_index(prefix: str = ""):
+    def _serve_index(request: Request, prefix: str = ""):
         """Return index.html with the session token + base-path injected.
 
         ``prefix`` is the normalised ``X-Forwarded-Prefix`` (e.g. ``/hermes``)
@@ -3614,8 +3648,9 @@ def mount_spa(application: FastAPI):
         """
         html = _index_path.read_text()
         chat_js = "true" if _DASHBOARD_EMBEDDED_CHAT_ENABLED else "false"
+        nonce = getattr(request.state, "csp_nonce", "")
         token_script = (
-            f'<script>window.__HERMES_SESSION_TOKEN__="{_SESSION_TOKEN}";'
+            f'<script nonce="{nonce}">window.__HERMES_SESSION_TOKEN__="{_SESSION_TOKEN}";'
             f"window.__HERMES_DASHBOARD_EMBEDDED_CHAT__={chat_js};"
             f'window.__HERMES_BASE_PATH__="{prefix}";</script>'
         )
@@ -3671,7 +3706,7 @@ def mount_spa(application: FastAPI):
             and file_path.is_file()
         ):
             return FileResponse(file_path)
-        return _serve_index(prefix)
+        return _serve_index(request, prefix)
 
 
 # ---------------------------------------------------------------------------
