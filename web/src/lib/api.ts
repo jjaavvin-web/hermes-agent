@@ -2054,12 +2054,43 @@ export interface OSDiagnostic {
   hint?: string;
 }
 
+export type OSGraphGroup =
+  | "surfaces"
+  | "control"
+  | "providers"
+  | "memory"
+  | "protection"
+  | "host";
+
+export type OSEdgeState = "live" | "disabled" | "broken" | "gated";
+
+export interface OSGraphNode {
+  id: string;
+  label: string;
+  kind: string;
+  group: OSGraphGroup;
+  status: OSStatus;
+  detail?: string;
+  /** Section id (snapshot.sections) backing this node, for click-inspect. */
+  section_ref?: string;
+}
+
+export interface OSGraphEdge {
+  id: string;
+  source: string;
+  target: string;
+  label?: string;
+  state: OSEdgeState;
+}
+
 export interface OSSnapshot {
   generated_at: string;
   overall: OSStatus;
   sections: OSSection[];
   /** Every non-green item, pre-sorted red→amber by the backend. */
   diagnostics: OSDiagnostic[];
+  /** Static architecture topology with live health bound onto the nodes. */
+  graph: { nodes: OSGraphNode[]; edges: OSGraphEdge[] };
 }
 
 export interface HubAgentPluginRow {

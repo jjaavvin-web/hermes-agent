@@ -84,6 +84,302 @@ def _run(cmd: list[str], timeout: float = 3.0) -> subprocess.CompletedProcess:
 
 
 # ---------------------------------------------------------------------------
+# Graph helpers (Appendix B)
+# ---------------------------------------------------------------------------
+
+def _bind(sections: list[dict], section_id: str, item_name: str) -> tuple[Status, Optional[str]]:
+    """Look up (status, detail) for a named item within a section.
+
+    Falls back to ("unknown", None) when the section or item is absent.
+    """
+    for sec in sections:
+        if sec.get("id") == section_id:
+            for item in sec.get("items", []):
+                if item.get("name") == item_name:
+                    return item.get("status", "unknown"), item.get("detail")
+            # Section found but item missing
+            return "unknown", None
+    # Section missing entirely
+    return "unknown", None
+
+
+def _bridge_edge_state() -> str:
+    """Return 'live' if kanban-mvms-bridge.timer is enabled, else 'disabled'."""
+    try:
+        r = _run(
+            ["systemctl", "--user", "is-enabled", "kanban-mvms-bridge.timer"],
+            timeout=3.0,
+        )
+        if r.stdout.strip() == "enabled":
+            return "live"
+    except Exception:
+        pass
+    return "disabled"
+
+
+def _build_os_graph(sections: list[dict]) -> dict:
+    """Build the Nexus graph (24 nodes, ~23 edges) from Appendix B.
+
+    Node status is BOUND from the already-computed sections; edges are static
+    topology with one dynamic state (kanban-db→mvms bridge timer check).
+    """
+    # ------------------------------------------------------------------
+    # Helper: worst status across a list of (section_id, item_name) bindings
+    # ------------------------------------------------------------------
+    def _bind_worst(bindings: list[tuple[str, str]]) -> tuple[Status, Optional[str]]:
+        results = [_bind(sections, sid, iname) for sid, iname in bindings]
+        worst_s = _worst_status([s for s, _ in results])
+        # Use the detail from the worst-status binding (first match wins)
+        detail = next((d for s, d in results if s == worst_s), None)
+        return worst_s, detail
+
+    def _node(
+        id_: str,
+        label: str,
+        kind: str,
+        group: str,
+        status: Status,
+        detail: Optional[str] = None,
+        section_ref: Optional[str] = None,
+    ) -> dict:
+        n: dict = {
+            "id": id_,
+            "label": label,
+            "kind": kind,
+            "group": group,
+            "status": status,
+        }
+        if detail is not None:
+            n["detail"] = detail
+        if section_ref is not None:
+            n["section_ref"] = section_ref
+        return n
+
+    def _edge(
+        id_: str,
+        source: str,
+        target: str,
+        label: Optional[str] = None,
+        state: str = "live",
+    ) -> dict:
+        e: dict = {"id": id_, "source": source, "target": target, "state": state}
+        if label is not None:
+            e["label"] = label
+        return e
+
+    # ------------------------------------------------------------------
+    # NODES (24)
+    # ------------------------------------------------------------------
+    nodes: list[dict] = []
+
+    # --- surfaces (4) ---
+    # claude-code: bind memory_stores/memory_md (fresh→green)
+    s, d = _bind(sections, "memory_stores", "memory_md")
+    nodes.append(_node("claude-code", "Claude Code", "client", "surfaces", s, d, "memory_stores"))
+
+    # discord: bind gateway state platforms (gateway section worst is the proxy)
+    s, d = _bind(sections, "gateway", "gateway_state")
+    nodes.append(_node("discord", "Discord", "surface", "surfaces", s, d, "gateway"))
+
+    # dashboard: bind systemd / hermes-dashboard active — we look for the hermes-dashboard item
+    # The systemd section probes "timers_keep" / "failed_units"; hermes-dashboard is a service
+    # not directly probed by name.  Use section worst as proxy (timers section covers dashboard).
+    s_sd, d_sd = _bind(sections, "systemd", "failed_units")
+    # If failed_units is green, treat dashboard as green; otherwise surface the systemd status.
+    dash_status: Status = "green" if s_sd == "green" else s_sd
+    nodes.append(_node("dashboard", "Dashboard (:9119)", "ui", "surfaces", dash_status, d_sd, "systemd"))
+
+    # codex-pipeline: bind providers/codex_pipeline
+    s, d = _bind(sections, "providers", "codex_pipeline")
+    nodes.append(_node("codex-pipeline", "Codex Pipeline", "pipeline", "surfaces", s, d, "providers"))
+
+    # --- control (4) ---
+    # gateway: worst of gateway section
+    gw_statuses = [item.get("status", "unknown") for item in
+                   next((sec["items"] for sec in sections if sec["id"] == "gateway"), [])]
+    gw_status = _worst_status(gw_statuses) if gw_statuses else "unknown"
+    gw_detail = next(
+        (item.get("detail") for item in
+         next((sec["items"] for sec in sections if sec["id"] == "gateway"), [])
+         if item.get("status") == gw_status),
+        None,
+    )
+    nodes.append(_node("gateway", "Gateway", "service", "control", gw_status, gw_detail, "gateway"))
+
+    # watchdog: bind gateway/watchdog_events
+    s, d = _bind(sections, "gateway", "watchdog_events")
+    nodes.append(_node("watchdog", "Watchdog", "guard", "control", s, d, "gateway"))
+
+    # hermes-cron: bind cron section worst
+    cron_statuses = [item.get("status", "unknown") for item in
+                     next((sec["items"] for sec in sections if sec["id"] == "cron"), [])]
+    cron_status = _worst_status(cron_statuses) if cron_statuses else "unknown"
+    cron_detail = next(
+        (item.get("detail") for item in
+         next((sec["items"] for sec in sections if sec["id"] == "cron"), [])
+         if item.get("status") == cron_status),
+        None,
+    )
+    nodes.append(_node("hermes-cron", "Hermes Cron", "scheduler", "control", cron_status, cron_detail, "cron"))
+
+    # timers: bind systemd section worst
+    sd_statuses = [item.get("status", "unknown") for item in
+                   next((sec["items"] for sec in sections if sec["id"] == "systemd"), [])]
+    sd_status = _worst_status(sd_statuses) if sd_statuses else "unknown"
+    sd_detail = next(
+        (item.get("detail") for item in
+         next((sec["items"] for sec in sections if sec["id"] == "systemd"), [])
+         if item.get("status") == sd_status),
+        None,
+    )
+    nodes.append(_node("timers", "Timers", "scheduler", "control", sd_status, sd_detail, "systemd"))
+
+    # --- providers (3) ---
+    # chatgpt-backend: bind providers/codex_process
+    s, d = _bind(sections, "providers", "codex_process")
+    nodes.append(_node("chatgpt-backend", "ChatGPT Backend", "llm", "providers", s, d, "providers"))
+
+    # claude-max: static green "Max cli-subprocess"
+    nodes.append(_node("claude-max", "Claude Max", "llm", "providers",
+                       "green", "Max cli-subprocess", "providers"))
+
+    # openrouter: bind providers/openrouter_key
+    s, d = _bind(sections, "providers", "openrouter_key")
+    nodes.append(_node("openrouter", "OpenRouter", "llm", "providers", s, d, "providers"))
+
+    # --- memory (9) ---
+    # mvms: bind memory_stores/mvms_observations
+    s, d = _bind(sections, "memory_stores", "mvms_observations")
+    nodes.append(_node("mvms", "MVMS", "database", "memory", s, d, "memory_stores"))
+
+    # supabase-db: bind containers item (supabase_db_goattrade-system)
+    s, d = _bind(sections, "containers", "supabase_db_goattrade-system")
+    nodes.append(_node("supabase-db", "Supabase DB", "database", "memory", s, d, "containers"))
+
+    # honcho-api: bind containers item (honcho-api-1)
+    s, d = _bind(sections, "containers", "honcho-api-1")
+    nodes.append(_node("honcho-api", "Honcho API", "service", "memory", s, d, "containers"))
+
+    # honcho-deriver: bind containers item (honcho-deriver-1)
+    s, d = _bind(sections, "containers", "honcho-deriver-1")
+    nodes.append(_node("honcho-deriver", "Honcho Deriver", "worker", "memory", s, d, "containers"))
+
+    # honcho-db: bind containers item (honcho-database-1)
+    s, d = _bind(sections, "containers", "honcho-database-1")
+    nodes.append(_node("honcho-db", "Honcho DB", "database", "memory", s, d, "containers"))
+
+    # honcho-redis: containers items — look for redis container; may not be in core set
+    s, d = _bind(sections, "containers", "honcho-redis-1")
+    if s == "unknown":
+        # Try alternate name
+        s, d = _bind(sections, "containers", "honcho-redis")
+    nodes.append(_node("honcho-redis", "Honcho Redis", "cache", "memory", s, d, "containers"))
+
+    # state-db: bind memory_stores/state_db
+    s, d = _bind(sections, "memory_stores", "state_db")
+    nodes.append(_node("state-db", "State DB", "database", "memory", s, d, "memory_stores"))
+
+    # kanban-db: bind memory_stores/kanban_db
+    s, d = _bind(sections, "memory_stores", "kanban_db")
+    nodes.append(_node("kanban-db", "Kanban DB", "database", "memory", s, d, "memory_stores"))
+
+    # claude-memory: bind memory_stores/memory_md
+    s, d = _bind(sections, "memory_stores", "memory_md")
+    nodes.append(_node("claude-memory", "Claude Memory", "store", "memory", s, d, "memory_stores"))
+
+    # hermes-memories: static green
+    nodes.append(_node("hermes-memories", "Hermes Memories", "store", "memory",
+                       "green", "Honcho-managed memories", "memory_stores"))
+
+    # --- protection (3) ---
+    # nightly-backup: worst of mvms-canonical/honcho-live/app-state ages
+    backup_items = [
+        _bind(sections, "backups", "mvms-canonical-*.sql.gz"),
+        _bind(sections, "backups", "honcho-live-store-*.sql.gz"),
+        _bind(sections, "backups", "hermes-app-state-*.tar.gz"),
+    ]
+    backup_statuses = [s for s, _ in backup_items]
+    nb_status = _worst_status(backup_statuses)
+    nb_detail = next((d for s, d in backup_items if s == nb_status), None)
+    nodes.append(_node("nightly-backup", "Nightly Backup", "backup", "protection",
+                       nb_status, nb_detail, "backups"))
+
+    # backups-dir: static green (directory existence is a precondition, not actively probed)
+    nodes.append(_node("backups-dir", "Backups Dir", "storage", "protection",
+                       "green", "~/.hermes/backups", "backups"))
+
+    # veracrypt: bind backups/veracrypt_weekly
+    s, d = _bind(sections, "backups", "veracrypt_weekly")
+    nodes.append(_node("veracrypt", "VeraCrypt", "backup", "protection", s, d, "backups"))
+
+    # --- host (1) ---
+    # wsl-host: bind host section worst
+    host_items = next((sec["items"] for sec in sections if sec["id"] == "host"), [])
+    host_statuses = [item.get("status", "unknown") for item in host_items]
+    host_status = _worst_status(host_statuses) if host_statuses else "unknown"
+    host_detail = next(
+        (item.get("detail") for item in host_items if item.get("status") == host_status),
+        None,
+    )
+    nodes.append(_node("wsl-host", "WSL Host", "host", "host", host_status, host_detail, "host"))
+
+    # ------------------------------------------------------------------
+    # EDGES (~23)  state: live | disabled | broken | gated
+    # ------------------------------------------------------------------
+    edges: list[dict] = []
+
+    # surfaces → control
+    edges.append(_edge("e-discord-gateway",    "discord",       "gateway",        "chat",                  "live"))
+    edges.append(_edge("e-dashboard-gateway",  "dashboard",     "gateway",        "state (ro)",            "live"))
+    edges.append(_edge("e-watchdog-gateway",   "watchdog",      "gateway",        "dead-man",              "live"))
+    edges.append(_edge("e-cron-gateway",       "hermes-cron",   "gateway",        "jobs",                  "live"))
+
+    # gateway → providers
+    edges.append(_edge("e-gw-chatgpt",         "gateway",       "chatgpt-backend","main lane gpt-5.5",     "live"))
+    edges.append(_edge("e-gw-claudemax",       "gateway",       "claude-max",     "premium lane",          "live"))
+
+    # codex-pipeline → provider
+    edges.append(_edge("e-codex-chatgpt",      "codex-pipeline","chatgpt-backend","ChatGPT-Max",           "live"))
+
+    # gateway + claude-code → honcho
+    edges.append(_edge("e-claudecode-honcho",  "claude-code",   "honcho-api",     "SessionEnd bridge",     "live"))
+    edges.append(_edge("e-gw-honcho",          "gateway",       "honcho-api",     "turns+dialectic",       "live"))
+    edges.append(_edge("e-hapi-hdb",           "honcho-api",    "honcho-db",      None,                    "live"))
+    edges.append(_edge("e-hapi-hredis",        "honcho-api",    "honcho-redis",   None,                    "live"))
+    edges.append(_edge("e-hderiver-hdb",       "honcho-deriver","honcho-db",      None,                    "live"))
+    edges.append(_edge("e-hderiver-or",        "honcho-deriver","openrouter",     "derivation",            "live"))
+
+    # claude-code → memory
+    edges.append(_edge("e-claudecode-mvms",    "claude-code",   "mvms",           "MCP /remember",         "live"))
+    edges.append(_edge("e-gw-mvms",            "gateway",       "mvms",           "mvms_record_*",         "live"))
+    edges.append(_edge("e-claudecode-cmem",    "claude-code",   "claude-memory",  "auto-memory",           "live"))
+
+    # gateway → state-db / kanban-db
+    edges.append(_edge("e-gw-statedb",         "gateway",       "state-db",       "sessions",              "live"))
+    edges.append(_edge("e-gw-kanbandb",        "gateway",       "kanban-db",      "dispatcher",            "live"))
+
+    # mvms → supabase-db
+    edges.append(_edge("e-mvms-supadb",        "mvms",          "supabase-db",    "schema on",             "live"))
+
+    # kanban-db → mvms (dynamic: live if timer enabled, else disabled)
+    bridge_state = _bridge_edge_state()
+    edges.append(_edge("e-kanban-mvms",        "kanban-db",     "mvms",           "bridge (staged)",       bridge_state))
+
+    # claude-code → mvms (gated)
+    edges.append(_edge("e-claudecode-mvms-gated","claude-code", "mvms",           "lesson promote (weekly, human-gated)", "gated"))
+
+    # nightly-backup → stores
+    edges.append(_edge("e-backup-mvms",        "nightly-backup","mvms",           "02:30 dump",            "live"))
+    edges.append(_edge("e-backup-hdb",         "nightly-backup","honcho-db",      "02:30 dump",            "live"))
+    edges.append(_edge("e-backup-cmem",        "nightly-backup","claude-memory",  "app-state tar",         "live"))
+
+    # veracrypt → backups-dir  (edge stays live; node status carries the stale signal)
+    edges.append(_edge("e-vera-bdir",          "veracrypt",     "backups-dir",    None,                    "live"))
+
+    return {"nodes": nodes, "edges": edges}
+
+
+# ---------------------------------------------------------------------------
 # Section 1: gateway
 # ---------------------------------------------------------------------------
 
@@ -750,11 +1046,18 @@ def _build_os_snapshot() -> dict:
     overall = _worst_status([s["status"] for s in sections])
     diagnostics = _build_diagnostics(sections)
 
+    # Build Nexus graph (Appendix B) inside the same cached snapshot build
+    try:
+        graph = _build_os_graph(sections)
+    except Exception as e:
+        graph = {"nodes": [], "edges": [], "error": str(e)}
+
     return {
         "generated_at": _now(),
         "overall": overall,
         "sections": sections,
         "diagnostics": diagnostics,
+        "graph": graph,
     }
 
 

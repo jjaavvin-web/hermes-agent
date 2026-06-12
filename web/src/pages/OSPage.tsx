@@ -3,7 +3,9 @@
  *
  * Renders /api/dashboard/os: a hero overall-status row (the <10s diagnosis
  * surface — "All systems nominal" when clean, otherwise the red→amber
- * diagnostics list) above a responsive grid of 8 expandable section cards.
+ * diagnostics list) above a toggleable body: the Nexus architecture-flow
+ * graph (default) or a responsive grid of 8 expandable section cards. The
+ * choice persists in localStorage; both views share the same polled snapshot.
  */
 
 import { useCallback, useEffect, useState } from "react";
@@ -12,10 +14,13 @@ import {
   CheckCircle2,
   ChevronDown,
   ChevronUp,
+  LayoutGrid,
   RefreshCw,
   Server,
+  Workflow,
 } from "lucide-react";
 import { usePageHeader } from "@/contexts/usePageHeader";
+import { OSNexus } from "@/components/os/OSNexus";
 import {
   api,
   type OSDiagnostic,
@@ -31,6 +36,19 @@ import {
 
 const SNAPSHOT_POLL_MS = 15_000;
 const HEADLINE_METRIC_COUNT = 3;
+
+type OSView = "nexus" | "grid";
+const VIEW_STORAGE_KEY = "os-view";
+
+function loadStoredView(): OSView {
+  try {
+    return window.localStorage.getItem(VIEW_STORAGE_KEY) === "grid"
+      ? "grid"
+      : "nexus";
+  } catch {
+    return "nexus";
+  }
+}
 
 /** Status visual configuration — shared dashboard status palette. */
 const STATUS_CFG: Record<
@@ -360,6 +378,16 @@ export default function OSPage() {
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set());
+  const [view, setViewState] = useState<OSView>(loadStoredView);
+
+  const setView = useCallback((next: OSView) => {
+    setViewState(next);
+    try {
+      window.localStorage.setItem(VIEW_STORAGE_KEY, next);
+    } catch {
+      // Storage unavailable (private mode) — view still switches for the session.
+    }
+  }, []);
 
   useEffect(() => {
     setTitle("OS");
@@ -433,26 +461,70 @@ export default function OSPage() {
         {error && (
           <span className="text-warning">· refresh failed: {error}</span>
         )}
+
+        {/* View toggle — Nexus (architecture flow) | Grid (section cards) */}
+        <div
+          className="ml-auto flex flex-shrink-0 overflow-hidden rounded-md border border-border"
+          role="group"
+          aria-label="OS view"
+        >
+          <button
+            type="button"
+            onClick={() => setView("nexus")}
+            aria-pressed={view === "nexus"}
+            className={`flex items-center gap-1.5 px-2.5 py-1 text-xs font-semibold transition ${
+              view === "nexus"
+                ? "bg-accent/40 text-text-primary"
+                : "text-text-tertiary hover:text-text-primary"
+            }`}
+          >
+            <Workflow className="h-3.5 w-3.5" />
+            Nexus
+          </button>
+          <button
+            type="button"
+            onClick={() => setView("grid")}
+            aria-pressed={view === "grid"}
+            className={`flex items-center gap-1.5 border-l border-border px-2.5 py-1 text-xs font-semibold transition ${
+              view === "grid"
+                ? "bg-accent/40 text-text-primary"
+                : "text-text-tertiary hover:text-text-primary"
+            }`}
+          >
+            <LayoutGrid className="h-3.5 w-3.5" />
+            Grid
+          </button>
+        </div>
       </div>
 
+      {/* Hero stays visible on BOTH views — it is the <10s diagnosis surface */}
       <Hero snapshot={data} loading={loading} onRefresh={() => void loadSnapshot()} />
 
-      {/* Section grid */}
-      <div className="mt-4 grid grid-cols-1 items-start gap-3 pb-8 sm:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-4">
-        {data.sections.map((section) => (
-          <SectionCard
-            key={section.id}
-            section={section}
-            expanded={expanded.has(section.id)}
-            onToggle={() => toggleExpand(section.id)}
-          />
-        ))}
-      </div>
-
-      {data.sections.length === 0 && (
-        <div className="flex min-h-[160px] items-center justify-center text-sm text-text-tertiary">
-          No sections in snapshot.
+      {view === "nexus" ? (
+        /* Nexus — architecture-flow graph over the same polled snapshot */
+        <div className="mt-4 h-[calc(100dvh-300px)] min-h-[480px] pb-8">
+          <OSNexus snapshot={data} />
         </div>
+      ) : (
+        <>
+          {/* Section grid */}
+          <div className="mt-4 grid grid-cols-1 items-start gap-3 pb-8 sm:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-4">
+            {data.sections.map((section) => (
+              <SectionCard
+                key={section.id}
+                section={section}
+                expanded={expanded.has(section.id)}
+                onToggle={() => toggleExpand(section.id)}
+              />
+            ))}
+          </div>
+
+          {data.sections.length === 0 && (
+            <div className="flex min-h-[160px] items-center justify-center text-sm text-text-tertiary">
+              No sections in snapshot.
+            </div>
+          )}
+        </>
       )}
     </div>
   );
