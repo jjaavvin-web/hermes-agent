@@ -191,9 +191,43 @@ function Hero({ snapshot, loading, onRefresh }: HeroProps) {
   const redCount = snapshot.diagnostics.filter((d) => d.severity === "red").length;
   const amberCount = snapshot.diagnostics.length - redCount;
 
+  // Clean snapshot → slim single-line bar so the Nexus graph gets the room.
+  if (clean) {
+    return (
+      <section
+        className="flex flex-shrink-0 items-center gap-3 rounded-lg border border-border bg-card px-4 py-2"
+        aria-label="Overall status"
+      >
+        <CheckCircle2
+          className="h-4 w-4 flex-shrink-0"
+          style={{ color: overall.color }}
+        />
+        <h2
+          className="font-mondwest text-display min-w-0 flex-1 truncate text-sm tracking-[0.12em]"
+          style={{ color: overall.color }}
+        >
+          All systems nominal
+        </h2>
+        <span className="hidden flex-shrink-0 text-xs text-text-tertiary sm:inline">
+          {snapshot.sections.length} sections probed · updated{" "}
+          {fmtTs(snapshot.generated_at)}
+        </span>
+        <StatusChip status={snapshot.overall} />
+        <button
+          type="button"
+          onClick={onRefresh}
+          aria-label="Refresh OS snapshot"
+          className="flex-shrink-0 rounded-md border border-border p-1.5 text-text-secondary transition hover:text-text-primary"
+        >
+          <RefreshCw className={`h-4 w-4 ${loading ? "animate-spin" : ""}`} />
+        </button>
+      </section>
+    );
+  }
+
   return (
     <section
-      className="rounded-lg border bg-card p-4"
+      className="flex-shrink-0 rounded-lg border bg-card p-4"
       style={{ borderColor: snapshot.overall === "green" ? undefined : overall.ring }}
       aria-label="Overall status"
     >
@@ -202,11 +236,7 @@ function Hero({ snapshot, loading, onRefresh }: HeroProps) {
           className="flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-md border"
           style={{ borderColor: overall.ring, background: overall.soft }}
         >
-          {clean ? (
-            <CheckCircle2 className="h-5 w-5" style={{ color: overall.color }} />
-          ) : (
-            <AlertTriangle className="h-5 w-5" style={{ color: overall.color }} />
-          )}
+          <AlertTriangle className="h-5 w-5" style={{ color: overall.color }} />
         </span>
 
         <div className="min-w-0 flex-1">
@@ -214,9 +244,7 @@ function Hero({ snapshot, loading, onRefresh }: HeroProps) {
             className="font-mondwest text-display text-base tracking-[0.12em]"
             style={{ color: overall.color }}
           >
-            {clean
-              ? "All systems nominal"
-              : `${snapshot.diagnostics.length} finding${snapshot.diagnostics.length === 1 ? "" : "s"} — ${redCount} red · ${amberCount} amber`}
+            {`${snapshot.diagnostics.length} finding${snapshot.diagnostics.length === 1 ? "" : "s"} — ${redCount} red · ${amberCount} amber`}
           </h2>
           <p className="mt-0.5 text-xs text-text-tertiary">
             {snapshot.sections.length} sections probed · updated {fmtTs(snapshot.generated_at)}
@@ -235,13 +263,11 @@ function Hero({ snapshot, loading, onRefresh }: HeroProps) {
         </button>
       </div>
 
-      {!clean && (
-        <ul className="mt-3 space-y-1.5" aria-label="Diagnostics">
-          {snapshot.diagnostics.map((diag, i) => (
-            <DiagnosticRow key={`${diag.source}-${i}`} diag={diag} />
-          ))}
-        </ul>
-      )}
+      <ul className="mt-3 space-y-1.5" aria-label="Diagnostics">
+        {snapshot.diagnostics.map((diag, i) => (
+          <DiagnosticRow key={`${diag.source}-${i}`} diag={diag} />
+        ))}
+      </ul>
     </section>
   );
 }
@@ -451,9 +477,18 @@ export default function OSPage() {
 
   // ------------------------------------------------------------------ Content
   return (
-    <div className="min-h-0 bg-background p-4 text-text-primary">
+    <div
+      className={`bg-background p-4 text-text-primary ${
+        view === "nexus"
+          ? // Nexus fills the viewport below the app chrome (topbar/header/main
+            // padding + route-wrapper bottom inset) so the graph gets the room;
+            // min-h keeps cramped windows scrolling instead of crushing it.
+            "flex min-h-[540px] flex-col h-[calc(100dvh-152px)] sm:h-[calc(100dvh-160px)] lg:h-[calc(100dvh-112px)]"
+          : "min-h-0"
+      }`}
+    >
       {/* Page chrome */}
-      <div className="mb-3 flex items-center gap-1.5 text-xs text-text-tertiary">
+      <div className="mb-3 flex flex-shrink-0 items-center gap-1.5 text-xs text-text-tertiary">
         <Server className="h-3.5 w-3.5" />
         <span className="font-mondwest text-display tracking-[0.16em]">
           Infrastructure Operating Status
@@ -501,8 +536,10 @@ export default function OSPage() {
       <Hero snapshot={data} loading={loading} onRefresh={() => void loadSnapshot()} />
 
       {view === "nexus" ? (
-        /* Nexus — architecture-flow graph over the same polled snapshot */
-        <div className="mt-4 h-[calc(100dvh-300px)] min-h-[480px] pb-8">
+        /* Nexus — architecture-flow graph over the same polled snapshot.
+           flex-1 absorbs whatever the hero leaves (slim bar when clean, full
+           diagnostics list when not); min-h guards against tiny canvases. */
+        <div className="mt-3 min-h-[420px] min-w-0 flex-1">
           <OSNexus snapshot={data} />
         </div>
       ) : (

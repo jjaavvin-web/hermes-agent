@@ -6,7 +6,10 @@
  * architecture order (surfaces → control → providers → memory → protection →
  * host), directional smoothstep edges with arrowheads, edge styling by link
  * state (live / disabled / gated / broken), a legend chip row, and a
- * click-to-inspect side panel backed by snapshot.sections + diagnostics.
+ * click-to-inspect side panel (rendered beside the canvas, not over it) backed
+ * by snapshot.sections + diagnostics. Edge labels stay hidden at default zoom
+ * and surface on hover/selection or past LABEL_SHOW_ZOOM to keep the dense
+ * middle columns readable.
  *
  * Adapted from components/system-health/HealthGraph.tsx and reuses its
  * statusMeta()/kindIcon() visual language so the two graph tabs feel related.
@@ -26,6 +29,7 @@ import {
   getSmoothStepPath,
   useNodesInitialized,
   useReactFlow,
+  useStore,
   type Edge,
   type EdgeProps,
   type Node,
@@ -43,8 +47,6 @@ import type {
   OSStatus,
 } from "@/lib/api";
 import {
-  COL_W,
-  ROW_H,
   kindIconElement,
   statusMeta,
   type StatusMeta,
@@ -84,14 +86,21 @@ const SEVERITY: Record<OSStatus, number> = {
 // Layout constants + presentation-only hints (topology itself is API-driven)
 // ---------------------------------------------------------------------------
 
-const NODE_W = 232;
-const NODE_H = 56;
-const GAP_W = COL_W - NODE_W; // horizontal corridor between columns
+const NODE_W = 252;
+const NODE_H = 60;
+const GAP_W = 72; // horizontal corridor between columns
+/** Local column/row pitch — wider than the system-health graph so the larger
+ * nodes keep a full edge corridor between columns. */
+const COL_W = NODE_W + GAP_W;
+const ROW_H = NODE_H + 52;
 const GROUP_LABEL_Y = -72;
 /** Groups with more than this many nodes split into two sub-columns. */
 const SPLIT_THRESHOLD = 6;
 /** Minimum vertical clearance between edge labels sharing a corridor. */
 const LABEL_MIN_GAP = 22;
+/** Zoom at/above which every edge label renders; below it labels appear only
+ * on hover, edge selection, or edges touching the selected node. */
+const LABEL_SHOW_ZOOM = 1.3;
 
 const GROUP_ORDER: string[] = [
   "surfaces",
@@ -224,6 +233,8 @@ interface OSEdgeData extends Record<string, unknown> {
   labelY?: number;
   labelText?: string;
   labelColor?: string;
+  /** Force the label visible (hovered edge, or edge touching the selection). */
+  labelActive?: boolean;
 }
 
 type OSRFEdge = Edge<OSEdgeData, "os">;
@@ -293,7 +304,7 @@ const OSFlowNode = memo(function OSFlowNode({
       <div style={{ minWidth: 0, flex: 1 }}>
         <div
           style={{
-            fontSize: 12.5,
+            fontSize: 13,
             fontWeight: 600,
             color: "#e9eff6",
             whiteSpace: "nowrap",
@@ -306,10 +317,10 @@ const OSFlowNode = memo(function OSFlowNode({
         <div
           style={{
             marginTop: 2,
-            fontSize: 9,
-            letterSpacing: "0.09em",
+            fontSize: 10,
+            letterSpacing: "0.08em",
             textTransform: "uppercase",
-            color: "rgba(168,192,214,0.5)",
+            color: "rgba(168,192,214,0.7)",
             whiteSpace: "nowrap",
             overflow: "hidden",
             textOverflow: "ellipsis",
@@ -323,13 +334,13 @@ const OSFlowNode = memo(function OSFlowNode({
         className={data.status === "red" ? "sh-pulse" : undefined}
         style={{
           position: "absolute",
-          top: 9,
-          right: 9,
-          width: 8,
-          height: 8,
+          top: 8,
+          right: 8,
+          width: 9,
+          height: 9,
           borderRadius: "50%",
           background: meta.color,
-          boxShadow: `0 0 9px ${meta.color}`,
+          boxShadow: `0 0 10px ${meta.color}`,
         }}
       />
       {attention && (
@@ -395,6 +406,10 @@ const NODE_TYPES = { os: OSFlowNode, "os-group": GroupLabelNode };
  * Directional smoothstep edge with a controllable vertical-turn x (so long
  * edges turn inside column gaps, never through a column of nodes) and a
  * pre-computed, de-overlapped label position.
+ *
+ * Labels are hidden at default zoom to keep the dense middle readable: an
+ * edge shows its label only when hovered, selected, touching the selected
+ * node (data.labelActive), or once the viewport zoom crosses LABEL_SHOW_ZOOM.
  */
 const OSFlowEdge = memo(function OSFlowEdge({
   sourceX,
@@ -406,7 +421,11 @@ const OSFlowEdge = memo(function OSFlowEdge({
   data,
   style,
   markerEnd,
+  selected,
 }: EdgeProps<OSRFEdge>) {
+  // Store selector (zoom = transform[2]) so edges re-render only when the
+  // threshold is crossed, not on every pan/zoom frame like useViewport.
+  const zoomedIn = useStore((s) => s.transform[2] >= LABEL_SHOW_ZOOM);
   const [path, defaultLabelX, defaultLabelY] = getSmoothStepPath({
     sourceX,
     sourceY,
@@ -418,17 +437,20 @@ const OSFlowEdge = memo(function OSFlowEdge({
     centerX: data?.centerX,
   });
 
+  const showLabel =
+    Boolean(data?.labelText) && (zoomedIn || selected || data?.labelActive);
+
   return (
     <BaseEdge
       path={path}
       style={style}
       markerEnd={markerEnd}
-      label={data?.labelText}
+      label={showLabel ? data?.labelText : undefined}
       labelX={data?.labelX ?? defaultLabelX}
       labelY={data?.labelY ?? defaultLabelY}
       labelStyle={{
-        fill: data?.labelColor ?? "rgba(205,222,238,0.75)",
-        fontSize: 8.5,
+        fill: data?.labelColor ?? "rgba(205,222,238,0.85)",
+        fontSize: 10,
         fontWeight: 600,
         letterSpacing: "0.04em",
       }}
@@ -669,6 +691,7 @@ function buildFlow(
         labelX: p.label?.x,
         labelY: p.label?.y,
         labelText: p.edge.label,
+        labelActive: onSelected,
         labelColor:
           p.edge.state !== "live" && stateMeta.color
             ? stateMeta.color
@@ -731,10 +754,10 @@ function InspectPanel({ node, section, diagnostics, onClose }: InspectPanelProps
 
   return (
     <aside
-      className="absolute inset-y-0 right-0 z-20 flex w-[min(340px,90%)] flex-col border-l border-white/10 bg-[#0a0f18]/[0.97] text-white backdrop-blur-sm"
+      className="flex h-full w-full flex-col overflow-hidden rounded-lg border border-border bg-card"
       aria-label={`Inspect ${node.label}`}
     >
-      <div className="flex items-start gap-2.5 border-b border-white/10 px-4 py-3">
+      <div className="flex items-start gap-2.5 border-b border-border px-4 py-3">
         <span
           className="flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-lg"
           style={{ background: meta.soft, color: meta.color }}
@@ -742,13 +765,15 @@ function InspectPanel({ node, section, diagnostics, onClose }: InspectPanelProps
           {kindIconElement(node.kind, { size: 16, strokeWidth: 2 })}
         </span>
         <div className="min-w-0 flex-1">
-          <h3 className="truncate text-sm font-semibold">{node.label}</h3>
-          <p className="mt-0.5 text-[10px] uppercase tracking-[0.14em] text-white/40">
+          <h3 className="truncate text-sm font-semibold text-text-primary">
+            {node.label}
+          </h3>
+          <p className="mt-0.5 text-xs tracking-[0.06em] text-text-secondary">
             {node.kind.replace(/-/g, " ")} · {node.group}
           </p>
         </div>
         <span
-          className="flex-shrink-0 rounded-full border px-2 py-0.5 text-[10px] font-semibold"
+          className="flex-shrink-0 rounded-full border px-2 py-0.5 text-xs font-semibold"
           style={{ color: meta.color, borderColor: meta.ring, background: meta.soft }}
         >
           {OS_STATUS_LABEL[node.status] ?? node.status}
@@ -757,7 +782,7 @@ function InspectPanel({ node, section, diagnostics, onClose }: InspectPanelProps
           type="button"
           onClick={onClose}
           aria-label="Close inspector"
-          className="flex-shrink-0 rounded-md p-1 text-white/50 transition hover:bg-white/10 hover:text-white"
+          className="flex-shrink-0 rounded-md p-1 text-text-secondary transition hover:bg-accent/30 hover:text-text-primary"
         >
           <X className="h-3.5 w-3.5" />
         </button>
@@ -765,12 +790,14 @@ function InspectPanel({ node, section, diagnostics, onClose }: InspectPanelProps
 
       <div className="min-h-0 flex-1 overflow-y-auto px-4 py-3">
         {node.detail && (
-          <p className="text-xs leading-relaxed text-white/70">{node.detail}</p>
+          <p className="text-xs leading-relaxed text-text-secondary">
+            {node.detail}
+          </p>
         )}
 
         {diagnostics.length > 0 && (
           <div className="mt-3">
-            <h4 className="text-[10px] font-semibold uppercase tracking-[0.16em] text-white/40">
+            <h4 className="text-xs font-semibold tracking-[0.14em] text-text-secondary">
               Diagnostics
             </h4>
             <ul className="mt-1.5 space-y-1.5">
@@ -783,16 +810,16 @@ function InspectPanel({ node, section, diagnostics, onClose }: InspectPanelProps
                     style={{ borderColor: dm.ring, background: dm.soft }}
                   >
                     <span
-                      className="font-mono text-[10px] font-semibold"
+                      className="font-mono text-xs font-semibold"
                       style={{ color: dm.color }}
                     >
                       {diag.source}
                     </span>
-                    <p className="mt-0.5 text-xs leading-relaxed text-white/80">
+                    <p className="mt-0.5 text-xs leading-relaxed text-text-primary">
                       {diag.message}
                     </p>
                     {diag.hint && (
-                      <p className="mt-0.5 text-xs leading-relaxed text-white/50">
+                      <p className="mt-0.5 text-xs leading-relaxed text-text-secondary">
                         {diag.hint}
                       </p>
                     )}
@@ -805,12 +832,12 @@ function InspectPanel({ node, section, diagnostics, onClose }: InspectPanelProps
 
         {section ? (
           <div className="mt-3">
-            <h4 className="text-[10px] font-semibold uppercase tracking-[0.16em] text-white/40">
+            <h4 className="text-xs font-semibold tracking-[0.14em] text-text-secondary">
               Section · {section.label}
             </h4>
-            <ul className="mt-1.5 divide-y divide-white/[0.06] rounded-md border border-white/10">
+            <ul className="mt-1.5 divide-y divide-border rounded-md border border-border">
               {section.items.length === 0 && (
-                <li className="px-2.5 py-2 text-xs text-white/45">
+                <li className="px-2.5 py-2 text-xs text-text-secondary">
                   No probes reported.
                 </li>
               )}
@@ -829,17 +856,15 @@ function InspectPanel({ node, section, diagnostics, onClose }: InspectPanelProps
                               : `0 0 6px ${im.color}`,
                         }}
                       />
-                      <span className="min-w-0 flex-1 truncate text-xs font-semibold text-white/85">
+                      <span className="min-w-0 flex-1 truncate text-xs font-semibold text-text-primary">
                         {item.name}
                       </span>
                       {item.metric && (
                         <span
-                          className="flex-shrink-0 font-mono text-[10px]"
+                          className="flex-shrink-0 font-mono text-xs text-text-secondary"
                           style={{
                             color:
-                              item.status === "green"
-                                ? "rgba(255,255,255,0.55)"
-                                : im.color,
+                              item.status === "green" ? undefined : im.color,
                           }}
                         >
                           {item.metric}
@@ -847,7 +872,7 @@ function InspectPanel({ node, section, diagnostics, onClose }: InspectPanelProps
                       )}
                     </div>
                     {item.detail && (
-                      <p className="mt-0.5 break-words pl-3.5 text-[11px] leading-relaxed text-white/55">
+                      <p className="mt-0.5 break-words pl-3.5 text-xs leading-relaxed text-text-secondary">
                         {item.detail}
                       </p>
                     )}
@@ -857,7 +882,7 @@ function InspectPanel({ node, section, diagnostics, onClose }: InspectPanelProps
             </ul>
           </div>
         ) : (
-          <p className="mt-3 text-xs text-white/45">
+          <p className="mt-3 text-xs text-text-secondary">
             No section detail bound to this node.
           </p>
         )}
@@ -907,24 +932,22 @@ function EdgeLegend() {
 }
 
 // ---------------------------------------------------------------------------
-// FitView — fits the viewport once nodes are measured (timing-race safe)
+// FitView — fits the viewport once nodes are measured (timing-race safe) and
+// re-fits whenever fitKey changes (inspect panel open/close, container resize)
 // ---------------------------------------------------------------------------
 
-function FitView() {
+function FitView({ fitKey }: { fitKey: string }) {
   const { fitView } = useReactFlow();
   const initialized = useNodesInitialized();
-  const fitted = useRef(false);
   useEffect(() => {
-    if (fitted.current) return;
-    const fit = () => {
-      if (fitted.current) return;
-      fitted.current = true;
-      void fitView({ padding: 0.14, duration: 240 });
-    };
-    if (initialized) requestAnimationFrame(fit);
+    const fit = () => void fitView({ padding: 0.14, duration: 240 });
+    if (initialized) {
+      const raf = requestAnimationFrame(fit);
+      return () => cancelAnimationFrame(raf);
+    }
     const fallback = setTimeout(fit, 500);
     return () => clearTimeout(fallback);
-  }, [initialized, fitView]);
+  }, [initialized, fitKey, fitView]);
   return null;
 }
 
@@ -939,6 +962,26 @@ interface OSNexusProps {
 /** Interactive, pan/zoom architecture-flow view of the OS snapshot graph. */
 export function OSNexus({ snapshot }: OSNexusProps) {
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [hoveredEdgeId, setHoveredEdgeId] = useState<string | null>(null);
+
+  // Re-fit the graph when the canvas geometry changes (inspect panel toggling
+  // the flex row, window/container resizes). Debounced so drag-resizes settle.
+  const canvasRef = useRef<HTMLDivElement | null>(null);
+  const [resizeTick, setResizeTick] = useState(0);
+  useEffect(() => {
+    const el = canvasRef.current;
+    if (!el || typeof ResizeObserver === "undefined") return;
+    let timer: number | undefined;
+    const observer = new ResizeObserver(() => {
+      window.clearTimeout(timer);
+      timer = window.setTimeout(() => setResizeTick((t) => t + 1), 120);
+    });
+    observer.observe(el);
+    return () => {
+      window.clearTimeout(timer);
+      observer.disconnect();
+    };
+  }, []);
 
   const graph = snapshot.graph as OSSnapshot["graph"] | undefined;
   const hasGraph = Boolean(graph && graph.nodes.length > 0);
@@ -950,6 +993,16 @@ export function OSNexus({ snapshot }: OSNexusProps) {
         : { nodes: [] as CanvasNode[], edges: [] as OSRFEdge[] },
     [hasGraph, graph, selectedId],
   );
+
+  // Hovered edge surfaces its label without rebuilding the whole flow.
+  const displayEdges = useMemo(() => {
+    if (!hoveredEdgeId) return edges;
+    return edges.map((edge) =>
+      edge.id === hoveredEdgeId
+        ? { ...edge, data: { ...edge.data, labelActive: true } }
+        : edge,
+    );
+  }, [edges, hoveredEdgeId]);
 
   const selected = useMemo(
     () => graph?.nodes.find((n) => n.id === selectedId) ?? null,
@@ -977,44 +1030,54 @@ export function OSNexus({ snapshot }: OSNexusProps) {
   }
 
   return (
-    <div className="relative h-full w-full overflow-hidden rounded-lg border border-border bg-[#070a0f]">
-      <ReactFlow
-        className="sh-flow"
-        nodes={nodes}
-        edges={edges}
-        nodeTypes={NODE_TYPES}
-        edgeTypes={EDGE_TYPES}
-        onNodeClick={(_, node) => {
-          if (node.type === "os") setSelectedId(node.id);
-        }}
-        onPaneClick={() => setSelectedId(null)}
-        minZoom={0.15}
-        maxZoom={1.9}
-        nodesDraggable={false}
-        nodesConnectable={false}
-        nodesFocusable={false}
-        proOptions={{ hideAttribution: false }}
-        colorMode="dark"
+    <div className="flex h-full w-full gap-3">
+      {/* Graph canvas — shares the row with the inspect panel (no overlay). */}
+      <div
+        ref={canvasRef}
+        className="relative h-full min-w-0 flex-1 overflow-hidden rounded-lg border border-border bg-[#070a0f]"
       >
-        <Background
-          variant={BackgroundVariant.Dots}
-          gap={24}
-          size={1}
-          color="rgba(120,150,180,0.16)"
-        />
-        <Controls showInteractive={false} position="bottom-left" />
-        <FitView />
-      </ReactFlow>
+        <ReactFlow
+          className="sh-flow"
+          nodes={nodes}
+          edges={displayEdges}
+          nodeTypes={NODE_TYPES}
+          edgeTypes={EDGE_TYPES}
+          onNodeClick={(_, node) => {
+            if (node.type === "os") setSelectedId(node.id);
+          }}
+          onPaneClick={() => setSelectedId(null)}
+          onEdgeMouseEnter={(_, edge) => setHoveredEdgeId(edge.id)}
+          onEdgeMouseLeave={() => setHoveredEdgeId(null)}
+          minZoom={0.15}
+          maxZoom={1.9}
+          nodesDraggable={false}
+          nodesConnectable={false}
+          nodesFocusable={false}
+          proOptions={{ hideAttribution: false }}
+          colorMode="dark"
+        >
+          <Background
+            variant={BackgroundVariant.Dots}
+            gap={24}
+            size={1}
+            color="rgba(120,150,180,0.16)"
+          />
+          <Controls showInteractive={false} position="bottom-left" />
+          <FitView fitKey={`${selected ? "panel" : "full"}:${resizeTick}`} />
+        </ReactFlow>
 
-      <EdgeLegend />
+        <EdgeLegend />
+      </div>
 
       {selected && (
-        <InspectPanel
-          node={selected}
-          section={selectedSection}
-          diagnostics={selectedDiagnostics}
-          onClose={() => setSelectedId(null)}
-        />
+        <div className="h-full w-80 flex-shrink-0 xl:w-96">
+          <InspectPanel
+            node={selected}
+            section={selectedSection}
+            diagnostics={selectedDiagnostics}
+            onClose={() => setSelectedId(null)}
+          />
+        </div>
       )}
     </div>
   );
