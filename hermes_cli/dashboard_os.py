@@ -96,7 +96,16 @@ def _probe_gateway() -> dict:
     start_time = data.get("start_time")
     if start_time:
         try:
-            uptime_s = int(time.monotonic()) - int(start_time)
+            # start_time = field 22 of /proc/<pid>/stat = clock ticks since boot.
+            # Convert to seconds using SC_CLK_TCK (typically 100 on Linux/WSL2).
+            import os as _os
+            hz = _os.sysconf("SC_CLK_TCK") or 100
+            proc_uptime_s = float(Path("/proc/uptime").read_text().split()[0])
+            proc_start_s = int(start_time) / hz
+            candidate = int(proc_uptime_s - proc_start_s)
+            # Accept only sane positive values under 90 days.
+            if 0 < candidate < 90 * 86400:
+                uptime_s = candidate
         except Exception:
             pass
 
@@ -166,15 +175,19 @@ def _section_gateway() -> dict:
 # ---------------------------------------------------------------------------
 
 def _probe_codex_process() -> dict:
-    """Check if codex process is alive."""
+    """Hermes uses the ChatGPT HTTP backend; no local codex process required.
+    Green when the pipeline snapshot loads OK; amber only if the snapshot fails.
+    """
     try:
-        r = _run(["pgrep", "-f", "codex"])
-        if r.returncode == 0:
-            pids = r.stdout.strip().splitlines()
-            return _item("codex_process", "green", f"codex running ({len(pids)} pid(s))")
-        return _item("codex_process", "amber", "codex process not found")
+        from hermes_cli.dashboard_codex_sessions import _cached_snapshot
+        snap = _cached_snapshot()
+        counts = snap.get("counts", {})
+        total = counts.get("total", 0)
+        return _item("codex_process", "green",
+                     f"backend lane (HTTP); {total} sessions tracked",
+                     metric=str(total))
     except Exception as e:
-        return _item("codex_process", "unknown", str(e))
+        return _item("codex_process", "amber", f"pipeline snapshot unavailable: {e}")
 
 
 def _probe_codex_sessions() -> dict:
@@ -213,24 +226,25 @@ def _probe_claude_cli() -> dict:
 
 
 def _probe_openrouter_key() -> dict:
-    """Check if OpenRouter API key is configured (never reveal value)."""
+    """OpenRouter key is deliberately absent from the gateway env.
+    The key lives in the Honcho deriver compose env.  Check that file for
+    LLM_OPENROUTER_API_KEY — never read/print the value, only present/absent + length>20.
+    """
+    HONCHO_ENV = Path.home() / "workspace" / "honcho-selfhost" / "honcho" / ".env"
     try:
-        # Check env var
-        has_env = bool(os.environ.get("OPENROUTER_API_KEY", "").strip())
-        if has_env:
-            return _item("openrouter_key", "green", "OPENROUTER_API_KEY set in environment")
-        # Check hermes env file
-        env_sh = HERMES_HOME / "env" / "env.sh"
-        if env_sh.exists():
-            text = env_sh.read_text()
-            if "OPENROUTER_API_KEY" in text and "=" in text:
-                # Check if line has a non-empty value (heuristic)
-                for line in text.splitlines():
-                    if "OPENROUTER_API_KEY" in line and "=" in line:
-                        val = line.split("=", 1)[1].strip().strip("'\"")
-                        if val and val not in ("", '""', "''"):
-                            return _item("openrouter_key", "green", "OPENROUTER_API_KEY configured in env.sh")
-        return _item("openrouter_key", "amber", "OPENROUTER_API_KEY not found in env or env.sh")
+        if not HONCHO_ENV.exists():
+            return _item("openrouter_key", "amber",
+                         f"honcho .env not found ({HONCHO_ENV})")
+        for line in HONCHO_ENV.read_text().splitlines():
+            stripped = line.strip()
+            if stripped.startswith("LLM_OPENROUTER_API_KEY"):
+                parts = stripped.split("=", 1)
+                if len(parts) == 2:
+                    val = parts[1].strip().strip("'\"")
+                    if len(val) > 20:
+                        return _item("openrouter_key", "green",
+                                     "honcho-managed (capped)")
+        return _item("openrouter_key", "amber", "honcho deriver key missing")
     except Exception as e:
         return _item("openrouter_key", "unknown", str(e))
 
