@@ -27,7 +27,6 @@ import {
   Download,
   Eye,
   FileText,
-  GitBranch,
   Globe,
   Heart,
   KeyRound,
@@ -43,6 +42,7 @@ import {
   Puzzle,
   Radio,
   RotateCw,
+  Server,
   Settings,
   Shield,
   ShieldCheck,
@@ -82,10 +82,9 @@ import ProfilesPage from "@/pages/ProfilesPage";
 import SkillsPage from "@/pages/SkillsPage";
 import PluginsPage from "@/pages/PluginsPage";
 import NexusHealthPage from "@/pages/NexusHealthPage";
-import HivesPage from "@/pages/HivesPage";
+import OSPage from "@/pages/OSPage";
 import ExplorerPage from "@/pages/ExplorerPage";
 import PulsePage from "@/pages/PulsePage";
-import CodexSessionsPage from "@/pages/CodexSessionsPage";
 import GitHealthPage from "@/pages/GitHealthPage";
 import GetSomePage from "@/pages/GetSomePage";
 import WelcomePage from "@/pages/WelcomePage";
@@ -158,8 +157,7 @@ const BUILTIN_ROUTES_CORE: Record<string, ComponentType> = {
   "/plugins": PluginsPage,
   "/explorer": ExplorerPage,
   "/nexus-health": NexusHealthPage,
-  "/hives": HivesPage,
-  "/codex-sessions": CodexSessionsPage,
+  "/os": OSPage,
   "/git-health": GitHealthPage,
   "/get-some": GetSomePage,
   "/mcp": McpPage,
@@ -212,8 +210,7 @@ const BUILTIN_NAV_REST: NavItem[] = [
   { path: "/skills", labelKey: "skills", label: "Skills", icon: Package },
   { path: "/explorer", labelKey: "explorer", label: "Explorer", icon: Network },
   { path: "/nexus-health", labelKey: "system_health", label: "System Health", icon: Shield },
-  { path: "/hives", labelKey: "hives", label: "Hives", icon: Workflow },
-  { path: "/codex-sessions", labelKey: "codex_sessions", label: "Codex Sessions", icon: GitBranch },
+  { path: "/os", labelKey: "os", label: "OS", icon: Server },
   { path: "/get-some", labelKey: "get_some", label: "Get Some", icon: Sparkles },
   { path: "/git-health", labelKey: "git_health", label: "Git Health", icon: Heart },
   { path: "/plugins", labelKey: "plugins", label: "Plugins", icon: Puzzle },

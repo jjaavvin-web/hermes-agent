@@ -755,10 +755,8 @@ export const api = {
   getLatestDream: () => fetchJSON<{ dream: string | null; date: string | null }>("/api/dashboard/dreams/latest"),
   getQueueHistory: (range: "1d" | "7d" | "30d" = "7d") =>
     fetchJSON<import("@/components/mission/types").QueueHistory>(`/api/dashboard/queue?range=${range}`),
-  getHivesSnapshot: () =>
-    fetchJSON<HivesSnapshot>("/api/dashboard/hives"),
-  getHiveLog: (id: string, tail = 200) =>
-    fetchJSON<HiveLogResponse>(`/api/dashboard/hives/${encodeURIComponent(id)}/log?tail=${tail}`),
+  getOSSnapshot: () =>
+    fetchJSON<OSSnapshot>("/api/dashboard/os"),
   // Personas (Hive B — Pantheon)
   getPersonas: () => fetchJSON<Persona[]>("/api/personas"),
   createPersona: (body: PersonaCreate) =>
@@ -2030,44 +2028,38 @@ export interface NexusHealthNodeDetail extends NexusHealthNode {
 }
 
 // ---------------------------------------------------------------------------
-// Hives — Ruflo hive run observability types
+// OS — infrastructure operating-status snapshot (/api/dashboard/os)
 // ---------------------------------------------------------------------------
 
-export type HiveStatus = "running" | "completed" | "blocked" | "stale";
+export type OSStatus = "green" | "amber" | "red" | "unknown";
 
-export interface HiveRun {
+export interface OSItem {
+  name: string;
+  status: OSStatus;
+  detail: string;
+  metric?: string;
+}
+
+export interface OSSection {
   id: string;
-  workdir: string;
-  session: string | null;
-  status: HiveStatus;
-  tracking_card: string | null;
-  started_at: string | null;
-  updated_at: string | null;
-  elapsed_seconds: number;
-  final_report_status: "COMPLETE" | "BLOCKED" | null;
-  final_report_path: string | null;
-  log_path: string | null;
-  log_size_bytes: number;
-  log_mtime: string | null;
-  tmux_alive: boolean;
-  track_title: string | null;
-  objective_summary: string | null;
+  label: string;
+  status: OSStatus;
+  items: OSItem[];
 }
 
-export interface HivesSnapshot {
-  hives: HiveRun[];
-  scanned_at: string;
-  active_count: number;
-  completed_count: number;
-  stale_count: number;
+export interface OSDiagnostic {
+  severity: "red" | "amber";
+  source: string;
+  message: string;
+  hint?: string;
 }
 
-export interface HiveLogResponse {
-  lines: string[];
-  path: string | null;
-  mtime: string | null;
-  truncated_to: number;
-  error?: string;
+export interface OSSnapshot {
+  generated_at: string;
+  overall: OSStatus;
+  sections: OSSection[];
+  /** Every non-green item, pre-sorted red→amber by the backend. */
+  diagnostics: OSDiagnostic[];
 }
 
 export interface HubAgentPluginRow {
