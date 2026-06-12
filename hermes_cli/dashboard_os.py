@@ -990,6 +990,166 @@ def _section_host() -> dict:
     return _section("host", "Host", items)
 
 
+
+
+# ---------------------------------------------------------------------------
+# Consolidated donor snapshots: System Health attention, Git Health, Work, Pulse
+# ---------------------------------------------------------------------------
+
+def _coerce_status(value: Any) -> Status:
+    normalized = str(value or "unknown").lower()
+    if normalized in {"green", "ok", "online", "running", "active", "enabled", "ready", "idle"}:
+        return "green"
+    if normalized in {"amber", "warn", "warning", "degraded", "stopped", "auth_gated"}:
+        return "amber"
+    if normalized in {"red", "bad", "error", "failed", "offline", "critical"}:
+        return "red"
+    return "unknown"
+
+
+def _safe_len(value: Any) -> int:
+    return len(value) if isinstance(value, list) else 0
+
+
+def _build_attention_snapshot(sections: list[dict]) -> dict:
+    diagnostics = _build_diagnostics(sections)
+    chips = []
+    for diag in diagnostics[:4]:
+        message = str(diag.get("message") or "needs attention")
+        label, _, detail = message.partition(":")
+        chips.append({
+            "source": diag.get("source", "unknown"),
+            "status": diag.get("severity", "amber"),
+            "label": label.strip().replace("_", " ") or str(diag.get("source", "unknown")).replace("_", " "),
+            "detail": detail.strip() or message,
+            "section_id": diag.get("source", "unknown"),
+        })
+    return {
+        "posture": _worst_status([s.get("status", "unknown") for s in sections]),
+        "chips": chips,
+    }
+
+
+def _repo_section_from_git_health() -> tuple[dict, dict]:
+    try:
+        from hermes_cli.dashboard_codex_sessions import git_graph, git_health
+
+        health = git_health()
+        graph = git_graph()
+        summary = health.get("summary", {}) if isinstance(health, dict) else {}
+        total = int(summary.get("total") or 0)
+        ready = int(summary.get("ready") or 0)
+        readiness_pct = round((ready / total) * 100) if total else 0
+        uncommitted = int(summary.get("total_uncommitted") or 0)
+        changed = int(summary.get("total_files_changed") or 0)
+        actionable = int(summary.get("actionable") or 0)
+        best = health.get("best_move", {}) if isinstance(health, dict) else {}
+        best_text = str(best.get("text") or "No git move available")
+        best_status = _coerce_status(best.get("severity"))
+        counts = graph.get("counts", {}) if isinstance(graph, dict) else {}
+        ahead_total = int(counts.get("ahead_total") or 0)
+        rows = health.get("rows", []) if isinstance(health, dict) else []
+        lanes = graph.get("lanes", []) if isinstance(graph, dict) else []
+        status: Status = "green"
+        if any(_coerce_status(row.get("severity")) == "red" for row in rows if isinstance(row, dict)):
+            status = "red"
+        elif uncommitted or actionable or any(_coerce_status(row.get("severity")) == "amber" for row in rows if isinstance(row, dict)):
+            status = "amber"
+        payload = {
+            "scanned_at": health.get("scanned_at") or graph.get("scanned_at"),
+            "summary": summary,
+            "readiness_pct": readiness_pct,
+            "best_move": best,
+            "counts": counts,
+            "rows": rows,
+            "lanes": lanes,
+        }
+        section = _section("repo", "Repo", [
+            _item("readiness", status, f"{ready}/{total} lanes ready", metric=f"{readiness_pct}%"),
+            _item("uncommitted", "amber" if uncommitted else "green", f"{uncommitted} uncommitted files across lanes", metric=str(uncommitted)),
+            _item("ahead_total", "green" if ahead_total == 0 else "amber", f"{ahead_total} commits ahead total", metric=str(ahead_total)),
+            _item("best_move", best_status, best_text),
+            _item("files_changed", "green" if changed == 0 else "amber", f"{changed} files changed across lanes", metric=str(changed)),
+        ])
+        return section, payload
+    except Exception as exc:
+        payload = {"error": str(exc), "summary": {}, "readiness_pct": 0, "best_move": {"text": "Git Health unavailable", "severity": "unknown"}, "rows": [], "lanes": []}
+        return _section("repo", "Repo", [_item("git_health", "unknown", str(exc))]), payload
+
+
+def _work_section_from_command_center() -> tuple[dict, dict]:
+    try:
+        from hermes_cli.dashboard_command_center import get_command_center
+
+        payload = get_command_center()
+        projects = payload.get("projects", []) if isinstance(payload, dict) else []
+        live = payload.get("live", {}) if isinstance(payload, dict) else {}
+        decisions = payload.get("decisions", []) if isinstance(payload, dict) else []
+        stalled = payload.get("stalled", []) if isinstance(payload, dict) else []
+        active_projects = [p for p in projects if isinstance(p, dict) and not p.get("archived")]
+        if active_projects:
+            projects_pct = round(sum(float(p.get("completion_pct") or 0) for p in active_projects) / len(active_projects))
+        else:
+            projects_pct = 0
+        runtimes = live.get("runtimes", []) if isinstance(live, dict) else []
+        live_runtimes = sum(1 for r in runtimes if _coerce_status((r or {}).get("status")) == "green")
+        section = _section("work", "Work", [
+            _item("projects_completion", "green" if projects_pct >= 75 else "amber", f"{len(active_projects)} active project cards averaged", metric=f"{projects_pct}%"),
+            _item("pending_decisions", "amber" if decisions else "green", f"{len(decisions)} decision items", metric=str(len(decisions))),
+            _item("live_runtimes", "green" if live_runtimes else "amber", f"{live_runtimes}/{_safe_len(runtimes)} runtimes live", metric=str(live_runtimes)),
+            _item("stalled", "amber" if stalled else "green", f"{len(stalled)} stalled workers/tasks", metric=str(len(stalled))),
+        ])
+        payload = {
+            **(payload if isinstance(payload, dict) else {}),
+            "projects_completion_pct": projects_pct,
+            "live_runtimes": live_runtimes,
+            "counts": {
+                "projects": len(active_projects),
+                "decisions": len(decisions),
+                "live_runtimes": live_runtimes,
+                "stalled": len(stalled),
+            },
+        }
+        return section, payload
+    except Exception as exc:
+        payload = {"error": str(exc), "projects": [], "live": {"runtimes": []}, "decisions": [], "stalled": [], "projects_completion_pct": 0, "live_runtimes": 0, "counts": {"projects": 0, "decisions": 0, "live_runtimes": 0, "stalled": 0}}
+        return _section("work", "Work", [_item("command_center", "unknown", str(exc))]), payload
+
+
+def _activity_section_from_pulse() -> tuple[dict, dict]:
+    try:
+        from hermes_cli.dashboard_health import _get_queue_depth
+        from hermes_cli.pulse_data import build_pulse_kpis, build_pulse_queue
+
+        queue_7d = _get_queue_depth("7d")
+        pulse_queue = build_pulse_queue(limit=8)
+        kpis = build_pulse_kpis()
+        points = queue_7d.get("points", []) if isinstance(queue_7d, dict) else []
+        created_7d = sum(int(point.get("count") or 0) for point in points if isinstance(point, dict))
+        open_now = int(queue_7d.get("openNow") or 0) if isinstance(queue_7d, dict) else 0
+        pending = int(kpis.get("pending_cards") or 0) if isinstance(kpis, dict) else 0
+        active_hives = int(kpis.get("active_hives") or 0) if isinstance(kpis, dict) else 0
+        cards = pulse_queue.get("cards", []) if isinstance(pulse_queue, dict) else []
+        section = _section("activity", "Activity", [
+            _item("created_7d", "green" if created_7d < 25 else "amber", "tasks created in the last 7 days", metric=str(created_7d)),
+            _item("open_now", "green" if open_now < 50 else "amber", "currently open kanban tasks", metric=str(open_now)),
+            _item("pending_cards", "green" if pending < 20 else "amber", "ready/triage cards waiting", metric=str(pending)),
+            _item("active_hives", "green" if active_hives == 0 else "amber", "active hive runs", metric=str(active_hives)),
+        ])
+        payload = {
+            "queue_7d": queue_7d,
+            "queue": pulse_queue,
+            "kpis": kpis,
+            "created_7d": created_7d,
+            "open_now": open_now,
+            "cards": cards,
+        }
+        return section, payload
+    except Exception as exc:
+        payload = {"error": str(exc), "queue_7d": {"range": "7d", "points": [], "openNow": 0}, "queue": {"cards": []}, "kpis": {}, "created_7d": 0, "open_now": 0, "cards": []}
+        return _section("activity", "Activity", [_item("pulse", "unknown", str(exc))]), payload
+
+
 # ---------------------------------------------------------------------------
 # Snapshot builder
 # ---------------------------------------------------------------------------
@@ -1044,8 +1204,14 @@ def _build_os_snapshot() -> dict:
                                          fn.__name__.replace("_section_", "").capitalize(),
                                          [_item("probe", "unknown", str(e))]))
 
+    repo_section, repo = _repo_section_from_git_health()
+    work_section, work = _work_section_from_command_center()
+    activity_section, activity = _activity_section_from_pulse()
+    sections.extend([repo_section, work_section, activity_section])
+
     overall = _worst_status([s["status"] for s in sections])
     diagnostics = _build_diagnostics(sections)
+    attention = _build_attention_snapshot(sections)
 
     # Build Nexus graph (Appendix B) inside the same cached snapshot build
     try:
@@ -1058,6 +1224,10 @@ def _build_os_snapshot() -> dict:
         "overall": overall,
         "sections": sections,
         "diagnostics": diagnostics,
+        "attention": attention,
+        "repo": repo,
+        "work": work,
+        "activity": activity,
         "graph": graph,
     }
 
@@ -1084,9 +1254,9 @@ def get_os_snapshot() -> dict:
 _OS_ENDPOINT_TIMEOUT = 15.0  # hard timeout for the full cold-build path
 
 
-@router.get("/os", summary="OS infrastructure health snapshot (8 sections)")
+@router.get("/os", summary="OS infrastructure health snapshot (11 sections)")
 async def get_os() -> dict:
-    """Read-only OSSnapshot: 8 sections + diagnostics, 20 s TTL cache.
+    """Read-only OSSnapshot: infra + repo/work/activity sections, diagnostics, 20 s TTL cache.
 
     Never 500 — every probe degrades to status=unknown on failure.
     """
