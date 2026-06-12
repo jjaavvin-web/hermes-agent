@@ -2,13 +2,13 @@
  * OS — one tab that visualizes the entire AI infrastructure.
  *
  * Renders /api/dashboard/os: a hero overall-status row (the <10s diagnosis
- * surface — "All systems nominal" when clean, otherwise the red→amber
- * diagnostics list) above a toggleable body: the Nexus architecture-flow
- * graph (default) or a responsive grid of 8 expandable section cards. The
- * choice persists in localStorage; both views share the same polled snapshot.
+ * surface) with consolidated attention/repo/work/activity chips above a
+ * toggleable body: the Nexus architecture-flow graph (default) or a responsive
+ * grid of expandable section cards. The choice persists in localStorage; both
+ * views share the same polled snapshot.
  */
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   AlertTriangle,
   CheckCircle2,
@@ -23,34 +23,28 @@ import { usePageHeader } from "@/contexts/usePageHeader";
 import { OSNexus } from "@/components/os/OSNexus";
 import {
   api,
+  type OSActivitySnapshot,
   type OSDiagnostic,
   type OSItem,
   type OSSection,
   type OSSnapshot,
   type OSStatus,
+  type OSWorkSnapshot,
 } from "@/lib/api";
-
-// ---------------------------------------------------------------------------
-// Constants
-// ---------------------------------------------------------------------------
 
 const SNAPSHOT_POLL_MS = 15_000;
 const HEADLINE_METRIC_COUNT = 3;
-
 type OSView = "nexus" | "grid";
 const VIEW_STORAGE_KEY = "os-view";
 
 function loadStoredView(): OSView {
   try {
-    return window.localStorage.getItem(VIEW_STORAGE_KEY) === "grid"
-      ? "grid"
-      : "nexus";
+    return window.localStorage.getItem(VIEW_STORAGE_KEY) === "grid" ? "grid" : "nexus";
   } catch {
     return "nexus";
   }
 }
 
-/** Status visual configuration — shared dashboard status palette. */
 const STATUS_CFG: Record<
   OSStatus,
   { label: string; color: string; dot: string; chip: string; ring: string; soft: string }
@@ -89,16 +83,7 @@ const STATUS_CFG: Record<
   },
 };
 
-const SEVERITY_SCORE: Record<OSStatus, number> = {
-  red: 3,
-  amber: 2,
-  unknown: 1,
-  green: 0,
-};
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
+const SEVERITY_SCORE: Record<OSStatus, number> = { red: 3, amber: 2, unknown: 1, green: 0 };
 
 function fmtTs(iso: string | null | undefined): string {
   if (!iso) return "—";
@@ -115,7 +100,6 @@ function fmtTs(iso: string | null | undefined): string {
   }
 }
 
-/** Worst-first headline rows for a collapsed card (sort is stable, so API order breaks ties). */
 function headlineItems(items: OSItem[]): OSItem[] {
   return [...items]
     .sort((a, b) => {
@@ -126,159 +110,148 @@ function headlineItems(items: OSItem[]): OSItem[] {
     .slice(0, HEADLINE_METRIC_COUNT);
 }
 
-// ---------------------------------------------------------------------------
-// Status atoms
-// ---------------------------------------------------------------------------
+function findSection(snapshot: OSSnapshot, id: string): OSSection | undefined {
+  return snapshot.sections.find((section) => section.id === id);
+}
 
 function StatusDot({ status, className = "" }: { status: OSStatus; className?: string }) {
   const cfg = STATUS_CFG[status];
-  return (
-    <span
-      className={`inline-block h-2.5 w-2.5 flex-shrink-0 rounded-full ${cfg.dot} ${className}`}
-      aria-label={cfg.label}
-    />
-  );
+  return <span className={`inline-block h-2.5 w-2.5 flex-shrink-0 rounded-full ${cfg.dot} ${className}`} aria-label={cfg.label} />;
 }
 
 function StatusChip({ status }: { status: OSStatus }) {
   const cfg = STATUS_CFG[status];
-  return (
-    <span
-      className={`flex-shrink-0 rounded-full px-2 py-0.5 text-xs font-semibold ${cfg.chip}`}
-    >
-      {cfg.label}
-    </span>
-  );
+  return <span className={`flex-shrink-0 rounded-full px-2 py-0.5 text-xs font-semibold ${cfg.chip}`}>{cfg.label}</span>;
 }
 
-// ---------------------------------------------------------------------------
-// Hero — overall status + diagnostics (the <10s diagnosis surface)
-// ---------------------------------------------------------------------------
-
-interface HeroProps {
-  snapshot: OSSnapshot;
-  loading: boolean;
-  onRefresh: () => void;
+function MetricChip({
+  label,
+  value,
+  status = "green",
+  onClick,
+}: {
+  label: string;
+  value: string | number;
+  status?: OSStatus;
+  onClick: () => void;
+}) {
+  const cfg = STATUS_CFG[status];
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className="inline-flex min-w-0 items-center gap-1.5 rounded-full border px-2.5 py-1 text-left text-xs transition hover:bg-accent/30"
+      style={{ borderColor: cfg.ring, background: cfg.soft }}
+      title={`${label}: ${value}`}
+    >
+      <StatusDot status={status} className="h-1.5 w-1.5" />
+      <span className="max-w-[9rem] truncate text-text-tertiary">{label}</span>
+      <span className="font-mono font-semibold text-text-primary">{value}</span>
+    </button>
+  );
 }
 
 function DiagnosticRow({ diag }: { diag: OSDiagnostic }) {
   const cfg = STATUS_CFG[diag.severity];
   return (
-    <li
-      className="flex flex-wrap items-baseline gap-x-2 gap-y-1 rounded-md border px-3 py-2"
-      style={{ borderColor: cfg.ring, background: cfg.soft }}
-    >
+    <li className="flex flex-wrap items-baseline gap-x-2 gap-y-1 rounded-md border px-3 py-2" style={{ borderColor: cfg.ring, background: cfg.soft }}>
       <StatusDot status={diag.severity} className="self-center" />
-      <span
-        className="rounded px-1.5 py-0.5 font-mono text-xs font-semibold"
-        style={{ color: cfg.color, background: `${cfg.color}1f` }}
-      >
+      <span className="rounded px-1.5 py-0.5 font-mono text-xs font-semibold" style={{ color: cfg.color, background: `${cfg.color}1f` }}>
         {diag.source}
       </span>
       <span className="min-w-0 flex-1 text-xs text-text-primary">
         {diag.message}
-        {diag.hint && (
-          <span className="text-text-secondary"> — {diag.hint}</span>
-        )}
+        {diag.hint && <span className="text-text-secondary"> — {diag.hint}</span>}
       </span>
     </li>
   );
 }
 
-function Hero({ snapshot, loading, onRefresh }: HeroProps) {
+function Sparkline({ points }: { points: Array<{ date?: string; count?: number }> }) {
+  const values = points.map((point) => Number(point.count || 0));
+  const max = Math.max(1, ...values);
+  return (
+    <div className="flex h-10 items-end gap-1" aria-label="7 day task creation sparkline">
+      {values.length === 0 && <span className="text-xs text-text-tertiary">No recent task creation</span>}
+      {values.map((value, index) => (
+        <span
+          key={`${points[index]?.date ?? index}-${index}`}
+          className="w-3 rounded-t bg-accent"
+          style={{ height: `${Math.max(10, (value / max) * 40)}px`, opacity: 0.35 + (value / max) * 0.65 }}
+          title={`${points[index]?.date ?? "day"}: ${value}`}
+        />
+      ))}
+    </div>
+  );
+}
+
+interface HeroProps {
+  snapshot: OSSnapshot;
+  loading: boolean;
+  onRefresh: () => void;
+  onFocusSection: (id: string) => void;
+}
+
+function Hero({ snapshot, loading, onRefresh, onFocusSection }: HeroProps) {
   const overall = STATUS_CFG[snapshot.overall];
-  const clean = snapshot.diagnostics.length === 0;
   const redCount = snapshot.diagnostics.filter((d) => d.severity === "red").length;
   const amberCount = snapshot.diagnostics.length - redCount;
-
-  // Clean snapshot → slim single-line bar so the Nexus graph gets the room.
-  if (clean) {
-    return (
-      <section
-        className="flex flex-shrink-0 items-center gap-3 rounded-lg border border-border bg-card px-4 py-2"
-        aria-label="Overall status"
-      >
-        <CheckCircle2
-          className="h-4 w-4 flex-shrink-0"
-          style={{ color: overall.color }}
-        />
-        <h2
-          className="font-mondwest text-display min-w-0 flex-1 truncate text-sm tracking-[0.12em]"
-          style={{ color: overall.color }}
-        >
-          All systems nominal
-        </h2>
-        <span className="hidden flex-shrink-0 text-xs text-text-tertiary sm:inline">
-          {snapshot.sections.length} sections probed · updated{" "}
-          {fmtTs(snapshot.generated_at)}
-        </span>
-        <StatusChip status={snapshot.overall} />
-        <button
-          type="button"
-          onClick={onRefresh}
-          aria-label="Refresh OS snapshot"
-          className="flex-shrink-0 rounded-md border border-border p-1.5 text-text-secondary transition hover:text-text-primary"
-        >
-          <RefreshCw className={`h-4 w-4 ${loading ? "animate-spin" : ""}`} />
-        </button>
-      </section>
-    );
-  }
+  const repo = snapshot.repo;
+  const repoSummary = repo?.summary;
+  const work = snapshot.work;
+  const workCounts = work?.counts;
+  const activity = snapshot.activity;
+  const attention = snapshot.attention?.chips ?? [];
+  const bestMove = String(repo?.best_move?.text ?? "No git move available");
 
   return (
-    <section
-      className="flex-shrink-0 rounded-lg border bg-card p-4"
-      style={{ borderColor: snapshot.overall === "green" ? undefined : overall.ring }}
-      aria-label="Overall status"
-    >
-      <div className="flex items-center gap-3">
-        <span
-          className="flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-md border"
-          style={{ borderColor: overall.ring, background: overall.soft }}
-        >
-          <AlertTriangle className="h-5 w-5" style={{ color: overall.color }} />
+    <section className="flex-shrink-0 rounded-lg border bg-card p-4" style={{ borderColor: snapshot.overall === "green" ? undefined : overall.ring }} aria-label="Overall status">
+      <div className="flex flex-wrap items-center gap-3">
+        <span className="flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-md border" style={{ borderColor: overall.ring, background: overall.soft }}>
+          {snapshot.overall === "green" ? <CheckCircle2 className="h-5 w-5" style={{ color: overall.color }} /> : <AlertTriangle className="h-5 w-5" style={{ color: overall.color }} />}
         </span>
-
-        <div className="min-w-0 flex-1">
-          <h2
-            className="font-mondwest text-display text-base tracking-[0.12em]"
-            style={{ color: overall.color }}
-          >
-            {`${snapshot.diagnostics.length} finding${snapshot.diagnostics.length === 1 ? "" : "s"} — ${redCount} red · ${amberCount} amber`}
+        <div className="min-w-[180px] flex-1">
+          <h2 className="font-mondwest text-display text-base tracking-[0.12em]" style={{ color: overall.color }}>
+            {snapshot.diagnostics.length === 0 ? "All systems nominal" : `${snapshot.diagnostics.length} finding${snapshot.diagnostics.length === 1 ? "" : "s"} — ${redCount} red · ${amberCount} amber`}
           </h2>
-          <p className="mt-0.5 text-xs text-text-tertiary">
-            {snapshot.sections.length} sections probed · updated {fmtTs(snapshot.generated_at)}
-          </p>
+          <p className="mt-0.5 text-xs text-text-tertiary">{snapshot.sections.length} cards · updated {fmtTs(snapshot.generated_at)}</p>
         </div>
-
         <StatusChip status={snapshot.overall} />
-
-        <button
-          type="button"
-          onClick={onRefresh}
-          aria-label="Refresh OS snapshot"
-          className="flex-shrink-0 rounded-md border border-border p-1.5 text-text-secondary transition hover:text-text-primary"
-        >
+        <button type="button" onClick={onRefresh} aria-label="Refresh OS snapshot" className="flex-shrink-0 rounded-md border border-border p-1.5 text-text-secondary transition hover:text-text-primary">
           <RefreshCw className={`h-4 w-4 ${loading ? "animate-spin" : ""}`} />
         </button>
       </div>
 
-      <ul className="mt-3 space-y-1.5" aria-label="Diagnostics">
-        {snapshot.diagnostics.map((diag, i) => (
-          <DiagnosticRow key={`${diag.source}-${i}`} diag={diag} />
+      <div className="mt-3 flex flex-wrap gap-2" aria-label="OS consolidated hero chips">
+        <MetricChip label="posture" value={STATUS_CFG[snapshot.attention?.posture ?? snapshot.overall].label} status={snapshot.attention?.posture ?? snapshot.overall} onClick={() => onFocusSection("gateway")} />
+        {attention.length === 0 ? (
+          <MetricChip label="attention" value="0" status="green" onClick={() => onFocusSection("gateway")} />
+        ) : attention.map((chip) => (
+          <MetricChip key={`${chip.source}-${chip.detail}`} label={chip.label} value="needs eyes" status={chip.status} onClick={() => onFocusSection(chip.section_id)} />
         ))}
-      </ul>
+        <MetricChip label="git readiness" value={`${repo?.readiness_pct ?? 0}%`} status={findSection(snapshot, "repo")?.status ?? "unknown"} onClick={() => onFocusSection("repo")} />
+        <MetricChip label="dirty" value={repoSummary?.total_uncommitted ?? 0} status={(repoSummary?.total_uncommitted ?? 0) > 0 ? "amber" : "green"} onClick={() => onFocusSection("repo")} />
+        <MetricChip label="best move" value={bestMove.length > 34 ? `${bestMove.slice(0, 34)}…` : bestMove} status={findSection(snapshot, "repo")?.status ?? "unknown"} onClick={() => onFocusSection("repo")} />
+        <MetricChip label="projects" value={`${work?.projects_completion_pct ?? 0}%`} status={findSection(snapshot, "work")?.status ?? "unknown"} onClick={() => onFocusSection("work")} />
+        <MetricChip label="decisions" value={workCounts?.decisions ?? 0} status={(workCounts?.decisions ?? 0) > 0 ? "amber" : "green"} onClick={() => onFocusSection("work")} />
+        <MetricChip label="live" value={workCounts?.live_runtimes ?? 0} status={(workCounts?.live_runtimes ?? 0) > 0 ? "green" : "amber"} onClick={() => onFocusSection("work")} />
+        <MetricChip label="stalled" value={workCounts?.stalled ?? 0} status={(workCounts?.stalled ?? 0) > 0 ? "amber" : "green"} onClick={() => onFocusSection("work")} />
+        <MetricChip label="7d tasks" value={activity?.created_7d ?? 0} status={findSection(snapshot, "activity")?.status ?? "unknown"} onClick={() => onFocusSection("activity")} />
+      </div>
+
+      {snapshot.diagnostics.length > 0 && (
+        <ul className="mt-3 space-y-1.5" aria-label="Diagnostics">
+          {snapshot.diagnostics.slice(0, 4).map((diag, i) => <DiagnosticRow key={`${diag.source}-${i}`} diag={diag} />)}
+        </ul>
+      )}
     </section>
   );
 }
 
-// ---------------------------------------------------------------------------
-// Section card — status dot + headline metrics, click to expand full items
-// ---------------------------------------------------------------------------
-
 interface SectionCardProps {
   section: OSSection;
   expanded: boolean;
+  extra?: OSSnapshot;
   onToggle: () => void;
 }
 
@@ -289,117 +262,113 @@ function ItemRow({ item }: { item: OSItem }) {
       <StatusDot status={item.status} className="mt-1" />
       <div className="min-w-0 flex-1">
         <div className="flex items-baseline justify-between gap-2">
-          <span className="truncate text-xs font-semibold text-text-primary">
-            {item.name}
-          </span>
-          {item.metric && (
-            <span
-              className="flex-shrink-0 font-mono text-xs"
-              style={{ color: item.status === "green" ? undefined : cfg.color }}
-            >
-              {item.metric}
-            </span>
-          )}
+          <span className="truncate text-xs font-semibold text-text-primary">{item.name}</span>
+          {item.metric && <span className="flex-shrink-0 font-mono text-xs" style={{ color: item.status === "green" ? undefined : cfg.color }}>{item.metric}</span>}
         </div>
-        {item.detail && (
-          <p className="mt-0.5 break-words text-xs leading-relaxed text-text-secondary">
-            {item.detail}
-          </p>
-        )}
+        {item.detail && <p className="mt-0.5 break-words text-xs leading-relaxed text-text-secondary">{item.detail}</p>}
       </div>
     </li>
   );
 }
 
-function SectionCard({ section, expanded, onToggle }: SectionCardProps) {
+function WorkDetails({ work }: { work?: OSWorkSnapshot }) {
+  const projects = work?.projects ?? [];
+  const decisions = work?.decisions ?? [];
+  const stalled = work?.stalled ?? [];
+  return (
+    <div className="space-y-3 border-t border-border px-4 py-3 text-xs text-text-secondary">
+      <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+        {projects.slice(0, 4).map((project) => (
+          <div key={project.slug} className="rounded-md border border-border bg-background/40 p-2">
+            <div className="flex items-center justify-between gap-2 text-text-primary">
+              <span className="truncate font-semibold">{project.icon || "◆"} {project.name}</span>
+              <span className="font-mono">{project.completion_pct}%</span>
+            </div>
+            <div className="mt-1 h-1.5 overflow-hidden rounded-full bg-border">
+              <span className="block h-full rounded-full bg-accent" style={{ width: `${Math.max(0, Math.min(100, project.completion_pct || 0))}%` }} />
+            </div>
+            <div className="mt-1 flex justify-between text-text-tertiary"><span>left {project.remaining_count}</span><span>blocked {project.blocked}</span></div>
+          </div>
+        ))}
+      </div>
+      {decisions.length > 0 && <p><strong className="text-text-primary">Decisions:</strong> {decisions.slice(0, 3).map((d) => d.title).join(" · ")}</p>}
+      {stalled.length > 0 && <p><strong className="text-warning">Stalled:</strong> {stalled.slice(0, 3).map((s) => `${s.project}: ${s.title}`).join(" · ")}</p>}
+    </div>
+  );
+}
+
+function ActivityDetails({ activity }: { activity?: OSActivitySnapshot }) {
+  return (
+    <div className="space-y-3 border-t border-border px-4 py-3 text-xs text-text-secondary">
+      <Sparkline points={activity?.queue_7d?.points ?? []} />
+      <div className="grid grid-cols-2 gap-2">
+        <span className="rounded-md border border-border p-2">Open now <strong className="text-text-primary">{activity?.open_now ?? 0}</strong></span>
+        <span className="rounded-md border border-border p-2">Queued cards <strong className="text-text-primary">{activity?.cards?.length ?? 0}</strong></span>
+      </div>
+      {(activity?.cards?.length ?? 0) > 0 && <p>{activity?.cards?.slice(0, 4).map((card) => `${card.board}:${card.title}`).join(" · ")}</p>}
+    </div>
+  );
+}
+
+function RepoDetails({ snapshot }: { snapshot: OSSnapshot }) {
+  const repo = snapshot.repo;
+  const lanes = repo?.lanes ?? [];
+  const rows = repo?.rows ?? [];
+  return (
+    <div className="space-y-2 border-t border-border px-4 py-3 text-xs text-text-secondary">
+      <p><strong className="text-text-primary">Recommended:</strong> {repo?.best_move?.text ?? "No git move available"}</p>
+      <div className="grid grid-cols-2 gap-2">
+        <span className="rounded-md border border-border p-2">Rows <strong className="text-text-primary">{rows.length}</strong></span>
+        <span className="rounded-md border border-border p-2">Lanes <strong className="text-text-primary">{lanes.length}</strong></span>
+      </div>
+    </div>
+  );
+}
+
+function SectionCard({ section, expanded, extra, onToggle }: SectionCardProps) {
   const cfg = STATUS_CFG[section.status];
   const attention = section.status === "red" || section.status === "amber";
   const headline = headlineItems(section.items);
 
   return (
-    <div
-      className="flex flex-col self-start overflow-hidden rounded-lg border bg-card"
-      style={{ borderColor: attention ? cfg.ring : undefined }}
-    >
-      <button
-        type="button"
-        onClick={onToggle}
-        aria-expanded={expanded}
-        className="flex w-full items-center gap-2.5 px-4 py-3 text-left transition hover:bg-accent/30"
-      >
+    <div id={`os-card-${section.id}`} className="flex scroll-mt-24 flex-col self-start overflow-hidden rounded-lg border bg-card" style={{ borderColor: attention ? cfg.ring : undefined }}>
+      <button type="button" onClick={onToggle} aria-expanded={expanded} className="flex w-full items-center gap-2.5 px-4 py-3 text-left transition hover:bg-accent/30">
         <StatusDot status={section.status} />
-        <span className="font-mondwest text-display min-w-0 flex-1 truncate text-xs tracking-[0.12em] text-text-primary">
-          {section.label}
-        </span>
+        <span className="font-mondwest text-display min-w-0 flex-1 truncate text-xs tracking-[0.12em] text-text-primary">{section.label}</span>
         {attention && <StatusChip status={section.status} />}
-        {expanded ? (
-          <ChevronUp className="h-3.5 w-3.5 flex-shrink-0 text-text-tertiary" />
-        ) : (
-          <ChevronDown className="h-3.5 w-3.5 flex-shrink-0 text-text-tertiary" />
-        )}
+        {expanded ? <ChevronUp className="h-3.5 w-3.5 flex-shrink-0 text-text-tertiary" /> : <ChevronDown className="h-3.5 w-3.5 flex-shrink-0 text-text-tertiary" />}
       </button>
 
-      {/* Headline metrics — always visible */}
       {!expanded && (
         <div className="space-y-1 px-4 pb-3">
-          {headline.length === 0 && (
-            <p className="text-xs text-text-tertiary">No probes reported.</p>
-          )}
+          {headline.length === 0 && <p className="text-xs text-text-tertiary">No probes reported.</p>}
           {headline.map((item) => (
-            <div
-              key={item.name}
-              className="flex items-baseline justify-between gap-2 text-xs"
-            >
-              <span className="flex items-baseline gap-1.5 truncate text-text-tertiary">
-                {item.status !== "green" && (
-                  <StatusDot status={item.status} className="h-1.5 w-1.5 self-center" />
-                )}
-                {item.name}
-              </span>
-              <span
-                className="flex-shrink-0 truncate font-mono text-text-secondary"
-                style={{
-                  color: item.status === "green" || item.status === "unknown"
-                    ? undefined
-                    : STATUS_CFG[item.status].color,
-                }}
-              >
-                {item.metric ?? STATUS_CFG[item.status].label}
-              </span>
+            <div key={item.name} className="flex items-baseline justify-between gap-2 text-xs">
+              <span className="flex items-baseline gap-1.5 truncate text-text-tertiary">{item.status !== "green" && <StatusDot status={item.status} className="h-1.5 w-1.5 self-center" />}{item.name}</span>
+              <span className="flex-shrink-0 truncate font-mono text-text-secondary" style={{ color: item.status === "green" || item.status === "unknown" ? undefined : STATUS_CFG[item.status].color }}>{item.metric ?? STATUS_CFG[item.status].label}</span>
             </div>
           ))}
-          {section.items.length > headline.length && (
-            <p className="pt-0.5 text-xs text-text-tertiary">
-              +{section.items.length - headline.length} more…
-            </p>
-          )}
+          {section.items.length > headline.length && <p className="pt-0.5 text-xs text-text-tertiary">+{section.items.length - headline.length} more…</p>}
         </div>
       )}
 
-      {/* Expanded — full item list */}
       {expanded && (
-        <ul className="divide-y divide-border border-t border-border">
-          {section.items.length === 0 && (
-            <li className="px-4 py-2.5 text-xs text-text-tertiary">
-              No probes reported.
-            </li>
-          )}
-          {section.items.map((item) => (
-            <ItemRow key={item.name} item={item} />
-          ))}
-        </ul>
+        <>
+          <ul className="divide-y divide-border border-t border-border">
+            {section.items.length === 0 && <li className="px-4 py-2.5 text-xs text-text-tertiary">No probes reported.</li>}
+            {section.items.map((item) => <ItemRow key={item.name} item={item} />)}
+          </ul>
+          {section.id === "repo" && extra && <RepoDetails snapshot={extra} />}
+          {section.id === "work" && <WorkDetails work={extra?.work} />}
+          {section.id === "activity" && <ActivityDetails activity={extra?.activity} />}
+        </>
       )}
     </div>
   );
 }
 
-// ---------------------------------------------------------------------------
-// OSPage
-// ---------------------------------------------------------------------------
-
 export default function OSPage() {
   const { setTitle } = usePageHeader();
-
   const [snapshot, setSnapshot] = useState<OSSnapshot | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
@@ -411,13 +380,11 @@ export default function OSPage() {
     try {
       window.localStorage.setItem(VIEW_STORAGE_KEY, next);
     } catch {
-      // Storage unavailable (private mode) — view still switches for the session.
+      // view still switches for the session
     }
   }, []);
 
-  useEffect(() => {
-    setTitle("OS");
-  }, [setTitle]);
+  useEffect(() => { setTitle("OS"); }, [setTitle]);
 
   const loadSnapshot = useCallback(async () => {
     setLoading(true);
@@ -447,120 +414,60 @@ export default function OSPage() {
     });
   }, []);
 
-  // ------------------------------------------------------------------ Loading
+  const focusSection = useCallback((id: string) => {
+    setView("grid");
+    setExpanded((prev) => new Set(prev).add(id));
+    window.setTimeout(() => document.getElementById(`os-card-${id}`)?.scrollIntoView({ behavior: "smooth", block: "start" }), 80);
+  }, [setView]);
+
+  const coreFirstSections = useMemo(() => {
+    if (!snapshot) return [];
+    const preferred = ["repo", "work", "activity"];
+    return [...snapshot.sections].sort((a, b) => {
+      const ai = preferred.indexOf(a.id);
+      const bi = preferred.indexOf(b.id);
+      if (ai !== -1 || bi !== -1) return (ai === -1 ? 99 : ai) - (bi === -1 ? 99 : bi);
+      return 0;
+    });
+  }, [snapshot]);
+
   if (!snapshot && !error) {
-    return (
-      <div className="flex min-h-[300px] items-center justify-center bg-background text-sm text-text-secondary">
-        <RefreshCw className="mr-2 h-4 w-4 animate-spin" />
-        Loading OS…
-      </div>
-    );
+    return <div className="flex min-h-[300px] items-center justify-center bg-background text-sm text-text-secondary"><RefreshCw className="mr-2 h-4 w-4 animate-spin" />Loading OS…</div>;
   }
 
-  // ------------------------------------------------------------------- Error
   if (!snapshot && error) {
     return (
       <div className="flex min-h-[300px] flex-col items-center justify-center gap-3 bg-background">
         <p className="text-sm text-destructive">{error}</p>
-        <button
-          type="button"
-          onClick={() => void loadSnapshot()}
-          className="rounded-md border border-border px-3 py-1.5 text-xs text-text-secondary transition hover:text-text-primary"
-        >
-          Retry
-        </button>
+        <button type="button" onClick={() => void loadSnapshot()} className="rounded-md border border-border px-3 py-1.5 text-xs text-text-secondary transition hover:text-text-primary">Retry</button>
       </div>
     );
   }
 
   const data = snapshot as OSSnapshot;
 
-  // ------------------------------------------------------------------ Content
   return (
-    <div
-      className={`bg-background p-4 text-text-primary ${
-        view === "nexus"
-          ? // Nexus fills the viewport below the app chrome (topbar/header/main
-            // padding + route-wrapper bottom inset) so the graph gets the room;
-            // min-h keeps cramped windows scrolling instead of crushing it.
-            "flex min-h-[540px] flex-col h-[calc(100dvh-152px)] sm:h-[calc(100dvh-160px)] lg:h-[calc(100dvh-112px)]"
-          : "min-h-0"
-      }`}
-    >
-      {/* Page chrome */}
+    <div className={`bg-background p-4 text-text-primary ${view === "nexus" ? "flex min-h-[540px] flex-col h-[calc(100dvh-152px)] sm:h-[calc(100dvh-160px)] lg:h-[calc(100dvh-112px)]" : "min-h-0"}`}>
       <div className="mb-3 flex flex-shrink-0 items-center gap-1.5 text-xs text-text-tertiary">
         <Server className="h-3.5 w-3.5" />
-        <span className="font-mondwest text-display tracking-[0.16em]">
-          Infrastructure Operating Status
-        </span>
-        {error && (
-          <span className="text-warning">· refresh failed: {error}</span>
-        )}
-
-        {/* View toggle — Nexus (architecture flow) | Grid (section cards) */}
-        <div
-          className="ml-auto flex flex-shrink-0 overflow-hidden rounded-md border border-border"
-          role="group"
-          aria-label="OS view"
-        >
-          <button
-            type="button"
-            onClick={() => setView("nexus")}
-            aria-pressed={view === "nexus"}
-            className={`flex items-center gap-1.5 px-2.5 py-1 text-xs font-semibold transition ${
-              view === "nexus"
-                ? "bg-accent/40 text-text-primary"
-                : "text-text-tertiary hover:text-text-primary"
-            }`}
-          >
-            <Workflow className="h-3.5 w-3.5" />
-            Nexus
-          </button>
-          <button
-            type="button"
-            onClick={() => setView("grid")}
-            aria-pressed={view === "grid"}
-            className={`flex items-center gap-1.5 border-l border-border px-2.5 py-1 text-xs font-semibold transition ${
-              view === "grid"
-                ? "bg-accent/40 text-text-primary"
-                : "text-text-tertiary hover:text-text-primary"
-            }`}
-          >
-            <LayoutGrid className="h-3.5 w-3.5" />
-            Grid
-          </button>
+        <span className="font-mondwest text-display tracking-[0.16em]">Infrastructure Operating Status</span>
+        {error && <span className="text-warning">· refresh failed: {error}</span>}
+        <div className="ml-auto flex flex-shrink-0 overflow-hidden rounded-md border border-border" role="group" aria-label="OS view">
+          <button type="button" onClick={() => setView("nexus")} aria-pressed={view === "nexus"} className={`flex items-center gap-1.5 px-2.5 py-1 text-xs font-semibold transition ${view === "nexus" ? "bg-accent/40 text-text-primary" : "text-text-tertiary hover:text-text-primary"}`}><Workflow className="h-3.5 w-3.5" />Nexus</button>
+          <button type="button" onClick={() => setView("grid")} aria-pressed={view === "grid"} className={`flex items-center gap-1.5 border-l border-border px-2.5 py-1 text-xs font-semibold transition ${view === "grid" ? "bg-accent/40 text-text-primary" : "text-text-tertiary hover:text-text-primary"}`}><LayoutGrid className="h-3.5 w-3.5" />Grid</button>
         </div>
       </div>
 
-      {/* Hero stays visible on BOTH views — it is the <10s diagnosis surface */}
-      <Hero snapshot={data} loading={loading} onRefresh={() => void loadSnapshot()} />
+      <Hero snapshot={data} loading={loading} onRefresh={() => void loadSnapshot()} onFocusSection={focusSection} />
 
       {view === "nexus" ? (
-        /* Nexus — architecture-flow graph over the same polled snapshot.
-           flex-1 absorbs whatever the hero leaves (slim bar when clean, full
-           diagnostics list when not); min-h guards against tiny canvases. */
-        <div className="mt-3 min-h-[420px] min-w-0 flex-1">
-          <OSNexus snapshot={data} />
-        </div>
+        <div className="mt-3 min-h-[420px] min-w-0 flex-1"><OSNexus snapshot={data} /></div>
       ) : (
         <>
-          {/* Section grid */}
           <div className="mt-4 grid grid-cols-1 items-start gap-3 pb-8 sm:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-4">
-            {data.sections.map((section) => (
-              <SectionCard
-                key={section.id}
-                section={section}
-                expanded={expanded.has(section.id)}
-                onToggle={() => toggleExpand(section.id)}
-              />
-            ))}
+            {coreFirstSections.map((section) => <SectionCard key={section.id} section={section} expanded={expanded.has(section.id)} extra={data} onToggle={() => toggleExpand(section.id)} />)}
           </div>
-
-          {data.sections.length === 0 && (
-            <div className="flex min-h-[160px] items-center justify-center text-sm text-text-tertiary">
-              No sections in snapshot.
-            </div>
-          )}
+          {data.sections.length === 0 && <div className="flex min-h-[160px] items-center justify-center text-sm text-text-tertiary">No sections in snapshot.</div>}
         </>
       )}
     </div>

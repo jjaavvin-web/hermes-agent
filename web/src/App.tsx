@@ -81,12 +81,8 @@ import CronPage from "@/pages/CronPage";
 import ProfilesPage from "@/pages/ProfilesPage";
 import SkillsPage from "@/pages/SkillsPage";
 import PluginsPage from "@/pages/PluginsPage";
-import NexusHealthPage from "@/pages/NexusHealthPage";
 import OSPage from "@/pages/OSPage";
 import ExplorerPage from "@/pages/ExplorerPage";
-import PulsePage from "@/pages/PulsePage";
-import GitHealthPage from "@/pages/GitHealthPage";
-import GetSomePage from "@/pages/GetSomePage";
 import WelcomePage from "@/pages/WelcomePage";
 import McpPage from "@/pages/McpPage";
 import PairingPage from "@/pages/PairingPage";
@@ -113,8 +109,8 @@ function RootRedirect() {
     if (fetched.current) return;
     fetched.current = true;
     fetchJSON<{ soul_exists: boolean }>("/api/welcome/first-run-status")
-      .then((data) => setTarget(data.soul_exists ? "/nexus-health" : "/welcome"))
-      .catch(() => setTarget("/nexus-health"));
+      .then((data) => setTarget(data.soul_exists ? "/os" : "/welcome"))
+      .catch(() => setTarget("/os"));
   }, []);
 
   if (!target) return null;
@@ -147,7 +143,6 @@ const CHAT_NAV_ITEM: NavItem = {
  */
 const BUILTIN_ROUTES_CORE: Record<string, ComponentType> = {
   "/": RootRedirect,
-  "/pulse": PulsePage,
   "/sessions": SessionsPage,
   "/analytics": AnalyticsPage,
   "/models": ModelsPage,
@@ -156,10 +151,7 @@ const BUILTIN_ROUTES_CORE: Record<string, ComponentType> = {
   "/skills": SkillsPage,
   "/plugins": PluginsPage,
   "/explorer": ExplorerPage,
-  "/nexus-health": NexusHealthPage,
   "/os": OSPage,
-  "/git-health": GitHealthPage,
-  "/get-some": GetSomePage,
   "/mcp": McpPage,
   "/pairing": PairingPage,
   "/channels": ChannelsPage,
@@ -182,12 +174,6 @@ function ChatRouteSink() {
 
 const BUILTIN_NAV_REST: NavItem[] = [
   {
-    path: "/pulse",
-    labelKey: "pulse",
-    label: "Pulse",
-    icon: Activity,
-  },
-  {
     path: "/sessions",
     labelKey: "sessions",
     label: "Sessions",
@@ -209,10 +195,7 @@ const BUILTIN_NAV_REST: NavItem[] = [
   { path: "/cron", labelKey: "cron", label: "Cron", icon: Clock },
   { path: "/skills", labelKey: "skills", label: "Skills", icon: Package },
   { path: "/explorer", labelKey: "explorer", label: "Explorer", icon: Network },
-  { path: "/nexus-health", labelKey: "system_health", label: "System Health", icon: Shield },
   { path: "/os", labelKey: "os", label: "OS", icon: Server },
-  { path: "/get-some", labelKey: "get_some", label: "Get Some", icon: Sparkles },
-  { path: "/git-health", labelKey: "git_health", label: "Git Health", icon: Heart },
   { path: "/plugins", labelKey: "plugins", label: "Plugins", icon: Puzzle },
   { path: "/mcp", label: "MCP", icon: Plug },
   { path: "/channels", label: "Channels", icon: Radio },
@@ -411,11 +394,6 @@ export default function App() {
   const normalizedPath = pathname.replace(/\/$/, "") || "/";
   const isExplorerRoute = normalizedPath === "/explorer";
   const isChatRoute = normalizedPath === "/chat";
-  // H3: /pulse needs full-height layout so the force-directed constellation
-  // canvas has vertical space to render. Without this, the page wrapper
-  // collapses to its content's min-height and the canvas degenerates to a
-  // 44px-tall strip.
-  const isPulseRoute = normalizedPath === "/pulse";
   const embeddedChat = isDashboardEmbeddedChatEnabled();
 
   // `dashboard.show_token_analytics` gates the Analytics nav item.  The
@@ -778,7 +756,7 @@ export default function App() {
                   : isChatRoute
                     ? "pb-0 pt-1 sm:pt-2 lg:pt-4"
                     : "pt-2 sm:pt-4 lg:pt-6",
-                (isDocsRoute || isExplorerRoute || isPulseRoute) && "min-h-0 flex-1",
+                (isDocsRoute || isExplorerRoute) && "min-h-0 flex-1",
                 "focus:outline-none",
               )}
             >
@@ -788,7 +766,7 @@ export default function App() {
                   "w-full min-w-0",
                   !isChatRoute && !isExplorerRoute &&
                     "pb-[calc(2rem+env(safe-area-inset-bottom,0px))] lg:pb-8",
-                  (isDocsRoute || isChatRoute || isExplorerRoute || isPulseRoute) &&
+                  (isDocsRoute || isChatRoute || isExplorerRoute) &&
                     "min-h-0 flex flex-1 flex-col",
                 )}
               >
