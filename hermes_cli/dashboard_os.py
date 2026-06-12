@@ -569,6 +569,7 @@ _CORE_CONTAINERS = frozenset({
     "honcho-database-1",
     "honcho-api-1",
     "honcho-deriver-1",
+    "honcho-redis-1",
     "supabase_db_goattrade-system",
     "supabase_kong_goattrade-system",
 })
