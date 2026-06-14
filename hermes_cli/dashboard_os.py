@@ -396,7 +396,7 @@ def _probe_gateway() -> dict:
             # Convert to seconds using SC_CLK_TCK (typically 100 on Linux/WSL2).
             import os as _os
             hz = _os.sysconf("SC_CLK_TCK") or 100
-            proc_uptime_s = float(Path("/proc/uptime").read_text().split()[0])
+            proc_uptime_s = float(Path("/proc/uptime").read_text(encoding="utf-8").split()[0])
             proc_start_s = int(start_time) / hz
             candidate = int(proc_uptime_s - proc_start_s)
             # Accept only sane positive values under 90 days.
@@ -980,7 +980,7 @@ def _section_host() -> dict:
 
     # WSL uptime from /proc/uptime
     try:
-        uptime_s = float(Path("/proc/uptime").read_text().split()[0])
+        uptime_s = float(Path("/proc/uptime").read_text(encoding="utf-8").split()[0])
         h = int(uptime_s // 3600)
         m = int((uptime_s % 3600) // 60)
         items.append(_item("wsl_uptime", "green", f"up {h}h {m}m", metric=f"{h}h{m}m"))
@@ -1067,9 +1067,9 @@ def _repo_section_from_git_health() -> tuple[dict, dict]:
         section = _section("repo", "Repo", [
             _item("readiness", status, f"{ready}/{total} lanes ready", metric=f"{readiness_pct}%"),
             _item("uncommitted", "amber" if uncommitted else "green", f"{uncommitted} uncommitted files across lanes", metric=str(uncommitted)),
-            _item("ahead_total", "green" if ahead_total == 0 else "amber", f"{ahead_total} commits ahead total", metric=str(ahead_total)),
+            _item("ahead_total", "amber" if ahead_total > 20000 else "green", f"{ahead_total} commits ahead total", metric=str(ahead_total)),
             _item("best_move", best_status, best_text),
-            _item("files_changed", "green" if changed == 0 else "amber", f"{changed} files changed across lanes", metric=str(changed)),
+            _item("files_changed", "amber" if changed > 15000 else "green", f"{changed} files changed across lanes", metric=str(changed)),
         ])
         return section, payload
     except Exception as exc:
@@ -1131,7 +1131,7 @@ def _activity_section_from_pulse() -> tuple[dict, dict]:
         active_hives = int(kpis.get("active_hives") or 0) if isinstance(kpis, dict) else 0
         cards = pulse_queue.get("cards", []) if isinstance(pulse_queue, dict) else []
         section = _section("activity", "Activity", [
-            _item("created_7d", "green" if created_7d < 25 else "amber", "tasks created in the last 7 days", metric=str(created_7d)),
+            _item("created_7d", "green" if created_7d < 100 else "amber", "tasks created in the last 7 days", metric=str(created_7d)),
             _item("open_now", "green" if open_now < 50 else "amber", "currently open kanban tasks", metric=str(open_now)),
             _item("pending_cards", "green" if pending < 20 else "amber", "ready/triage cards waiting", metric=str(pending)),
             _item("active_hives", "green" if active_hives == 0 else "amber", "active hive runs", metric=str(active_hives)),
