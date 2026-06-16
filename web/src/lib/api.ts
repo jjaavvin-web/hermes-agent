@@ -920,6 +920,8 @@ export const api = {
     fetchJSON<import("@/components/mission/types").QueueHistory>(`/api/dashboard/queue?range=${range}`),
   getOSSnapshot: () =>
     fetchJSON<OSSnapshot>("/api/dashboard/os"),
+  getLearning: () =>
+    fetchJSON<LearningResponse>("/api/dashboard/learning"),
   // Personas (Hive B — Pantheon)
   getPersonas: () => fetchJSON<Persona[]>("/api/personas"),
   createPersona: (body: PersonaCreate) =>
@@ -2442,6 +2444,56 @@ export interface OSSnapshot {
   activity?: OSActivitySnapshot;
   /** Static architecture topology with live health bound onto the nodes. */
   graph: { nodes: OSGraphNode[]; edges: OSGraphEdge[] };
+}
+
+// ---------------------------------------------------------------------------
+// Learning — MVMS learning-loop metric + canary (/api/dashboard/learning)
+// ---------------------------------------------------------------------------
+
+export type LearningStatus = "green" | "amber" | "red" | "unknown";
+
+export interface LearningEmbedCoverageItem {
+  embedded?: number;
+  ratio?: number;
+  total?: number;
+}
+
+export type LearningEmbedCoverage = Record<string, LearningEmbedCoverageItem>;
+
+export interface LearningSnapshotLatest {
+  SIGNAL_SCORE?: number | null;
+  trusted_count?: number | null;
+  trusted_ratio?: number | null;
+  lessons_total?: number | null;
+  dup_rows?: number | null;
+  dup_ratio?: number | null;
+  auto_bridged_count?: number | null;
+  quarantine_count?: number | null;
+  near_dup_clusters?: number | null;
+  importance_hist?: Record<string, number | undefined> | null;
+  lessons_last_7d?: number | null;
+  embed_coverage?: LearningEmbedCoverage | null;
+}
+
+export interface LearningResultLatest {
+  pass?: boolean | null;
+  rank?: number | null;
+  planted_uuid?: string | null;
+}
+
+export interface LearningHistoryPoint {
+  SIGNAL_SCORE?: number | null;
+  trusted_count?: number | null;
+  dup_ratio?: number | null;
+  generated_at?: string | null;
+}
+
+export interface LearningResponse {
+  status: LearningStatus;
+  snapshot_latest?: LearningSnapshotLatest | null;
+  result_latest?: LearningResultLatest | null;
+  history_tail?: LearningHistoryPoint[];
+  errors?: string[];
 }
 
 export interface HubAgentPluginRow {
