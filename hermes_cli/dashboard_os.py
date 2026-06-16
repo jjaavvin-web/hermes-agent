@@ -1042,10 +1042,9 @@ def _repo_section_from_git_health() -> tuple[dict, dict]:
         readiness_pct = round((ready / total) * 100) if total else 0
         uncommitted = int(summary.get("total_uncommitted") or 0)
         changed = int(summary.get("total_files_changed") or 0)
-        actionable = int(summary.get("actionable") or 0)
         best = health.get("best_move", {}) if isinstance(health, dict) else {}
         best_text = str(best.get("text") or "No git move available")
-        best_status = _coerce_status(best.get("severity"))
+        best_status: Status = "red" if _coerce_status(best.get("severity")) == "red" else "green"
         counts = graph.get("counts", {}) if isinstance(graph, dict) else {}
         ahead_total = int(counts.get("ahead_total") or 0)
         rows = health.get("rows", []) if isinstance(health, dict) else []
@@ -1053,7 +1052,7 @@ def _repo_section_from_git_health() -> tuple[dict, dict]:
         status: Status = "green"
         if any(_coerce_status(row.get("severity")) == "red" for row in rows if isinstance(row, dict)):
             status = "red"
-        elif uncommitted or actionable or any(_coerce_status(row.get("severity")) == "amber" for row in rows if isinstance(row, dict)):
+        elif uncommitted > 25:
             status = "amber"
         payload = {
             "scanned_at": health.get("scanned_at") or graph.get("scanned_at"),
@@ -1065,8 +1064,8 @@ def _repo_section_from_git_health() -> tuple[dict, dict]:
             "lanes": lanes,
         }
         section = _section("repo", "Repo", [
-            _item("readiness", status, f"{ready}/{total} lanes ready", metric=f"{readiness_pct}%"),
-            _item("uncommitted", "amber" if uncommitted else "green", f"{uncommitted} uncommitted files across lanes", metric=str(uncommitted)),
+            _item("readiness", "green", f"{ready}/{total} lanes ready", metric=f"{readiness_pct}%"),
+            _item("uncommitted", "amber" if uncommitted > 25 else "green", f"{uncommitted} uncommitted files across lanes", metric=str(uncommitted)),
             _item("ahead_total", "amber" if ahead_total > 20000 else "green", f"{ahead_total} commits ahead total", metric=str(ahead_total)),
             _item("best_move", best_status, best_text),
             _item("files_changed", "amber" if changed > 15000 else "green", f"{changed} files changed across lanes", metric=str(changed)),
