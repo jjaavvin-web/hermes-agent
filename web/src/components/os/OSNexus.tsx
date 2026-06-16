@@ -211,10 +211,12 @@ const EDGE_STATE_META: Record<string, EdgeStateMeta> = {
 // ---------------------------------------------------------------------------
 
 interface OSNodeData extends Record<string, unknown> {
+  id: string;
   label: string;
   kind: string;
   status: OSStatus;
   detail: string;
+  onSelect: (id: string) => void;
 }
 
 type OSRFNode = Node<OSNodeData, "os">;
@@ -253,10 +255,27 @@ const OSFlowNode = memo(function OSFlowNode({
 }: NodeProps<OSRFNode>) {
   const meta = osMeta(data.status);
   const attention = data.status === "red" || data.status === "amber";
+  const [focusVisible, setFocusVisible] = useState(false);
+  const nodeShadow = selected
+    ? `0 0 0 1.5px ${meta.color}, 0 12px 34px -10px ${meta.color}55`
+    : focusVisible
+      ? `0 0 0 2px ${meta.color}, 0 12px 34px -10px ${meta.color}55`
+      : "0 6px 18px -10px rgba(0,0,0,0.85)";
 
   return (
     <div
+      role="button"
+      tabIndex={0}
+      aria-label={`${data.label}, ${OS_STATUS_LABEL[data.status]}`}
       title={data.detail || data.label}
+      onKeyDown={(event) => {
+        if (event.key === "Enter" || event.key === " ") {
+          event.preventDefault();
+          data.onSelect(data.id);
+        }
+      }}
+      onFocus={() => setFocusVisible(true)}
+      onBlur={() => setFocusVisible(false)}
       style={{
         width: NODE_W,
         height: NODE_H,
@@ -270,11 +289,10 @@ const OSFlowNode = memo(function OSFlowNode({
         background:
           "linear-gradient(180deg, rgba(17,25,35,0.97) 0%, rgba(10,15,22,0.97) 100%)",
         border: `1px solid ${selected ? meta.color : meta.ring}`,
-        boxShadow: selected
-          ? `0 0 0 1.5px ${meta.color}, 0 12px 34px -10px ${meta.color}55`
-          : "0 6px 18px -10px rgba(0,0,0,0.85)",
+        boxShadow: nodeShadow,
         transition: "box-shadow .2s ease, border-color .2s ease",
         cursor: "pointer",
+        outline: "none",
       }}
     >
       <Handle type="target" position={Position.Left} id="l" style={HANDLE_STYLE} />
@@ -497,6 +515,7 @@ interface PreEdge {
 function buildFlow(
   graph: { nodes: OSGraphNode[]; edges: OSGraphEdge[] },
   selectedId: string | null,
+  onSelect: (id: string) => void,
 ): { nodes: CanvasNode[]; edges: OSRFEdge[] } {
   // 1. Bucket nodes by group, in architecture order (unknown groups appended).
   const byGroup = new Map<string, OSGraphNode[]>();
@@ -575,11 +594,14 @@ function buildFlow(
       height: NODE_H,
       selected: p.node.id === selectedId,
       draggable: false,
+      focusable: false,
       data: {
+        id: p.node.id,
         label: p.node.label,
         kind: p.node.kind,
         status: p.node.status,
         detail: p.node.detail ?? "",
+        onSelect,
       },
     });
   }
@@ -914,7 +936,7 @@ const LEGEND_ENTRIES: { label: string; color: string; dash?: string }[] = [
 function EdgeLegend() {
   return (
     <div
-      className="pointer-events-none absolute left-3 top-3 z-10 flex flex-wrap gap-1.5"
+      className="pointer-events-none absolute left-3 top-3 z-10 flex flex-wrap gap-1.5 max-sm:flex-nowrap max-sm:overflow-hidden"
       aria-label="Edge state legend"
     >
       {LEGEND_ENTRIES.map((entry) => (
@@ -945,18 +967,23 @@ function EdgeLegend() {
 // re-fits whenever fitKey changes (inspect panel open/close, container resize)
 // ---------------------------------------------------------------------------
 
-function FitView({ fitKey }: { fitKey: string }) {
+function FitView({ fitKey, isMobile }: { fitKey: string; isMobile: boolean }) {
   const { fitView } = useReactFlow();
   const initialized = useNodesInitialized();
   useEffect(() => {
-    const fit = () => void fitView({ padding: 0.14, duration: 240 });
+    const fit = () =>
+      void fitView({
+        padding: isMobile ? 0.06 : 0.14,
+        minZoom: isMobile ? 0.4 : undefined,
+        duration: 240,
+      });
     if (initialized) {
       const raf = requestAnimationFrame(fit);
       return () => cancelAnimationFrame(raf);
     }
     const fallback = setTimeout(fit, 500);
     return () => clearTimeout(fallback);
-  }, [initialized, fitKey, fitView]);
+  }, [initialized, fitKey, fitView, isMobile]);
   return null;
 }
 
@@ -999,7 +1026,7 @@ export function OSNexus({ snapshot }: OSNexusProps) {
   const { nodes, edges } = useMemo(
     () =>
       hasGraph && graph
-        ? buildFlow(graph, selectedId)
+        ? buildFlow(graph, selectedId, setSelectedId)
         : { nodes: [] as CanvasNode[], edges: [] as OSRFEdge[] },
     [hasGraph, graph, selectedId],
   );
@@ -1047,7 +1074,7 @@ export function OSNexus({ snapshot }: OSNexusProps) {
         className="relative h-full min-w-0 flex-1 overflow-hidden rounded-lg border border-border bg-[#070a0f]"
       >
         <ReactFlow
-          className="sh-flow"
+          className="sh-flow os-flow"
           nodes={nodes}
           edges={displayEdges}
           nodeTypes={NODE_TYPES}
@@ -1058,12 +1085,17 @@ export function OSNexus({ snapshot }: OSNexusProps) {
           onPaneClick={() => setSelectedId(null)}
           onEdgeMouseEnter={(_, edge) => setHoveredEdgeId(edge.id)}
           onEdgeMouseLeave={() => setHoveredEdgeId(null)}
-          minZoom={0.15}
+          onEdgeClick={(_, edge) => setHoveredEdgeId(edge.id)}
+          minZoom={isMobile ? 0.4 : 0.15}
           maxZoom={1.9}
+          panOnDrag={true}
+          zoomOnPinch={true}
+          zoomOnDoubleClick={false}
+          preventScrolling={false}
           nodesDraggable={false}
           nodesConnectable={false}
-          nodesFocusable={false}
-          proOptions={{ hideAttribution: false }}
+          nodesFocusable={true}
+          proOptions={{ hideAttribution: true }}
           colorMode="dark"
         >
           <Background
@@ -1072,8 +1104,11 @@ export function OSNexus({ snapshot }: OSNexusProps) {
             size={1}
             color="rgba(120,150,180,0.16)"
           />
-          <Controls showInteractive={false} position="bottom-left" />
-          <FitView fitKey={`${selected ? "panel" : "full"}:${resizeTick}`} />
+          <Controls showInteractive={false} position="bottom-right" />
+          <FitView
+            fitKey={`${selected ? "panel" : "full"}:${resizeTick}`}
+            isMobile={isMobile}
+          />
         </ReactFlow>
 
         <EdgeLegend />
