@@ -11938,6 +11938,12 @@ try:
 except Exception as _exc:
     _log.warning("Failed to load dashboard_os routes: %s", _exc)
 try:
+    from hermes_cli.dashboard_learning import router as _learning_router
+    app.include_router(_learning_router)
+    _log.info("Mounted learning-loop dashboard API routes at /api/dashboard/learning")
+except Exception as _exc:
+    _log.warning("Failed to load dashboard_learning routes: %s", _exc)
+try:
     from hermes_cli.dashboard_get_some import router as _get_some_router
     app.include_router(_get_some_router)
     _log.info("Mounted Get Some dashboard API routes at /api/dashboard/projects + /work-nexus")
