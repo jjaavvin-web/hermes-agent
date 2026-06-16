@@ -245,7 +245,7 @@ type OSRFEdge = Edge<OSEdgeData, "os">;
 const HANDLE_STYLE: React.CSSProperties = {
   width: 5,
   height: 5,
-  background: "rgba(120,150,180,0.55)",
+  background: "rgba(124,145,168,0.55)",
 };
 
 /** A single infrastructure node rendered on the nexus canvas. */
@@ -325,7 +325,7 @@ const OSFlowNode = memo(function OSFlowNode({
           style={{
             fontSize: 13,
             fontWeight: 600,
-            color: "#e9eff6",
+            color: "var(--color-text-primary)",
             whiteSpace: "nowrap",
             overflow: "hidden",
             textOverflow: "ellipsis",
@@ -339,7 +339,7 @@ const OSFlowNode = memo(function OSFlowNode({
             fontSize: 10,
             letterSpacing: "0.08em",
             textTransform: "uppercase",
-            color: "rgba(168,192,214,0.7)",
+            color: "var(--color-text-secondary)",
             whiteSpace: "nowrap",
             overflow: "hidden",
             textOverflow: "ellipsis",
@@ -391,7 +391,7 @@ const GroupLabelNode = memo(function GroupLabelNode({
           fontWeight: 700,
           letterSpacing: "0.22em",
           textTransform: "uppercase",
-          color: "rgba(168,192,214,0.62)",
+          color: "var(--color-text-secondary)",
           whiteSpace: "nowrap",
         }}
       >
@@ -475,7 +475,7 @@ const OSFlowEdge = memo(function OSFlowEdge({
       }}
       labelShowBg
       labelBgStyle={{
-        fill: "#0a0f16",
+        fill: "var(--color-card)",
         fillOpacity: 0.92,
         stroke: "rgba(120,150,180,0.18)",
         strokeWidth: 0.5,
@@ -942,7 +942,7 @@ function EdgeLegend() {
       {LEGEND_ENTRIES.map((entry) => (
         <span
           key={entry.label}
-          className="flex items-center gap-1.5 rounded-full border border-white/10 bg-[#0a0f16]/85 px-2 py-1 text-[10px] font-medium text-white/65"
+          className="flex items-center gap-1.5 rounded-full border border-border bg-card/90 px-2 py-1 text-[10px] font-medium text-text-tertiary"
         >
           <svg width="20" height="6" aria-hidden="true">
             <line
@@ -1071,7 +1071,7 @@ export function OSNexus({ snapshot }: OSNexusProps) {
       {/* Graph canvas — shares the row with the inspect panel on desktop; full-width behind a sheet on mobile. */}
       <div
         ref={canvasRef}
-        className="relative h-full min-w-0 flex-1 overflow-hidden rounded-lg border border-border bg-[#070a0f]"
+        className="relative h-full min-w-0 flex-1 overflow-hidden rounded-lg border border-border bg-background"
       >
         <ReactFlow
           className="sh-flow os-flow"
@@ -1102,7 +1102,7 @@ export function OSNexus({ snapshot }: OSNexusProps) {
             variant={BackgroundVariant.Dots}
             gap={24}
             size={1}
-            color="rgba(120,150,180,0.16)"
+            color="rgba(124,145,168,0.16)"
           />
           <Controls showInteractive={false} position="bottom-right" />
           <FitView
