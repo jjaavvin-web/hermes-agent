@@ -144,11 +144,105 @@ def _bridge_edge_state() -> str:
     return "disabled"
 
 
-def _build_os_graph(sections: list[dict]) -> dict:
-    """Build the Nexus graph (24 nodes, ~23 edges) from Appendix B.
+def _systemd_timer_status(
+    timer_name: str,
+    *,
+    expected_enabled: bool = True,
+    disabled_reason: Optional[str] = None,
+) -> tuple[Status, str, str]:
+    """Read-only timer probe for graph-only infra nodes.
 
-    Node status is BOUND from the already-computed sections; edges are static
-    topology with one dynamic state (kanban-db→mvms bridge timer check).
+    Uses is-active/is-enabled only.  Disabled-by-design timers are informational
+    context, not amber, unless a caller explicitly expects the timer enabled.
+    """
+    try:
+        active_r = _run(["systemctl", "--user", "is-active", timer_name], timeout=3.0)
+        active = (active_r.stdout or active_r.stderr or "unknown").strip() or "unknown"
+    except Exception as exc:
+        active = f"unknown ({exc})"
+    try:
+        enabled_r = _run(["systemctl", "--user", "is-enabled", timer_name], timeout=3.0)
+        enabled = (enabled_r.stdout or enabled_r.stderr or "unknown").strip() or "unknown"
+    except Exception as exc:
+        enabled = f"unknown ({exc})"
+
+    detail = f"{timer_name}: active={active} enabled={enabled}"
+    if disabled_reason is not None or not expected_enabled:
+        return "info", detail, disabled_reason or "disabled by design; informational only"
+
+    if active == "active" and enabled == "enabled":
+        return "green", detail, f"{timer_name} is active and enabled"
+    if active.startswith("unknown") and enabled.startswith("unknown"):
+        return "unknown", detail, f"{timer_name} systemctl probe failed"
+    return "amber", detail, f"{timer_name} is expected active/enabled but reported active={active} enabled={enabled}"
+
+
+def _state_files_status(
+    label: str,
+    paths: list[Path],
+    *,
+    stale_hours: float = 168.0,
+) -> tuple[Status, str, str]:
+    """Read-only existence/freshness probe for dashboard state-file nodes."""
+    try:
+        missing = [p for p in paths if not p.exists()]
+        if missing:
+            names = ", ".join(str(p) for p in missing)
+            return "amber", f"missing state file(s): {names}", f"{label} state file missing"
+        newest = max(paths, key=lambda p: p.stat().st_mtime)
+        age_h = (time.time() - newest.stat().st_mtime) / 3600
+        detail = f"{label}: newest={newest.name} age={age_h:.1f}h"
+        if age_h <= stale_hours:
+            return "green", detail, f"{label} state file exists and is within {stale_hours:.0f}h freshness window"
+        return "amber", detail, f"{label} state file is older than {stale_hours:.0f}h"
+    except Exception as exc:
+        return "unknown", f"{label}: state-file probe failed: {exc}", f"{label} state-file probe raised"
+
+
+def _required_paths_status(label: str, paths: list[Path]) -> tuple[Status, str, str]:
+    """Read-only path-existence probe for graph-only infra nodes."""
+    try:
+        missing = [p for p in paths if not p.exists()]
+        if missing:
+            names = ", ".join(str(p) for p in missing)
+            return "amber", f"missing required path(s): {names}", f"{label} required path missing"
+        names = ", ".join(p.name for p in paths)
+        return "green", f"required path(s) present: {names}", f"{label} required files exist"
+    except Exception as exc:
+        return "unknown", f"{label}: path probe failed: {exc}", f"{label} path probe raised"
+
+
+def _x_search_config_status() -> tuple[Status, str, str]:
+    """Read-only x_search configuration probe; never prints secret values."""
+    try:
+        cfg = HERMES_HOME / "config.yaml"
+        if not cfg.exists():
+            return "amber", "config.yaml missing", "x_search config cannot be verified without config.yaml"
+        text = cfg.read_text(encoding="utf-8", errors="replace")
+        has_section = bool(re.search(r"(?m)^x_search:\s*$", text))
+        has_model = bool(re.search(r"(?m)^x_search:\s*$[\s\S]*?^\S", text) and re.search(r"(?m)^\s*model:\s*\S+", text))
+        toolset_enabled = bool(re.search(r"(?m)^\s*-\s*x_search\s*$", text))
+        if has_section and toolset_enabled:
+            detail = "x_search configured and enabled in toolsets"
+            if has_model:
+                detail += " (model set)"
+            return "green", detail, "x_search config section and toolset entry are present"
+        bits = []
+        if not has_section:
+            bits.append("missing x_search section")
+        if not toolset_enabled:
+            bits.append("x_search toolset not enabled")
+        return "amber", ", ".join(bits) or "x_search partially configured", "x_search is not fully configured/enabled"
+    except Exception as exc:
+        return "unknown", f"x_search config probe failed: {exc}", "x_search config probe raised"
+
+
+def _build_os_graph(sections: list[dict]) -> dict:
+    """Build the Nexus graph (35 nodes, ~35 edges) from Appendix B + full-coverage redesign.
+
+    Node status is BOUND from already-computed sections when available; graph-only
+    infra elements use read-only probes (systemctl is-active/is-enabled and file
+    existence/freshness). Edges are static topology with dynamic timer-gated states.
     """
     # ------------------------------------------------------------------
     # Helper: worst status across a list of (section_id, item_name) bindings
@@ -201,7 +295,7 @@ def _build_os_graph(sections: list[dict]) -> dict:
         return e
 
     # ------------------------------------------------------------------
-    # NODES (24)
+    # NODES (35)
     # ------------------------------------------------------------------
     nodes: list[dict] = []
 
@@ -285,6 +379,13 @@ def _build_os_graph(sections: list[dict]) -> dict:
     )
     nodes.append(_node("timers", "Timers", "scheduler", "control", sd_status, sd_detail, "systemd", sd_reason))
 
+    # mvms-watcher / honcho-watcher: explicit control-plane watcher timers.
+    s, d, r = _systemd_timer_status("mvms-watcher.timer")
+    nodes.append(_node("mvms-watcher", "MVMS Watcher", "guard", "control", s, d, "systemd", r))
+
+    s, d, r = _systemd_timer_status("honcho-watcher.timer")
+    nodes.append(_node("honcho-watcher", "Honcho Watcher", "guard", "control", s, d, "systemd", r))
+
     # --- providers (3) ---
     # chatgpt-backend: bind providers/codex_pipeline_load
     s, d = _bind(sections, "providers", "codex_pipeline_load")
@@ -298,7 +399,23 @@ def _build_os_graph(sections: list[dict]) -> dict:
     s, d = _bind(sections, "providers", "openrouter_key")
     nodes.append(_node("openrouter", "OpenRouter", "llm", "providers", s, d, "providers"))
 
-    # --- memory (9) ---
+    # --- ingest (3) ---
+    s, d, r = _required_paths_status(
+        "ICT Brain",
+        [HERMES_HOME / "scripts" / "ict-brain", HERMES_HOME / "scripts" / "ict-brain" / "tools" / "ictq.py"],
+    )
+    nodes.append(_node("ict-brain", "ICT Brain", "pipeline", "ingest", s, d, "memory_stores", r))
+
+    s, d, r = _required_paths_status(
+        "Opus Extractor",
+        [HERMES_HOME / "scripts" / "ict-brain" / "tools" / "opus_extractor.py"],
+    )
+    nodes.append(_node("opus_extractor", "Opus Extractor", "worker", "ingest", s, d, "providers", r))
+
+    s, d, r = _x_search_config_status()
+    nodes.append(_node("x_search", "x_search", "provider", "ingest", s, d, "providers", r))
+
+    # --- memory (10) ---
     # mvms: bind memory_stores/mvms_observations
     s, d = _bind(sections, "memory_stores", "mvms_observations")
     nodes.append(_node("mvms", "MVMS", "database", "memory", s, d, "memory_stores"))
@@ -364,6 +481,38 @@ def _build_os_graph(sections: list[dict]) -> dict:
     s, d = _bind(sections, "backups", "veracrypt_weekly")
     nodes.append(_node("veracrypt", "VeraCrypt", "backup", "protection", s, d, "backups"))
 
+    # mvms-compactor: intentionally disabled; visible as info, never amber.
+    s, d, r = _systemd_timer_status(
+        "mvms-compactor.timer",
+        expected_enabled=False,
+        disabled_reason="disabled-by-design; compaction is manually/gate controlled",
+    )
+    nodes.append(_node("mvms-compactor", "MVMS Compactor", "worker", "protection", "info", d, "systemd", r))
+
+    # off-box-backup-gap: bind the real backup risk surfaced by the backups section.
+    offbox_status, offbox_detail, offbox_reason = _bind_meta(sections, "backups", "mvms-backup-gap-offbox")
+    if offbox_status == "unknown":
+        offbox_status, offbox_detail, offbox_reason = "amber", "no off-box replication marker found", "local backups exist, but off-box replication has no success marker"
+    nodes.append(_node("off-box-backup-gap", "Off-box Backup Gap", "backup", "protection", offbox_status, offbox_detail, "backups", offbox_reason))
+
+    # --- learning (3) ---
+    s, d, r = _systemd_timer_status("learning-verify.timer")
+    nodes.append(_node("learning-verify", "Learning Verify", "guard", "learning", s, d, "systemd", r))
+
+    s, d, r = _state_files_status(
+        "Distiller",
+        [HERMES_HOME / "state" / "distiller-queue.jsonl", HERMES_HOME / "state" / "distiller-inbox-latest.md"],
+        stale_hours=168.0,
+    )
+    nodes.append(_node("distiller", "Distiller", "worker", "learning", s, d, "memory_stores", r))
+
+    s, d, r = _state_files_status(
+        "Reflect Gate",
+        [HERMES_HOME / "state" / "learning-loop" / "critic-latest.md"],
+        stale_hours=168.0,
+    )
+    nodes.append(_node("reflect-gate", "Reflect Gate", "guard", "learning", s, d, "memory_stores", r))
+
     # --- host (1) ---
     # wsl-host: bind host section worst
     host_items = next((sec["items"] for sec in sections if sec["id"] == "host"), [])
@@ -380,7 +529,7 @@ def _build_os_graph(sections: list[dict]) -> dict:
     nodes.append(_node("wsl-host", "WSL Host", "host", "host", host_status, host_detail, "host", host_reason))
 
     # ------------------------------------------------------------------
-    # EDGES (~23)  state: live | disabled | broken | gated
+    # EDGES (~35)  state: live | disabled | broken | gated
     # ------------------------------------------------------------------
     edges: list[dict] = []
 
@@ -393,6 +542,11 @@ def _build_os_graph(sections: list[dict]) -> dict:
     # gateway → providers
     edges.append(_edge("e-gw-chatgpt",         "gateway",       "chatgpt-backend","main lane gpt-5.5",     "live"))
     edges.append(_edge("e-gw-claudemax",       "gateway",       "claude-max",     "premium lane",          "live"))
+
+    # providers/tools → ingest
+    edges.append(_edge("e-claudemax-opus",     "claude-max",    "opus_extractor", "Opus OAuth",            "gated"))
+    edges.append(_edge("e-xsearch-ict",        "x_search",      "ict-brain",      "source recall",         "live"))
+    edges.append(_edge("e-opus-ict",           "opus_extractor","ict-brain",      "concept extraction",    "gated"))
 
     # codex-pipeline → provider
     edges.append(_edge("e-codex-chatgpt",      "codex-pipeline","chatgpt-backend","ChatGPT-Max",           "live"))
@@ -417,6 +571,15 @@ def _build_os_graph(sections: list[dict]) -> dict:
     # mvms → supabase-db
     edges.append(_edge("e-mvms-supadb",        "mvms",          "supabase-db",    "schema on",             "live"))
 
+    # ingest → memory
+    edges.append(_edge("e-ict-mvms",           "ict-brain",     "mvms",           "ICT assertions",        "live"))
+    edges.append(_edge("e-xsearch-mvms",       "x_search",      "mvms",           "scrape evidence",       "live"))
+
+    # watchers → targets
+    edges.append(_edge("e-mvmswatcher-mvms",   "mvms-watcher",  "mvms",           "health watch",          "live"))
+    edges.append(_edge("e-honchowatcher-hapi", "honcho-watcher","honcho-api",     "health watch",          "live"))
+    edges.append(_edge("e-honchowatcher-hdb",  "honcho-watcher","honcho-db",      "store watch",           "live"))
+
     # kanban-db → mvms (dynamic: live if timer enabled, else disabled)
     bridge_state = _bridge_edge_state()
     edges.append(_edge("e-kanban-mvms",        "kanban-db",     "mvms",           "bridge (staged)",       bridge_state))
@@ -424,10 +587,21 @@ def _build_os_graph(sections: list[dict]) -> dict:
     # claude-code → mvms (gated)
     edges.append(_edge("e-claudecode-mvms-gated","claude-code", "mvms",           "lesson promote (weekly, human-gated)", "gated"))
 
+    # learning loop → MVMS
+    edges.append(_edge("e-learnverify-mvms",   "learning-verify","mvms",          "recall canary",         "live"))
+    edges.append(_edge("e-distiller-mvms",     "distiller",     "mvms",           "promotion queue",       "gated"))
+    edges.append(_edge("e-reflectgate-mvms",   "reflect-gate",  "mvms",           "quality critic",        "gated"))
+
+    # MVMS compactor is visible but intentionally gated/disabled.
+    edges.append(_edge("e-compactor-mvms",     "mvms-compactor","mvms",           "manual compact",        "gated"))
+
     # nightly-backup → stores
     edges.append(_edge("e-backup-mvms",        "nightly-backup","mvms",           "02:30 dump",            "live"))
     edges.append(_edge("e-backup-hdb",         "nightly-backup","honcho-db",      "02:30 dump",            "live"))
     edges.append(_edge("e-backup-cmem",        "nightly-backup","claude-memory",  "app-state tar",         "live"))
+
+    # off-box replication risk is separate from local backup freshness.
+    edges.append(_edge("e-backup-offboxgap",   "nightly-backup","off-box-backup-gap", "off-box replication", "broken" if offbox_status == "red" else "gated"))
 
     # veracrypt → backups-dir  (edge stays live; node status carries the stale signal)
     edges.append(_edge("e-vera-bdir",          "veracrypt",     "backups-dir",    None,                    "live"))
