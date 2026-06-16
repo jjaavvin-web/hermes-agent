@@ -2306,11 +2306,12 @@ export interface NexusHealthNodeDetail extends NexusHealthNode {
 // OS — infrastructure operating-status snapshot (/api/dashboard/os)
 // ---------------------------------------------------------------------------
 
-export type OSStatus = "green" | "amber" | "red" | "unknown";
+export type OSStatus = "green" | "amber" | "red" | "unknown" | "info";
 
 export interface OSItem {
   name: string;
   status: OSStatus;
+  reason?: string;
   detail: string;
   metric?: string;
 }
@@ -2319,14 +2320,16 @@ export interface OSSection {
   id: string;
   label: string;
   status: OSStatus;
+  reason?: string;
   items: OSItem[];
 }
 
 export interface OSDiagnostic {
-  severity: "red" | "amber";
+  severity: "red" | "amber" | "info";
   source: string;
   message: string;
   hint?: string;
+  reason?: string;
 }
 
 export type OSGraphGroup =
@@ -2345,6 +2348,7 @@ export interface OSGraphNode {
   kind: string;
   group: OSGraphGroup;
   status: OSStatus;
+  reason?: string;
   detail?: string;
   /** Section id (snapshot.sections) backing this node, for click-inspect. */
   section_ref?: string;
@@ -2361,6 +2365,7 @@ export interface OSGraphEdge {
 export interface OSAttentionChip {
   source: string;
   status: OSStatus;
+  reason?: string;
   label: string;
   detail: string;
   section_id: string;
@@ -2435,9 +2440,12 @@ export interface OSActivitySnapshot {
 export interface OSSnapshot {
   generated_at: string;
   overall: OSStatus;
+  reason?: string;
   sections: OSSection[];
   /** Every non-green item, pre-sorted red→amber by the backend. */
   diagnostics: OSDiagnostic[];
+  /** Informational diagnostics, never counted toward posture. */
+  info?: OSDiagnostic[];
   attention?: { posture: OSStatus; chips: OSAttentionChip[] };
   repo?: OSRepoSnapshot;
   work?: OSWorkSnapshot;
@@ -2460,6 +2468,28 @@ export interface LearningEmbedCoverageItem {
 
 export type LearningEmbedCoverage = Record<string, LearningEmbedCoverageItem>;
 
+export interface RecallFilter {
+  include_quarantine?: boolean;
+  exclude_auto_bridged?: boolean;
+  effective?: string;
+}
+
+export interface DistillerStatus {
+  pending?: number;
+  approved?: number;
+  rejected?: number;
+  oldest_pending_ts?: string | null;
+  last_promotion_ts?: string | null;
+  stale_count?: number;
+  frozen_since?: string | null;
+}
+
+export interface LoopCriticStatus {
+  checks?: Record<string, boolean>;
+  quarantine_last_7d?: number;
+  next_run_countdown_seconds?: number;
+}
+
 export interface LearningSnapshotLatest {
   SIGNAL_SCORE?: number | null;
   trusted_count?: number | null;
@@ -2472,6 +2502,10 @@ export interface LearningSnapshotLatest {
   near_dup_clusters?: number | null;
   importance_hist?: Record<string, number | undefined> | null;
   lessons_last_7d?: number | null;
+  ACTIONABLE_SIGNAL_SCORE?: number | null;
+  actionable_lessons_total?: number | null;
+  trusted_actionable_ratio?: number | null;
+  lessons_authored_by_agent?: number | null;
   embed_coverage?: LearningEmbedCoverage | null;
 }
 
@@ -2490,8 +2524,26 @@ export interface LearningHistoryPoint {
 
 export interface LearningResponse {
   status: LearningStatus;
+  reason?: string;
   snapshot_latest?: LearningSnapshotLatest | null;
   result_latest?: LearningResultLatest | null;
+  recall_filters?: RecallFilter | null;
+  weekly_hygiene_latest?: {
+    lesson_completion_ratio?: number;
+    embedding_coverage_summary?: string;
+    stuck_ready?: number;
+    ts?: string;
+  } | null;
+  distiller?: DistillerStatus | null;
+  canary?: {
+    pass?: boolean;
+    rank?: number;
+    recalled?: number;
+    avoided_mistake?: boolean;
+    embed_present?: boolean;
+    mode?: string;
+  } | null;
+  loop_critic?: LoopCriticStatus | null;
   history_tail?: LearningHistoryPoint[];
   errors?: string[];
 }
@@ -2552,6 +2604,34 @@ export interface AgentPluginUpdateResponse {
 export interface PluginProvidersPutRequest {
   memory_provider?: string;
   context_engine?: string;
+}
+
+// Git Topology — placeholders for OS Wave C view
+
+export interface GitTopologyLane {
+  id: string;
+  name: string;
+  branch: string;
+  ahead?: number;
+  behind?: number;
+  uncommitted_by_type?: Record<string, number>;
+  status?: OSStatus;
+  reason?: string;
+}
+
+export interface GitTopologyNode {
+  id: string;
+  label: string;
+  kind: string;
+  status?: OSStatus;
+  reason?: string;
+}
+
+export interface GitTopologyEdge {
+  id: string;
+  source: string;
+  target: string;
+  label?: string;
 }
 
 // ── Persona types (Hive B — Pantheon) ────────────────────────────────────

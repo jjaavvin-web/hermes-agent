@@ -57,26 +57,43 @@ def _now() -> str:
 # Type helpers (dicts matching the TypeScript interfaces in the spec)
 # ---------------------------------------------------------------------------
 
-Status = str  # "green" | "amber" | "red" | "unknown"
+Status = str  # "green" | "amber" | "red" | "info" | "unknown"
 
 
-def _item(name: str, status: Status, detail: str, metric: Optional[str] = None) -> dict:
+def _item(
+    name: str,
+    status: Status,
+    detail: str,
+    metric: Optional[str] = None,
+    reason: Optional[str] = None,
+    **extra: Any,
+) -> dict:
     d: dict = {"name": name, "status": status, "detail": detail}
     if metric is not None:
         d["metric"] = metric
+    if reason is not None:
+        d["reason"] = reason
+    elif status != "green":
+        # Safety net: every non-green status carries a why for the Diagnostics drawer.
+        d["reason"] = detail
+    for key, value in extra.items():
+        if value is not None:
+            d[key] = value
     return d
 
 
 def _section(id_: str, label: str, items: list[dict]) -> dict:
-    worst = _worst_status([i["status"] for i in items])
+    # Info is visible context, never posture. Unknown still degrades as amber via diagnostics.
+    posture_statuses = [i.get("status", "unknown") for i in items if i.get("status") != "info"]
+    worst = _worst_status(posture_statuses) if posture_statuses else "green"
     return {"id": id_, "label": label, "status": worst, "items": items}
 
 
 def _worst_status(statuses: list[Status]) -> Status:
-    order = {"red": 0, "amber": 1, "unknown": 2, "green": 3}
+    order = {"red": 0, "amber": 1, "info": 2, "unknown": 3, "green": 4}
     if not statuses:
         return "unknown"
-    return min(statuses, key=lambda s: order.get(s, 2))
+    return min(statuses, key=lambda s: order.get(str(s or "unknown"), 3))
 
 
 def _run(cmd: list[str], timeout: float = 3.0) -> subprocess.CompletedProcess:
@@ -87,20 +104,30 @@ def _run(cmd: list[str], timeout: float = 3.0) -> subprocess.CompletedProcess:
 # Graph helpers (Appendix B)
 # ---------------------------------------------------------------------------
 
-def _bind(sections: list[dict], section_id: str, item_name: str) -> tuple[Status, Optional[str]]:
-    """Look up (status, detail) for a named item within a section.
-
-    Falls back to ("unknown", None) when the section or item is absent.
-    """
+def _bind_item(sections: list[dict], section_id: str, item_name: str) -> Optional[dict]:
     for sec in sections:
         if sec.get("id") == section_id:
             for item in sec.get("items", []):
                 if item.get("name") == item_name:
-                    return item.get("status", "unknown"), item.get("detail")
-            # Section found but item missing
-            return "unknown", None
-    # Section missing entirely
-    return "unknown", None
+                    return item
+            return None
+    return None
+
+
+def _bind_meta(sections: list[dict], section_id: str, item_name: str) -> tuple[Status, Optional[str], Optional[str]]:
+    """Look up (status, detail, reason) for a named item within a section.
+
+    Falls back to ("unknown", None, None) when the section or item is absent.
+    """
+    item = _bind_item(sections, section_id, item_name)
+    if item is None:
+        return "unknown", None, None
+    return item.get("status", "unknown"), item.get("detail"), item.get("reason")
+
+
+def _bind(sections: list[dict], section_id: str, item_name: str) -> tuple[Status, Optional[str]]:
+    s, d, _ = _bind_meta(sections, section_id, item_name)
+    return s, d
 
 
 def _bridge_edge_state() -> str:
@@ -126,12 +153,13 @@ def _build_os_graph(sections: list[dict]) -> dict:
     # ------------------------------------------------------------------
     # Helper: worst status across a list of (section_id, item_name) bindings
     # ------------------------------------------------------------------
-    def _bind_worst(bindings: list[tuple[str, str]]) -> tuple[Status, Optional[str]]:
-        results = [_bind(sections, sid, iname) for sid, iname in bindings]
-        worst_s = _worst_status([s for s, _ in results])
-        # Use the detail from the worst-status binding (first match wins)
-        detail = next((d for s, d in results if s == worst_s), None)
-        return worst_s, detail
+    def _bind_worst(bindings: list[tuple[str, str]]) -> tuple[Status, Optional[str], Optional[str]]:
+        results = [_bind_meta(sections, sid, iname) for sid, iname in bindings]
+        worst_s = _worst_status([s for s, _, _ in results])
+        # Use the detail/reason from the worst-status binding (first match wins).
+        detail = next((d for s, d, _ in results if s == worst_s), None)
+        reason = next((r for s, _, r in results if s == worst_s), None)
+        return worst_s, detail, reason
 
     def _node(
         id_: str,
@@ -141,6 +169,7 @@ def _build_os_graph(sections: list[dict]) -> dict:
         status: Status,
         detail: Optional[str] = None,
         section_ref: Optional[str] = None,
+        reason: Optional[str] = None,
     ) -> dict:
         n: dict = {
             "id": id_,
@@ -153,6 +182,10 @@ def _build_os_graph(sections: list[dict]) -> dict:
             n["detail"] = detail
         if section_ref is not None:
             n["section_ref"] = section_ref
+        if reason is not None:
+            n["reason"] = reason
+        elif status not in {"green", "info"} and detail is not None:
+            n["reason"] = detail
         return n
 
     def _edge(
@@ -190,7 +223,7 @@ def _build_os_graph(sections: list[dict]) -> dict:
     nodes.append(_node("dashboard", "Dashboard (:9119)", "ui", "surfaces", dash_status, d_sd, "systemd"))
 
     # codex-pipeline: bind providers/codex_pipeline
-    s, d = _bind(sections, "providers", "codex_pipeline")
+    s, d = _bind(sections, "providers", "codex_live_sessions")
     nodes.append(_node("codex-pipeline", "Codex Pipeline", "pipeline", "surfaces", s, d, "providers"))
 
     # --- control (4) ---
@@ -204,7 +237,13 @@ def _build_os_graph(sections: list[dict]) -> dict:
          if item.get("status") == gw_status),
         None,
     )
-    nodes.append(_node("gateway", "Gateway", "service", "control", gw_status, gw_detail, "gateway"))
+    gw_reason = next(
+        (item.get("reason") for item in
+         next((sec["items"] for sec in sections if sec["id"] == "gateway"), [])
+         if item.get("status") == gw_status),
+        None,
+    )
+    nodes.append(_node("gateway", "Gateway", "service", "control", gw_status, gw_detail, "gateway", gw_reason))
 
     # watchdog: bind gateway/watchdog_events
     s, d = _bind(sections, "gateway", "watchdog_events")
@@ -220,7 +259,13 @@ def _build_os_graph(sections: list[dict]) -> dict:
          if item.get("status") == cron_status),
         None,
     )
-    nodes.append(_node("hermes-cron", "Hermes Cron", "scheduler", "control", cron_status, cron_detail, "cron"))
+    cron_reason = next(
+        (item.get("reason") for item in
+         next((sec["items"] for sec in sections if sec["id"] == "cron"), [])
+         if item.get("status") == cron_status),
+        None,
+    )
+    nodes.append(_node("hermes-cron", "Hermes Cron", "scheduler", "control", cron_status, cron_detail, "cron", cron_reason))
 
     # timers: bind systemd section worst
     sd_statuses = [item.get("status", "unknown") for item in
@@ -232,11 +277,17 @@ def _build_os_graph(sections: list[dict]) -> dict:
          if item.get("status") == sd_status),
         None,
     )
-    nodes.append(_node("timers", "Timers", "scheduler", "control", sd_status, sd_detail, "systemd"))
+    sd_reason = next(
+        (item.get("reason") for item in
+         next((sec["items"] for sec in sections if sec["id"] == "systemd"), [])
+         if item.get("status") == sd_status),
+        None,
+    )
+    nodes.append(_node("timers", "Timers", "scheduler", "control", sd_status, sd_detail, "systemd", sd_reason))
 
     # --- providers (3) ---
-    # chatgpt-backend: bind providers/codex_process
-    s, d = _bind(sections, "providers", "codex_process")
+    # chatgpt-backend: bind providers/codex_pipeline_load
+    s, d = _bind(sections, "providers", "codex_pipeline_load")
     nodes.append(_node("chatgpt-backend", "ChatGPT Backend", "llm", "providers", s, d, "providers"))
 
     # claude-max: static green "Max cli-subprocess"
@@ -301,8 +352,9 @@ def _build_os_graph(sections: list[dict]) -> dict:
     backup_statuses = [s for s, _ in backup_items]
     nb_status = _worst_status(backup_statuses)
     nb_detail = next((d for s, d in backup_items if s == nb_status), None)
+    nb_reason = next((_bind_meta(sections, "backups", name)[2] for name in ("mvms-canonical-*.sql.gz", "honcho-live-store-*.sql.gz", "hermes-app-state-*.tar.gz") if _bind_meta(sections, "backups", name)[0] == nb_status), None)
     nodes.append(_node("nightly-backup", "Nightly Backup", "backup", "protection",
-                       nb_status, nb_detail, "backups"))
+                       nb_status, nb_detail, "backups", nb_reason))
 
     # backups-dir: static green (directory existence is a precondition, not actively probed)
     nodes.append(_node("backups-dir", "Backups Dir", "storage", "protection",
@@ -321,7 +373,11 @@ def _build_os_graph(sections: list[dict]) -> dict:
         (item.get("detail") for item in host_items if item.get("status") == host_status),
         None,
     )
-    nodes.append(_node("wsl-host", "WSL Host", "host", "host", host_status, host_detail, "host"))
+    host_reason = next(
+        (item.get("reason") for item in host_items if item.get("status") == host_status),
+        None,
+    )
+    nodes.append(_node("wsl-host", "WSL Host", "host", "host", host_status, host_detail, "host", host_reason))
 
     # ------------------------------------------------------------------
     # EDGES (~23)  state: live | disabled | broken | gated
@@ -423,21 +479,21 @@ def _probe_gateway() -> dict:
 
     uptime_str = f"{uptime_s // 3600}h{(uptime_s % 3600) // 60}m" if uptime_s and uptime_s >= 0 else "?"
     detail = f"pid={pid} state={gw_state} uptime={uptime_str}"
-    return _item("gateway_state", status, detail)
+    return _item("gateway_state", status, detail, reason="gateway_state.json is not running/alive" if status != "green" else None)
 
 
 def _probe_gateway_systemctl() -> dict:
     r = _run(["systemctl", "--user", "is-active", "hermes-gateway"])
     active = r.stdout.strip()
     status: Status = "green" if active == "active" else ("amber" if active == "activating" else "red")
-    return _item("systemd_unit", status, f"hermes-gateway.service: {active}")
+    return _item("systemd_unit", status, f"hermes-gateway.service: {active}", reason="hermes-gateway systemd unit is not active" if status != "green" else None)
 
 
 def _probe_gateway_watchdog() -> dict:
     # Silence file → red if present
     silence = HERMES_HOME / "state" / "gateway-watchdog" / "silence"
     if silence.exists():
-        return _item("watchdog_silence", "red", "watchdog silenced — touch ~/.hermes/state/gateway-watchdog/silence present")
+        return _item("watchdog_silence", "red", "watchdog silenced — touch ~/.hermes/state/gateway-watchdog/silence present", reason="watchdog silence file exists")
 
     # Last events.jsonl entry
     events_path = HERMES_HOME / "state" / "gateway-watchdog" / "events.jsonl"
@@ -450,10 +506,10 @@ def _probe_gateway_watchdog() -> dict:
                     ev = json.loads(line)
                     ev_status = ev.get("status", "unknown")
                     s: Status = "green" if ev_status == "ok" else ("amber" if ev_status in ("warn",) else "red")
-                    return _item("watchdog_events", s, f"last event: {ev_status} at {ev.get('ts','?')}")
+                    return _item("watchdog_events", s, f"last event: {ev_status} at {ev.get('ts','?')}", reason="last watchdog event was not ok" if s != "green" else None)
         except Exception as e:
-            return _item("watchdog_events", "unknown", f"parse error: {e}")
-    return _item("watchdog_events", "unknown", "no events.jsonl")
+            return _item("watchdog_events", "unknown", f"parse error: {e}", reason="watchdog events JSONL parse failed")
+    return _item("watchdog_events", "unknown", "no events.jsonl", reason="watchdog events file missing")
 
 
 def _section_gateway() -> dict:
@@ -462,7 +518,7 @@ def _section_gateway() -> dict:
         try:
             items.append(probe())
         except Exception as e:
-            items.append(_item(probe.__name__, "unknown", str(e)))
+            items.append(_item(probe.__name__, "unknown", str(e), reason="section probe raised"))
     return _section("gateway", "Gateway", items)
 
 
@@ -470,35 +526,108 @@ def _section_gateway() -> dict:
 # Section 2: providers
 # ---------------------------------------------------------------------------
 
-def _probe_codex_process() -> dict:
+def _probe_codex_pipeline_load() -> dict:
     """Hermes uses the ChatGPT HTTP backend; no local codex process required.
-    Green when the pipeline snapshot loads OK; amber only if the snapshot fails.
+    Snapshot-loaded is info context, not posture.
     """
     try:
         from hermes_cli.dashboard_codex_sessions import _cached_snapshot
         snap = _cached_snapshot()
-        counts = snap.get("counts", {})
-        total = counts.get("total", 0)
-        return _item("codex_process", "green",
-                     f"backend lane (HTTP); {total} sessions tracked",
-                     metric=str(total))
+        counts = snap.get("counts", {}) if isinstance(snap, dict) else {}
+        total = int(counts.get("total") or 0)
+        return _item(
+            "codex_pipeline_load",
+            "info",
+            f"backend lane (HTTP); snapshot loaded; {total} sessions tracked",
+            metric=str(total),
+            reason="snapshot availability is routine context, not a health failure",
+        )
     except Exception as e:
-        return _item("codex_process", "amber", f"pipeline snapshot unavailable: {e}")
+        return _item(
+            "codex_pipeline_load",
+            "amber",
+            f"pipeline snapshot unavailable: {e}",
+            reason="codex pipeline snapshot loader raised",
+        )
+
+
+def _parse_iso_age_days(value: Any) -> Optional[float]:
+    if not value:
+        return None
+    try:
+        dt = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return max(0.0, (datetime.now(timezone.utc) - dt).total_seconds() / 86400)
+    except Exception:
+        return None
 
 
 def _probe_codex_sessions() -> dict:
-    """Import codex-sessions snapshot loader for counts by state."""
+    """Import codex-sessions snapshot loader and classify states semantically."""
     try:
         from hermes_cli.dashboard_codex_sessions import _cached_snapshot
         snap = _cached_snapshot()
-        counts = snap.get("counts", {})
-        total = counts.get("total", 0)
-        by_state = counts.get("by_state", {})
-        parts = ", ".join(f"{k}={v}" for k, v in by_state.items()) if by_state else "none"
-        s: Status = "green" if total >= 0 else "unknown"
-        return _item("codex_pipeline", s, f"{total} sessions: {parts}", metric=str(total))
+        counts = snap.get("counts", {}) if isinstance(snap, dict) else {}
+        sessions = snap.get("sessions", []) if isinstance(snap, dict) else []
+        total = int(counts.get("total") or 0)
+        by_state = counts.get("by_state", {}) if isinstance(counts, dict) else {}
+
+        escalated = blocked = orphaned = missing_worktree = 0
+        stale_completed = stale_unknown_amber = stale_unknown_red = 0
+        stale_reasons: list[str] = []
+        for row in sessions if isinstance(sessions, list) else []:
+            if not isinstance(row, dict):
+                continue
+            state_raw = str(row.get("state") or row.get("hive_state") or "UNKNOWN")
+            state = state_raw.lower()
+            if state_raw == "ESCALATED" or state == "escalated":
+                escalated += 1
+            if state in {"blocked", "block", "blocked_success"}:
+                blocked += 1
+            if state in {"orphaned", "orphan"}:
+                orphaned += 1
+            if row.get("worktree_path") and not row.get("worktree_alive", True):
+                missing_worktree += 1
+
+            hive = row.get("hive") if isinstance(row.get("hive"), dict) else {}
+            hive_state = str(hive.get("state") or row.get("hive_state") or state_raw).lower()
+            if hive_state.startswith("stale") or state.startswith("stale"):
+                final_report = bool(row.get("final_report") or row.get("report_written") or hive.get("final_report"))
+                wt = str(row.get("worktree_path") or "")
+                if wt and (Path(wt) / "FINAL-REPORT.md").exists():
+                    final_report = True
+                age_days = _parse_iso_age_days(row.get("last_message_at") or row.get("created_at"))
+                if final_report or "completed" in hive_state or "complete" in state:
+                    stale_completed += 1
+                elif age_days is not None and age_days > 30:
+                    stale_unknown_red += 1
+                    stale_reasons.append(f"stale_unknown {age_days:.0f} days, no report")
+                else:
+                    stale_unknown_amber += 1
+                    stale_reasons.append(f"stale_unknown {age_days:.0f} days, no report" if age_days is not None else "stale_unknown age unavailable, no report")
+
+        terminal_red = orphaned + missing_worktree + stale_unknown_red
+        terminal_amber = stale_unknown_amber
+        s: Status = "red" if terminal_red else ("amber" if terminal_amber else "green")
+        parts = [f"{k}={v}" for k, v in by_state.items()] if by_state else ["none"]
+        detail = f"{total} sessions: {', '.join(parts)}; blocked_count={blocked}"
+        reason_bits = []
+        if escalated:
+            reason_bits.append(f"ESCALATED={escalated} handled queue")
+        if blocked:
+            reason_bits.append(f"blocked={blocked} terminal success")
+        if orphaned:
+            reason_bits.append(f"ORPHANED={orphaned}")
+        if missing_worktree:
+            reason_bits.append(f"missing_worktree={missing_worktree}")
+        if stale_completed:
+            reason_bits.append(f"stale_completed={stale_completed}")
+        reason_bits.extend(stale_reasons[:3])
+        reason = ", ".join(reason_bits) if reason_bits else "all tracked codex sessions are semantically non-actionable"
+        return _item("codex_live_sessions", s, detail, metric=str(total), reason=reason, blocked_count=blocked)
     except Exception as e:
-        return _item("codex_pipeline", "unknown", f"codex-sessions import failed: {e}")
+        return _item("codex_live_sessions", "unknown", f"codex-sessions import failed: {e}", reason="codex sessions snapshot import raised")
 
 
 def _probe_claude_cli() -> dict:
@@ -506,7 +635,7 @@ def _probe_claude_cli() -> dict:
     try:
         binary = shutil.which("claude")
         if not binary:
-            return _item("claude_cli", "red", "claude binary not found in PATH")
+            return _item("claude_cli", "red", "claude binary not found in PATH", reason="required claude CLI binary missing")
         # Best-effort: check for cli-subprocess state file
         state_dir = HERMES_HOME / "state"
         # Look for any recent cli-subprocess or claude-cli-* artifact
@@ -518,7 +647,7 @@ def _probe_claude_cli() -> dict:
             detail += f", last turn ≈{age_h:.1f}h ago"
         return _item("claude_cli", "green", detail)
     except Exception as e:
-        return _item("claude_cli", "unknown", str(e))
+        return _item("claude_cli", "unknown", str(e), reason="claude CLI probe raised")
 
 
 def _probe_openrouter_key() -> dict:
@@ -540,15 +669,15 @@ def _probe_openrouter_key() -> dict:
                     if len(val) > 20:
                         return _item("openrouter_key", "green",
                                      "honcho-managed (capped)")
-        return _item("openrouter_key", "amber", "honcho deriver key missing")
+        return _item("openrouter_key", "amber", "honcho deriver key missing", reason="LLM_OPENROUTER_API_KEY not present in honcho env")
     except Exception as e:
-        return _item("openrouter_key", "unknown", str(e))
+        return _item("openrouter_key", "unknown", str(e), reason="openrouter key probe raised")
 
 
 def _section_providers() -> dict:
     items: list[dict] = []
     for probe in (
-        _probe_codex_process,
+        _probe_codex_pipeline_load,
         _probe_codex_sessions,
         _probe_claude_cli,
         _probe_openrouter_key,
@@ -556,7 +685,7 @@ def _section_providers() -> dict:
         try:
             items.append(probe())
         except Exception as e:
-            items.append(_item(probe.__name__, "unknown", str(e)))
+            items.append(_item(probe.__name__, "unknown", str(e), reason="section probe raised"))
     return _section("providers", "Providers", items)
 
 
@@ -581,7 +710,7 @@ def _section_containers() -> dict:
         r = _run(["docker", "ps", "-a", "--format", "{{json .}}"])
         if r.returncode != 0:
             return _section("containers", "Containers",
-                            [_item("docker", "unknown", f"docker ps failed: {r.stderr.strip()}")])
+                            [_item("docker", "unknown", f"docker ps failed: {r.stderr.strip()}", reason="docker ps command failed")])
         containers: list[dict] = []
         for line in r.stdout.splitlines():
             line = line.strip()
@@ -597,7 +726,7 @@ def _section_containers() -> dict:
         for name in sorted(_CORE_CONTAINERS):
             c = by_name.get(name)
             if c is None:
-                items.append(_item(name, "red", "container not found"))
+                items.append(_item(name, "red", "container not found", reason="required core container missing"))
                 continue
             state = c.get("State", "unknown").lower()
             status_str = c.get("Status", "")
@@ -607,7 +736,7 @@ def _section_containers() -> dict:
                 s = "amber"
             else:
                 s = "red"
-            items.append(_item(name, s, f"{state} — {status_str}"))
+            items.append(_item(name, s, f"{state} — {status_str}", reason="core container is not running" if s != "green" else None))
 
         # Count extra containers (not in core set)
         for name, c in by_name.items():
@@ -618,7 +747,7 @@ def _section_containers() -> dict:
             items.append(_item("extras", "green", f"{extra_count} non-core container(s) present",
                                metric=str(extra_count)))
     except Exception as e:
-        items.append(_item("containers", "unknown", str(e)))
+        items.append(_item("containers", "unknown", str(e), reason="container section probe raised"))
 
     return _section("containers", "Containers", items)
 
@@ -638,51 +767,61 @@ _KEEP_TIMERS = frozenset({
 })
 
 
+def _load_desired_timers() -> dict[str, dict]:
+    path = HERMES_HOME / "desired-timers.json"
+    try:
+        data = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+        if not isinstance(data, dict):
+            return {}
+        normalized: dict[str, dict] = {}
+        for name, spec in data.items():
+            normalized[str(name)] = spec if isinstance(spec, dict) else {"enabled": bool(spec)}
+        return normalized
+    except Exception:
+        return {}
+
+
 def _section_systemd() -> dict:
     items: list[dict] = []
+    desired_timers = _load_desired_timers()
+    disabled_by_design = {name: spec for name, spec in desired_timers.items() if spec.get("enabled") is False}
     try:
-        # Failed units
         r_fail = _run(["systemctl", "--user", "--failed", "--no-legend"])
         if r_fail.returncode not in (0, 1):
-            items.append(_item("failed_units", "unknown", f"systemctl --failed error: {r_fail.stderr.strip()}"))
+            items.append(_item("failed_units", "unknown", f"systemctl --failed error: {r_fail.stderr.strip()}", reason="systemctl --failed returned an unexpected code"))
         else:
             failed_lines = [l.strip() for l in r_fail.stdout.splitlines() if l.strip()]
             failed_names = [l.split()[0] for l in failed_lines if l]
             if failed_names:
-                items.append(_item("failed_units", "red",
-                                   f"{len(failed_names)} failed: {', '.join(failed_names)}",
-                                   metric=str(len(failed_names))))
+                items.append(_item("failed_units", "red", f"{len(failed_names)} failed: {', '.join(failed_names)}", metric=str(len(failed_names)), reason="systemd reports failed user units"))
             else:
                 items.append(_item("failed_units", "green", "no failed units"))
     except Exception as e:
-        items.append(_item("failed_units", "unknown", str(e)))
+        items.append(_item("failed_units", "unknown", str(e), reason="failed_units probe raised"))
 
     try:
-        # Timers
         r_timers = _run(["systemctl", "--user", "list-timers", "--no-legend"])
         active_timers: set[str] = set()
         if r_timers.returncode == 0:
             for line in r_timers.stdout.splitlines():
-                parts = line.split()
-                # line format: NEXT ... LAST ... UNIT  ACTIVATES
-                # timer name is in column -2 (second-to-last)
-                if len(parts) >= 2:
-                    # Find the timer name — it ends with .timer
-                    for part in parts:
-                        if part.endswith(".timer"):
-                            active_timers.add(part)
-                            break
-
-        missing = _KEEP_TIMERS - active_timers
+                for part in line.split():
+                    if part.endswith(".timer"):
+                        active_timers.add(part)
+                        break
+        expected_timers = {timer for timer in _KEEP_TIMERS if disabled_by_design.get(timer, {}).get("enabled") is not False}
+        missing = expected_timers - active_timers
         if missing:
-            items.append(_item("timers_missing", "amber",
-                               f"missing/inactive KEEP timers: {', '.join(sorted(missing))}"))
+            items.append(_item("timers_missing", "amber", f"missing/inactive expected timers: {', '.join(sorted(missing))}", reason="timer is expected enabled but absent from systemd list-timers"))
         else:
-            items.append(_item("timers_keep", "green",
-                               f"all {len(_KEEP_TIMERS)} KEEP timers active",
-                               metric=str(len(active_timers))))
+            items.append(_item("timers_keep", "green", f"all {len(expected_timers)} expected KEEP timers active", metric=str(len(active_timers))))
+        if disabled_by_design:
+            disabled_parts = []
+            for name, spec in sorted(disabled_by_design.items()):
+                why = spec.get("reason") or "disabled by design"
+                disabled_parts.append(f"{name} ({why})")
+            items.append(_item("timers_disabled_by_design", "info", "; ".join(disabled_parts), metric=str(len(disabled_by_design)), reason="desired-timers.json marks these timers intentionally disabled"))
     except Exception as e:
-        items.append(_item("timers_keep", "unknown", str(e)))
+        items.append(_item("timers_keep", "unknown", str(e), reason="timers probe raised"))
 
     return _section("systemd", "Systemd", items)
 
@@ -691,27 +830,33 @@ def _section_systemd() -> dict:
 # Section 5: backups
 # ---------------------------------------------------------------------------
 
-_AMBER_H = 26
-_RED_H = 50
+_AMBER_H = 168
+_RED_H = 336
 _VERA_AMBER_DAYS = 8
 _VERA_RED_DAYS = 15
 
 
 def _backup_age_status(path_glob_parent: Path, pattern: str) -> dict:
-    """Find newest matching file; return item with age-based status."""
+    """Find newest matching file; return item with SLA-based status."""
     try:
         matches = sorted(path_glob_parent.glob(pattern), key=lambda p: p.stat().st_mtime, reverse=True)
         if not matches:
-            return _item(pattern, "red", "no backup found")
+            return _item(pattern, "red", "no backup found", reason="no matching backup artifact exists")
         newest = matches[0]
         age_h = (time.time() - newest.stat().st_mtime) / 3600
         size_mb = newest.stat().st_size / (1024 * 1024)
-        s: Status = "green" if age_h < _AMBER_H else ("amber" if age_h < _RED_H else "red")
-        return _item(pattern, s,
-                     f"{newest.name} age={age_h:.1f}h size={size_mb:.1f}MB",
-                     metric=f"{age_h:.1f}h")
+        if age_h < _AMBER_H:
+            s: Status = "info"
+            reason = "backup age is within 7d SLA; routine context only"
+        elif age_h < _RED_H:
+            s = "amber"
+            reason = "backup age exceeds 7d SLA but is under 14d red threshold"
+        else:
+            s = "red"
+            reason = "backup age exceeds 14d red threshold"
+        return _item(pattern, s, f"{newest.name} age={age_h:.1f}h size={size_mb:.1f}MB", metric=f"{age_h:.1f}h", reason=reason)
     except Exception as e:
-        return _item(pattern, "unknown", str(e))
+        return _item(pattern, "unknown", str(e), reason="backup age probe raised")
 
 
 def _section_backups() -> dict:
@@ -724,6 +869,23 @@ def _section_backups() -> dict:
     items.append(_backup_age_status(mvms_dir, "honcho-live-store-*.sql.gz"))
     # Hermes app state
     items.append(_backup_age_status(mvms_dir, "hermes-app-state-*.tar.gz"))
+
+    # Off-box replication marker: absence is a real risk, separate from within-SLA backup age.
+    try:
+        marker_candidates = [
+            mvms_dir / "OFFBOX-REPLICATION-OK",
+            mvms_dir / "offbox-replication.ok",
+            HERMES_HOME / "audits" / "veracrypt-backup" / "OFFBOX-REPLICATION-OK",
+        ]
+        marker = next((m for m in marker_candidates if m.exists()), None)
+        if marker is None:
+            items.append(_item("mvms-backup-gap-offbox", "amber", "no off-box replication marker found", reason="local backups exist, but off-box replication has no success marker"))
+        else:
+            age_h = (time.time() - marker.stat().st_mtime) / 3600
+            status: Status = "green" if age_h < _AMBER_H else ("amber" if age_h < _RED_H else "red")
+            items.append(_item("mvms-backup-gap-offbox", status, f"{marker.name} age={age_h:.1f}h", metric=f"{age_h:.1f}h", reason="off-box replication marker age exceeds SLA" if status != "green" else None))
+    except Exception as e:
+        items.append(_item("mvms-backup-gap-offbox", "unknown", str(e), reason="off-box marker probe raised"))
 
     # VeraCrypt weekly backup
     try:
@@ -741,13 +903,14 @@ def _section_backups() -> dict:
                 s: Status = "green" if age_days < _VERA_AMBER_DAYS else ("amber" if age_days < _VERA_RED_DAYS else "red")
                 items.append(_item("veracrypt_weekly", s,
                                    f"{newest.name} age={age_days:.1f}d",
-                                   metric=f"{age_days:.1f}d"))
+                                   metric=f"{age_days:.1f}d",
+                                   reason="weekly VeraCrypt backup age exceeds configured threshold" if s != "green" else None))
             else:
-                items.append(_item("veracrypt_weekly", "amber", "no weekly backup dirs found"))
+                items.append(_item("veracrypt_weekly", "amber", "no weekly backup dirs found", reason="veracrypt backup root exists but has no weekly dirs"))
         else:
-            items.append(_item("veracrypt_weekly", "amber", "veracrypt-backup dir missing"))
+            items.append(_item("veracrypt_weekly", "amber", "veracrypt-backup dir missing", reason="weekly off-box backup audit directory missing"))
     except Exception as e:
-        items.append(_item("veracrypt_weekly", "unknown", str(e)))
+        items.append(_item("veracrypt_weekly", "unknown", str(e), reason="veracrypt weekly probe raised"))
 
     return _section("backups", "Backups", items)
 
@@ -812,9 +975,9 @@ def _section_memory_stores() -> dict:
                                f"size={size_kb:.0f}KB mtime={age_h:.1f}h ago",
                                metric=f"{size_kb:.0f}KB"))
         else:
-            items.append(_item("state_db", "amber", "state.db not found"))
+            items.append(_item("state_db", "amber", "state.db not found", reason="Hermes state DB missing"))
     except Exception as e:
-        items.append(_item("state_db", "unknown", str(e)))
+        items.append(_item("state_db", "unknown", str(e), reason="state DB stat probe raised"))
 
     # kanban.db counts (using _probe_kanban pattern from dashboard_health)
     try:
@@ -834,48 +997,49 @@ def _section_memory_stores() -> dict:
             s: Status = "green"
             items.append(_item("kanban_db", s, detail, metric=str(open_count)))
         else:
-            items.append(_item("kanban_db", "amber", "kanban.db not found at expected path"))
+            items.append(_item("kanban_db", "amber", "kanban.db not found at expected path", reason="Hermes board DB missing at expected path"))
     except Exception as e:
-        items.append(_item("kanban_db", "unknown", str(e)))
+        items.append(_item("kanban_db", "unknown", str(e), reason="kanban DB read probe raised"))
 
     # MEMORY.md size
     try:
         if MEMORY_MD.exists():
             size = MEMORY_MD.stat().st_size
-            s = "green" if size < 22000 else "amber"
+            s = "green" if size < 100000 else "info"
             items.append(_item("memory_md", s,
                                f"size={size} bytes",
-                               metric=f"{size}B"))
+                               metric=f"{size}B",
+                               reason="exceeds 100KB threshold but MEMORY.md growth is by design" if s == "info" else None))
         else:
-            items.append(_item("memory_md", "amber", "MEMORY.md not found"))
+            items.append(_item("memory_md", "amber", "MEMORY.md not found", reason="Claude MEMORY.md missing at expected path"))
     except Exception as e:
-        items.append(_item("memory_md", "unknown", str(e)))
+        items.append(_item("memory_md", "unknown", str(e), reason="MEMORY.md stat probe raised"))
 
     # MVMS count (docker exec, 60s sub-cache, degrade to unknown)
     try:
         count = _mvms_count()
         if count is None:
             items.append(_item("mvms_observations", "unknown",
-                               "docker exec psql failed or timed out"))
+                               "docker exec psql failed or timed out", reason="MVMS observations count probe failed"))
         else:
             items.append(_item("mvms_observations", "green",
                                f"{count:,} observations in memory.observations",
                                metric=str(count)))
     except Exception as e:
-        items.append(_item("mvms_observations", "unknown", str(e)))
+        items.append(_item("mvms_observations", "unknown", str(e), reason="MVMS observations probe raised"))
 
     # Honcho messages count (docker exec, 60s sub-cache)
     try:
         count = _honcho_count()
         if count is None:
             items.append(_item("honcho_messages", "unknown",
-                               "docker exec psql failed or timed out"))
+                               "docker exec psql failed or timed out", reason="Honcho messages count probe failed"))
         else:
             items.append(_item("honcho_messages", "green",
                                f"{count:,} messages in honcho.messages",
                                metric=str(count)))
     except Exception as e:
-        items.append(_item("honcho_messages", "unknown", str(e)))
+        items.append(_item("honcho_messages", "unknown", str(e), reason="Honcho messages probe raised"))
 
     return _section("memory_stores", "Memory Stores", items)
 
@@ -894,7 +1058,7 @@ def _section_cron() -> dict:
         not_ok = [j for j in enabled if j.get("lastStatus") and j.get("lastStatus") != "ok"]
 
         if not jobs:
-            items.append(_item("cron_jobs", "amber", "no cron jobs found"))
+            items.append(_item("cron_jobs", "amber", "no cron jobs found", reason="cron loader returned zero jobs"))
         else:
             items.append(_item("cron_enabled", "green" if enabled else "amber",
                                f"{len(enabled)}/{len(jobs)} jobs enabled",
@@ -908,7 +1072,7 @@ def _section_cron() -> dict:
                 items.append(_item("cron_last_status", "green",
                                    "all recent runs ok" if enabled else "no recent runs"))
     except Exception as e:
-        items.append(_item("cron_jobs", "unknown", str(e)))
+        items.append(_item("cron_jobs", "unknown", str(e), reason="cron jobs loader raised"))
 
     return _section("cron", "Cron", items)
 
@@ -933,9 +1097,9 @@ def _section_host() -> dict:
                                f"{avail_gb}G free / {total_gb}G total",
                                metric=f"{avail_gb}G"))
         else:
-            items.append(_item("disk_free", "unknown", "df parse failed"))
+            items.append(_item("disk_free", "unknown", "df parse failed", reason="df output parse failed"))
     except Exception as e:
-        items.append(_item("disk_free", "unknown", str(e)))
+        items.append(_item("disk_free", "unknown", str(e), reason="disk probe raised"))
 
     # free -m
     try:
@@ -952,11 +1116,11 @@ def _section_host() -> dict:
                                        metric=f"{avail_mb}MB"))
                     break
             else:
-                items.append(_item("mem_available", "unknown", "Mem: line not found in free output"))
+                items.append(_item("mem_available", "unknown", "Mem: line not found in free output", reason="free output missing Mem line"))
         else:
-            items.append(_item("mem_available", "unknown", "free command failed"))
+            items.append(_item("mem_available", "unknown", "free command failed", reason="free command returned non-zero"))
     except Exception as e:
-        items.append(_item("mem_available", "unknown", str(e)))
+        items.append(_item("mem_available", "unknown", str(e), reason="memory probe raised"))
 
     # Load average + WSL uptime
     try:
@@ -972,11 +1136,11 @@ def _section_host() -> dict:
                                    f"1m={load1} 5m={load5} 15m={load15}",
                                    metric=str(load1)))
             else:
-                items.append(_item("load_avg", "unknown", f"could not parse: {text}"))
+                items.append(_item("load_avg", "unknown", f"could not parse: {text}", reason="uptime load parse failed"))
         else:
-            items.append(_item("load_avg", "unknown", "uptime failed"))
+            items.append(_item("load_avg", "unknown", "uptime failed", reason="uptime command returned non-zero"))
     except Exception as e:
-        items.append(_item("load_avg", "unknown", str(e)))
+        items.append(_item("load_avg", "unknown", str(e), reason="load average probe raised"))
 
     # WSL uptime from /proc/uptime
     try:
@@ -985,7 +1149,7 @@ def _section_host() -> dict:
         m = int((uptime_s % 3600) // 60)
         items.append(_item("wsl_uptime", "green", f"up {h}h {m}m", metric=f"{h}h{m}m"))
     except Exception as e:
-        items.append(_item("wsl_uptime", "unknown", str(e)))
+        items.append(_item("wsl_uptime", "unknown", str(e), reason="/proc/uptime read failed"))
 
     return _section("host", "Host", items)
 
@@ -998,11 +1162,13 @@ def _section_host() -> dict:
 
 def _coerce_status(value: Any) -> Status:
     normalized = str(value or "unknown").lower()
-    if normalized in {"green", "ok", "online", "running", "active", "enabled", "ready", "idle"}:
+    if normalized in {"green", "ok", "online", "running", "active", "enabled", "ready"}:
         return "green"
+    if normalized in {"info", "informational", "notice"}:
+        return "info"
     if normalized in {"amber", "warn", "warning", "degraded", "stopped", "auth_gated"}:
         return "amber"
-    if normalized in {"red", "bad", "error", "failed", "offline", "critical"}:
+    if normalized in {"red", "bad", "error", "failed", "offline", "critical", "orphaned", "missing_worktree"}:
         return "red"
     return "unknown"
 
@@ -1012,7 +1178,8 @@ def _safe_len(value: Any) -> int:
 
 
 def _build_attention_snapshot(sections: list[dict]) -> dict:
-    diagnostics = _build_diagnostics(sections)
+    diagnostics, _info = _build_diagnostics(sections)
+    diagnostics = [d for d in diagnostics if d.get("severity") in {"amber", "red"}]
     chips = []
     for diag in diagnostics[:4]:
         message = str(diag.get("message") or "needs attention")
@@ -1044,16 +1211,51 @@ def _repo_section_from_git_health() -> tuple[dict, dict]:
         changed = int(summary.get("total_files_changed") or 0)
         best = health.get("best_move", {}) if isinstance(health, dict) else {}
         best_text = str(best.get("text") or "No git move available")
-        best_status: Status = "red" if _coerce_status(best.get("severity")) == "red" else "green"
+        best_status = _coerce_status(best.get("severity"))
+        # Best-move warn/idle context is ranked by explicit repo thresholds; only red degrades posture.
+        if best_status != "red":
+            best_status = "green"
         counts = graph.get("counts", {}) if isinstance(graph, dict) else {}
         ahead_total = int(counts.get("ahead_total") or 0)
         rows = health.get("rows", []) if isinstance(health, dict) else []
+        normalized_rows: list[dict] = []
+        for row in rows if isinstance(rows, list) else []:
+            if not isinstance(row, dict):
+                continue
+            normalized = dict(row)
+            sev = str(normalized.get("severity") or "unknown").lower()
+            if sev == "idle":
+                normalized["severity"] = "info"
+                normalized.setdefault("reason", "idle lane/no reviewable work; informational only")
+            elif sev == "warn":
+                normalized["severity"] = "info"
+                normalized.setdefault("reason", "git-health warning is velocity-scored separately by total uncommitted threshold")
+            elif _coerce_status(sev) in {"amber", "red"}:
+                normalized["severity"] = _coerce_status(sev)
+                normalized.setdefault("reason", normalized.get("recommendation") or f"git-health severity={sev}")
+            normalized_rows.append(normalized)
+        rows = normalized_rows
         lanes = graph.get("lanes", []) if isinstance(graph, dict) else []
+        actionable_row_statuses = [
+            _coerce_status(row.get("severity"))
+            for row in rows
+            if isinstance(row, dict) and _coerce_status(row.get("severity")) in {"amber", "red"}
+        ]
         status: Status = "green"
-        if any(_coerce_status(row.get("severity")) == "red" for row in rows if isinstance(row, dict)):
+        if any(s == "red" for s in actionable_row_statuses):
             status = "red"
-        elif uncommitted > 25:
+        elif any(s == "amber" for s in actionable_row_statuses) or uncommitted > 100:
             status = "amber"
+        lane_counts: list[tuple[str, int]] = []
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            count = int(row.get("uncommitted") or 0)
+            if count:
+                lane_counts.append((str(row.get("slug") or row.get("thread_id") or "lane"), count))
+        lane_counts.sort(key=lambda item: item[1], reverse=True)
+        lane_detail = ", ".join(f"{slug}: {count}" for slug, count in lane_counts[:5])
+        uncommitted_reason = f"uncommitted={uncommitted} files" + (f" ({lane_detail})" if lane_detail else "")
         payload = {
             "scanned_at": health.get("scanned_at") or graph.get("scanned_at"),
             "summary": summary,
@@ -1065,15 +1267,17 @@ def _repo_section_from_git_health() -> tuple[dict, dict]:
         }
         section = _section("repo", "Repo", [
             _item("readiness", "green", f"{ready}/{total} lanes ready", metric=f"{readiness_pct}%"),
-            _item("uncommitted", "amber" if uncommitted > 25 else "green", f"{uncommitted} uncommitted files across lanes", metric=str(uncommitted)),
-            _item("ahead_total", "amber" if ahead_total > 20000 else "green", f"{ahead_total} commits ahead total", metric=str(ahead_total)),
-            _item("best_move", best_status, best_text),
-            _item("files_changed", "amber" if changed > 15000 else "green", f"{changed} files changed across lanes", metric=str(changed)),
+            _item("uncommitted", "amber" if uncommitted > 100 else "green", f"{uncommitted} uncommitted files across lanes", metric=str(uncommitted), reason=uncommitted_reason if uncommitted > 100 else None),
+            _item("ahead_total", "amber" if ahead_total > 20000 else "green", f"{ahead_total} commits ahead total", metric=str(ahead_total), reason="ahead_total exceeds 20k commits" if ahead_total > 20000 else None),
+            _item("best_move", best_status, best_text, reason="git-health best move reports actionable severity" if best_status != "green" else None),
+            _item("files_changed", "amber" if changed > 15000 else "green", f"{changed} files changed across lanes", metric=str(changed), reason="files_changed exceeds 15k threshold" if changed > 15000 else None),
         ])
+        if status in {"red", "amber"} and section.get("status") == "green":
+            section["status"] = status
         return section, payload
     except Exception as exc:
         payload = {"error": str(exc), "summary": {}, "readiness_pct": 0, "best_move": {"text": "Git Health unavailable", "severity": "unknown"}, "rows": [], "lanes": []}
-        return _section("repo", "Repo", [_item("git_health", "unknown", str(exc))]), payload
+        return _section("repo", "Repo", [_item("git_health", "unknown", str(exc), reason="git_health/git_graph import or probe raised")]), payload
 
 
 def _work_section_from_command_center() -> tuple[dict, dict]:
@@ -1093,10 +1297,10 @@ def _work_section_from_command_center() -> tuple[dict, dict]:
         runtimes = live.get("runtimes", []) if isinstance(live, dict) else []
         live_runtimes = sum(1 for r in runtimes if _coerce_status((r or {}).get("status")) == "green")
         section = _section("work", "Work", [
-            _item("projects_completion", "green" if projects_pct >= 75 else "amber", f"{len(active_projects)} active project cards averaged", metric=f"{projects_pct}%"),
-            _item("pending_decisions", "amber" if decisions else "green", f"{len(decisions)} decision items", metric=str(len(decisions))),
-            _item("live_runtimes", "green" if live_runtimes else "amber", f"{live_runtimes}/{_safe_len(runtimes)} runtimes live", metric=str(live_runtimes)),
-            _item("stalled", "amber" if stalled else "green", f"{len(stalled)} stalled workers/tasks", metric=str(len(stalled))),
+            _item("projects_completion", "green" if projects_pct >= 75 else "amber", f"{len(active_projects)} active project cards averaged", metric=f"{projects_pct}%", reason="project completion average below 75%" if projects_pct < 75 else None),
+            _item("pending_decisions", "amber" if decisions else "green", f"{len(decisions)} decision items", metric=str(len(decisions)), reason="open decision queue is non-empty" if decisions else None),
+            _item("live_runtimes", "green" if live_runtimes else "amber", f"{live_runtimes}/{_safe_len(runtimes)} runtimes live", metric=str(live_runtimes), reason="no live runtimes reported by command center" if not live_runtimes else None),
+            _item("stalled", "amber" if stalled else "green", f"{len(stalled)} stalled workers/tasks", metric=str(len(stalled)), reason="stalled worker/task list is non-empty" if stalled else None),
         ])
         payload = {
             **(payload if isinstance(payload, dict) else {}),
@@ -1112,7 +1316,7 @@ def _work_section_from_command_center() -> tuple[dict, dict]:
         return section, payload
     except Exception as exc:
         payload = {"error": str(exc), "projects": [], "live": {"runtimes": []}, "decisions": [], "stalled": [], "projects_completion_pct": 0, "live_runtimes": 0, "counts": {"projects": 0, "decisions": 0, "live_runtimes": 0, "stalled": 0}}
-        return _section("work", "Work", [_item("command_center", "unknown", str(exc))]), payload
+        return _section("work", "Work", [_item("command_center", "unknown", str(exc), reason="command center payload probe raised")]), payload
 
 
 def _activity_section_from_pulse() -> tuple[dict, dict]:
@@ -1129,11 +1333,17 @@ def _activity_section_from_pulse() -> tuple[dict, dict]:
         pending = int(kpis.get("pending_cards") or 0) if isinstance(kpis, dict) else 0
         active_hives = int(kpis.get("active_hives") or 0) if isinstance(kpis, dict) else 0
         cards = pulse_queue.get("cards", []) if isinstance(pulse_queue, dict) else []
+        active_hive_status: Status = "amber" if active_hives > 3 else ("info" if active_hives > 0 else "green")
+        active_hive_reason = (
+            f"active_hives={active_hives} exceeds 3 active-hive threshold"
+            if active_hives > 3
+            else (f"active_hives={active_hives} is expected background activity" if active_hives > 0 else None)
+        )
         section = _section("activity", "Activity", [
-            _item("created_7d", "green" if created_7d < 100 else "amber", "tasks created in the last 7 days", metric=str(created_7d)),
-            _item("open_now", "green" if open_now < 50 else "amber", "currently open kanban tasks", metric=str(open_now)),
-            _item("pending_cards", "green" if pending < 20 else "amber", "ready/triage cards waiting", metric=str(pending)),
-            _item("active_hives", "green" if active_hives == 0 else "amber", "active hive runs", metric=str(active_hives)),
+            _item("created_7d", "green" if created_7d < 200 else "amber", "tasks created in the last 7 days", metric=str(created_7d), reason="created_7d exceeds 200 expected-activity threshold" if created_7d >= 200 else None),
+            _item("open_now", "green" if open_now < 100 else "amber", "currently open kanban tasks", metric=str(open_now), reason="open_now exceeds 100 expected-activity threshold" if open_now >= 100 else None),
+            _item("pending_cards", "green" if pending < 20 else "amber", "ready/triage cards waiting", metric=str(pending), reason="pending ready/triage card count exceeds 20" if pending >= 20 else None),
+            _item("active_hives", active_hive_status, "active hive runs", metric=str(active_hives), reason=active_hive_reason),
         ])
         payload = {
             "queue_7d": queue_7d,
@@ -1146,35 +1356,43 @@ def _activity_section_from_pulse() -> tuple[dict, dict]:
         return section, payload
     except Exception as exc:
         payload = {"error": str(exc), "queue_7d": {"range": "7d", "points": [], "openNow": 0}, "queue": {"cards": []}, "kpis": {}, "created_7d": 0, "open_now": 0, "cards": []}
-        return _section("activity", "Activity", [_item("pulse", "unknown", str(exc))]), payload
+        return _section("activity", "Activity", [_item("pulse", "unknown", str(exc), reason="pulse KPI/queue probe raised")]), payload
 
 
 # ---------------------------------------------------------------------------
 # Snapshot builder
 # ---------------------------------------------------------------------------
 
-def _build_diagnostics(sections: list[dict]) -> list[dict]:
-    """Flatten every non-green item into a diagnostics list, red→amber sorted."""
+def _build_diagnostics(sections: list[dict]) -> tuple[list[dict], list[dict]]:
+    """Split actionable red/amber diagnostics from muted info context."""
     diags: list[dict] = []
+    info_list: list[dict] = []
     severity_order = {"red": 0, "amber": 1}
     for sec in sections:
         for item in sec.get("items", []):
             sev = item.get("status")
-            if sev in ("red", "amber"):
-                diags.append({
-                    "severity": sev,
-                    "source": sec["id"],
-                    "message": f"{item['name']}: {item['detail']}",
-                })
+            row = {
+                "severity": sev,
+                "source": sec["id"],
+                "message": f"{item['name']}: {item['detail']}",
+            }
+            if item.get("reason"):
+                row["reason"] = item.get("reason")
+            if item.get("metric") is not None:
+                row["metric"] = item.get("metric")
+            if sev == "info":
+                info_list.append(row)
+            elif sev in ("red", "amber"):
+                diags.append(row)
             elif sev == "unknown":
-                diags.append({
-                    "severity": "amber",
-                    "source": sec["id"],
-                    "message": f"{item['name']}: {item['detail']} (unknown)",
-                    "hint": "probe degraded — check logs",
-                })
+                row["severity"] = "amber"
+                row["message"] = f"{item['name']}: {item['detail']} (unknown)"
+                row["hint"] = "probe degraded — check logs"
+                row.setdefault("reason", item.get("reason") or "probe returned unknown")
+                diags.append(row)
     diags.sort(key=lambda d: severity_order.get(d["severity"], 2))
-    return diags
+    info_list.sort(key=lambda d: (str(d.get("source")), str(d.get("message"))))
+    return diags, info_list
 
 
 def _build_os_snapshot() -> dict:
@@ -1201,15 +1419,16 @@ def _build_os_snapshot() -> dict:
             except Exception as e:
                 sections.append(_section(fn.__name__.replace("_section_", ""),
                                          fn.__name__.replace("_section_", "").capitalize(),
-                                         [_item("probe", "unknown", str(e))]))
+                                         [_item("probe", "unknown", str(e), reason="section builder future failed")]))
 
     repo_section, repo = _repo_section_from_git_health()
     work_section, work = _work_section_from_command_center()
     activity_section, activity = _activity_section_from_pulse()
     sections.extend([repo_section, work_section, activity_section])
 
-    overall = _worst_status([s["status"] for s in sections])
-    diagnostics = _build_diagnostics(sections)
+    overall_statuses = [s["status"] for s in sections if s.get("status") != "info"]
+    overall = _worst_status(overall_statuses) if overall_statuses else "green"
+    diagnostics, info = _build_diagnostics(sections)
     attention = _build_attention_snapshot(sections)
 
     # Build Nexus graph (Appendix B) inside the same cached snapshot build
@@ -1217,12 +1436,20 @@ def _build_os_snapshot() -> dict:
         graph = _build_os_graph(sections)
     except Exception as e:
         graph = {"nodes": [], "edges": [], "error": str(e)}
+        diagnostics.append({
+            "severity": "red",
+            "source": "graph",
+            "message": "topology unavailable",
+            "reason": str(e),
+        })
+        overall = "red"
 
     return {
         "generated_at": _now(),
         "overall": overall,
         "sections": sections,
         "diagnostics": diagnostics,
+        "info": info,
         "attention": attention,
         "repo": repo,
         "work": work,
@@ -1274,5 +1501,7 @@ async def get_os() -> dict:
                 "source": "endpoint",
                 "message": "snapshot build timed out",
                 "hint": "retry in a moment; individual probes may be stuck",
+                "reason": "snapshot builder exceeded hard endpoint timeout",
             }],
+            "info": [],
         }

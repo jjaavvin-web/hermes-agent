@@ -7,9 +7,8 @@
  * host), directional smoothstep edges with arrowheads, edge styling by link
  * state (live / disabled / gated / broken), a legend chip row, and a
  * click-to-inspect side panel (rendered beside the canvas, not over it) backed
- * by snapshot.sections + diagnostics. Edge labels stay hidden at default zoom
- * and surface on hover/selection or past LABEL_SHOW_ZOOM to keep the dense
- * middle columns readable.
+ * by snapshot.sections + diagnostics. Edge labels render at default zoom; hover/selection still force labels active
+ * at lower zooms so the dense middle columns stay understandable.
  *
  * Adapted from components/system-health/HealthGraph.tsx and reuses its
  * statusMeta()/kindIcon() visual language so the two graph tabs feel related.
@@ -37,7 +36,7 @@ import {
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 import "@/components/system-health/system-health.css";
-import { X } from "lucide-react";
+import { Maximize2, X } from "lucide-react";
 import { useBelowBreakpoint } from "@nous-research/ui/hooks/use-below-breakpoint";
 import type {
   OSDiagnostic,
@@ -47,6 +46,12 @@ import type {
   OSSnapshot,
   OSStatus,
 } from "@/lib/api";
+import {
+  STATUS_CFG,
+  SEVERITY_SCORE,
+  fmtTs,
+  type Status,
+} from "@/components/StatusKit/constants";
 import {
   kindIconElement,
   statusMeta,
@@ -62,10 +67,20 @@ const OS_TO_HEALTH: Record<OSStatus, string> = {
   amber: "warn",
   red: "error",
   unknown: "unknown",
+  info: "unknown",
 };
 
-/** statusMeta() adapter: OS snapshot statuses → system-health palette. */
+/** StatusKit-first adapter with system-health fallback for unknown strings. */
 function osMeta(status: string): StatusMeta {
+  const cfg = STATUS_CFG[status as Status];
+  if (cfg) {
+    return {
+      label: cfg.label,
+      color: cfg.color,
+      soft: cfg.soft,
+      ring: cfg.ring,
+    };
+  }
   return statusMeta(OS_TO_HEALTH[status as OSStatus] ?? "unknown");
 }
 
@@ -74,26 +89,32 @@ const OS_STATUS_LABEL: Record<OSStatus, string> = {
   amber: "Degraded",
   red: "Critical",
   unknown: "Unknown",
+  info: "Informational",
 };
 
 const SEVERITY: Record<OSStatus, number> = {
   red: 3,
   amber: 2,
   unknown: 1,
+  info: 0,
   green: 0,
 };
+
+function severityOf(status: OSStatus): number {
+  return SEVERITY[status] ?? SEVERITY_SCORE.unknown;
+}
 
 // ---------------------------------------------------------------------------
 // Layout constants + presentation-only hints (topology itself is API-driven)
 // ---------------------------------------------------------------------------
 
 const NODE_W = 252;
-const NODE_H = 60;
+const NODE_H = 51;
 const GAP_W = 72; // horizontal corridor between columns
 /** Local column/row pitch — wider than the system-health graph so the larger
  * nodes keep a full edge corridor between columns. */
 const COL_W = NODE_W + GAP_W;
-const ROW_H = NODE_H + 52;
+const ROW_H = NODE_H + 44;
 const GROUP_LABEL_Y = -72;
 /** Groups with more than this many nodes split into two sub-columns. */
 const SPLIT_THRESHOLD = 6;
@@ -101,14 +122,16 @@ const SPLIT_THRESHOLD = 6;
 const LABEL_MIN_GAP = 22;
 /** Zoom at/above which every edge label renders; below it labels appear only
  * on hover, edge selection, or edges touching the selected node. */
-const LABEL_SHOW_ZOOM = 1.3;
+const LABEL_SHOW_ZOOM = 1.0;
 
 const GROUP_ORDER: string[] = [
   "surfaces",
   "control",
   "providers",
+  "ingest",
   "memory",
   "protection",
+  "learning",
   "host",
 ];
 
@@ -116,8 +139,10 @@ const GROUP_LABEL: Record<string, string> = {
   surfaces: "Surfaces",
   control: "Control Plane",
   providers: "Providers",
+  ingest: "Ingest",
   memory: "Memory Stores",
   protection: "Protection",
+  learning: "Learning Loop",
   host: "Host",
 };
 
@@ -138,10 +163,16 @@ const ROW_HINT: Record<string, number> = {
   watchdog: 1,
   gateway: 2,
   "hermes-cron": 3,
+  "mvms-watcher": 4,
+  "honcho-watcher": 5,
   // providers
   "chatgpt-backend": 0,
   "claude-max": 1,
   openrouter: 2,
+  // ingest
+  "ict-brain": 0,
+  opus_extractor: 1,
+  x_search: 2,
   // memory, sub-column 0 (consumers / APIs)
   "state-db": 0,
   "kanban-db": 1,
@@ -158,6 +189,12 @@ const ROW_HINT: Record<string, number> = {
   "nightly-backup": 0,
   veracrypt: 1,
   "backups-dir": 2,
+  "mvms-compactor": 3,
+  "off-box-backup-gap": 4,
+  // learning
+  "learning-verify": 0,
+  distiller: 1,
+  "reflect-gate": 2,
   // host
   "wsl-host": 0,
 };
@@ -216,6 +253,9 @@ interface OSNodeData extends Record<string, unknown> {
   kind: string;
   status: OSStatus;
   detail: string;
+  density?: "compact" | "detailed" | "icon-only";
+  metric?: string;
+  generatedAt?: string;
   onSelect: (id: string) => void;
 }
 
@@ -256,6 +296,10 @@ const OSFlowNode = memo(function OSFlowNode({
   const meta = osMeta(data.status);
   const attention = data.status === "red" || data.status === "amber";
   const [focusVisible, setFocusVisible] = useState(false);
+  const density = data.density ?? "compact";
+  const iconOnly = density === "icon-only";
+  const detailed = density === "detailed";
+  const iconBox = iconOnly ? 24 : 28;
   const nodeShadow = selected
     ? `0 0 0 1.5px ${meta.color}, 0 12px 34px -10px ${meta.color}55`
     : focusVisible
@@ -277,15 +321,16 @@ const OSFlowNode = memo(function OSFlowNode({
       onFocus={() => setFocusVisible(true)}
       onBlur={() => setFocusVisible(false)}
       style={{
-        width: NODE_W,
-        height: NODE_H,
+        width: iconOnly ? 36 : NODE_W,
+        height: iconOnly ? 36 : NODE_H,
         boxSizing: "border-box",
         position: "relative",
         display: "flex",
         alignItems: "center",
-        gap: 10,
-        padding: "9px 12px",
-        borderRadius: 12,
+        justifyContent: iconOnly ? "center" : undefined,
+        gap: iconOnly ? 0 : 8,
+        padding: iconOnly ? 5 : "6px 10px",
+        borderRadius: iconOnly ? 999 : 11,
         background:
           "linear-gradient(180deg, rgba(17,25,35,0.97) 0%, rgba(10,15,22,0.97) 100%)",
         border: `1px solid ${selected ? meta.color : meta.ring}`,
@@ -307,9 +352,9 @@ const OSFlowNode = memo(function OSFlowNode({
       <div
         style={{
           flexShrink: 0,
-          width: 32,
-          height: 32,
-          borderRadius: 9,
+          width: iconBox,
+          height: iconBox,
+          borderRadius: iconOnly ? 999 : 8,
           background: meta.soft,
           color: meta.color,
           display: "flex",
@@ -317,58 +362,77 @@ const OSFlowNode = memo(function OSFlowNode({
           justifyContent: "center",
         }}
       >
-        {kindIconElement(data.kind, { size: 17, strokeWidth: 2 })}
+        {kindIconElement(data.kind, { size: iconOnly ? 14 : 16, strokeWidth: 2 })}
       </div>
 
-      <div style={{ minWidth: 0, flex: 1 }}>
-        <div
-          style={{
-            fontSize: 13,
-            fontWeight: 600,
-            color: "var(--color-text-primary)",
-            whiteSpace: "nowrap",
-            overflow: "hidden",
-            textOverflow: "ellipsis",
-          }}
-        >
-          {data.label}
+      {!iconOnly && (
+        <div style={{ minWidth: 0, flex: 1 }}>
+          <div
+            style={{
+              fontSize: 12.5,
+              lineHeight: "16px",
+              fontWeight: 600,
+              color: "var(--color-text-primary)",
+              whiteSpace: "nowrap",
+              overflow: "hidden",
+              textOverflow: "ellipsis",
+            }}
+          >
+            {data.label}
+          </div>
+          <div
+            style={{
+              marginTop: 1,
+              fontSize: 9.5,
+              lineHeight: "12px",
+              letterSpacing: "0.08em",
+              textTransform: "uppercase",
+              color: "var(--color-text-secondary)",
+              whiteSpace: "nowrap",
+              overflow: "hidden",
+              textOverflow: "ellipsis",
+            }}
+          >
+            {data.kind.replace(/-/g, " ")}
+          </div>
+          {detailed && (
+            <div
+              style={{
+                marginTop: 1,
+                fontSize: 9,
+                lineHeight: "11px",
+                color: "var(--color-text-tertiary)",
+                whiteSpace: "nowrap",
+                overflow: "hidden",
+                textOverflow: "ellipsis",
+              }}
+            >
+              {data.metric ?? (data.generatedAt ? fmtTs(data.generatedAt) : "metric pending")}
+            </div>
+          )}
         </div>
-        <div
-          style={{
-            marginTop: 2,
-            fontSize: 10,
-            letterSpacing: "0.08em",
-            textTransform: "uppercase",
-            color: "var(--color-text-secondary)",
-            whiteSpace: "nowrap",
-            overflow: "hidden",
-            textOverflow: "ellipsis",
-          }}
-        >
-          {data.kind.replace(/-/g, " ")}
-        </div>
-      </div>
+      )}
 
       <span
         className={data.status === "red" ? "sh-pulse" : undefined}
         style={{
           position: "absolute",
-          top: 8,
-          right: 8,
-          width: 9,
-          height: 9,
+          top: iconOnly ? 2 : 7,
+          right: iconOnly ? 2 : 7,
+          width: iconOnly ? 7 : 8,
+          height: iconOnly ? 7 : 8,
           borderRadius: "50%",
           background: meta.color,
           boxShadow: `0 0 10px ${meta.color}`,
         }}
       />
-      {attention && (
+      {attention && !iconOnly && (
         <span
           style={{
             position: "absolute",
             left: 0,
-            top: 10,
-            bottom: 10,
+            top: 9,
+            bottom: 9,
             width: 3,
             borderRadius: 3,
             background: meta.color,
@@ -426,9 +490,9 @@ const NODE_TYPES = { os: OSFlowNode, "os-group": GroupLabelNode };
  * edges turn inside column gaps, never through a column of nodes) and a
  * pre-computed, de-overlapped label position.
  *
- * Labels are hidden at default zoom to keep the dense middle readable: an
- * edge shows its label only when hovered, selected, touching the selected
- * node (data.labelActive), or once the viewport zoom crosses LABEL_SHOW_ZOOM.
+ * Labels render at default zoom. Hover, edge selection, or edges touching the
+ * selected node (data.labelActive) still force visibility below the default
+ * zoom threshold.
  */
 const OSFlowEdge = memo(function OSFlowEdge({
   sourceX,
@@ -514,7 +578,6 @@ interface PreEdge {
 /** Lay graph nodes into group columns and translate edges into routed RF edges. */
 function buildFlow(
   graph: { nodes: OSGraphNode[]; edges: OSGraphEdge[] },
-  selectedId: string | null,
   onSelect: (id: string) => void,
 ): { nodes: CanvasNode[]; edges: OSRFEdge[] } {
   // 1. Bucket nodes by group, in architecture order (unknown groups appended).
@@ -592,7 +655,7 @@ function buildFlow(
       position: { x: p.x, y: p.y },
       width: NODE_W,
       height: NODE_H,
-      selected: p.node.id === selectedId,
+      selected: false,
       draggable: false,
       focusable: false,
       data: {
@@ -601,6 +664,7 @@ function buildFlow(
         kind: p.node.kind,
         status: p.node.status,
         detail: p.node.detail ?? "",
+        density: "compact",
         onSelect,
       },
     });
@@ -694,13 +758,10 @@ function buildFlow(
   const rfEdges: OSRFEdge[] = pre.map((p) => {
     const stateMeta = EDGE_STATE_META[p.edge.state] ?? EDGE_STATE_META.live;
     const worst =
-      (SEVERITY[p.src.node.status] ?? 1) >= (SEVERITY[p.tgt.node.status] ?? 1)
+      severityOf(p.src.node.status) >= severityOf(p.tgt.node.status)
         ? p.src.node.status
         : p.tgt.node.status;
     const color = stateMeta.color ?? osMeta(worst).color;
-    const onSelected =
-      selectedId !== null &&
-      (p.edge.source === selectedId || p.edge.target === selectedId);
     return {
       id: p.edge.id,
       type: "os",
@@ -708,13 +769,13 @@ function buildFlow(
       target: p.edge.target,
       sourceHandle: p.sourceHandle,
       targetHandle: p.targetHandle,
-      animated: onSelected,
+      animated: false,
       data: {
         centerX: p.centerX,
         labelX: p.label?.x,
         labelY: p.label?.y,
         labelText: p.edge.label,
-        labelActive: onSelected,
+        labelActive: false,
         labelColor:
           p.edge.state !== "live" && stateMeta.color
             ? stateMeta.color
@@ -722,9 +783,9 @@ function buildFlow(
       },
       style: {
         stroke: color,
-        strokeWidth: onSelected ? 2.2 : 1.4,
+        strokeWidth: 1.4,
         strokeDasharray: stateMeta.dash,
-        opacity: onSelected ? 0.95 : p.edge.state === "disabled" ? 0.45 : 0.62,
+        opacity: p.edge.state === "disabled" ? 0.45 : 0.62,
       },
       markerEnd: {
         type: MarkerType.ArrowClosed,
@@ -967,17 +1028,50 @@ function EdgeLegend() {
 // re-fits whenever fitKey changes (inspect panel open/close, container resize)
 // ---------------------------------------------------------------------------
 
+const VIEWPORT_STORAGE_KEY = "os-graph-viewport";
+
+function fitGraph(
+  fitView: ReturnType<typeof useReactFlow>["fitView"],
+  isMobile: boolean,
+) {
+  return fitView({
+    padding: isMobile ? 0.06 : 0.14,
+    minZoom: isMobile ? 0.4 : undefined,
+    duration: 240,
+  });
+}
+
+function readStoredViewport(): { x: number; y: number; zoom: number } | null {
+  if (typeof window === "undefined") return null;
+  try {
+    const raw = window.localStorage.getItem(VIEWPORT_STORAGE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as Partial<{ x: number; y: number; zoom: number }>;
+    if (
+      typeof parsed.x === "number" &&
+      typeof parsed.y === "number" &&
+      typeof parsed.zoom === "number"
+    ) {
+      return { x: parsed.x, y: parsed.y, zoom: parsed.zoom };
+    }
+  } catch {
+    // Ignore malformed or blocked localStorage; fitView remains the fallback.
+  }
+  return null;
+}
+
 function FitView({ fitKey, isMobile }: { fitKey: string; isMobile: boolean }) {
   const { fitView } = useReactFlow();
   const initialized = useNodesInitialized();
+  const skippedPersistedInitialFit = useRef(false);
   useEffect(() => {
-    const fit = () =>
-      void fitView({
-        padding: isMobile ? 0.06 : 0.14,
-        minZoom: isMobile ? 0.4 : undefined,
-        duration: 240,
-      });
+    const fit = () => void fitGraph(fitView, isMobile);
     if (initialized) {
+      if (!skippedPersistedInitialFit.current && readStoredViewport()) {
+        skippedPersistedInitialFit.current = true;
+        return;
+      }
+      skippedPersistedInitialFit.current = true;
       const raf = requestAnimationFrame(fit);
       return () => cancelAnimationFrame(raf);
     }
@@ -985,6 +1079,56 @@ function FitView({ fitKey, isMobile }: { fitKey: string; isMobile: boolean }) {
     return () => clearTimeout(fallback);
   }, [initialized, fitKey, fitView, isMobile]);
   return null;
+}
+
+function ViewportPersistence() {
+  const initialized = useNodesInitialized();
+  const { getViewport, setCenter, zoomTo } = useReactFlow();
+  const restoredRef = useRef(false);
+
+  useEffect(() => {
+    if (!initialized || restoredRef.current) return;
+    restoredRef.current = true;
+    const saved = readStoredViewport();
+    if (!saved) return;
+    const raf = requestAnimationFrame(() => {
+      void setCenter(saved.x, saved.y, { zoom: saved.zoom, duration: 0 });
+      void zoomTo(saved.zoom, { duration: 0 });
+    });
+    return () => cancelAnimationFrame(raf);
+  }, [initialized, setCenter, zoomTo]);
+
+  useEffect(() => {
+    if (!initialized || typeof window === "undefined") return;
+    const timer = window.setInterval(() => {
+      try {
+        window.localStorage.setItem(
+          VIEWPORT_STORAGE_KEY,
+          JSON.stringify(getViewport()),
+        );
+      } catch {
+        // localStorage may be unavailable in hardened/private contexts.
+      }
+    }, 2000);
+    return () => window.clearInterval(timer);
+  }, [getViewport, initialized]);
+
+  return null;
+}
+
+function FitViewButton({ isMobile }: { isMobile: boolean }) {
+  const { fitView } = useReactFlow();
+  return (
+    <button
+      type="button"
+      aria-label="Fit graph to viewport"
+      title="Fit graph"
+      onClick={() => void fitGraph(fitView, isMobile)}
+      className="absolute right-3 top-3 z-10 flex h-7 w-7 items-center justify-center rounded border border-border bg-card/90 text-text-secondary shadow-lg transition hover:bg-accent/30 hover:text-text-primary"
+    >
+      <Maximize2 className="h-3.5 w-3.5" />
+    </button>
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -1021,29 +1165,49 @@ export function OSNexus({ snapshot }: OSNexusProps) {
   }, []);
 
   const graph = snapshot.graph as OSSnapshot["graph"] | undefined;
-  const hasGraph = Boolean(graph && graph.nodes.length > 0);
+  const graphNodes = graph?.nodes ?? [];
+  const graphEdges = graph?.edges ?? [];
+  const hasGraph = graphNodes.length > 0;
 
   const { nodes, edges } = useMemo(
     () =>
-      hasGraph && graph
-        ? buildFlow(graph, selectedId, setSelectedId)
+      hasGraph
+        ? buildFlow({ nodes: graphNodes, edges: graphEdges }, setSelectedId)
         : { nodes: [] as CanvasNode[], edges: [] as OSRFEdge[] },
-    [hasGraph, graph, selectedId],
+    [hasGraph, graph?.nodes, graph?.edges],
   );
 
-  // Hovered edge surfaces its label without rebuilding the whole flow.
+  // Node selection and hovered/selected edge labels update without rebuilding layout.
+  const displayNodes = useMemo(
+    () =>
+      nodes.map((node) =>
+        node.type === "os" ? { ...node, selected: node.id === selectedId } : node,
+      ),
+    [nodes, selectedId],
+  );
+
   const displayEdges = useMemo(() => {
-    if (!hoveredEdgeId) return edges;
-    return edges.map((edge) =>
-      edge.id === hoveredEdgeId
-        ? { ...edge, data: { ...edge.data, labelActive: true } }
-        : edge,
-    );
-  }, [edges, hoveredEdgeId]);
+    if (!hoveredEdgeId && !selectedId) return edges;
+    return edges.map((edge) => {
+      const touchesSelection =
+        selectedId !== null && (edge.source === selectedId || edge.target === selectedId);
+      if (edge.id !== hoveredEdgeId && !touchesSelection) return edge;
+      return {
+        ...edge,
+        animated: touchesSelection,
+        data: { ...edge.data, labelActive: true },
+        style: {
+          ...edge.style,
+          strokeWidth: touchesSelection ? 2.2 : edge.style?.strokeWidth,
+          opacity: touchesSelection ? 0.95 : edge.style?.opacity,
+        },
+      };
+    });
+  }, [edges, hoveredEdgeId, selectedId]);
 
   const selected = useMemo(
-    () => graph?.nodes.find((n) => n.id === selectedId) ?? null,
-    [graph, selectedId],
+    () => graphNodes.find((n) => n.id === selectedId) ?? null,
+    [graphNodes, selectedId],
   );
   const selectedSection = useMemo(
     () =>
@@ -1075,7 +1239,7 @@ export function OSNexus({ snapshot }: OSNexusProps) {
       >
         <ReactFlow
           className="sh-flow os-flow"
-          nodes={nodes}
+          nodes={displayNodes}
           edges={displayEdges}
           nodeTypes={NODE_TYPES}
           edgeTypes={EDGE_TYPES}
@@ -1105,6 +1269,8 @@ export function OSNexus({ snapshot }: OSNexusProps) {
             color="rgba(124,145,168,0.16)"
           />
           <Controls showInteractive={false} position="bottom-right" />
+          <FitViewButton isMobile={isMobile} />
+          <ViewportPersistence />
           <FitView
             fitKey={`${selected ? "panel" : "full"}:${resizeTick}`}
             isMobile={isMobile}

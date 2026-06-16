@@ -1,45 +1,13 @@
+import type { ReactNode } from "react";
 import { AlertTriangle, CheckCircle2, RefreshCw, ShieldCheck, Sparkles } from "lucide-react";
-import type { LearningEmbedCoverage, LearningHistoryPoint, LearningResponse, LearningStatus } from "@/lib/api";
+import type { DistillerStatus, LearningResponse, LoopCriticStatus, RecallFilter } from "@/lib/api";
+import { STATUS_CFG, SEVERITY_SCORE, fmtTs, type Status } from "@/components/StatusKit/constants";
+import { MetricChip } from "@/components/StatusKit/MetricChip";
+import { StatusChip } from "@/components/StatusKit/StatusChip";
+import { StatusDot } from "@/components/StatusKit/StatusDot";
+import { LearningSparkline, Sparkline } from "@/components/StatusKit/Sparkline";
 
-const STATUS_CFG: Record<
-  LearningStatus,
-  { label: string; color: string; dot: string; chip: string; ring: string; soft: string }
-> = {
-  green: {
-    label: "Nominal",
-    color: "#4ade80",
-    dot: "bg-[#4ade80] shadow-[0_0_7px_#4ade80]",
-    chip: "bg-[rgba(74,222,128,0.12)] text-[#4ade80] border border-[rgba(74,222,128,0.35)]",
-    ring: "rgba(74,222,128,0.35)",
-    soft: "rgba(74,222,128,0.08)",
-  },
-  amber: {
-    label: "Degraded",
-    color: "#ffbd38",
-    dot: "bg-[#ffbd38] shadow-[0_0_7px_#ffbd38]",
-    chip: "bg-[rgba(255,189,56,0.12)] text-[#ffbd38] border border-[rgba(255,189,56,0.35)]",
-    ring: "rgba(255,189,56,0.45)",
-    soft: "rgba(255,189,56,0.07)",
-  },
-  red: {
-    label: "Critical",
-    color: "#fb2c36",
-    dot: "bg-[#fb2c36] shadow-[0_0_7px_#fb2c36]",
-    chip: "bg-[rgba(251,44,54,0.12)] text-[#fb2c36] border border-[rgba(251,44,54,0.40)]",
-    ring: "rgba(251,44,54,0.55)",
-    soft: "rgba(251,44,54,0.07)",
-  },
-  unknown: {
-    label: "Unknown",
-    color: "#7c91a8",
-    dot: "bg-[#7c91a8]",
-    chip: "bg-[rgba(124,145,168,0.10)] text-[#7c91a8] border border-[rgba(124,145,168,0.30)]",
-    ring: "rgba(124,145,168,0.30)",
-    soft: "rgba(124,145,168,0.06)",
-  },
-};
-
-function normalizeStatus(status: LearningResponse["status"]): LearningStatus {
+function normalizeStatus(status: LearningResponse["status"]): Status {
   return status === "green" || status === "amber" || status === "red" || status === "unknown" ? status : "unknown";
 }
 
@@ -60,180 +28,338 @@ function fmtPct(value: unknown, digits = 1): string {
   return `${pct.toLocaleString(undefined, { maximumFractionDigits: digits })}%`;
 }
 
-function fmtTs(iso: string | null | undefined): string {
+function fmtBool(value: boolean | null | undefined): string {
+  if (value === true) return "true";
+  if (value === false) return "false";
+  return "—";
+}
+
+function fmtDuration(secondsValue: unknown): string {
+  const seconds = finiteNumber(secondsValue);
+  if (seconds === null) return "—";
+  const clamped = Math.max(0, Math.floor(seconds));
+  const days = Math.floor(clamped / 86_400);
+  const hours = Math.floor((clamped % 86_400) / 3_600);
+  const minutes = Math.floor((clamped % 3_600) / 60);
+  if (days > 0) return `${days}d ${hours}h`;
+  if (hours > 0) return `${hours}h ${minutes}m`;
+  return `${minutes}m`;
+}
+
+function ageFromNow(iso: string | null | undefined): string {
   if (!iso) return "—";
-  try {
-    return new Date(iso).toLocaleString(undefined, {
-      month: "short",
-      day: "numeric",
-      hour: "2-digit",
-      minute: "2-digit",
-    });
-  } catch {
-    return iso;
-  }
+  const ts = Date.parse(iso);
+  if (!Number.isFinite(ts)) return "—";
+  return fmtDuration(Math.max(0, Math.floor((Date.now() - ts) / 1000)));
 }
 
-function StatusDot({ status, className = "" }: { status: LearningStatus; className?: string }) {
-  return <span className={`inline-block h-2.5 w-2.5 flex-shrink-0 rounded-full ${STATUS_CFG[status].dot} ${className}`} />;
+function noop(): void {
+  // MetricChip is button-shaped in StatusKit for OS focus affordances; this panel is read-only.
 }
 
-function StatusBadge({ status }: { status: LearningStatus }) {
+function statusMax(statuses: Status[]): Status {
+  return statuses.reduce<Status>((worst, next) => (SEVERITY_SCORE[next] > SEVERITY_SCORE[worst] ? next : worst), "green");
+}
+
+function PanelCard({
+  title,
+  kicker,
+  status = "info",
+  children,
+}: {
+  title: string;
+  kicker?: string;
+  status?: Status;
+  children: ReactNode;
+}) {
   const cfg = STATUS_CFG[status];
   return (
-    <span className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-semibold uppercase tracking-[0.12em] ${cfg.chip}`}>
+    <section className="min-w-[250px] rounded-lg border bg-card p-4" style={{ borderColor: cfg.ring, background: status === "info" ? undefined : cfg.soft }}>
+      <div className="mb-3 flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <h3 className="font-mondwest text-display text-xs tracking-[0.16em] text-text-primary">{title}</h3>
+          {kicker && <p className="mt-1 text-[11px] uppercase tracking-[0.14em] text-text-tertiary">{kicker}</p>}
+        </div>
+        <StatusDot status={status} className="mt-1" />
+      </div>
+      {children}
+    </section>
+  );
+}
+
+function DataRow({ label, value, emphasis = false }: { label: string; value: ReactNode; emphasis?: boolean }) {
+  return (
+    <div className="flex items-baseline justify-between gap-3 border-b border-border/50 py-1.5 last:border-b-0">
+      <span className="text-xs text-text-tertiary">{label}</span>
+      <span className={`${emphasis ? "text-sm" : "text-xs"} max-w-[60%] text-right font-mono text-text-primary`}>{value}</span>
+    </div>
+  );
+}
+
+function BooleanBadge({ label, value }: { label: string; value: boolean | null | undefined }) {
+  const status: Status = value === true ? "green" : value === false ? "amber" : "unknown";
+  const cfg = STATUS_CFG[status];
+  return (
+    <span className="inline-flex items-center gap-1 rounded-full border px-2 py-1 text-[11px]" style={{ borderColor: cfg.ring, background: cfg.soft, color: cfg.color }}>
       <StatusDot status={status} className="h-1.5 w-1.5" />
-      {cfg.label}
+      {label}: {fmtBool(value)}
     </span>
   );
 }
 
-function MetricChip({ label, value, status = "green" }: { label: string; value: string | number; status?: LearningStatus }) {
-  const cfg = STATUS_CFG[status];
-  return (
-    <div
-      className="inline-flex min-w-0 items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs"
-      style={{ borderColor: cfg.ring, background: cfg.soft }}
-      title={`${label}: ${value}`}
-    >
-      <StatusDot status={status} className="h-1.5 w-1.5" />
-      <span className="max-w-[9rem] truncate text-text-tertiary">{label}</span>
-      <span className="font-mono font-semibold text-text-primary">{value}</span>
-    </div>
-  );
-}
-
-function linePath(values: number[], width: number, height: number): string {
-  if (values.length === 0) return "";
-  const max = Math.max(1, ...values);
-  return values
-    .map((value, index) => {
-      const x = values.length === 1 ? width / 2 : (index / (values.length - 1)) * width;
-      const y = height - (value / max) * height;
-      return `${index === 0 ? "M" : "L"}${x.toFixed(1)},${y.toFixed(1)}`;
-    })
-    .join(" ");
-}
-
-function LearningSparkline({ points }: { points: LearningHistoryPoint[] }) {
-  const history = points.filter(Boolean).slice(-24);
-  const trusted = history.map((point) => finiteNumber(point.trusted_count) ?? 0);
-  const dupPct = history.map((point) => {
-    const ratio = finiteNumber(point.dup_ratio) ?? 0;
-    return Math.max(0, Math.min(100, Math.abs(ratio) <= 1 ? ratio * 100 : ratio));
-  });
-  const trustedMax = Math.max(1, ...trusted);
-
-  if (history.length === 0) {
-    return <div className="flex h-44 items-center justify-center rounded-lg border border-border bg-background/35 text-sm text-text-tertiary">No history_tail yet.</div>;
-  }
+function SignalPanel({ latest }: { latest: LearningResponse["snapshot_latest"] }) {
+  const signalScore = finiteNumber(latest?.SIGNAL_SCORE);
+  const actionableScore = finiteNumber(latest?.ACTIONABLE_SIGNAL_SCORE);
+  const gap = signalScore !== null && actionableScore !== null ? actionableScore - signalScore : null;
+  const trustedCount = finiteNumber(latest?.trusted_count);
+  const lessonsTotal = finiteNumber(latest?.lessons_total);
+  const trustedRatio = finiteNumber(latest?.trusted_ratio) ?? (trustedCount !== null && lessonsTotal ? trustedCount / lessonsTotal : null);
+  const dupRatio = finiteNumber(latest?.dup_ratio);
+  const gapStatus: Status = gap !== null && gap >= 5 ? "amber" : "green";
 
   return (
-    <div className="rounded-lg border border-border bg-background/35 p-3">
-      <div className="mb-2 flex flex-wrap items-center gap-3 text-xs text-text-tertiary">
-        <span className="inline-flex items-center gap-1.5"><span className="h-2 w-2 rounded-full bg-[#4ade80]" />trusted_count</span>
-        <span className="inline-flex items-center gap-1.5"><span className="h-2 w-2 rounded-full bg-[#ffbd38]" />dup_ratio %</span>
-        <span className="ml-auto font-mono">{fmtTs(history.at(-1)?.generated_at)}</span>
-      </div>
-      <svg viewBox="0 0 320 128" className="h-40 w-full overflow-visible" role="img" aria-label="Learning trusted count and duplicate ratio history">
-        <defs>
-          <linearGradient id="learningTrustedFill" x1="0" x2="0" y1="0" y2="1">
-            <stop offset="0%" stopColor="#4ade80" stopOpacity="0.38" />
-            <stop offset="100%" stopColor="#4ade80" stopOpacity="0.06" />
-          </linearGradient>
-        </defs>
-        {[0, 32, 64, 96, 128].map((y) => (
-          <line key={y} x1="0" x2="320" y1={y} y2={y} stroke="rgba(124,145,168,0.16)" strokeWidth="1" />
-        ))}
-        {trusted.map((value, index) => {
-          const x = trusted.length === 1 ? 156 : (index / (trusted.length - 1)) * 312;
-          const height = Math.max(5, (value / trustedMax) * 96);
-          return (
-            <rect
-              key={`${history[index]?.generated_at ?? index}-trusted`}
-              x={x}
-              y={124 - height}
-              width="8"
-              height={height}
-              rx="3"
-              fill="url(#learningTrustedFill)"
-            />
-          );
-        })}
-        <path d={linePath(dupPct, 320, 112)} fill="none" stroke="#ffbd38" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" />
-      </svg>
-    </div>
-  );
-}
-
-function CanaryBadge({ result }: { result: LearningResponse["result_latest"] }) {
-  const passed = result?.pass === true;
-  const failed = result?.pass === false;
-  const status: LearningStatus = passed ? "green" : failed ? "red" : "unknown";
-  const cfg = STATUS_CFG[status];
-  return (
-    <div className="rounded-lg border bg-card p-4" style={{ borderColor: cfg.ring, background: cfg.soft }}>
-      <div className="flex items-center gap-2">
-        <span className="flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-md border" style={{ borderColor: cfg.ring, color: cfg.color }}>
-          {passed ? <ShieldCheck className="h-5 w-5" /> : <AlertTriangle className="h-5 w-5" />}
-        </span>
-        <div className="min-w-0 flex-1">
-          <p className="font-mondwest text-display text-sm tracking-[0.14em]" style={{ color: cfg.color }}>Canary {passed ? "passed" : failed ? "failed" : "unknown"}</p>
-          <p className="mt-0.5 text-xs text-text-tertiary">rank <span className="font-mono text-text-primary">{fmtNumber(result?.rank)}</span></p>
+    <PanelCard title="1 · SIGNAL" kicker="pollution gap headline" status={gapStatus}>
+      <div className="grid grid-cols-2 gap-2">
+        <div className="rounded-md border border-border bg-background/35 p-3">
+          <p className="text-[11px] uppercase tracking-[0.14em] text-text-tertiary">SIGNAL_SCORE</p>
+          <p className="mt-1 font-mono text-3xl font-semibold text-text-primary">{fmtNumber(signalScore, 3)}</p>
+        </div>
+        <div className="rounded-md border border-[rgba(255,189,56,0.45)] bg-[rgba(255,189,56,0.07)] p-3">
+          <p className="text-[11px] uppercase tracking-[0.14em] text-warning">ACTIONABLE</p>
+          <p className="mt-1 font-mono text-3xl font-semibold text-warning">{fmtNumber(actionableScore, 3)}</p>
         </div>
       </div>
-      <p className="mt-3 break-all font-mono text-[11px] text-text-secondary">{result?.planted_uuid ?? "No planted UUID reported"}</p>
-    </div>
+      <p className="mt-2 text-xs text-text-secondary">1-vs-8 pollution gap: <span className="font-mono text-text-primary">{gap === null ? "—" : fmtNumber(gap, 3)}</span></p>
+      <div className="mt-3 space-y-1">
+        <DataRow label="trusted_count / ratio" value={`${fmtNumber(trustedCount)} / ${fmtPct(trustedRatio)}`} />
+        <DataRow label="dup_ratio" value={fmtPct(dupRatio)} />
+        <DataRow label="lessons total / 7d" value={`${fmtNumber(latest?.lessons_total)} / ${fmtNumber(latest?.lessons_last_7d)}`} />
+        <DataRow label="authored_by_agent" value={fmtNumber(latest?.lessons_authored_by_agent)} />
+        <DataRow label="completions_total" value={fmtNumber(latest?.actionable_lessons_total)} />
+      </div>
+    </PanelCard>
   );
 }
 
-function ImportanceHistogram({ hist }: { hist?: Record<string, number | undefined> | null }) {
-  const rows = ["2", "3", "4", "5"].map((key) => ({ key, value: finiteNumber(hist?.[key]) ?? 0 }));
-  const max = Math.max(1, ...rows.map((row) => row.value));
+function CanaryPanel({ snapshot }: { snapshot: LearningResponse }) {
+  const canary = snapshot.canary ?? null;
+  const result = snapshot.result_latest ?? null;
+  const passed = canary?.pass ?? result?.pass;
+  const status: Status = passed === true ? "green" : passed === false ? "red" : "unknown";
+  const embedPresent = canary?.embed_present;
+  const confidenceStatus: Status = embedPresent === true ? "green" : embedPresent === false ? "amber" : "unknown";
+  const confidence = embedPresent === true ? "Confidence: semantic" : embedPresent === false ? "Confidence: hybrid (text+kanban, no vector embedding)" : "Confidence: unknown";
+
   return (
-    <div className="rounded-lg border border-border bg-card p-4">
-      <h3 className="font-mondwest text-display text-xs tracking-[0.16em] text-text-primary">Importance histogram</h3>
-      <div className="mt-4 space-y-3">
-        {rows.map((row) => (
+    <PanelCard title="2 · CANARY VECTOR-CONFIDENCE" kicker="trap honesty" status={status}>
+      <div className="flex items-center gap-2">
+        <span className="flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-md border" style={{ borderColor: STATUS_CFG[status].ring, color: STATUS_CFG[status].color }}>
+          {passed === true ? <ShieldCheck className="h-5 w-5" /> : <AlertTriangle className="h-5 w-5" />}
+        </span>
+        <div className="min-w-0 flex-1">
+          <p className="font-mondwest text-display text-sm tracking-[0.14em]" style={{ color: STATUS_CFG[status].color }}>
+            Canary {passed === true ? "passed" : passed === false ? "failed" : "unknown"}
+          </p>
+          <p className="mt-0.5 text-xs text-text-tertiary">rank <span className="font-mono text-text-primary">{fmtNumber(canary?.rank ?? result?.rank)}</span></p>
+        </div>
+      </div>
+      <div className="mt-3 rounded-md border px-3 py-2 text-xs" style={{ borderColor: STATUS_CFG[confidenceStatus].ring, background: STATUS_CFG[confidenceStatus].soft, color: STATUS_CFG[confidenceStatus].color }}>
+        {confidence}
+      </div>
+      <div className="mt-3 space-y-1">
+        <DataRow label="recalled" value={fmtNumber(canary?.recalled)} />
+        <DataRow label="avoided_mistake" value={fmtBool(canary?.avoided_mistake)} />
+        <DataRow label="mode" value={canary?.mode ?? "—"} />
+        <DataRow label="planted_uuid" value={<span className="break-all">{result?.planted_uuid ?? "—"}</span>} />
+      </div>
+    </PanelCard>
+  );
+}
+
+function RecallPanel({ filters, latest }: { filters: RecallFilter | null | undefined; latest: LearningResponse["snapshot_latest"] }) {
+  const autoBridged = finiteNumber(latest?.auto_bridged_count) ?? 0;
+  const quarantine = finiteNumber(latest?.quarantine_count) ?? 0;
+  const lessonsTotal = finiteNumber(latest?.lessons_total) ?? 0;
+  const excludedTotal = autoBridged + quarantine;
+  const denominator = lessonsTotal > 0 ? lessonsTotal : excludedTotal;
+  const autoPct = denominator > 0 ? autoBridged / denominator : null;
+
+  return (
+    <PanelCard title="3 · RECALL QUALITY" kicker="filters + impact" status={filters ? "green" : "unknown"}>
+      {!filters ? (
+        <p className="rounded-md border border-border bg-background/35 p-3 text-xs text-text-tertiary">No recall filters configured</p>
+      ) : (
+        <>
+          <div className="flex flex-wrap gap-2">
+            <BooleanBadge label="include_quarantine" value={filters?.include_quarantine} />
+            <BooleanBadge label="exclude_auto_bridged" value={filters?.exclude_auto_bridged} />
+          </div>
+          <div className="mt-3 space-y-1">
+            <DataRow label="effective" value={filters?.effective ?? "—"} />
+            <DataRow label="excluded auto-bridged" value={`${fmtNumber(autoBridged)} (${fmtPct(autoPct)})`} />
+            <DataRow label="excluded quarantine" value={fmtNumber(quarantine)} />
+          </div>
+          <p className="mt-3 text-xs text-text-secondary">
+            Impact: excluded {fmtNumber(autoBridged)} auto-bridged ({fmtPct(autoPct)}), {fmtNumber(quarantine)} quarantine.
+          </p>
+        </>
+      )}
+    </PanelCard>
+  );
+}
+
+function DistillerPanel({ distiller }: { distiller: DistillerStatus | null | undefined }) {
+  const frozen = distiller?.frozen_since === "2026-05-15";
+  return (
+    <PanelCard title="4 · DISTILLER STATUS" kicker="queue freeze visibility" status={frozen ? "amber" : distiller ? "green" : "unknown"}>
+      {frozen && (
+        <div className="mb-3 rounded-md border border-[rgba(255,189,56,0.45)] bg-[rgba(255,189,56,0.09)] px-3 py-2 text-xs font-semibold uppercase tracking-[0.12em] text-warning">
+          DISTILLER FROZEN · open inbox
+        </div>
+      )}
+      {!distiller ? (
+        <p className="rounded-md border border-border bg-background/35 p-3 text-xs text-text-tertiary">Distiller data unavailable</p>
+      ) : (
+        <div className="space-y-1">
+          <DataRow label="pending / approved / rejected" value={`${fmtNumber(distiller?.pending)} / ${fmtNumber(distiller?.approved)} / ${fmtNumber(distiller?.rejected)}`} emphasis />
+          <DataRow label="oldest pending age" value={ageFromNow(distiller?.oldest_pending_ts)} />
+          <DataRow label="oldest pending ts" value={fmtTs(distiller?.oldest_pending_ts)} />
+          <DataRow label="last promotion" value={fmtTs(distiller?.last_promotion_ts)} />
+          <DataRow label="stale_count" value={fmtNumber(distiller?.stale_count)} />
+          <DataRow label="frozen_since" value={distiller?.frozen_since ?? "—"} />
+        </div>
+      )}
+    </PanelCard>
+  );
+}
+
+function LoopCriticPanel({ critic }: { critic: LoopCriticStatus | null | undefined }) {
+  const checks = Object.entries(critic?.checks ?? {});
+  const checkStatuses = checks.map(([, pass]) => (pass ? "green" : "red") as Status);
+  return (
+    <PanelCard title="5 · LOOP-CRITIC" kicker="7 hard checks" status={critic ? statusMax(checkStatuses) : "unknown"}>
+      {!critic ? (
+        <p className="rounded-md border border-border bg-background/35 p-3 text-xs text-text-tertiary">Loop critic data unavailable</p>
+      ) : (
+        <>
+          <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+            {checks.length === 0 && <p className="text-xs text-text-tertiary">No critic checks reported.</p>}
+            {checks.map(([name, pass]) => (
+              <div key={name} className="flex items-center gap-2 rounded-md border border-border bg-background/35 px-2 py-1.5 text-xs">
+                <StatusDot status={pass ? "green" : "red"} className="h-1.5 w-1.5" />
+                <span className="truncate text-text-secondary" title={name}>{name}</span>
+              </div>
+            ))}
+          </div>
+          <div className="mt-3 space-y-1">
+            <DataRow label="quarantine_last_7d" value={fmtNumber(critic?.quarantine_last_7d)} />
+            <DataRow label="next run countdown" value={fmtDuration(critic?.next_run_countdown_seconds)} />
+          </div>
+        </>
+      )}
+    </PanelCard>
+  );
+}
+
+function ImportanceAndEmbedPanel({ latest }: { latest: LearningResponse["snapshot_latest"] }) {
+  const coverage = latest?.embed_coverage ?? null;
+  const entries = Object.entries(coverage ?? {}).sort(([a], [b]) => {
+    if (a === "completion") return -1;
+    if (b === "completion") return 1;
+    return a.localeCompare(b);
+  });
+  const histRows = ["2", "3", "4", "5"].map((key) => ({ key, value: finiteNumber(latest?.importance_hist?.[key]) ?? 0 }));
+  const histMax = Math.max(1, ...histRows.map((row) => row.value));
+
+  return (
+    <PanelCard title="6 · HISTOGRAM + EMBED COVERAGE" kicker="completion laggard vs 95% gate" status="info">
+      <div className="space-y-2">
+        {histRows.map((row) => (
           <div key={row.key} className="grid grid-cols-[2.5rem_1fr_3rem] items-center gap-2 text-xs">
             <span className="font-mono text-text-tertiary">imp {row.key}</span>
-            <div className="h-3 overflow-hidden rounded-full bg-border">
-              <span className="block h-full rounded-full bg-accent" style={{ width: `${Math.max(3, (row.value / max) * 100)}%` }} />
+            <div className="h-2.5 overflow-hidden rounded-full bg-border">
+              <span className="block h-full rounded-full bg-accent" style={{ width: `${Math.max(3, (row.value / histMax) * 100)}%` }} />
             </div>
             <span className="text-right font-mono text-text-primary">{fmtNumber(row.value)}</span>
           </div>
         ))}
       </div>
-    </div>
-  );
-}
-
-function EmbedCoverage({ coverage }: { coverage?: LearningEmbedCoverage | null }) {
-  const entries = Object.entries(coverage ?? {}).sort(([a], [b]) => a.localeCompare(b));
-  return (
-    <div className="rounded-lg border border-border bg-card p-4">
-      <h3 className="font-mondwest text-display text-xs tracking-[0.16em] text-text-primary">Embed coverage</h3>
       <div className="mt-4 space-y-3">
         {entries.length === 0 && <p className="text-xs text-text-tertiary">No embed_coverage data.</p>}
         {entries.map(([kind, item]) => {
           const embedded = finiteNumber(item?.embedded) ?? 0;
           const total = finiteNumber(item?.total) ?? 0;
-          const ratio = finiteNumber(item?.ratio) ?? (total > 0 ? embedded / total : 0);
-          const pct = Math.max(0, Math.min(100, Math.abs(ratio) <= 1 ? ratio * 100 : ratio));
+          const ratio = finiteNumber(item?.ratio) ?? (total > 0 ? embedded / total : null);
+          const pct = Math.max(0, Math.min(100, Math.abs(ratio ?? 0) <= 1 ? (ratio ?? 0) * 100 : ratio ?? 0));
+          const coverageStatus: Status = pct >= 95 ? "green" : kind === "completion" ? "amber" : "info";
           return (
             <div key={kind}>
               <div className="mb-1 flex items-baseline justify-between gap-2 text-xs">
-                <span className="truncate font-semibold text-text-primary">{kind}</span>
+                <span className="truncate font-semibold text-text-primary">{kind}{kind === "completion" ? " · laggard" : ""}</span>
                 <span className="font-mono text-text-secondary">{fmtNumber(embedded)} / {fmtNumber(total)} · {fmtPct(ratio)}</span>
               </div>
               <div className="h-2 overflow-hidden rounded-full bg-border">
-                <span className="block h-full rounded-full bg-[#4ade80]" style={{ width: `${pct}%` }} />
+                <span className="block h-full rounded-full" style={{ width: `${pct}%`, background: STATUS_CFG[coverageStatus].color }} />
               </div>
             </div>
           );
         })}
       </div>
-    </div>
+    </PanelCard>
+  );
+}
+
+function HistoryPanel({ history }: { history: LearningResponse["history_tail"] }) {
+  return (
+    <PanelCard title="7 · LEARNING HISTORY" kicker="trusted_count + dup_ratio" status="info">
+      <LearningSparkline points={history ?? []} />
+    </PanelCard>
+  );
+}
+
+function WeeklyHygienePanel({ weekly }: { weekly: LearningResponse["weekly_hygiene_latest"] }) {
+  return (
+    <PanelCard title="8 · WEEKLY-HYGIENE DIGEST" kicker="latest hygiene pulse" status={weekly ? "green" : "unknown"}>
+      {!weekly ? (
+        <p className="rounded-md border border-border bg-background/35 p-3 text-xs text-text-tertiary">Weekly hygiene data unavailable</p>
+      ) : (
+        <div className="space-y-1">
+          <DataRow label="lesson_completion_ratio" value={fmtPct(weekly?.lesson_completion_ratio)} />
+          <DataRow label="embedding coverage" value={weekly?.embedding_coverage_summary ?? "—"} />
+          <DataRow label="stuck_ready" value={fmtNumber(weekly?.stuck_ready)} />
+          <DataRow label="ts" value={fmtTs(weekly?.ts)} />
+        </div>
+      )}
+    </PanelCard>
+  );
+}
+
+function ThroughputPanel({ distiller }: { distiller: DistillerStatus | null | undefined }) {
+  const pending = finiteNumber(distiller?.pending);
+  const approved = finiteNumber(distiller?.approved);
+  const rejected = finiteNumber(distiller?.rejected);
+  const total = (pending ?? 0) + (approved ?? 0) + (rejected ?? 0);
+  const approvalRatio = total > 0 && approved !== null ? approved / total : null;
+  const rejectionRatio = total > 0 && rejected !== null ? rejected / total : null;
+  const sparkPoints = [
+    { date: "pending", count: pending ?? 0 },
+    { date: "approved", count: approved ?? 0 },
+    { date: "rejected", count: rejected ?? 0 },
+  ];
+
+  return (
+    <PanelCard title="9 · LOOP THROUGHPUT" kicker="velocity, not vibes" status={distiller ? "info" : "unknown"}>
+      <div className="space-y-1">
+        <DataRow label="scan queue" value={distiller ? `${fmtNumber(total)} items observed` : "TBD"} />
+        <DataRow label="promote rate" value={distiller ? fmtPct(approvalRatio) : "TBD"} />
+        <DataRow label="reject rate" value={distiller ? fmtPct(rejectionRatio) : "TBD"} />
+        <DataRow label="pending pressure" value={distiller ? fmtNumber(pending) : "TBD"} />
+      </div>
+      {distiller && <div className="mt-3"><Sparkline points={sparkPoints} /></div>}
+      <p className="mt-3 text-xs text-text-tertiary">
+        Rates are derived from distiller pending/approved/rejected counts until backend exposes real scan/promote/reject deltas.
+      </p>
+    </PanelCard>
   );
 }
 
@@ -273,31 +399,34 @@ export function LearningPanel({ snapshot, loading, error, onRefresh }: LearningP
             </h2>
             <p className="mt-0.5 text-xs text-text-tertiary">read-only MVMS lesson quality + canary surface</p>
           </div>
-          <StatusBadge status={status} />
+          <StatusChip status={status} />
           <button type="button" onClick={onRefresh} aria-label="Refresh learning snapshot" className="flex-shrink-0 rounded-md border border-border p-1.5 text-text-secondary transition hover:text-text-primary">
             <RefreshCw className={`h-4 w-4 ${loading ? "animate-spin" : ""}`} />
           </button>
         </div>
 
         <div className="mt-3 flex flex-wrap gap-2" aria-label="Learning metric chips">
-          <MetricChip label="SIGNAL_SCORE" value={fmtNumber(latest?.SIGNAL_SCORE, 3)} status={status} />
-          <MetricChip label="trusted_count" value={fmtNumber(latest?.trusted_count)} status="green" />
-          <MetricChip label="dup_ratio" value={fmtPct(dupRatio)} status={dupRatio > 0.18 ? "amber" : "green"} />
-          <MetricChip label="auto_bridged noise" value={fmtNumber(bridged)} status={bridged > 0 ? "amber" : "green"} />
-          <MetricChip label="quarantine_count" value={fmtNumber(quarantine)} status={quarantine > 0 ? "amber" : "green"} />
-          <MetricChip label="trusted_ratio" value={fmtPct(latest?.trusted_ratio)} status="green" />
-          <MetricChip label="lessons_total" value={fmtNumber(latest?.lessons_total)} status="unknown" />
+          <MetricChip label="SIGNAL_SCORE" value={fmtNumber(latest?.SIGNAL_SCORE, 3)} status={status} onClick={noop} />
+          <MetricChip label="ACTIONABLE_SIGNAL_SCORE" value={fmtNumber(latest?.ACTIONABLE_SIGNAL_SCORE, 3)} status="amber" onClick={noop} />
+          <MetricChip label="trusted_count" value={fmtNumber(latest?.trusted_count)} status="green" onClick={noop} />
+          <MetricChip label="dup_ratio" value={fmtPct(dupRatio)} status={dupRatio > 0.18 ? "amber" : "green"} onClick={noop} />
+          <MetricChip label="auto_bridged noise" value={fmtNumber(bridged)} status={bridged > 0 ? "amber" : "green"} onClick={noop} />
+          <MetricChip label="quarantine_count" value={fmtNumber(quarantine)} status={quarantine > 0 ? "amber" : "green"} onClick={noop} />
+          <MetricChip label="trusted_ratio" value={fmtPct(latest?.trusted_ratio)} status="green" onClick={noop} />
+          <MetricChip label="lessons_total" value={fmtNumber(latest?.lessons_total)} status="unknown" onClick={noop} />
         </div>
       </section>
 
-      <div className="mt-4 grid grid-cols-1 gap-3 xl:grid-cols-[minmax(0,1.5fr)_minmax(280px,0.75fr)]">
-        <LearningSparkline points={history} />
-        <CanaryBadge result={snapshot.result_latest} />
-      </div>
-
-      <div className="mt-3 grid grid-cols-1 gap-3 lg:grid-cols-2">
-        <ImportanceHistogram hist={latest?.importance_hist} />
-        <EmbedCoverage coverage={latest?.embed_coverage} />
+      <div className="mt-4 grid grid-cols-1 gap-3 lg:grid-cols-2 xl:grid-cols-3" aria-label="Learning 9-panel cockpit">
+        <SignalPanel latest={latest} />
+        <CanaryPanel snapshot={snapshot} />
+        <RecallPanel filters={snapshot.recall_filters ?? null} latest={latest} />
+        <DistillerPanel distiller={snapshot.distiller ?? null} />
+        <LoopCriticPanel critic={snapshot.loop_critic ?? null} />
+        <ImportanceAndEmbedPanel latest={latest} />
+        <HistoryPanel history={history} />
+        <WeeklyHygienePanel weekly={snapshot.weekly_hygiene_latest ?? null} />
+        <ThroughputPanel distiller={snapshot.distiller ?? null} />
       </div>
 
       {(errors.length > 0 || latest === null) && (

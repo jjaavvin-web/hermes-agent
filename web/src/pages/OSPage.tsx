@@ -86,9 +86,17 @@ const STATUS_CFG: Record<
     ring: "rgba(124,145,168,0.30)",
     soft: "rgba(124,145,168,0.06)",
   },
+  info: {
+    label: "Info",
+    color: "#6b9bd1",
+    dot: "bg-[#6b9bd1]",
+    chip: "bg-[rgba(107,155,209,0.10)] text-[#6b9bd1] border border-[rgba(107,155,209,0.30)]",
+    ring: "rgba(107,155,209,0.30)",
+    soft: "rgba(107,155,209,0.06)",
+  },
 };
 
-const SEVERITY_SCORE: Record<OSStatus, number> = { red: 3, amber: 2, unknown: 1, green: 0 };
+const SEVERITY_SCORE: Record<OSStatus, number> = { red: 3, amber: 2, unknown: 1, green: 0, info: 0 };
 
 function fmtTs(iso: string | null | undefined): string {
   if (!iso) return "—";
