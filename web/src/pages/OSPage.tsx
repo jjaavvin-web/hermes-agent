@@ -20,6 +20,7 @@ import {
   Workflow,
 } from "lucide-react";
 import { usePageHeader } from "@/contexts/usePageHeader";
+import { useBelowBreakpoint } from "@nous-research/ui/hooks/use-below-breakpoint";
 import { OSNexus } from "@/components/os/OSNexus";
 import {
   api,
@@ -38,10 +39,14 @@ type OSView = "nexus" | "grid";
 const VIEW_STORAGE_KEY = "os-view";
 
 function loadStoredView(): OSView {
+  if (typeof window === "undefined") return "nexus";
   try {
-    return window.localStorage.getItem(VIEW_STORAGE_KEY) === "grid" ? "grid" : "nexus";
+    const stored = window.localStorage.getItem(VIEW_STORAGE_KEY);
+    if (stored === "grid") return "grid";
+    if (stored === "nexus") return "nexus";
+    return window.innerWidth < 1024 ? "grid" : "nexus";
   } catch {
-    return "nexus";
+    return window.innerWidth < 1024 ? "grid" : "nexus";
   }
 }
 
@@ -52,7 +57,7 @@ const STATUS_CFG: Record<
   green: {
     label: "Nominal",
     color: "#4ade80",
-    dot: "bg-[#4ade80]",
+    dot: "bg-[#4ade80] shadow-[0_0_7px_#4ade80]",
     chip: "bg-[rgba(74,222,128,0.12)] text-[#4ade80] border border-[rgba(74,222,128,0.35)]",
     ring: "rgba(74,222,128,0.35)",
     soft: "rgba(74,222,128,0.08)",
@@ -60,7 +65,7 @@ const STATUS_CFG: Record<
   amber: {
     label: "Degraded",
     color: "#ffbd38",
-    dot: "bg-[#ffbd38] shadow-[0_0_6px_#ffbd38]",
+    dot: "bg-[#ffbd38] shadow-[0_0_7px_#ffbd38]",
     chip: "bg-[rgba(255,189,56,0.12)] text-[#ffbd38] border border-[rgba(255,189,56,0.35)]",
     ring: "rgba(255,189,56,0.45)",
     soft: "rgba(255,189,56,0.07)",
@@ -121,7 +126,12 @@ function StatusDot({ status, className = "" }: { status: OSStatus; className?: s
 
 function StatusChip({ status }: { status: OSStatus }) {
   const cfg = STATUS_CFG[status];
-  return <span className={`flex-shrink-0 rounded-full px-2 py-0.5 text-xs font-semibold ${cfg.chip}`}>{cfg.label}</span>;
+  return (
+    <span className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-semibold uppercase tracking-[0.12em] ${cfg.chip}`}>
+      <StatusDot status={status} className="h-1.5 w-1.5" />
+      {cfg.label}
+    </span>
+  );
 }
 
 function MetricChip({
@@ -140,7 +150,7 @@ function MetricChip({
     <button
       type="button"
       onClick={onClick}
-      className="inline-flex min-w-0 items-center gap-1.5 rounded-full border px-2.5 py-1 text-left text-xs transition hover:bg-accent/30"
+      className="inline-flex min-h-[44px] min-w-0 max-sm:flex-shrink-0 items-center gap-1.5 rounded-full border px-2.5 py-1 text-left text-xs transition hover:bg-accent/30 sm:min-h-0"
       style={{ borderColor: cfg.ring, background: cfg.soft }}
       title={`${label}: ${value}`}
     >
@@ -168,19 +178,47 @@ function DiagnosticRow({ diag }: { diag: OSDiagnostic }) {
 }
 
 function Sparkline({ points }: { points: Array<{ date?: string; count?: number }> }) {
-  const values = points.map((point) => Number(point.count || 0));
+  // dup of LearningSparkline -- see P6
+  const history = points.filter(Boolean).slice(-24);
+  const values = history.map((point) => Number(point.count || 0));
   const max = Math.max(1, ...values);
+
+  if (history.length === 0) {
+    return <div className="flex h-44 items-center justify-center rounded-lg border border-border bg-background/35 text-sm text-text-tertiary">No recent task creation</div>;
+  }
+
   return (
-    <div className="flex h-10 items-end gap-1" aria-label="7 day task creation sparkline">
-      {values.length === 0 && <span className="text-xs text-text-tertiary">No recent task creation</span>}
-      {values.map((value, index) => (
-        <span
-          key={`${points[index]?.date ?? index}-${index}`}
-          className="w-3 rounded-t bg-accent"
-          style={{ height: `${Math.max(10, (value / max) * 40)}px`, opacity: 0.35 + (value / max) * 0.65 }}
-          title={`${points[index]?.date ?? "day"}: ${value}`}
-        />
-      ))}
+    <div className="rounded-lg border border-border bg-background/35 p-3">
+      <div className="mb-2 flex flex-wrap items-center gap-3 text-xs text-text-tertiary">
+        <span className="inline-flex items-center gap-1.5"><span className="h-2 w-2 rounded-full bg-[#4ade80]" />created</span>
+        <span className="ml-auto font-mono">{history.at(-1)?.date ?? "latest"}</span>
+      </div>
+      <svg viewBox="0 0 320 128" className="h-40 w-full overflow-visible" role="img" aria-label="OS task creation history">
+        <defs>
+          <linearGradient id="osActivityFill" x1="0" x2="0" y1="0" y2="1">
+            <stop offset="0%" stopColor="#4ade80" stopOpacity="0.38" />
+            <stop offset="100%" stopColor="#4ade80" stopOpacity="0.06" />
+          </linearGradient>
+        </defs>
+        {[0, 32, 64, 96, 128].map((y) => (
+          <line key={y} x1="0" x2="320" y1={y} y2={y} stroke="rgba(124,145,168,0.16)" strokeWidth="1" />
+        ))}
+        {values.map((value, index) => {
+          const x = values.length === 1 ? 156 : (index / (values.length - 1)) * 312;
+          const height = Math.max(5, (value / max) * 96);
+          return (
+            <rect
+              key={`${history[index]?.date ?? index}-created`}
+              x={x}
+              y={124 - height}
+              width="8"
+              height={height}
+              rx="3"
+              fill="url(#osActivityFill)"
+            />
+          );
+        })}
+      </svg>
     </div>
   );
 }
@@ -188,11 +226,12 @@ function Sparkline({ points }: { points: Array<{ date?: string; count?: number }
 interface HeroProps {
   snapshot: OSSnapshot;
   loading: boolean;
+  isMobile: boolean;
   onRefresh: () => void;
   onFocusSection: (id: string) => void;
 }
 
-function Hero({ snapshot, loading, onRefresh, onFocusSection }: HeroProps) {
+function Hero({ snapshot, loading, isMobile, onRefresh, onFocusSection }: HeroProps) {
   const overall = STATUS_CFG[snapshot.overall];
   const redCount = snapshot.diagnostics.filter((d) => d.severity === "red").length;
   const amberCount = snapshot.diagnostics.length - redCount;
@@ -217,12 +256,12 @@ function Hero({ snapshot, loading, onRefresh, onFocusSection }: HeroProps) {
           <p className="mt-0.5 text-xs text-text-tertiary">{snapshot.sections.length} cards · updated {fmtTs(snapshot.generated_at)}</p>
         </div>
         <StatusChip status={snapshot.overall} />
-        <button type="button" onClick={onRefresh} aria-label="Refresh OS snapshot" className="flex-shrink-0 rounded-md border border-border p-1.5 text-text-secondary transition hover:text-text-primary">
+        <button type="button" onClick={onRefresh} aria-label="Refresh OS snapshot" className="min-h-[44px] min-w-[44px] flex-shrink-0 rounded-md border border-border p-2.5 text-text-secondary transition hover:text-text-primary sm:min-h-0 sm:min-w-0 sm:p-1.5">
           <RefreshCw className={`h-4 w-4 ${loading ? "animate-spin" : ""}`} />
         </button>
       </div>
 
-      <div className="mt-3 flex flex-wrap gap-2" aria-label="OS consolidated hero chips">
+      <div className="mt-3 flex flex-wrap gap-2.5 max-sm:flex-nowrap max-sm:overflow-x-auto sm:gap-2" aria-label="OS consolidated hero chips">
         <MetricChip label="posture" value={STATUS_CFG[snapshot.attention?.posture ?? snapshot.overall].label} status={snapshot.attention?.posture ?? snapshot.overall} onClick={() => onFocusSection("gateway")} />
         {attention.length === 0 ? (
           <MetricChip label="attention" value="0" status="green" onClick={() => onFocusSection("gateway")} />
@@ -241,7 +280,7 @@ function Hero({ snapshot, loading, onRefresh, onFocusSection }: HeroProps) {
 
       {snapshot.diagnostics.length > 0 && (
         <ul className="mt-3 space-y-1.5" aria-label="Diagnostics">
-          {snapshot.diagnostics.slice(0, 4).map((diag, i) => <DiagnosticRow key={`${diag.source}-${i}`} diag={diag} />)}
+          {snapshot.diagnostics.slice(0, isMobile ? 2 : 4).map((diag, i) => <DiagnosticRow key={`${diag.source}-${i}`} diag={diag} />)}
         </ul>
       )}
     </section>
@@ -334,7 +373,7 @@ function SectionCard({ section, expanded, extra, onToggle }: SectionCardProps) {
     <div id={`os-card-${section.id}`} className="flex scroll-mt-24 flex-col self-start overflow-hidden rounded-lg border bg-card" style={{ borderColor: attention ? cfg.ring : undefined }}>
       <button type="button" onClick={onToggle} aria-expanded={expanded} className="flex w-full items-center gap-2.5 px-4 py-3 text-left transition hover:bg-accent/30">
         <StatusDot status={section.status} />
-        <span className="font-mondwest text-display min-w-0 flex-1 truncate text-xs tracking-[0.12em] text-text-primary">{section.label}</span>
+        <span className="font-mondwest text-display min-w-0 flex-1 truncate text-xs tracking-[0.16em] text-text-primary">{section.label}</span>
         {attention && <StatusChip status={section.status} />}
         {expanded ? <ChevronUp className="h-3.5 w-3.5 flex-shrink-0 text-text-tertiary" /> : <ChevronDown className="h-3.5 w-3.5 flex-shrink-0 text-text-tertiary" />}
       </button>
@@ -369,6 +408,7 @@ function SectionCard({ section, expanded, extra, onToggle }: SectionCardProps) {
 
 export default function OSPage() {
   const { setTitle } = usePageHeader();
+  const isMobile = useBelowBreakpoint(1024);
   const [snapshot, setSnapshot] = useState<OSSnapshot | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
@@ -447,21 +487,22 @@ export default function OSPage() {
   const data = snapshot as OSSnapshot;
 
   return (
-    <div className={`bg-background p-4 text-text-primary ${view === "nexus" ? "flex min-h-[540px] flex-col h-[calc(100dvh-152px)] sm:h-[calc(100dvh-160px)] lg:h-[calc(100dvh-112px)]" : "min-h-0"}`}>
-      <div className="mb-3 flex flex-shrink-0 items-center gap-1.5 text-xs text-text-tertiary">
+    <div className={`bg-background p-4 text-text-primary ${view === "nexus" ? "flex min-h-[540px] flex-col lg:h-[calc(100dvh-112px)]" : "min-h-0"}`}>
+      {/* 152/160/112px offsets are top nav + page header + p-4 shell padding; lg drops the mobile bottom-nav height. */}
+      <div className="mb-3 flex flex-shrink-0 flex-wrap items-center gap-x-1.5 gap-y-2 text-xs text-text-tertiary">
         <Server className="h-3.5 w-3.5" />
         <span className="font-mondwest text-display tracking-[0.16em]">Infrastructure Operating Status</span>
-        {error && <span className="text-warning">· refresh failed: {error}</span>}
+        {error && <span className="min-w-0 truncate text-warning">· refresh failed: {error}</span>}
         <div className="ml-auto flex flex-shrink-0 overflow-hidden rounded-md border border-border" role="group" aria-label="OS view">
-          <button type="button" onClick={() => setView("nexus")} aria-pressed={view === "nexus"} className={`flex items-center gap-1.5 px-2.5 py-1 text-xs font-semibold transition ${view === "nexus" ? "bg-accent/40 text-text-primary" : "text-text-tertiary hover:text-text-primary"}`}><Workflow className="h-3.5 w-3.5" />Nexus</button>
-          <button type="button" onClick={() => setView("grid")} aria-pressed={view === "grid"} className={`flex items-center gap-1.5 border-l border-border px-2.5 py-1 text-xs font-semibold transition ${view === "grid" ? "bg-accent/40 text-text-primary" : "text-text-tertiary hover:text-text-primary"}`}><LayoutGrid className="h-3.5 w-3.5" />Grid</button>
+          <button type="button" onClick={() => setView("nexus")} aria-pressed={view === "nexus"} className={`flex min-h-[44px] items-center gap-1.5 px-2.5 py-1 text-xs font-semibold transition sm:min-h-0 ${view === "nexus" ? "bg-accent/40 text-text-primary" : "text-text-tertiary hover:text-text-primary"}`}><Workflow className="h-3.5 w-3.5" />Nexus</button>
+          <button type="button" onClick={() => setView("grid")} aria-pressed={view === "grid"} className={`flex min-h-[44px] items-center gap-1.5 border-l border-border px-2.5 py-1 text-xs font-semibold transition sm:min-h-0 ${view === "grid" ? "bg-accent/40 text-text-primary" : "text-text-tertiary hover:text-text-primary"}`}><LayoutGrid className="h-3.5 w-3.5" />Grid</button>
         </div>
       </div>
 
-      <Hero snapshot={data} loading={loading} onRefresh={() => void loadSnapshot()} onFocusSection={focusSection} />
+      <Hero snapshot={data} loading={loading} isMobile={isMobile} onRefresh={() => void loadSnapshot()} onFocusSection={focusSection} />
 
       {view === "nexus" ? (
-        <div className="mt-3 min-h-[420px] min-w-0 flex-1"><OSNexus snapshot={data} /></div>
+        <div className="mt-3 h-[70vh] min-h-[420px] min-w-0 lg:h-auto lg:flex-1"><OSNexus snapshot={data} /></div>
       ) : (
         <>
           <div className="mt-4 grid grid-cols-1 items-start gap-3 pb-8 sm:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-4">

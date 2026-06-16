@@ -6,7 +6,7 @@ const STATUS_CFG: Record<
   { label: string; color: string; dot: string; chip: string; ring: string; soft: string }
 > = {
   green: {
-    label: "Green",
+    label: "Nominal",
     color: "#4ade80",
     dot: "bg-[#4ade80] shadow-[0_0_7px_#4ade80]",
     chip: "bg-[rgba(74,222,128,0.12)] text-[#4ade80] border border-[rgba(74,222,128,0.35)]",
@@ -14,7 +14,7 @@ const STATUS_CFG: Record<
     soft: "rgba(74,222,128,0.08)",
   },
   amber: {
-    label: "Amber",
+    label: "Degraded",
     color: "#ffbd38",
     dot: "bg-[#ffbd38] shadow-[0_0_7px_#ffbd38]",
     chip: "bg-[rgba(255,189,56,0.12)] text-[#ffbd38] border border-[rgba(255,189,56,0.35)]",
@@ -22,7 +22,7 @@ const STATUS_CFG: Record<
     soft: "rgba(255,189,56,0.07)",
   },
   red: {
-    label: "Red",
+    label: "Critical",
     color: "#fb2c36",
     dot: "bg-[#fb2c36] shadow-[0_0_7px_#fb2c36]",
     chip: "bg-[rgba(251,44,54,0.12)] text-[#fb2c36] border border-[rgba(251,44,54,0.40)]",
