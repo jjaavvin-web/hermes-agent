@@ -239,13 +239,36 @@ class HonchoMemoryProvider(MemoryProvider):
     def name(self) -> str:
         return "honcho"
 
+    # LOKI-10: TTL cache for the /health probe so is_available() stays a fast check
+    # on hot availability-walk paths and hits the network at most once per window.
+    _HEALTH_CACHE: dict = {}  # base_url -> (ok: bool, checked_at_monotonic: float)
+    _HEALTH_TTL = 20.0        # seconds
+
     def is_available(self) -> bool:
-        """Check if Honcho is configured. No network calls."""
+        """Check if Honcho is configured AND healthy (fast /health probe, ~20s TTL-cached).
+        Returns False on outage so availability degrades loudly instead of silently."""
         try:
             from plugins.memory.honcho.client import HonchoClientConfig
             cfg = HonchoClientConfig.from_global_config()
             # Port #2645: baseUrl-only verification — api_key OR base_url suffices
-            return cfg.enabled and bool(cfg.api_key or cfg.base_url)
+            if not (cfg.enabled and (cfg.api_key or cfg.base_url)):
+                return False
+            base_url = (cfg.base_url or "").rstrip("/") or "http://127.0.0.1:8000"
+            import time
+            now = time.monotonic()
+            cached = self._HEALTH_CACHE.get(base_url)
+            if cached is not None and (now - cached[1]) < self._HEALTH_TTL:
+                return cached[0]
+            ok = False
+            try:
+                import httpx
+                resp = httpx.get(f"{base_url}/health", timeout=0.5)
+                ok = resp.status_code == 200
+            except Exception:
+                # network unreachable / timeout / endpoint down -> fail loud (unavailable)
+                ok = False
+            self._HEALTH_CACHE[base_url] = (ok, now)
+            return ok
         except Exception:
             return False
 
