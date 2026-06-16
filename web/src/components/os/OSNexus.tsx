@@ -38,6 +38,7 @@ import {
 import "@xyflow/react/dist/style.css";
 import "@/components/system-health/system-health.css";
 import { X } from "lucide-react";
+import { useBelowBreakpoint } from "@nous-research/ui/hooks/use-below-breakpoint";
 import type {
   OSDiagnostic,
   OSGraphEdge,
@@ -752,6 +753,14 @@ interface InspectPanelProps {
 function InspectPanel({ node, section, diagnostics, onClose }: InspectPanelProps) {
   const meta = osMeta(node.status);
 
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [onClose]);
+
   return (
     <aside
       className="flex h-full w-full flex-col overflow-hidden rounded-lg border border-border bg-card"
@@ -765,7 +774,7 @@ function InspectPanel({ node, section, diagnostics, onClose }: InspectPanelProps
           {kindIconElement(node.kind, { size: 16, strokeWidth: 2 })}
         </span>
         <div className="min-w-0 flex-1">
-          <h3 className="truncate text-sm font-semibold text-text-primary">
+          <h3 className="break-words text-sm font-semibold text-text-primary">
             {node.label}
           </h3>
           <p className="mt-0.5 text-xs tracking-[0.06em] text-text-secondary">
@@ -963,6 +972,7 @@ interface OSNexusProps {
 export function OSNexus({ snapshot }: OSNexusProps) {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [hoveredEdgeId, setHoveredEdgeId] = useState<string | null>(null);
+  const isMobile = useBelowBreakpoint(1024);
 
   // Re-fit the graph when the canvas geometry changes (inspect panel toggling
   // the flex row, window/container resizes). Debounced so drag-resizes settle.
@@ -1031,7 +1041,7 @@ export function OSNexus({ snapshot }: OSNexusProps) {
 
   return (
     <div className="flex h-full w-full gap-3">
-      {/* Graph canvas — shares the row with the inspect panel (no overlay). */}
+      {/* Graph canvas — shares the row with the inspect panel on desktop; full-width behind a sheet on mobile. */}
       <div
         ref={canvasRef}
         className="relative h-full min-w-0 flex-1 overflow-hidden rounded-lg border border-border bg-[#070a0f]"
@@ -1069,16 +1079,33 @@ export function OSNexus({ snapshot }: OSNexusProps) {
         <EdgeLegend />
       </div>
 
-      {selected && (
-        <div className="h-full w-80 flex-shrink-0 xl:w-96">
-          <InspectPanel
-            node={selected}
-            section={selectedSection}
-            diagnostics={selectedDiagnostics}
-            onClose={() => setSelectedId(null)}
-          />
-        </div>
-      )}
+      {selected &&
+        (isMobile ? (
+          <>
+            <div
+              className="fixed inset-0 z-40 bg-black/50"
+              onClick={() => setSelectedId(null)}
+              aria-hidden="true"
+            />
+            <div className="fixed inset-x-0 bottom-0 z-50 flex max-h-[75dvh] flex-col rounded-t-2xl border-t border-border bg-card shadow-2xl">
+              <InspectPanel
+                node={selected}
+                section={selectedSection}
+                diagnostics={selectedDiagnostics}
+                onClose={() => setSelectedId(null)}
+              />
+            </div>
+          </>
+        ) : (
+          <div className="h-full w-80 flex-shrink-0 xl:w-96">
+            <InspectPanel
+              node={selected}
+              section={selectedSection}
+              diagnostics={selectedDiagnostics}
+              onClose={() => setSelectedId(null)}
+            />
+          </div>
+        ))}
     </div>
   );
 }
