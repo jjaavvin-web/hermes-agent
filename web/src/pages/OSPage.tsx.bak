@@ -21,9 +21,9 @@ import {
   Workflow,
 } from "lucide-react";
 import { usePageHeader } from "@/contexts/usePageHeader";
+import { useBelowBreakpoint } from "@nous-research/ui/hooks/use-below-breakpoint";
 import { OSNexus } from "@/components/os/OSNexus";
 import { GitTopology } from "@/components/os/GitTopology";
-import { DiagnosticsDrawer } from "@/components/os/DiagnosticsDrawer";
 import {
   api,
   type OSActivitySnapshot,
@@ -237,32 +237,22 @@ function Sparkline({ points }: { points: Array<{ date?: string; count?: number }
 interface HeroProps {
   snapshot: OSSnapshot;
   loading: boolean;
+  isMobile: boolean;
   onRefresh: () => void;
   onFocusSection: (id: string) => void;
 }
 
-function Hero({ snapshot, loading, onRefresh, onFocusSection }: HeroProps) {
-  const [moreOpen, setMoreOpen] = useState(false);
-  const [diagDrawerOpen, setDiagDrawerOpen] = useState(false);
+function Hero({ snapshot, loading, isMobile, onRefresh, onFocusSection }: HeroProps) {
   const overall = STATUS_CFG[snapshot.overall];
-  const diagnostics = snapshot.diagnostics ?? [];
-  const infoDiagnostics = snapshot.info ?? [];
-  const allDiagnostics = [...diagnostics, ...infoDiagnostics];
-  const redCount = diagnostics.filter((d) => d.severity === "red").length;
-  const amberCount = diagnostics.filter((d) => d.severity === "amber").length;
-  const findingCount = redCount + amberCount;
+  const redCount = snapshot.diagnostics.filter((d) => d.severity === "red").length;
+  const amberCount = snapshot.diagnostics.length - redCount;
   const repo = snapshot.repo;
   const repoSummary = repo?.summary;
   const work = snapshot.work;
   const workCounts = work?.counts;
   const activity = snapshot.activity;
   const attention = snapshot.attention?.chips ?? [];
-  const bestMove = String(repo?.best_move?.text ?? "");
-  const repoStatus = findSection(snapshot, "repo")?.status ?? "unknown";
-  const dirtyCount = repoSummary?.total_uncommitted ?? 0;
-  const decisionCount = workCounts?.decisions ?? 0;
-  const stalledCount = workCounts?.stalled ?? 0;
-  const hasSecondaryMetrics = attention.length > 0 || dirtyCount > 0 || decisionCount > 0 || stalledCount > 0;
+  const bestMove = String(repo?.best_move?.text ?? "No git move available");
 
   return (
     <section className="flex-shrink-0 rounded-lg border bg-card p-4" style={{ borderColor: snapshot.overall === "green" ? undefined : overall.ring }} aria-label="Overall status">
@@ -272,7 +262,7 @@ function Hero({ snapshot, loading, onRefresh, onFocusSection }: HeroProps) {
         </span>
         <div className="min-w-[180px] flex-1">
           <h2 className="font-mondwest text-display text-base tracking-[0.12em]" style={{ color: overall.color }}>
-            {findingCount === 0 ? "All systems nominal" : `${findingCount} finding${findingCount === 1 ? "" : "s"} — ${redCount} red · ${amberCount} amber`}
+            {snapshot.diagnostics.length === 0 ? "All systems nominal" : `${snapshot.diagnostics.length} finding${snapshot.diagnostics.length === 1 ? "" : "s"} — ${redCount} red · ${amberCount} amber`}
           </h2>
           <p className="mt-0.5 text-xs text-text-tertiary">{snapshot.sections.length} cards · updated {fmtTs(snapshot.generated_at)}</p>
         </div>
@@ -282,83 +272,41 @@ function Hero({ snapshot, loading, onRefresh, onFocusSection }: HeroProps) {
         </button>
       </div>
 
-      <div className="mt-3 flex flex-wrap gap-2.5 sm:gap-2" aria-label="OS primary hero chips">
+      <div className="mt-3 flex flex-wrap gap-2.5 sm:gap-2" aria-label="OS consolidated hero chips">
         <MetricChip label="posture" value={STATUS_CFG[snapshot.attention?.posture ?? snapshot.overall].label} status={snapshot.attention?.posture ?? snapshot.overall} onClick={() => onFocusSection("gateway")} />
-        <MetricChip label="git readiness" value={`${repo?.readiness_pct ?? 0}%`} status={repoStatus} onClick={() => onFocusSection("repo")} />
+        {attention.length === 0 ? (
+          <MetricChip label="attention" value="0" status="green" onClick={() => onFocusSection("gateway")} />
+        ) : attention.map((chip) => (
+          <MetricChip key={`${chip.source}-${chip.detail}`} label={chip.label} value="needs eyes" status={chip.status} onClick={() => onFocusSection(chip.section_id)} />
+        ))}
+        <MetricChip label="git readiness" value={`${repo?.readiness_pct ?? 0}%`} status={findSection(snapshot, "repo")?.status ?? "unknown"} onClick={() => onFocusSection("repo")} />
+        <MetricChip label="dirty" value={repoSummary?.total_uncommitted ?? 0} status={(repoSummary?.total_uncommitted ?? 0) > 0 ? "amber" : "green"} onClick={() => onFocusSection("repo")} />
+        <MetricChip label="best move" value={bestMove.length > 34 ? `${bestMove.slice(0, 34)}…` : bestMove} status={findSection(snapshot, "repo")?.status ?? "unknown"} onClick={() => onFocusSection("repo")} />
         <MetricChip label="projects" value={`${work?.projects_completion_pct ?? 0}%`} status={findSection(snapshot, "work")?.status ?? "unknown"} onClick={() => onFocusSection("work")} />
-        <MetricChip label="live" value={workCounts?.live_runtimes ?? work?.live_runtimes ?? 0} status={(workCounts?.live_runtimes ?? work?.live_runtimes ?? 0) > 0 ? "green" : "amber"} onClick={() => onFocusSection("work")} />
+        <MetricChip label="decisions" value={workCounts?.decisions ?? 0} status={(workCounts?.decisions ?? 0) > 0 ? "amber" : "green"} onClick={() => onFocusSection("work")} />
+        <MetricChip label="live" value={workCounts?.live_runtimes ?? 0} status={(workCounts?.live_runtimes ?? 0) > 0 ? "green" : "amber"} onClick={() => onFocusSection("work")} />
+        <MetricChip label="stalled" value={workCounts?.stalled ?? 0} status={(workCounts?.stalled ?? 0) > 0 ? "amber" : "green"} onClick={() => onFocusSection("work")} />
         <MetricChip label="7d tasks" value={activity?.created_7d ?? 0} status={findSection(snapshot, "activity")?.status ?? "unknown"} onClick={() => onFocusSection("activity")} />
-        <button
-          type="button"
-          onClick={() => setMoreOpen((open) => !open)}
-          aria-expanded={moreOpen}
-          className="inline-flex min-h-[44px] max-sm:flex-shrink-0 items-center gap-1.5 rounded-full border border-border px-2.5 py-1 text-xs text-text-tertiary transition hover:bg-accent/30 hover:text-text-primary sm:min-h-0"
-        >
-          More <ChevronDown className={`h-3.5 w-3.5 transition ${moreOpen ? "rotate-180" : ""}`} />
-        </button>
       </div>
-      <button
-        type="button"
-        onClick={() => onFocusSection("repo")}
-        className="mt-3 flex w-full items-center gap-2 rounded-lg border px-3 py-2 text-left transition hover:bg-accent/30"
-        style={{ borderColor: STATUS_CFG[repoStatus].ring, background: STATUS_CFG[repoStatus].soft }}
-        title="Focus repo section"
-      >
-        <StatusDot status={repoStatus} />
-        <span className="flex-shrink-0 text-xs font-semibold uppercase tracking-[0.12em] text-text-tertiary">Best move</span>
-        <span className="min-w-0 flex-1 break-words text-sm font-semibold text-text-primary">{bestMove || "No move available"}</span>
-        <span className="flex-shrink-0 text-xs text-text-tertiary">focus repo →</span>
-      </button>
 
-
-      {moreOpen && (
-        <div className="mt-3 rounded-lg border border-border bg-background/40 p-3" aria-label="OS secondary hero metrics">
-          {hasSecondaryMetrics && (
-            <div className="flex flex-wrap gap-2.5 sm:gap-2">
-              {attention.map((chip) => (
-                <MetricChip key={`${chip.source}-${chip.detail}`} label={chip.label} value="needs eyes" status={chip.status} onClick={() => onFocusSection(chip.section_id)} />
-              ))}
-              {dirtyCount > 0 && <MetricChip label="dirty" value={dirtyCount} status="amber" onClick={() => onFocusSection("repo")} />}
-              {decisionCount > 0 && <MetricChip label="decisions" value={decisionCount} status="amber" onClick={() => onFocusSection("work")} />}
-              {stalledCount > 0 && <MetricChip label="stalled" value={stalledCount} status="amber" onClick={() => onFocusSection("work")} />}
-            </div>
-          )}
-          {allDiagnostics.length > 0 && (
-            <button
-              type="button"
-              onClick={() => setDiagDrawerOpen(true)}
-              className="mt-2 text-xs text-text-tertiary underline decoration-dotted underline-offset-4 transition hover:text-text-primary"
-            >
-              Show all ({allDiagnostics.length}) diagnostics
-            </button>
-          )}
-        </div>
-      )}
-
-      {diagnostics.length > 0 && (
-        <ul className="mt-3 space-y-1.5" aria-label="Diagnostics preview">
-          {diagnostics.slice(0, 4).map((diag, i) => <DiagnosticRow key={`${diag.source}-${i}`} diag={diag} />)}
+      {snapshot.diagnostics.length > 0 && (
+        <ul className="mt-3 space-y-1.5" aria-label="Diagnostics">
+          {snapshot.diagnostics.slice(0, isMobile ? 2 : 4).map((diag, i) => <DiagnosticRow key={`${diag.source}-${i}`} diag={diag} />)}
         </ul>
       )}
 
-      {allDiagnostics.length > 0 && (
-        <button
-          type="button"
-          onClick={() => setDiagDrawerOpen(true)}
-          className="mt-2 text-xs text-text-tertiary underline decoration-dotted underline-offset-4 transition hover:text-text-primary"
-        >
-          Show all ({allDiagnostics.length}) diagnostics · info muted/excluded from counts
-        </button>
+      {(snapshot.info ?? []).length > 0 && (
+        <details className="mt-2">
+          <summary className="cursor-pointer list-none text-xs text-text-tertiary transition hover:text-text-secondary">
+            ⓘ {(snapshot.info ?? []).length} informational · routine, excluded from status
+          </summary>
+          <ul className="mt-1.5 space-y-1 opacity-70" aria-label="Informational items">
+            {(snapshot.info ?? []).map((diag, i) => (
+              <DiagnosticRow key={`info-${diag.source}-${i}`} diag={diag} />
+            ))}
+          </ul>
+        </details>
       )}
-
-      <DiagnosticsDrawer
-        diagnostics={allDiagnostics}
-        open={diagDrawerOpen}
-        onOpenChange={setDiagDrawerOpen}
-        redCount={redCount}
-        amberCount={amberCount}
-        infoCount={infoDiagnostics.length}
-      />
     </section>
   );
 }
@@ -484,6 +432,7 @@ function SectionCard({ section, expanded, extra, onToggle }: SectionCardProps) {
 
 export default function OSPage() {
   const { setTitle } = usePageHeader();
+  const isMobile = useBelowBreakpoint(1024);
   const [snapshot, setSnapshot] = useState<OSSnapshot | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
@@ -574,7 +523,7 @@ export default function OSPage() {
         </div>
       </div>
 
-      <Hero snapshot={data} loading={loading} onRefresh={() => void loadSnapshot()} onFocusSection={focusSection} />
+      <Hero snapshot={data} loading={loading} isMobile={isMobile} onRefresh={() => void loadSnapshot()} onFocusSection={focusSection} />
 
       {view === "nexus" ? (
         <div className="mt-3 h-[70vh] min-h-[420px] min-w-0 lg:h-auto lg:flex-1"><OSNexus snapshot={data} /></div>
