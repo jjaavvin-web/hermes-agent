@@ -5,14 +5,13 @@ session search, web extraction, vision analysis, browser vision) picks up
 the best available backend without duplicating fallback logic.
 
 Resolution order for text tasks (auto mode):
-  1. User's main provider + main model (used regardless of provider type —
-     aggregators, direct API-key providers, native Anthropic, Codex, etc.)
-  2. OpenRouter  (OPENROUTER_API_KEY)
-  3. Nous Portal (~/.hermes/auth.json active provider)
-  4. Custom endpoint (config.yaml model.base_url + OPENAI_API_KEY)
-  5. Native Anthropic
-  6. Direct API-key providers (z.ai/GLM, Kimi/Moonshot, MiniMax, MiniMax-CN)
-  7. None
+  1. Fail-closed to the sanctioned subscription provider
+     (openai-codex / gpt-5.5).
+  2. None / BLOCKED_RUNTIME.
+
+``provider: auto`` is intentionally not an aggregator discovery chain. It must
+never silently route auxiliary work to OpenRouter or any other paid API-key
+fallback.
 
 Resolution order for vision/multimodal tasks (auto mode):
   1. Selected main provider, if it is one of the supported vision backends below
@@ -31,13 +30,13 @@ a model (auxiliary.<task>.provider + auxiliary.<task>.model).
 
 Per-task overrides are configured in config.yaml under the ``auxiliary:`` section
 (e.g. ``auxiliary.vision.provider``, ``auxiliary.compression.model``).
-Default "auto" follows the chains above.
+Default "auto" follows the fail-closed subscription route above.
 
 Payment / credit exhaustion fallback:
-  When a resolved provider returns HTTP 402 or a credit-related error,
-  call_llm() automatically retries with the next available provider in the
-  auto-detection chain.  This handles the common case where a user depletes
-  their OpenRouter balance but has Codex OAuth or another provider available.
+  A literal ``provider: auto`` never falls through to OpenRouter or any paid
+  API-key route. If the sanctioned subscription provider is unavailable or
+  returns a capacity/billing error, the auxiliary call raises/returns
+  BLOCKED_RUNTIME and logs the blocked fallback loudly.
 """
 
 import json
@@ -498,6 +497,9 @@ _AUTH_JSON_PATH = get_hermes_home() / "auth.json"
 # they want explicitly (from config.yaml model.model, auxiliary.<task>.model,
 # or the user's active Codex model selection).
 _CODEX_AUX_BASE_URL = "https://chatgpt.com/backend-api/codex"
+_SANCTIONED_AUTO_PROVIDER = "openai-codex"
+_SANCTIONED_AUTO_MODEL = "gpt-5.5"
+_BLOCKED_RUNTIME = "BLOCKED_RUNTIME"
 
 
 def _codex_cloudflare_headers(access_token: str) -> Dict[str, str]:
@@ -3125,124 +3127,49 @@ def _resolve_single_provider(
     return client
 
 def _resolve_auto(main_runtime: Optional[Dict[str, Any]] = None) -> Tuple[Optional[OpenAI], Optional[str]]:
-    """Full auto-detection chain.
+    """Fail-closed auto routing for text auxiliary tasks.
 
-    Priority:
-      1. User's main provider + main model, regardless of provider type.
-         This means auxiliary tasks (compression, vision, web extraction,
-         session search, etc.) use the same model the user configured for
-         chat.  Users on OpenRouter/Nous get their chosen chat model; users
-         on DeepSeek/ZAI/Alibaba get theirs; etc.  Running aux tasks on the
-         user's picked model keeps behavior predictable — no surprise
-         switches to a cheap fallback model for side tasks.
-      2. OpenRouter → Nous → custom → Codex → API-key providers (fallback
-         chain, only used when the main provider has no working client).
+    ``provider: auto`` is not a paid-provider discovery chain.  It may only
+    resolve to the sanctioned subscription route (openai-codex / gpt-5.5).  If
+    that route is unavailable, return ``(None, None)`` and log
+    ``BLOCKED_RUNTIME`` instead of trying OpenRouter/Nous/custom/API-key
+    fallbacks.
     """
-    global auxiliary_is_nous, _stale_base_url_warned
-    auxiliary_is_nous = False  # Reset — _try_nous() will set True if it wins
-    runtime = _normalize_main_runtime(main_runtime)
-    runtime_provider = runtime.get("provider", "")
-    runtime_model = str(runtime.get("model") or "")
-    runtime_base_url = str(runtime.get("base_url") or "")
-    runtime_api_key = runtime.get("api_key", "")
-    runtime_api_mode = str(runtime.get("api_mode") or "")
+    global auxiliary_is_nous
+    auxiliary_is_nous = False
 
-    # Fall back to process-local globals when main_runtime dict was not
-    # provided or was incomplete.  ``set_runtime_main()`` now records
-    # base_url/api_key/api_mode alongside provider/model, so custom:
-    # providers get the full credential surface in Step 1 of the
-    # auto-detect chain.
-    if not runtime_base_url and _RUNTIME_MAIN_BASE_URL:
-        runtime_base_url = _RUNTIME_MAIN_BASE_URL
-    if not runtime_api_key and _RUNTIME_MAIN_API_KEY:
-        runtime_api_key = _RUNTIME_MAIN_API_KEY
-    if not runtime_api_mode and _RUNTIME_MAIN_API_MODE:
-        runtime_api_mode = _RUNTIME_MAIN_API_MODE
+    client, resolved = resolve_provider_client(
+        _SANCTIONED_AUTO_PROVIDER,
+        _SANCTIONED_AUTO_MODEL,
+        api_mode="codex_responses",
+        main_runtime=main_runtime,
+    )
+    if client is None:
+        logger.error(
+            "%s: auxiliary provider 'auto' blocked — sanctioned provider "
+            "%s/%s is unavailable; OpenRouter/paid fallback is disabled.",
+            _BLOCKED_RUNTIME,
+            _SANCTIONED_AUTO_PROVIDER,
+            _SANCTIONED_AUTO_MODEL,
+        )
+        return None, None
 
-    # ── Warn once if OPENAI_BASE_URL is set but config.yaml uses a named
-    #    provider (not 'custom').  This catches the common "env poisoning"
-    #    scenario where a user switches providers via `hermes model` but the
-    #    old OPENAI_BASE_URL lingers in ~/.hermes/.env. ──
-    if not _stale_base_url_warned:
-        _env_base = os.getenv("OPENAI_BASE_URL", "").strip()
-        _cfg_provider = runtime_provider or _read_main_provider()
-        if (_env_base and _cfg_provider
-                and _cfg_provider != "custom"
-                and not _cfg_provider.startswith("custom:")):
-            logger.warning(
-                "OPENAI_BASE_URL is set (%s) but model.provider is '%s'. "
-                "Auxiliary clients may route to the wrong endpoint. "
-                "Run: hermes model to reconfigure, or remove "
-                "OPENAI_BASE_URL from ~/.hermes/.env",
-                _env_base, _cfg_provider,
-            )
-            _stale_base_url_warned = True
+    base_url = str(getattr(client, "base_url", "") or "")
+    if base_url_host_matches(base_url, "openrouter.ai"):
+        logger.error(
+            "%s: auxiliary provider 'auto' attempted to resolve to OpenRouter "
+            "(%s); blocked by fail-closed no-paid-fallback policy.",
+            _BLOCKED_RUNTIME,
+            base_url,
+        )
+        return None, None
 
-    # ── Step 1: main provider + main model → use them directly ──
-    #
-    # This is the primary aux backend for every user.  "auto" means
-    # "use my main chat model for side tasks as well" — including users
-    # on aggregators (OpenRouter, Nous) who previously got routed to a
-    # cheap provider-side default.  Explicit per-task overrides set via
-    # config.yaml (auxiliary.<task>.provider) still win over this.
-    main_provider = str(runtime_provider or _read_main_provider() or "")
-    main_model = str(runtime_model or _read_main_model() or "")
-    if (main_provider and main_model
-            and main_provider not in {"auto", ""}):
-        resolved_provider = main_provider
-        explicit_base_url = runtime_base_url or None
-        explicit_api_key = None
-        if runtime_base_url and (main_provider == "custom" or main_provider.startswith("custom:")):
-            resolved_provider = "custom"
-            explicit_base_url = runtime_base_url
-            explicit_api_key = runtime_api_key or None
-        elif runtime_api_key:
-            # Pin auxiliary to the same api_key as the active main chat session
-            # so that a working key is reused instead of re-selecting from the pool
-            # (which might pick a different, potentially exhausted key).
-            explicit_api_key = runtime_api_key
-        # Skip Step-1 if the main provider was recently 402'd. The unhealthy
-        # cache TTL bounds how long we bypass it, so a topped-up account
-        # recovers automatically. If we tried Step-1 anyway, every aux call
-        # on a depleted main provider would pay one doomed 402 RTT before
-        # falling to Step-2.
-        main_chain_label = _normalize_chain_label(resolved_provider)
-        if main_chain_label and _is_provider_unhealthy(main_chain_label):
-            _log_skip_unhealthy(main_chain_label)
-        else:
-            client, resolved = resolve_provider_client(
-                resolved_provider,
-                main_model,
-                explicit_base_url=explicit_base_url,
-                explicit_api_key=explicit_api_key,
-                api_mode=runtime_api_mode or None,
-            )
-            if client is not None:
-                logger.info("Auxiliary auto-detect: using main provider %s (%s)",
-                            main_provider, resolved or main_model)
-                return client, resolved or main_model
-
-    # ── Step 2: aggregator / fallback chain ──────────────────────────────
-    tried = []
-    for label, try_fn in _get_provider_chain():
-        if _is_provider_unhealthy(label):
-            _log_skip_unhealthy(label)
-            tried.append(f"{label} (unhealthy)")
-            continue
-        client, model = try_fn()
-        if client is not None:
-            if tried:
-                logger.info("Auxiliary auto-detect: using %s (%s) — skipped: %s",
-                            label, model or "default", ", ".join(tried))
-            else:
-                logger.info("Auxiliary auto-detect: using %s (%s)", label, model or "default")
-            return client, model
-        tried.append(label)
-    logger.warning("Auxiliary auto-detect: no provider available (tried: %s). "
-                   "Compression, summarization, and memory flush will not work. "
-                   "Set OPENROUTER_API_KEY or configure a local model in config.yaml.",
-                   ", ".join(tried))
-    return None, None
+    logger.info(
+        "Auxiliary auto-detect: fail-closed to sanctioned provider %s (%s)",
+        _SANCTIONED_AUTO_PROVIDER,
+        resolved or _SANCTIONED_AUTO_MODEL,
+    )
+    return client, resolved or _SANCTIONED_AUTO_MODEL
 
 
 # ── Centralized Provider Router ─────────────────────────────────────────────
@@ -3356,7 +3283,7 @@ def resolve_provider_client(
             "openrouter", "nous", "openai-codex" (or "codex"),
             "zai", "kimi-coding", "minimax", "minimax-cn",
             "custom" (OPENAI_BASE_URL + OPENAI_API_KEY),
-            "auto" (full auto-detection chain).
+            "auto" (fail-closed to openai-codex/gpt-5.5; no OpenRouter fallback).
         model: Model slug override.  If None, uses the provider's default
                auxiliary model.
         async_mode: If True, return an async-compatible client.
@@ -3461,7 +3388,7 @@ def resolve_provider_client(
             client_obj, final_model_str, api_key_str, base_url_str, api_mode,
         )
 
-    # ── Auto: try all providers in priority order ────────────────────
+    # ── Auto: fail-closed sanctioned subscription route ───────────────
     if provider == "auto":
         client, resolved = _resolve_auto(main_runtime=main_runtime)
         if client is None:
@@ -5141,6 +5068,12 @@ def call_llm(
                             task or "call", resolved_provider)
                 client, final_model = _get_cached_client("auto", main_runtime=main_runtime)
         if client is None:
+            if resolved_provider in {"auto", _SANCTIONED_AUTO_PROVIDER}:
+                raise RuntimeError(
+                    f"{_BLOCKED_RUNTIME}: No sanctioned subscription auxiliary provider "
+                    f"available for task={task} provider={resolved_provider}; "
+                    "OpenRouter/paid fallback is disabled. Run: hermes setup"
+                )
             raise RuntimeError(
                 f"No LLM provider configured for task={task} provider={resolved_provider}. "
                 f"Run: hermes setup")
@@ -5466,13 +5399,20 @@ def call_llm(
             # Fallback order (#26882, #26803):
             #   1. User-configured fallback_chain (per-task) if set
             #   2. Main agent model (last-resort safety net)
-            # For auto users (no explicit aux provider), use the full
-            # auto-detection chain instead — its Step 1 IS the main agent
-            # model, so users on `auto` already get main-model fallback.
+            # Literal auto and the sanctioned openai-codex aux route are
+            # fail-closed: never fall through to OpenRouter/main-provider paid
+            # routes after a capacity error.
             fb_client, fb_model, fb_label = (None, None, "")
-            if is_auto:
-                fb_client, fb_model, fb_label = _try_payment_fallback(
-                    resolved_provider, task, reason=reason)
+            fail_closed_aux = is_auto or _normalize_aux_provider(resolved_provider) == _SANCTIONED_AUTO_PROVIDER
+            if fail_closed_aux:
+                logger.error(
+                    "%s: auxiliary %s fail-closed after %s on %s; "
+                    "OpenRouter/paid fallback disabled.",
+                    _BLOCKED_RUNTIME,
+                    task or "call",
+                    reason,
+                    resolved_provider or _SANCTIONED_AUTO_PROVIDER,
+                )
             else:
                 fb_client, fb_model, fb_label = _try_configured_fallback_chain(
                     task, resolved_provider or "auto", reason=reason)
@@ -5637,6 +5577,12 @@ async def async_call_llm(
                             task or "call", resolved_provider)
                 client, final_model = _get_cached_client("auto", async_mode=True)
         if client is None:
+            if resolved_provider in {"auto", _SANCTIONED_AUTO_PROVIDER}:
+                raise RuntimeError(
+                    f"{_BLOCKED_RUNTIME}: No sanctioned subscription auxiliary provider "
+                    f"available for task={task} provider={resolved_provider}; "
+                    "OpenRouter/paid fallback is disabled. Run: hermes setup"
+                )
             raise RuntimeError(
                 f"No LLM provider configured for task={task} provider={resolved_provider}. "
                 f"Run: hermes setup")
@@ -5904,12 +5850,20 @@ async def async_call_llm(
             # Fallback order (#26882, #26803):
             #   1. User-configured fallback_chain (per-task) if set
             #   2. Main agent model (last-resort safety net)
-            # Auto users get the full auto-detection chain instead — its
-            # Step 1 IS the main agent model.
+            # Literal auto and the sanctioned openai-codex aux route are
+            # fail-closed: never fall through to OpenRouter/main-provider paid
+            # routes after a capacity error.
             fb_client, fb_model, fb_label = (None, None, "")
-            if is_auto:
-                fb_client, fb_model, fb_label = _try_payment_fallback(
-                    resolved_provider, task, reason=reason)
+            fail_closed_aux = is_auto or _normalize_aux_provider(resolved_provider) == _SANCTIONED_AUTO_PROVIDER
+            if fail_closed_aux:
+                logger.error(
+                    "%s: auxiliary %s (async) fail-closed after %s on %s; "
+                    "OpenRouter/paid fallback disabled.",
+                    _BLOCKED_RUNTIME,
+                    task or "call",
+                    reason,
+                    resolved_provider or _SANCTIONED_AUTO_PROVIDER,
+                )
             else:
                 fb_client, fb_model, fb_label = _try_configured_fallback_chain(
                     task, resolved_provider or "auto", reason=reason)

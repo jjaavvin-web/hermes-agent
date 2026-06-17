@@ -128,6 +128,50 @@ def finalize_turn(
         and not failed
     )
 
+    # File-mutation verifier hard failure.
+    # If one or more ``write_file`` / ``patch`` calls failed during this
+    # turn and were never superseded by a successful write to the same
+    # path, convert the turn to a hard failure and append the explanatory
+    # footer.  This catches the specific case — reported by Ben Eng
+    # (#15524-adjacent) — where a model issues a batch of parallel patches,
+    # half of them fail with "Could not find old_string", and the model
+    # summarises the turn claiming every file was edited.  The user then
+    # has to manually run ``git status`` to catch the lie.  With this hard
+    # failure the truth is surfaced to callers/sentinels, not only to a
+    # human reading the footer.
+    #
+    # Gate: only applied when the verifier is enabled and the user didn't
+    # interrupt.  Even an empty final response should be marked failed so
+    # automation wrappers see the denied mutation as a hard block.
+    _file_mutation_failure_error = None
+    if not interrupted:
+        try:
+            _failed = getattr(agent, "_turn_failed_file_mutations", None) or {}
+            if _failed and agent._file_mutation_verifier_enabled():
+                footer = agent._format_file_mutation_failure_footer(_failed)
+                completed = False
+                failed = True
+                _turn_exit_reason = "file_mutation_verifier_failed"
+                _file_mutation_failure_error = (
+                    "File-mutation verifier blocked success because "
+                    f"{len(_failed)} expected file mutation(s) failed or were denied."
+                )
+                blocked_header = "BLOCKED: " + _file_mutation_failure_error
+                if footer:
+                    if final_response:
+                        final_response = (
+                            blocked_header + "\n\n"
+                            + final_response.rstrip() + "\n\n" + footer
+                        )
+                    else:
+                        final_response = blocked_header + "\n\n" + footer
+                elif final_response:
+                    final_response = blocked_header + "\n\n" + final_response.rstrip()
+                else:
+                    final_response = blocked_header
+        except Exception as _ver_err:
+            logger.debug("file-mutation verifier hard failure failed: %s", _ver_err)
+
     # Save trajectory if enabled.  ``user_message`` may be a multimodal
     # list of parts; the trajectory format wants a plain string.
     agent._save_trajectory(messages, _summarize_user_message_for_log(user_message), completed)
@@ -185,31 +229,6 @@ def finalize_turn(
         )
     else:
         logger.info(_diag_msg, *_diag_args)
-
-    # File-mutation verifier footer.
-    # If one or more ``write_file`` / ``patch`` calls failed during this
-    # turn and were never superseded by a successful write to the same
-    # path, append an advisory footer to the assistant response.  This
-    # catches the specific case — reported by Ben Eng (#15524-adjacent)
-    # — where a model issues a batch of parallel patches, half of them
-    # fail with "Could not find old_string", and the model summarises
-    # the turn claiming every file was edited.  The user then has to
-    # manually run ``git status`` to catch the lie.  With this footer
-    # the truth is surfaced on every turn, so over-claiming is
-    # structurally impossible past the model.
-    #
-    # Gate: only applied when a real text response exists for this
-    # turn and the user didn't interrupt.  Empty/interrupted turns
-    # already have other surface text that shouldn't be augmented.
-    if final_response and not interrupted:
-        try:
-            _failed = getattr(agent, "_turn_failed_file_mutations", None) or {}
-            if _failed and agent._file_mutation_verifier_enabled():
-                footer = agent._format_file_mutation_failure_footer(_failed)
-                if footer:
-                    final_response = final_response.rstrip() + "\n\n" + footer
-        except Exception as _ver_err:
-            logger.debug("file-mutation verifier footer failed: %s", _ver_err)
 
     # Turn-completion explainer.
     # When a turn ends abnormally after substantive work — empty content
@@ -352,6 +371,9 @@ def finalize_turn(
         "cost_source": agent.session_cost_source,
         "session_id": agent.session_id,
     }
+    if _file_mutation_failure_error:
+        result["error"] = _file_mutation_failure_error
+        result["failure_reason"] = "file_mutation_verifier_failed"
     if agent._tool_guardrail_halt_decision is not None:
         result["guardrail"] = agent._tool_guardrail_halt_decision.to_metadata()
     # If a /steer landed after the final assistant turn (no more tool
