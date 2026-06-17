@@ -272,7 +272,7 @@ function Hero({ snapshot, loading, isMobile, onRefresh, onFocusSection }: HeroPr
         </button>
       </div>
 
-      <div className="mt-3 flex flex-wrap gap-2.5 max-sm:flex-nowrap max-sm:overflow-x-auto sm:gap-2" aria-label="OS consolidated hero chips">
+      <div className="mt-3 flex flex-wrap gap-2.5 sm:gap-2" aria-label="OS consolidated hero chips">
         <MetricChip label="posture" value={STATUS_CFG[snapshot.attention?.posture ?? snapshot.overall].label} status={snapshot.attention?.posture ?? snapshot.overall} onClick={() => onFocusSection("gateway")} />
         {attention.length === 0 ? (
           <MetricChip label="attention" value="0" status="green" onClick={() => onFocusSection("gateway")} />
@@ -293,6 +293,19 @@ function Hero({ snapshot, loading, isMobile, onRefresh, onFocusSection }: HeroPr
         <ul className="mt-3 space-y-1.5" aria-label="Diagnostics">
           {snapshot.diagnostics.slice(0, isMobile ? 2 : 4).map((diag, i) => <DiagnosticRow key={`${diag.source}-${i}`} diag={diag} />)}
         </ul>
+      )}
+
+      {(snapshot.info ?? []).length > 0 && (
+        <details className="mt-2">
+          <summary className="cursor-pointer list-none text-xs text-text-tertiary transition hover:text-text-secondary">
+            ⓘ {(snapshot.info ?? []).length} informational · routine, excluded from status
+          </summary>
+          <ul className="mt-1.5 space-y-1 opacity-70" aria-label="Informational items">
+            {(snapshot.info ?? []).map((diag, i) => (
+              <DiagnosticRow key={`info-${diag.source}-${i}`} diag={diag} />
+            ))}
+          </ul>
+        </details>
       )}
     </section>
   );
