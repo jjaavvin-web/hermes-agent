@@ -162,7 +162,7 @@ def test_bundled_plugin_manifests_ship_in_both_wheel_and_sdist():
 # transitive dep (fastapi in [web]; sse-starlette/mcp in [mcp]/[computer-use]/
 # [dev]) so we pin it directly in every extra that exposes a server surface and
 # enforce the floor in both pyproject and the committed lockfile.
-_STARLETTE_CVE_FLOOR = (1, 0, 1)
+_STARLETTE_CVE_FLOOR = (1, 3, 1)
 
 
 def _version_tuple(spec: str) -> tuple[int, ...]:
