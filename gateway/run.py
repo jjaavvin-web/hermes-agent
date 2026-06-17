@@ -14841,6 +14841,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 result = agent.run_conversation(_api_run_message, **_conversation_kwargs)
             finally:
                 unregister_gateway_notify(_approval_session_key)
+                # Drop any per-session terminal-deny patterns registered for this
+                # run (webhook/relay routes register them at dispatch, keyed by the
+                # same session key). This is the lifecycle match — without it the
+                # deny dict would grow one entry per webhook delivery. Idempotent.
+                try:
+                    from tools.approval import register_session_deny_patterns as _clear_deny
+                    _clear_deny(_approval_session_key, None)
+                except Exception:
+                    pass
                 # Cancel any pending clarify entries so blocked agent
                 # threads don't hang past the end of the run (interrupt,
                 # completion, gateway shutdown).  Idempotent.

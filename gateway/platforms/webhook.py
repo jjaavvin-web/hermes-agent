@@ -70,6 +70,21 @@ DEFAULT_PORT = 8644
 _INSECURE_NO_AUTH = "INSECURE_NO_AUTH"
 _DYNAMIC_ROUTES_FILENAME = "webhook_subscriptions.json"
 
+# Server-side terminal-command denial applied to EVERY webhook/relay-dispatched
+# agent session (loki lanes, relay workers). These run autonomously with no human
+# present to answer an approval prompt, so push / PR / merge must be physically
+# impossible at the approval layer — prompt-only guards are insufficient and were
+# the deep-infra-audit P0 (a dispatched agent could push or merge if its prompt
+# guard was stripped). Enforced unconditionally in approval.check_all_command_guards
+# (before the yolo/mode=off bypass). Routes may ADD patterns via a
+# "deny_terminal_patterns" list in webhook_subscriptions.json.
+DEFAULT_WEBHOOK_DENY_PATTERNS = [
+    r"\bgit\s+(?:-\S+\s+\S*\s*)*push\b",       # git push, git -C <dir> push, git push --force
+    r"\bgh\s+pr\s+(?:create|merge|ready)\b",   # open / merge / mark-ready a PR
+    r"\bgh\s+repo\s+(?:create|delete|fork)\b", # create / delete / fork a repo
+    r"\bhub\s+(?:pull-request|merge|push)\b",  # legacy hub CLI equivalents
+]
+
 # Hostnames/IP literals that only serve connections originating on the same
 # machine. Anything else is treated as a public bind for safety-rail purposes.
 _LOOPBACK_HOSTS = frozenset({
@@ -674,6 +689,34 @@ class WebhookAdapter(BasePlatformAdapter):
             user_id=f"webhook:{route_name}",
             user_name=route_name,
         )
+
+        # Register server-side push/PR/merge denial for THIS dispatched session.
+        # The key is computed with the SAME build_session_key call the dispatcher
+        # uses (gateway/platforms/base.py), so the approval contextvar key at
+        # tool-exec time matches this registration and the deny actually fires.
+        # Cleared at end-of-run in gateway/run.py's agent finally block.
+        try:
+            from gateway.session import build_session_key
+            from tools.approval import register_session_deny_patterns
+            _deny_patterns = list(DEFAULT_WEBHOOK_DENY_PATTERNS)
+            _route_deny = route_config.get("deny_terminal_patterns")
+            if isinstance(_route_deny, list):
+                _deny_patterns.extend(str(p) for p in _route_deny)
+            _extra = getattr(self.config, "extra", {}) or {}
+            _approval_key = build_session_key(
+                source,
+                group_sessions_per_user=_extra.get("group_sessions_per_user", True),
+                thread_sessions_per_user=_extra.get("thread_sessions_per_user", False),
+            )
+            register_session_deny_patterns(_approval_key, _deny_patterns)
+        except Exception:
+            # Fail loud but do not crash the dispatch — prompt-level guards remain
+            # as defense-in-depth if server-side registration somehow fails.
+            logger.exception(
+                "[webhook] failed to register deny_terminal_patterns for route=%s",
+                route_name,
+            )
+
         event = MessageEvent(
             text=prompt,
             message_type=MessageType.TEXT,

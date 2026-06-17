@@ -371,6 +371,27 @@ def _sudo_stdin_block_result(description: str) -> dict:
     }
 
 
+def _route_deny_block_result(pattern: str) -> dict:
+    """Build the block result for a route-level deny_terminal_patterns match.
+
+    Webhook/relay-dispatched sessions carry a server-side deny list (e.g.
+    ``git push`` / ``gh pr merge``) registered at dispatch time. Like the
+    hardline floor, this is unconditional — no session setting can lift it.
+    """
+    return {
+        "approved": False,
+        "route_denied": True,
+        "message": (
+            f"BLOCKED (route policy): this session was dispatched via a "
+            f"webhook/relay route that denies the command pattern {pattern!r}. "
+            "Server-side denial cannot be lifted by --yolo, /yolo, "
+            "approvals.mode=off, or cron approve mode. Push / PR / merge "
+            "actions are reserved for the human operator — surface the change "
+            "for review instead of running it yourself."
+        ),
+    }
+
+
 # =========================================================================
 # Dangerous command patterns
 # =========================================================================
@@ -676,6 +697,12 @@ _session_approved: dict[str, set] = {}
 _session_yolo: set[str] = set()
 _permanent_approved: set = set()
 
+# Per-session server-side terminal-deny patterns (set by webhook/relay
+# platforms at dispatch). session_key → [(compiled_regex, original_str), …].
+# Enforced in check_all_command_guards BEFORE the yolo/mode=off bypass so a
+# dispatched agent physically cannot run a denied command (e.g. git push).
+_session_deny_patterns: dict[str, list] = {}
+
 # =========================================================================
 # Blocking gateway approval (mirrors CLI's synchronous input() flow)
 # =========================================================================
@@ -787,6 +814,54 @@ def disable_session_yolo(session_key: str) -> None:
         _session_yolo.discard(session_key)
 
 
+def register_session_deny_patterns(session_key: str, patterns) -> None:
+    """Register server-side terminal-deny regexes for a session.
+
+    Used by webhook/relay platforms to enforce route-level command denial
+    (e.g. block ``git push`` / ``gh pr create`` / ``gh pr merge`` on a
+    dispatched agent) that no session setting — yolo, mode=off, cron — can
+    lift. Each pattern is a Python regex matched (search, case-insensitive)
+    against the full command string. Invalid regexes are skipped with a
+    warning. Passing an empty/None list clears any existing entry.
+    """
+    if not session_key:
+        return
+    compiled = []
+    for pat in patterns or []:
+        try:
+            compiled.append((re.compile(str(pat), re.IGNORECASE), str(pat)))
+        except re.error:
+            logger.warning(
+                "Ignoring invalid deny_terminal_pattern %r for session %s",
+                pat, session_key,
+            )
+    with _lock:
+        if compiled:
+            _session_deny_patterns[session_key] = compiled
+        else:
+            _session_deny_patterns.pop(session_key, None)
+
+
+def check_session_deny_patterns(command: str, session_key: Optional[str] = None) -> tuple[bool, Optional[str]]:
+    """Return ``(denied, matched_pattern)`` for the session's deny list.
+
+    Resolves the active session from the approval contextvar when *session_key*
+    is not given. Returns ``(False, None)`` when the session has no deny list.
+    """
+    if session_key is None:
+        session_key = get_current_session_key(default="")
+    if not session_key:
+        return False, None
+    with _lock:
+        compiled = _session_deny_patterns.get(session_key)
+    if not compiled:
+        return False, None
+    for rx, original in compiled:
+        if rx.search(command):
+            return True, original
+    return False, None
+
+
 def clear_session(session_key: str) -> None:
     """Remove all approval and yolo state for a given session."""
     if not session_key:
@@ -794,6 +869,7 @@ def clear_session(session_key: str) -> None:
     with _lock:
         _session_approved.pop(session_key, None)
         _session_yolo.discard(session_key)
+        _session_deny_patterns.pop(session_key, None)
         _pending.pop(session_key, None)
         entries = _gateway_queues.pop(session_key, [])
     for entry in entries:
@@ -1363,6 +1439,19 @@ def check_all_command_guards(command: str, env_type: str,
         logger.warning("Sudo stdin guard block: %s (command: %s)",
                        sudo_guess_desc, command[:200])
         return _sudo_stdin_block_result(sudo_guess_desc)
+
+    # == Route-level terminal deny (webhook/relay sessions) ==
+    # Server-side enforcement of per-route deny_terminal_patterns so a
+    # webhook/relay-dispatched agent physically cannot run e.g. `git push`
+    # or `gh pr merge`, even if its prompt guards are bypassed or stripped.
+    # Like the hardline floor and sudo guard above, this fires BEFORE the
+    # yolo / mode=off / cron bypass so no session-level setting can lift a
+    # route policy.
+    is_route_denied, deny_pattern = check_session_deny_patterns(command)
+    if is_route_denied:
+        logger.warning("Route deny-pattern block: %s (command: %s)",
+                       deny_pattern, command[:200])
+        return _route_deny_block_result(deny_pattern)
 
     # --yolo or approvals.mode=off: bypass all approval prompts.
     # Gateway /yolo is session-scoped; CLI --yolo remains process-scoped.
