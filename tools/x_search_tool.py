@@ -561,7 +561,7 @@ X_SEARCH_SCHEMA = {
 
 
 def _handle_x_search(args, **kw):
-    return x_search_tool(
+    raw = x_search_tool(
         query=args.get("query", ""),
         allowed_x_handles=args.get("allowed_x_handles"),
         excluded_x_handles=args.get("excluded_x_handles"),
@@ -570,6 +570,15 @@ def _handle_x_search(args, **kw):
         enable_image_understanding=bool(args.get("enable_image_understanding", False)),
         enable_video_understanding=bool(args.get("enable_video_understanding", False)),
     )
+    try:
+        result = json.loads(raw)
+    except Exception:
+        return raw
+    ingestible, reason = is_x_search_result_ingestible(result, strict=True)
+    result["ingestible"] = ingestible
+    if not ingestible:
+        result["ingest_skip_reason"] = reason
+    return json.dumps(result, ensure_ascii=False)
 
 
 registry.register(
