@@ -6,7 +6,12 @@ already indexed, and auto-discovers new git repos under parent_dirs.
 """
 from __future__ import annotations
 
+import argparse
 import json
+import re
+import shlex
+import stat
+import subprocess
 import time
 import urllib.error
 import urllib.request
@@ -18,8 +23,15 @@ except ImportError:
     yaml = None  # type: ignore
 
 GITNEXUS_API = "http://127.0.0.1:4747"
+GITNEXUS_CONTAINER = "gitnexus-server"
+GITNEXUS_REPOS_ROOT = "/data/gitnexus/repos"
 CONFIG_PATH = Path.home() / ".hermes" / "gitnexus-repos.yml"
 ANALYZE_TIMEOUT = 600  # 10 min for large repos
+HOOK_MARKER_START = "# >>> gitnexus-reindex >>>"
+HOOK_MARKER_END = "# <<< gitnexus-reindex <<<"
+HOOK_PYTHON = "/home/josep/.local/share/hermes-agent/venv/bin/python"
+HOOK_LOG = "$HOME/.hermes/logs/gitnexus-reindex.log"
+HOOK_LOCK_DIR = "$HOME/.hermes/locks"
 
 
 # ---------------------------------------------------------------------------
@@ -62,11 +74,102 @@ def _wait_for_job(job_id: str, label: str, timeout: int = ANALYZE_TIMEOUT) -> bo
     return False
 
 
+def _safe_label(label: str) -> str:
+    """Return a Docker-path-safe repo label or raise ValueError."""
+    if not label or label in {".", ".."} or "/" in label or "\\" in label:
+        raise ValueError(f"unsafe GitNexus repo label: {label!r}")
+    if label.startswith("-"):
+        raise ValueError(f"unsafe GitNexus repo label: {label!r}")
+    return label
+
+
+def _container_repo_path(label: str) -> str:
+    return f"{GITNEXUS_REPOS_ROOT}/{_safe_label(label)}"
+
+
+def _run_docker(*args: str, check: bool = True) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        ["docker", "exec", GITNEXUS_CONTAINER, *args],
+        check=check,
+        capture_output=True,
+        text=True,
+    )
+
+
+def _recreate_container_staging(label: str) -> str:
+    container_path = _container_repo_path(label)
+    quoted_path = shlex.quote(container_path)
+    _run_docker("sh", "-c", f"rm -rf {quoted_path} && mkdir -p {quoted_path}")
+    return container_path
+
+
+def _archive_tracked_files_to_container(host_path: Path, container_path: str) -> None:
+    """Stream tracked files from host git HEAD into the GitNexus container."""
+    archive_proc = subprocess.Popen(
+        ["git", "-C", str(host_path), "archive", "--format=tar", "HEAD"],
+        stdout=subprocess.PIPE,
+    )
+    try:
+        tar_proc = subprocess.Popen(
+            [
+                "docker",
+                "exec",
+                "-i",
+                GITNEXUS_CONTAINER,
+                "tar",
+                "-x",
+                "-C",
+                container_path,
+            ],
+            stdin=archive_proc.stdout,
+        )
+        if archive_proc.stdout is not None:
+            archive_proc.stdout.close()
+        tar_rc = tar_proc.wait()
+        archive_rc = archive_proc.wait()
+    finally:
+        if archive_proc.poll() is None:
+            archive_proc.kill()
+            archive_proc.wait()
+    if archive_rc != 0:
+        raise subprocess.CalledProcessError(archive_rc, archive_proc.args)
+    if tar_rc != 0:
+        raise subprocess.CalledProcessError(tar_rc, tar_proc.args)
+
+
+def _container_secret_hits(container_path: str) -> list[str]:
+    quoted_path = shlex.quote(container_path)
+    result = _run_docker(
+        "sh",
+        "-c",
+        f"find {quoted_path} \\( -name .env -o -name auth.json \\) -print",
+    )
+    return [line for line in result.stdout.splitlines() if line.strip()]
+
+
+def _stage_repo_in_container(host_path: Path, label: str) -> str | None:
+    """Stage tracked repo files inside the GitNexus container and secret-check them."""
+    safe_label = _safe_label(label)
+    container_path = _recreate_container_staging(safe_label)
+    print(f"  Staging {safe_label}: {host_path} -> {container_path}")
+    _archive_tracked_files_to_container(host_path, container_path)
+    secret_hits = _container_secret_hits(container_path)
+    if secret_hits:
+        print(f"  ABORT {safe_label}: secret guard found forbidden tracked files:")
+        for hit in secret_hits:
+            print(f"    {hit}")
+        return None
+    return container_path
+
+
 def _index_repo(path: Path, label: str) -> bool:
-    """Trigger GitNexus analyze for a repo and wait for it to finish."""
+    """Stage a repo inside the GitNexus container, analyze it, and wait."""
     print(f"  Indexing {label} ({path})…")
     try:
-        job = _api("POST", "/api/analyze", {"path": str(path)})
+        container_path = _stage_repo_in_container(path, label)
+        if container_path is None:
+            return False
+        job = _api("POST", "/api/analyze", {"path": container_path})
     except Exception as e:
         print(f"  ERROR triggering analyze for {label}: {e}")
         return False
@@ -74,14 +177,14 @@ def _index_repo(path: Path, label: str) -> bool:
 
 
 # ---------------------------------------------------------------------------
-# Config loading
+# Config loading and repo resolution
 # ---------------------------------------------------------------------------
 
 def _load_config() -> dict:
     if not CONFIG_PATH.exists():
         return {"repos": [], "auto_discover": {}}
 
-    text = CONFIG_PATH.read_text()
+    text = CONFIG_PATH.read_text(encoding="utf-8")
 
     if yaml is not None:
         return yaml.safe_load(text) or {}
@@ -145,6 +248,128 @@ def _load_config() -> dict:
     return config
 
 
+def _expanded_path(path: str | Path) -> Path:
+    return Path(path).expanduser()
+
+
+def _resolved_path(path: str | Path) -> Path:
+    return _expanded_path(path).resolve(strict=False)
+
+
+def _repo_label(repo_cfg: dict) -> str:
+    path = _expanded_path(repo_cfg.get("path", ""))
+    return repo_cfg.get("label") or path.name
+
+
+def _resolve_repo_selection(
+    config: dict,
+    *,
+    repo_label: str | None = None,
+    host_path: str | None = None,
+) -> tuple[Path, str]:
+    """Resolve --repo/--path into a host path and GitNexus label."""
+    repos = config.get("repos", [])
+    if repo_label:
+        for repo_cfg in repos:
+            label = _repo_label(repo_cfg)
+            if label == repo_label:
+                return _expanded_path(repo_cfg.get("path", "")), label
+        raise ValueError(f"repo label not found in {CONFIG_PATH}: {repo_label}")
+
+    if host_path is None:
+        raise ValueError("either repo_label or host_path is required")
+
+    requested = _expanded_path(host_path)
+    requested_resolved = _resolved_path(requested)
+    for repo_cfg in repos:
+        cfg_path = _expanded_path(repo_cfg.get("path", ""))
+        if _resolved_path(cfg_path) == requested_resolved:
+            return requested, _repo_label(repo_cfg)
+    return requested, requested.name
+
+
+# ---------------------------------------------------------------------------
+# Hook installation
+# ---------------------------------------------------------------------------
+
+def _hook_block(label: str) -> str:
+    safe_label = _safe_label(label)
+    return f"""{HOOK_MARKER_START}
+# GitNexus real-time reindex hook installed by hermes_cli.gitnexus_repo_manager.
+(
+  mkdir -p "$HOME/.hermes/logs" {HOOK_LOCK_DIR}
+  repo_root="$(git rev-parse --show-toplevel 2>/dev/null)" || exit 0
+  lockfile="{HOOK_LOCK_DIR}/gitnexus-reindex-{safe_label}.lock"
+  echo "[$(date -Is)] gitnexus hook for {safe_label}: repo=$repo_root" >> {HOOK_LOG}
+  if flock -n -E 75 "$lockfile" {HOOK_PYTHON} -m hermes_cli.gitnexus_repo_manager --path "$repo_root" >> {HOOK_LOG} 2>&1; then
+    echo "[$(date -Is)] gitnexus hook for {safe_label}: complete" >> {HOOK_LOG}
+  else
+    rc=$?
+    if [ "$rc" -eq 75 ]; then
+      echo "[$(date -Is)] gitnexus hook for {safe_label}: coalesced because lock is busy" >> {HOOK_LOG}
+    else
+      echo "[$(date -Is)] gitnexus hook for {safe_label}: failed rc=$rc" >> {HOOK_LOG}
+    fi
+  fi
+) >/dev/null 2>&1 &
+{HOOK_MARKER_END}"""
+
+
+def _replace_marker_block(existing: str, block: str) -> str:
+    pattern = re.compile(
+        rf"\n?{re.escape(HOOK_MARKER_START)}.*?{re.escape(HOOK_MARKER_END)}\n?",
+        re.DOTALL,
+    )
+    trimmed_block = f"\n{block}\n"
+    if pattern.search(existing):
+        new_text = pattern.sub(trimmed_block, existing).rstrip() + "\n"
+    else:
+        prefix = existing.rstrip() + "\n" if existing else "#!/bin/sh\n"
+        new_text = prefix + trimmed_block.lstrip("\n")
+    return new_text
+
+
+def _git_common_dir(repo_path: Path) -> Path:
+    result = subprocess.run(
+        ["git", "-C", str(repo_path), "rev-parse", "--git-common-dir"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    git_dir = Path(result.stdout.strip())
+    if not git_dir.is_absolute():
+        git_dir = repo_path / git_dir
+    return git_dir
+
+
+def _install_hook(repo_path: Path, label: str, hook_name: str) -> Path:
+    hooks_dir = _git_common_dir(repo_path) / "hooks"
+    hooks_dir.mkdir(parents=True, exist_ok=True)
+    hook_path = hooks_dir / hook_name
+    existing = hook_path.read_text(encoding="utf-8") if hook_path.exists() else ""
+    hook_path.write_text(_replace_marker_block(existing, _hook_block(label)), encoding="utf-8")
+    mode = hook_path.stat().st_mode
+    hook_path.chmod(mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+    return hook_path
+
+
+def install_hooks(config: dict) -> int:
+    installed = 0
+    for repo_cfg in config.get("repos", []):
+        if not repo_cfg.get("reindex_on_commit"):
+            continue
+        repo_path = _expanded_path(repo_cfg.get("path", ""))
+        label = _repo_label(repo_cfg)
+        if not repo_path.exists():
+            print(f"  SKIP hook {label}: path does not exist ({repo_path})")
+            continue
+        for hook_name in ("post-commit", "post-merge"):
+            hook_path = _install_hook(repo_path, label, hook_name)
+            installed += 1
+            print(f"  Installed {hook_name} hook for {label}: {hook_path}")
+    return installed
+
+
 # ---------------------------------------------------------------------------
 # Auto-discovery
 # ---------------------------------------------------------------------------
@@ -180,11 +405,38 @@ def _discover_repos(parent_dirs: list[str], excludes: list[str]) -> list[Path]:
 # Main
 # ---------------------------------------------------------------------------
 
-def run() -> None:
+def _run_single_repo(config: dict, *, repo_label: str | None, host_path: str | None) -> bool:
+    path, label = _resolve_repo_selection(config, repo_label=repo_label, host_path=host_path)
+    if not path.exists():
+        print(f"  FAILED {label}: path does not exist ({path})")
+        return False
+    return _index_repo(path, label)
+
+
+def run(argv: list[str] | None = None) -> None:
+    parser = argparse.ArgumentParser(description="Manage GitNexus repo indexing")
+    selector = parser.add_mutually_exclusive_group()
+    selector.add_argument("--repo", help="Config repo label to stage and reindex")
+    selector.add_argument("--path", help="Host repo path to stage and reindex")
+    parser.add_argument("--install-hooks", action="store_true", help="Install post-commit/post-merge hooks")
+    args = parser.parse_args(argv)
+
     print("GitNexus Repo Manager")
     print("=" * 40)
 
     config = _load_config()
+
+    if args.install_hooks:
+        count = install_hooks(config)
+        print(f"\nDone. Installed/updated hooks: {count}")
+        if not (args.repo or args.path):
+            return
+
+    if args.repo or args.path:
+        ok = _run_single_repo(config, repo_label=args.repo, host_path=args.path)
+        print(f"\nDone. Indexed: {1 if ok else 0}, Skipped: {0 if ok else 1}")
+        return
+
     existing = _existing_repos()
     print(f"Currently indexed repos: {sorted(existing)}")
 
