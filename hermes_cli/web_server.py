@@ -492,7 +492,13 @@ async def security_headers_middleware(request: Request, call_next):
     request.state.csp_nonce = nonce
     response = await call_next(request)
     response.headers["Content-Security-Policy-Report-Only"] = _dashboard_csp_report_only(nonce)
-    response.headers["X-Frame-Options"] = "DENY"
+    # The Explorer tab frames the dashboard's OWN same-origin GitNexus app
+    # (served under /_gitnexus-app/); allow same-origin framing there so the
+    # iframe can display. Every other path stays DENY (clickjacking guard).
+    if request.url.path.startswith("/_gitnexus-app/"):
+        response.headers["X-Frame-Options"] = "SAMEORIGIN"
+    else:
+        response.headers["X-Frame-Options"] = "DENY"
     response.headers["X-Content-Type-Options"] = "nosniff"
     return response
 
