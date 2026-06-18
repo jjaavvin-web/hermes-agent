@@ -73,6 +73,7 @@ def _paths() -> dict[str, Path]:
         "index_snapshot": state / "learning-index" / "snapshot-latest.json",
         "index_history": state / "learning-index" / "history.jsonl",
         "canary_result": state / "learning-canary" / "result-latest.json",
+        "behavioral_result": state / "learning-canary" / "result-behavioral-latest.json",
         "distiller_queue": state / "distiller-queue.jsonl",
         "distiller_inbox": state / "distiller-inbox-latest.md",
         "weekly_hygiene_latest": state / "weekly-hygiene",
@@ -87,6 +88,31 @@ def _read_json(path: Path) -> tuple[Any | None, str | None]:
         return json.loads(path.read_text(encoding="utf-8")), None
     except Exception as exc:  # never-500 file boundary
         return None, f"failed to read {path}: {exc}"
+
+
+def _missing_behavioral_block() -> dict[str, Any]:
+    return {
+        "present": False,
+        "demonstrated": False,
+        "severity": "info",
+        "note": "no agent behavioral demonstration recorded yet",
+    }
+
+
+def _read_behavioral(paths: dict[str, Path] | None = None) -> dict[str, Any]:
+    paths = paths or _paths()
+    result, err = _read_json(paths["behavioral_result"])
+    if err or not isinstance(result, dict):
+        return _missing_behavioral_block()
+    return {
+        "present": True,
+        "demonstrated": bool(result.get("pass") is True),
+        "recalled": result.get("recalled"),
+        "rank": result.get("rank"),
+        "ts": result.get("ts"),
+        "card": result.get("canary_lane_card"),
+        "severity": "info",
+    }
 
 
 def _read_history_tail(path: Path, limit: int = 14) -> tuple[list[Any], list[str]]:
@@ -320,6 +346,7 @@ def get_learning_snapshot() -> dict[str, Any]:
             "distiller": distiller,
             "weekly_hygiene_latest": weekly_hygiene_latest,
             "loop_critic": loop_critic,
+            "behavioral": _read_behavioral(paths),
             "canary_embed_present": result.get("embed_present", True) if isinstance(result, dict) else True,
             "errors": errors,
         }
@@ -353,6 +380,7 @@ async def get_learning() -> dict[str, Any]:
             "distiller": None,
             "weekly_hygiene_latest": None,
             "loop_critic": None,
+            "behavioral": _missing_behavioral_block(),
             "canary_embed_present": True,
             "errors": [f"learning snapshot build failed: {exc}"],
         }

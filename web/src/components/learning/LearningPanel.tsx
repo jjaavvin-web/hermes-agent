@@ -176,6 +176,27 @@ function CanaryPanel({ snapshot }: { snapshot: LearningResponse }) {
   );
 }
 
+function BehavioralRecallPanel({ behavioral }: { behavioral: LearningResponse["behavioral"] }) {
+  const demonstrated = behavioral?.demonstrated === true;
+  const label = demonstrated ? "demonstrated ✓" : "pending -- no agent demonstration yet";
+  return (
+    <PanelCard title="3 · BEHAVIORAL RECALL" kicker="agent acted safely" status="info">
+      <div className="mb-3 flex flex-wrap items-center gap-2">
+        <StatusChip status="info" />
+        <span className="text-xs font-semibold text-text-primary">{label}</span>
+      </div>
+      <div className="space-y-1">
+        <DataRow label="present" value={fmtBool(behavioral?.present)} />
+        <DataRow label="recalled" value={fmtBool(behavioral?.recalled)} />
+        <DataRow label="rank" value={fmtNumber(behavioral?.rank)} />
+        <DataRow label="last ts" value={fmtTs(behavioral?.ts)} />
+        <DataRow label="card" value={<span className="break-all">{behavioral?.card ?? "—"}</span>} />
+      </div>
+      {behavioral?.note && <p className="mt-3 rounded-md border border-border bg-background/35 p-2 text-xs text-text-tertiary">{behavioral.note}</p>}
+    </PanelCard>
+  );
+}
+
 function RecallPanel({ filters, latest }: { filters: RecallFilter | null | undefined; latest: LearningResponse["snapshot_latest"] }) {
   const autoBridged = finiteNumber(latest?.auto_bridged_count) ?? 0;
   const quarantine = finiteNumber(latest?.quarantine_count) ?? 0;
@@ -420,6 +441,7 @@ export function LearningPanel({ snapshot, loading, error, onRefresh }: LearningP
       <div className="mt-4 grid grid-cols-1 gap-3 lg:grid-cols-2 xl:grid-cols-3" aria-label="Learning 9-panel cockpit">
         <SignalPanel latest={latest} />
         <CanaryPanel snapshot={snapshot} />
+        <BehavioralRecallPanel behavioral={snapshot.behavioral} />
         <RecallPanel filters={snapshot.recall_filters ?? null} latest={latest} />
         <DistillerPanel distiller={snapshot.distiller ?? null} />
         <LoopCriticPanel critic={snapshot.loop_critic ?? null} />

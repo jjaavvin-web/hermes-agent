@@ -2543,6 +2543,16 @@ export interface LearningResponse {
     embed_present?: boolean;
     mode?: string;
   } | null;
+  behavioral?: {
+    present: boolean;
+    demonstrated: boolean;
+    recalled?: boolean | null;
+    rank?: number | null;
+    ts?: string | null;
+    card?: string | null;
+    severity?: string;
+    note?: string;
+  };
   loop_critic?: LoopCriticStatus | null;
   history_tail?: LearningHistoryPoint[];
   errors?: string[];
