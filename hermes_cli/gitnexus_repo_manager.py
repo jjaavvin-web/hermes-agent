@@ -162,6 +162,33 @@ def _stage_repo_in_container(host_path: Path, label: str) -> str | None:
     return container_path
 
 
+_ANALYZE_BUSY_RE = re.compile(r"job\s+([0-9a-fA-F][0-9a-fA-F-]{7,})")
+
+
+def _post_analyze(container_path: str, label: str, *, deadline: float) -> dict:
+    """POST /api/analyze, coalescing with GitNexus's single global job slot.
+
+    GitNexus runs one analysis at a time across ALL repos; a concurrent POST
+    returns HTTP 409 with the in-flight job id. Rather than dropping this
+    repo's reindex (leaving it stale until its next commit), wait for the
+    busy job to finish and retry, until our job is accepted or the deadline
+    passes.
+    """
+    while True:
+        try:
+            return _api("POST", "/api/analyze", {"path": container_path})
+        except urllib.error.HTTPError as e:
+            if e.code != 409:
+                raise
+            body = e.read().decode("utf-8", "replace")
+            match = _ANALYZE_BUSY_RE.search(body)
+            if not match or time.time() >= deadline:
+                raise
+            busy_job = match.group(1)
+            print(f"  [{label}] GitNexus busy (job {busy_job[:8]}); waiting to reindex…")
+            _wait_for_job(busy_job, f"{label}:busy", timeout=max(1, int(deadline - time.time())))
+
+
 def _index_repo(path: Path, label: str) -> bool:
     """Stage a repo inside the GitNexus container, analyze it, and wait."""
     print(f"  Indexing {label} ({path})…")
@@ -169,7 +196,7 @@ def _index_repo(path: Path, label: str) -> bool:
         container_path = _stage_repo_in_container(path, label)
         if container_path is None:
             return False
-        job = _api("POST", "/api/analyze", {"path": container_path})
+        job = _post_analyze(container_path, label, deadline=time.time() + ANALYZE_TIMEOUT)
     except Exception as e:
         print(f"  ERROR triggering analyze for {label}: {e}")
         return False

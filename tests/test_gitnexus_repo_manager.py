@@ -218,3 +218,53 @@ def test_hook_install_is_idempotent_and_preserves_user_hook(monkeypatch, tmp_pat
         "hermes_cli.gitnexus_repo_manager --path \"$repo_root\""
     ) in text
     assert "flock -n -E 75 \"$lockfile\"" in text
+
+
+def test_post_analyze_waits_out_409_then_retries(monkeypatch):
+    import io
+    import urllib.error
+
+    posts = []
+
+    def fake_api(method, path, body=None):
+        if method == "POST":
+            posts.append(body)
+            if len(posts) == 1:
+                raise urllib.error.HTTPError(
+                    path,
+                    409,
+                    "Conflict",
+                    {},
+                    io.BytesIO(
+                        b'{"error":"Analysis already in progress '
+                        b'(job abc12345-d20c-4a38-8714-e5da30097449)"}'
+                    ),
+                )
+            return {"jobId": "newjob"}
+        raise AssertionError(f"unexpected GET {path}")
+
+    waited = []
+    monkeypatch.setattr(mgr, "_api", fake_api)
+    monkeypatch.setattr(
+        mgr, "_wait_for_job", lambda jid, label, timeout=600: waited.append(jid) or True
+    )
+
+    job = mgr._post_analyze(
+        "/data/gitnexus/repos/x", "x", deadline=mgr.time.time() + 60
+    )
+
+    assert job == {"jobId": "newjob"}
+    assert waited == ["abc12345-d20c-4a38-8714-e5da30097449"]  # waited on the busy job
+    assert len(posts) == 2  # retried after the busy job cleared
+
+
+def test_post_analyze_reraises_non_409(monkeypatch):
+    import io
+    import urllib.error
+
+    def fake_api(method, path, body=None):
+        raise urllib.error.HTTPError(path, 500, "Server Error", {}, io.BytesIO(b"boom"))
+
+    monkeypatch.setattr(mgr, "_api", fake_api)
+    with pytest.raises(urllib.error.HTTPError):
+        mgr._post_analyze("/data/gitnexus/repos/x", "x", deadline=mgr.time.time() + 60)
