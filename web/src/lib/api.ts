@@ -920,6 +920,8 @@ export const api = {
     fetchJSON<import("@/components/mission/types").QueueHistory>(`/api/dashboard/queue?range=${range}`),
   getOSSnapshot: () =>
     fetchJSON<OSSnapshot>("/api/dashboard/os"),
+  getProjectsSnapshot: () =>
+    fetchJSON<ProjectsSnapshot>("/api/dashboard/projects"),
   getLearning: () =>
     fetchJSON<LearningResponse>("/api/dashboard/learning"),
   // Personas (Hive B — Pantheon)
@@ -2452,6 +2454,35 @@ export interface OSSnapshot {
   activity?: OSActivitySnapshot;
   /** Static architecture topology with live health bound onto the nodes. */
   graph: { nodes: OSGraphNode[]; edges: OSGraphEdge[] };
+}
+
+export interface ProjectRemainingWorkItem {
+  id: string;
+  status: string;
+  title: string;
+}
+
+export interface ProjectSnapshot {
+  slug: string;
+  name: string;
+  icon: string;
+  color: string;
+  archived: boolean;
+  total: number;
+  completion_pct: number;
+  by_status: Record<string, number>;
+  active: number;
+  blocked: number;
+  last_activity: number | null;
+  remaining: ProjectRemainingWorkItem[];
+  remaining_count: number;
+  remaining_by_status: Record<string, number>;
+  remaining_more: number;
+}
+
+export interface ProjectsSnapshot {
+  scanned_at: string | null;
+  projects: ProjectSnapshot[];
 }
 
 // ---------------------------------------------------------------------------

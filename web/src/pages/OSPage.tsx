@@ -15,6 +15,7 @@ import {
   ChevronDown,
   ChevronUp,
   GitBranch,
+  FolderKanban,
   LayoutGrid,
   RefreshCw,
   Server,
@@ -23,6 +24,7 @@ import {
 import { usePageHeader } from "@/contexts/usePageHeader";
 import { OSNexus } from "@/components/os/OSNexus";
 import { GitTopology } from "@/components/os/GitTopology";
+import { OSProjects } from "@/components/os/OSProjects";
 import { DiagnosticsDrawer } from "@/components/os/DiagnosticsDrawer";
 import {
   api,
@@ -37,7 +39,7 @@ import {
 
 const SNAPSHOT_POLL_MS = 15_000;
 const HEADLINE_METRIC_COUNT = 3;
-type OSView = "nexus" | "grid" | "git";
+type OSView = "nexus" | "grid" | "git" | "projects";
 const VIEW_STORAGE_KEY = "os-view";
 
 function loadStoredView(): OSView {
@@ -47,6 +49,7 @@ function loadStoredView(): OSView {
     if (stored === "grid") return "grid";
     if (stored === "nexus") return "nexus";
     if (stored === "git") return "git";
+    if (stored === "projects") return "projects";
     return window.innerWidth < 1024 ? "grid" : "nexus";
   } catch {
     return window.innerWidth < 1024 ? "grid" : "nexus";
@@ -571,6 +574,7 @@ export default function OSPage() {
         <div className="ml-auto flex flex-shrink-0 overflow-hidden rounded-md border border-border" role="group" aria-label="OS view">
           <button type="button" onClick={() => setView("nexus")} aria-pressed={view === "nexus"} className={`flex min-h-[44px] items-center gap-1.5 px-2.5 py-1 text-xs font-semibold transition sm:min-h-0 ${view === "nexus" ? "bg-accent/40 text-text-primary" : "text-text-tertiary hover:text-text-primary"}`}><Workflow className="h-3.5 w-3.5" />Nexus</button>
           <button type="button" onClick={() => setView("grid")} aria-pressed={view === "grid"} className={`flex min-h-[44px] items-center gap-1.5 border-l border-border px-2.5 py-1 text-xs font-semibold transition sm:min-h-0 ${view === "grid" ? "bg-accent/40 text-text-primary" : "text-text-tertiary hover:text-text-primary"}`}><LayoutGrid className="h-3.5 w-3.5" />Grid</button><button type="button" onClick={() => setView("git")} aria-pressed={view === "git"} className={`flex min-h-[44px] items-center gap-1.5 border-l border-border px-2.5 py-1 text-xs font-semibold transition sm:min-h-0 ${view === "git" ? "bg-accent/40 text-text-primary" : "text-text-tertiary hover:text-text-primary"}`}><GitBranch className="h-3.5 w-3.5" />Git</button>
+          <button type="button" onClick={() => setView("projects")} aria-pressed={view === "projects"} className={`flex min-h-[44px] items-center gap-1.5 border-l border-border px-2.5 py-1 text-xs font-semibold transition sm:min-h-0 ${view === "projects" ? "bg-accent/40 text-text-primary" : "text-text-tertiary hover:text-text-primary"}`}><FolderKanban className="h-3.5 w-3.5" />Projects</button>
         </div>
       </div>
 
@@ -580,6 +584,8 @@ export default function OSPage() {
         <div className="mt-3 h-[70vh] min-h-[420px] min-w-0 lg:h-auto lg:flex-1"><OSNexus snapshot={data} /></div>
       ) : view === "git" ? (
         <GitTopology snapshot={data} />
+      ) : view === "projects" ? (
+        <div className="min-h-0"><OSProjects /></div>
       ) : (
         <>
           <div className="mt-4 grid grid-cols-1 items-start gap-3 pb-8 sm:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-4">
