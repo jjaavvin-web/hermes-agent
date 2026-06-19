@@ -53,6 +53,10 @@ _GITNEXUS_GRAPH_URL = f"{GITNEXUS_BASE_URL}/api/graph"
 _HTTP_BYTE_CEILING = 2_000_000
 _MEMORY_LEAF_LIMIT = 150
 _CODE_COMMUNITY_LIMIT = 25
+_LOKI_LANE_COUNT = 15
+_CODEX_BRANCH_LIMIT = 25
+_RECALL_HEALTH_URL = "http://127.0.0.1:8745/health"
+_RECALL_MCP_DIR = HERMES_HOME / "mcp" / "recall"
 _SUBCACHE_TTL = 60.0
 _GITNEXUS_REPO_TTL = 300.0
 _MVMS_CACHE: tuple[ProbeResult, float] | None = None
@@ -102,10 +106,10 @@ HUB_LABELS: dict[str, str] = {
 }
 
 BRIDGES: tuple[tuple[str, str, str, str], ...] = (
-    ("projects-brain", "projects", "brain", "kanban-mvms-bridge.timer"),
-    ("brain-lanes", "brain", "lanes", "recall-to-dispatch"),
+    ("projects-brain", "projects", "brain", "kanban-mvms-bridge"),
+    ("brain-lanes", "brain", "lanes", "recall→dispatch"),
     ("code-deploy", "code", "deploy", "reindex-on-commit"),
-    ("learning-brain", "learning", "brain", "write-back/reflect-gate"),
+    ("learning-brain", "learning", "brain", "write-back"),
     ("config-infra", "config", "infra", "gateway runs model"),
 )
 
@@ -270,8 +274,33 @@ def _unreachable_hub(hub_id: str, source: str, query: str, error: Exception | st
     return ProbeResult({"hub": hub, "leaves": [], "edges": []})
 
 
-def _edge(edge_id: str, source: str, target: str, label: str, *, kind: str = "bridge") -> dict[str, str]:
-    return {"id": edge_id, "source": source, "target": target, "label": label, "kind": kind}
+def _edge(
+    edge_id: str,
+    source: str,
+    target: str,
+    label: str,
+    *,
+    kind: str = "bridge",
+    provenance: dict[str, str] | None = None,
+    verified: bool = True,
+) -> dict[str, Any]:
+    edge = {
+        "id": edge_id,
+        "source": source,
+        "target": target,
+        "label": label,
+        "kind": kind,
+        "mechanism": label,
+        "verified": verified,
+        "provenance": provenance or _prov("connectome", "edge construction", "mechanism", label),
+    }
+    prov = edge["provenance"]
+    edge["provSource"] = prov.get("source", "")
+    edge["provQuery"] = prov.get("query", "")
+    edge["provField"] = prov.get("field", "")
+    edge["provValue"] = prov.get("value", "")
+    edge["lastSeen"] = prov.get("lastSeen", _now())
+    return edge
 
 
 def _worst_status(statuses: list[str]) -> str:
@@ -998,21 +1027,273 @@ def _code_cluster(repo: str | None = None) -> ProbeResult:
 
 
 # ---------------------------------------------------------------------------
-# Deferred L4 lane hub — provenance-backed, not an empty fake
+# Lanes probe — Kanban task_runs primary signal + stale codex refs secondary
 # ---------------------------------------------------------------------------
 
-def _deferred_probe(hub_id: str, source: str, query: str, field: str) -> ProbeResult:
-    hub = _hub_node(
-        hub_id,
-        0,
-        "pending",
-        _prov(source, query, field, "pending later workstream"),
-        detail="probe deferred to a later Neural Connectome workstream",
-    )
-    return ProbeResult({"hub": hub, "leaves": [], "edges": []})
+def _task_run_status(raw_status: str, outcome: str | None = None) -> str:
+    status = (raw_status or "unknown").lower()
+    if status == "running":
+        return "running"
+    if status in {"completed", "done"} or outcome == "completed":
+        return "completed"
+    if status == "blocked" or outcome == "blocked":
+        return "blocked"
+    if status == "scheduled":
+        return "queued"
+    if status in {"reclaimed", "released"} or outcome == "reclaimed":
+        return "stale"
+    if status in {"crashed", "timed_out", "failed"}:
+        return "blocked"
+    return status or "unknown"
 
-def _lanes_probe() -> ProbeResult:
-    return _deferred_probe("lanes", "Kanban task_runs + git refs", "L4 _lanes_probe", "task_runs.status")
+
+def _task_run_time(row: sqlite3.Row) -> int:
+    return int(row["ended_at"] or row["last_heartbeat_at"] or row["started_at"] or 0)
+
+
+def _read_task_runs(db_path: Path = KANBAN_DB) -> list[sqlite3.Row]:
+    query = (
+        "SELECT id, task_id, profile, step_key, status, outcome, worker_pid, "
+        "last_heartbeat_at, started_at, ended_at, summary, error "
+        "FROM task_runs "
+        "ORDER BY COALESCE(ended_at,last_heartbeat_at,started_at) DESC, id DESC"
+    )
+    uri = f"file:{db_path}?mode=ro"
+    con = sqlite3.connect(uri, uri=True)
+    con.row_factory = sqlite3.Row
+    try:
+        return con.execute(query).fetchall()
+    finally:
+        con.close()
+
+
+def _codex_branch_rows(repo_dir: Path = REPO_ROOT, limit: int = _CODEX_BRANCH_LIMIT) -> list[dict[str, str]]:
+    result = subprocess.run(
+        [
+            "git",
+            "for-each-ref",
+            f"--count={int(limit)}",
+            "--sort=-committerdate",
+            "--format=%(committerdate:iso8601)%09%(refname:short)%09%(objectname:short)",
+            "refs/heads/codex/**",
+        ],
+        cwd=repo_dir,
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=3,
+    )
+    rows: list[dict[str, str]] = []
+    for line in result.stdout.splitlines():
+        parts = line.split("\t")
+        if len(parts) < 3:
+            continue
+        rows.append({"committerdate": parts[0], "branch": parts[1], "sha": parts[2]})
+    return rows
+
+
+def _lanes_probe(db_path: Path = KANBAN_DB, repo_dir: Path = REPO_ROOT) -> ProbeResult:
+    task_query = (
+        "SELECT id,task_id,profile,step_key,status,outcome,last_heartbeat_at,started_at,ended_at "
+        "FROM task_runs ORDER BY COALESCE(ended_at,last_heartbeat_at,started_at) DESC, id DESC"
+    )
+    branch_query = "git for-each-ref --sort=-committerdate --format=... refs/heads/codex/** --count=25"
+    try:
+        rows = _read_task_runs(db_path)
+        status_counts: dict[str, int] = {}
+        normalized_counts: dict[str, int] = {}
+        recent_by_profile: dict[str, sqlite3.Row] = {}
+        running_profiles: set[str] = set()
+        blocked_profiles: set[str] = set()
+        statuses: list[str] = []
+        for row in rows:
+            raw_status = str(row["status"] or "unknown")
+            status_counts[raw_status] = status_counts.get(raw_status, 0) + 1
+            normalized = _task_run_status(raw_status, row["outcome"])
+            normalized_counts[normalized] = normalized_counts.get(normalized, 0) + 1
+            statuses.append(normalized)
+            profile = str(row["profile"] or "").strip()
+            if profile and profile not in recent_by_profile:
+                recent_by_profile[profile] = row
+            if normalized == "running" and profile:
+                running_profiles.add(profile)
+            if normalized == "blocked" and profile:
+                blocked_profiles.add(profile)
+
+        leaves: list[dict[str, Any]] = []
+        for lane_no in range(1, _LOKI_LANE_COUNT + 1):
+            lane_id = f"loki{lane_no}"
+            display = f"loki {lane_no}"
+            aliases = {lane_id, f"loki-{lane_no}", f"loki_{lane_no}", f"loki {lane_no}"}
+            matched = next((recent_by_profile[a] for a in aliases if a in recent_by_profile), None)
+            if any(alias in running_profiles for alias in aliases):
+                status = "running"
+            elif any(alias in blocked_profiles for alias in aliases):
+                status = "blocked"
+            else:
+                status = "idle"
+            prov_value = "no matching task_runs.profile row"
+            metric: dict[str, Any] = {"lane_number": lane_no, "task_runs_profile_aliases": sorted(aliases)}
+            if matched:
+                prov_value = matched["status"]
+                metric.update(
+                    {
+                        "task_run_id": matched["id"],
+                        "task_id": matched["task_id"],
+                        "profile": matched["profile"],
+                        "outcome": matched["outcome"],
+                        "last_seen_epoch": _task_run_time(matched),
+                    }
+                )
+            leaves.append(
+                _node(
+                    f"lanes:{lane_id}",
+                    display,
+                    "lanes",
+                    "loki-lane",
+                    status,
+                    _prov(str(db_path), task_query, "task_runs.status", prov_value),
+                    metric=metric,
+                    extra={"lane_number": lane_no, "secondary": False},
+                )
+            )
+
+        branches = _codex_branch_rows(repo_dir, _CODEX_BRANCH_LIMIT)
+        for branch in branches:
+            leaves.append(
+                _node(
+                    f"lanes:branch:{branch['branch']}",
+                    branch["branch"],
+                    "lanes",
+                    "codex-branch",
+                    "stale",
+                    _prov(str(repo_dir), branch_query, "committerdate", branch["committerdate"]),
+                    metric={"branch": branch["branch"], "sha": branch["sha"], "committerdate": branch["committerdate"], "secondary": True},
+                    extra={"branch": branch["branch"], "secondary": True, "dimmed": True},
+                )
+            )
+
+        live_focus = normalized_counts.get("running", 0) + normalized_counts.get("blocked", 0) + normalized_counts.get("queued", 0)
+        hub_status = "running" if normalized_counts.get("running", 0) else ("blocked" if normalized_counts.get("blocked", 0) else "completed")
+        hub = _hub_node(
+            "lanes",
+            len(rows),
+            hub_status,
+            _prov(str(db_path), task_query, "task_runs.status", f"{len(rows)} task_runs; statuses={status_counts}"),
+            detail="Primary signal is live Kanban task_runs; codex/** branches are secondary stale refs only.",
+            metric={
+                "task_runs_total": len(rows),
+                "task_runs_status_counts": status_counts,
+                "task_runs_normalized_counts": normalized_counts,
+                "live_focus_count": live_focus,
+                "loki_lane_nodes": _LOKI_LANE_COUNT,
+                "codex_branch_query": "refs/heads/codex/**",
+                "codex_branch_nodes": len(branches),
+                "codex_branch_cap": _CODEX_BRANCH_LIMIT,
+                "codex_branches_secondary_stale": True,
+                "projects_lanes_branch_name_edge": "dropped: branch_name has no live join key",
+            },
+        )
+        return ProbeResult({"hub": hub, "leaves": leaves, "edges": []})
+    except Exception as exc:
+        return _unreachable_hub("lanes", f"{db_path} + {repo_dir}", f"{task_query}; {branch_query}", exc)
+
+
+# ---------------------------------------------------------------------------
+# Verified inter-hub bridges — emit only if the live mechanism is present
+# ---------------------------------------------------------------------------
+
+def _systemctl_user(*args: str) -> str:
+    result = subprocess.run(
+        ["systemctl", "--user", *args],
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=3,
+    )
+    return result.stdout.strip()
+
+
+def _verify_projects_brain_bridge() -> dict[str, str] | None:
+    try:
+        enabled = _systemctl_user("is-enabled", "kanban-mvms-bridge.timer")
+    except Exception:
+        return None
+    if enabled != "enabled":
+        return None
+    return _prov("systemctl --user", "is-enabled kanban-mvms-bridge.timer", "unit.enabled", enabled)
+
+
+def _verify_brain_lanes_bridge() -> dict[str, str] | None:
+    try:
+        payload = _read_http_json(_RECALL_HEALTH_URL, timeout=3.0, byte_ceiling=50_000)
+    except Exception:
+        return None
+    if not isinstance(payload, dict) or payload.get("ok") is not True:
+        return None
+    return _prov(_RECALL_HEALTH_URL, "GET /health", "ok", payload.get("ok"))
+
+
+def _verify_code_deploy_bridge(repo_dir: Path = REPO_ROOT) -> dict[str, str] | None:
+    hook = repo_dir / ".git" / "hooks" / "post-commit"
+    try:
+        text = hook.read_text(encoding="utf-8")
+    except OSError:
+        return None
+    if "gitnexus-reindex" not in text or "hermes_cli.gitnexus_repo_manager" not in text:
+        return None
+    return _prov(str(hook), "read_text(encoding='utf-8')", "gitnexus hook marker", "gitnexus-reindex + hermes_cli.gitnexus_repo_manager")
+
+
+def _verify_learning_brain_bridge() -> dict[str, str] | None:
+    try:
+        payload = _read_http_json(_RECALL_HEALTH_URL, timeout=3.0, byte_ceiling=50_000)
+        close_loop = (_RECALL_MCP_DIR / "close_loop.py").read_text(encoding="utf-8")
+        recorder = (_RECALL_MCP_DIR / "record_loop_lesson.py").read_text(encoding="utf-8")
+    except Exception:
+        return None
+    recall_ready = isinstance(payload, dict) and payload.get("ok") is True and payload.get("model_warmed") is True
+    helper_ready = "record_loop_lesson" in close_loop and "mvms_record_lesson" in recorder
+    if not recall_ready or not helper_ready:
+        return None
+    return _prov(
+        f"{_RECALL_HEALTH_URL} + {_RECALL_MCP_DIR}",
+        "GET /health + read close_loop.py/record_loop_lesson.py",
+        "recall close-loop write-back",
+        "model_warmed=True; close_loop→record_loop_lesson→mvms_record_lesson",
+    )
+
+
+def _verify_config_infra_bridge(config_path: Path = CONFIG_PATH) -> dict[str, str] | None:
+    try:
+        with config_path.open("r", encoding="utf-8") as handle:
+            config = yaml.safe_load(handle) or {}
+        model_cfg = config.get("model", {}) if isinstance(config.get("model"), dict) else {}
+        default_model = model_cfg.get("default") or model_cfg.get("model")
+        provider = model_cfg.get("provider")
+        gateway_state = _systemctl_user("is-active", "hermes-gateway.service")
+    except Exception:
+        return None
+    if not default_model or gateway_state != "active":
+        return None
+    return _prov(str(config_path), "yaml.safe_load + systemctl --user is-active hermes-gateway.service", "model.default/provider", f"{default_model}/{provider}; gateway={gateway_state}")
+
+
+def _verified_bridge_edges() -> list[dict[str, Any]]:
+    verifiers: dict[str, Callable[[], dict[str, str] | None]] = {
+        "projects-brain": _verify_projects_brain_bridge,
+        "brain-lanes": _verify_brain_lanes_bridge,
+        "code-deploy": _verify_code_deploy_bridge,
+        "learning-brain": _verify_learning_brain_bridge,
+        "config-infra": _verify_config_infra_bridge,
+    }
+    edges: list[dict[str, Any]] = []
+    for edge_id, source, target, label in BRIDGES:
+        provenance = verifiers[edge_id]()
+        if provenance is None:
+            continue
+        edges.append(_edge(edge_id, source, target, label, kind="bridge", provenance=provenance, verified=True))
+    return edges
 
 
 PROBES: dict[str, Callable[[], ProbeResult]] = {
@@ -1051,7 +1332,7 @@ def _build_connectome_snapshot() -> dict[str, Any]:
                 results[hub_id] = _unreachable_hub(hub_id, "connectome probe", hub_id, exc)
 
     nodes = [results[hub_id]["hub"] for hub_id in CANONICAL_HUBS]
-    edges = [_edge(edge_id, source, target, label) for edge_id, source, target, label in BRIDGES]
+    edges = _verified_bridge_edges()
     status = "degraded" if any(node.get("status") == "source unreachable" for node in nodes) else "ok"
     return {
         "nodes": nodes,
