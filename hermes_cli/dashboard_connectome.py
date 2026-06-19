@@ -8,7 +8,9 @@ Every source is try/except guarded and degrades to a provenance-backed
 """
 from __future__ import annotations
 
+import asyncio
 import concurrent.futures
+import json
 import os
 import sqlite3
 import subprocess
@@ -19,6 +21,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Annotated, Any
 
+import asyncpg
+import httpx
 import yaml
 from fastapi import APIRouter, Query
 
@@ -42,6 +46,36 @@ KANBAN_DB = HERMES_HOME / "kanban" / "boards" / "hermes" / "kanban.db"
 CONFIG_PATH = HERMES_HOME / "config.yaml"
 AUDITS_DIR = HERMES_HOME / "audits"
 SERVING_DEPLOY_BRANCH = "deploy/dashboard-both"
+MVMS_ENV_FILE = Path("/home/josep/workspace/goattrade-system/.env")
+GITNEXUS_BASE_URL = "http://127.0.0.1:4747"
+_GITNEXUS_REPOS_URL = f"{GITNEXUS_BASE_URL}/api/repos"
+_GITNEXUS_GRAPH_URL = f"{GITNEXUS_BASE_URL}/api/graph"
+_HTTP_BYTE_CEILING = 2_000_000
+_MEMORY_LEAF_LIMIT = 150
+_CODE_COMMUNITY_LIMIT = 25
+_SUBCACHE_TTL = 60.0
+_GITNEXUS_REPO_TTL = 300.0
+_MVMS_CACHE: tuple[ProbeResult, float] | None = None
+_MVMS_LOCK = threading.Lock()
+_GITNEXUS_CACHE: tuple[ProbeResult, float] | None = None
+_GITNEXUS_LOCK = threading.Lock()
+
+# The one authoritative ICT/chatter exclusion for MVMS reads. Keep the literal
+# IS DISTINCT FROM predicate: != silently drops NULL-source rows.
+MEMORY_QUERY_WHERE = """source IS DISTINCT FROM 'ict-brain'
+  AND source !~ ':(gave_up|crashed|blocked)$'
+  AND source !~* 'compactor|superseder|reflect-promote|curator'
+  AND source !~ '^kanban-mvms-bridge:'
+  AND deprecated_at IS NULL"""
+
+# Clean-total is the ICT-excluded pool used as the secondary hub metric. The
+# chatter predicate owns materialized/default signal rows. It intentionally
+# allows deprecated rows through so each node can expose live/stale status.
+MEMORY_CLEAN_TOTAL_WHERE = """source IS DISTINCT FROM 'ict-brain'"""
+MEMORY_SIGNAL_WHERE = """source IS DISTINCT FROM 'ict-brain'
+  AND source !~ ':(gave_up|crashed|blocked)$'
+  AND source !~* 'compactor|superseder|reflect-promote|curator'
+  AND source !~ '^kanban-mvms-bridge:'"""
 
 CANONICAL_HUBS: tuple[str, ...] = (
     "projects",
@@ -646,7 +680,325 @@ def _learning_probe(snapshot_getter: Callable[[], dict[str, Any]] | None = None)
 
 
 # ---------------------------------------------------------------------------
-# Deferred hubs for later lanes — provenance-backed, not empty stubs
+# Brain probe — MVMS read-only, ICT/chatter filtered server-side
+# ---------------------------------------------------------------------------
+
+def _load_mvms_env_if_needed() -> None:
+    """Mirror the recall wrapper: source DB URL locally without printing it."""
+    if os.environ.get("MVMS_DATABASE_URL"):
+        return
+    if not MVMS_ENV_FILE.is_file():
+        return
+    try:
+        for raw in MVMS_ENV_FILE.read_text(encoding="utf-8").splitlines():
+            line = raw.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, value = line.split("=", 1)
+            key = key.strip()
+            if key not in {"SUPABASE_DB_URL", "DATABASE_URL", "MVMS_DATABASE_URL"}:
+                continue
+            value = value.strip().strip('"').strip("'")
+            if value and key not in os.environ:
+                os.environ[key] = value
+    except OSError:
+        return
+
+
+def _mvms_dsn() -> str:
+    _load_mvms_env_if_needed()
+    value = os.getenv("MVMS_DATABASE_URL") or os.getenv("SUPABASE_DB_URL") or os.getenv("DATABASE_URL")
+    if not value:
+        raise RuntimeError("MVMS_DATABASE_URL/SUPABASE_DB_URL/DATABASE_URL not set")
+    return value
+
+
+async def _memory_query(limit: int = _MEMORY_LEAF_LIMIT) -> dict[str, Any]:
+    """Single read-only MVMS helper; all memory.observations reads go through here."""
+    safe_limit = max(1, min(int(limit), _MEMORY_LEAF_LIMIT))
+    conn = await asyncpg.connect(_mvms_dsn(), command_timeout=10)
+    try:
+        async with conn.transaction(readonly=True):
+            clean_total = int(
+                await conn.fetchval(
+                    f"SELECT count(*)::bigint FROM memory.observations WHERE {MEMORY_CLEAN_TOTAL_WHERE}"
+                )
+                or 0
+            )
+            signal_total = int(
+                await conn.fetchval(
+                    f"""
+                    SELECT count(*)::bigint
+                    FROM memory.observations
+                    WHERE {MEMORY_SIGNAL_WHERE}
+                      AND kind IN ('completion','lesson')
+                    """
+                )
+                or 0
+            )
+            unfiltered_total = int(
+                await conn.fetchval("SELECT count(*)::bigint FROM memory.observations") or 0
+            )
+            ict_total = int(
+                await conn.fetchval("SELECT count(*)::bigint FROM memory.observations WHERE source = 'ict-brain'")
+                or 0
+            )
+            rows = await conn.fetch(
+                f"""
+                SELECT id, kind, source, project, importance, created_at, deprecated_at, superseded_by
+                FROM memory.observations
+                WHERE {MEMORY_SIGNAL_WHERE}
+                  AND kind IN ('completion','lesson')
+                ORDER BY importance DESC NULLS LAST, id ASC
+                LIMIT $1
+                """,
+                safe_limit,
+            )
+    finally:
+        await conn.close()
+    return {
+        "clean_total": clean_total,
+        "signal_total": signal_total,
+        "unfiltered_total": unfiltered_total,
+        "ict_total": ict_total,
+        "rows": [dict(row) for row in rows],
+        "where": MEMORY_SIGNAL_WHERE,
+        "exact_live_where": MEMORY_QUERY_WHERE,
+        "clean_where": MEMORY_CLEAN_TOTAL_WHERE,
+    }
+
+
+def _run_async(coro: Any) -> Any:
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(coro)
+    # The dashboard routes are sync, but tests may call from an async context.
+    # Use a private loop in a short helper thread rather than nesting loops.
+    box: dict[str, Any] = {}
+    def runner() -> None:
+        try:
+            box["value"] = asyncio.run(coro)
+        except BaseException as exc:  # pragma: no cover - defensive bridge
+            box["error"] = exc
+    thread = threading.Thread(target=runner, daemon=True)
+    thread.start()
+    thread.join()
+    if "error" in box:
+        raise box["error"]
+    return box.get("value")
+
+
+def _memory_probe() -> ProbeResult:
+    global _MVMS_CACHE
+    now = time.monotonic()
+    if _MVMS_CACHE and now < _MVMS_CACHE[1]:
+        return _MVMS_CACHE[0]
+    with _MVMS_LOCK:
+        now = time.monotonic()
+        if _MVMS_CACHE and now < _MVMS_CACHE[1]:
+            return _MVMS_CACHE[0]
+        query = f"{MEMORY_SIGNAL_WHERE} AND kind IN ('completion','lesson') ORDER BY importance DESC, id ASC LIMIT {_MEMORY_LEAF_LIMIT}"
+        try:
+            data = _run_async(_memory_query(_MEMORY_LEAF_LIMIT))
+            leaves: list[dict[str, Any]] = []
+            for row in data["rows"]:
+                row_id = str(row.get("id"))
+                status = "live" if row.get("deprecated_at") is None and row.get("superseded_by") is None else "stale"
+                kind = str(row.get("kind") or "observation")
+                importance = int(row.get("importance") or 0)
+                leaves.append(
+                    _node(
+                        f"brain:{row_id}",
+                        f"{kind} · imp {importance}",
+                        "brain",
+                        kind,
+                        status,
+                        _prov("memory.observations", query, "source", row.get("source")),
+                        metric={
+                            "id": row_id,
+                            "kind": kind,
+                            "source": row.get("source"),
+                            "project": row.get("project"),
+                            "importance": importance,
+                            "created_at": row.get("created_at").isoformat() if row.get("created_at") else None,
+                        },
+                    )
+                )
+            signal_total = int(data["signal_total"])
+            clean_total = int(data["clean_total"])
+            hub = _hub_node(
+                "brain",
+                signal_total,
+                "completed",
+                _prov("memory.observations", query, "count", f"signal={signal_total}; clean_total={clean_total}"),
+                detail=f"MVMS signal {signal_total}; ICT-excluded clean pool {clean_total}",
+                metric={
+                    "signal_count": signal_total,
+                    "clean_total": clean_total,
+                    "unfiltered_total": int(data["unfiltered_total"]),
+                    "ict_excluded": int(data["ict_total"]),
+                    "leaf_cap": _MEMORY_LEAF_LIMIT,
+                    "where": data["where"],
+                    "exact_live_where": data["exact_live_where"],
+                    "clean_total_where": data["clean_where"],
+                },
+            )
+            result = ProbeResult({"hub": hub, "leaves": leaves, "edges": []})
+            _MVMS_CACHE = (result, now + _SUBCACHE_TTL)
+            return result
+        except Exception as exc:
+            if _MVMS_CACHE:
+                return _MVMS_CACHE[0]
+            return _unreachable_hub("brain", "memory.observations", query, exc)
+
+
+# Back-compatible alias for packet/tests that name _memory_probe explicitly.
+_brain_probe = _memory_probe
+
+
+# ---------------------------------------------------------------------------
+# Code probe — GitNexus repo summary only; never materialize full graph
+# ---------------------------------------------------------------------------
+
+def _read_http_json(url: str, *, timeout: float = 4.0, byte_ceiling: int = _HTTP_BYTE_CEILING) -> Any:
+    with httpx.Client(timeout=timeout) as client:
+        with client.stream("GET", url, headers={"Accept": "application/json"}) as response:
+            response.raise_for_status()
+            chunks: list[bytes] = []
+            total = 0
+            for chunk in response.iter_bytes():
+                total += len(chunk)
+                if total > byte_ceiling:
+                    raise RuntimeError(f"response exceeded byte ceiling {byte_ceiling} for {url}")
+                chunks.append(chunk)
+    return json.loads(b"".join(chunks).decode("utf-8"))
+
+
+def _repo_rows_from_payload(payload: Any) -> list[dict[str, Any]]:
+    if isinstance(payload, dict):
+        raw = payload.get("repos") or payload.get("items") or payload.get("data") or []
+    else:
+        raw = payload
+    if not isinstance(raw, list):
+        return []
+    rows: list[dict[str, Any]] = []
+    for item in raw:
+        if isinstance(item, dict):
+            rows.append(item)
+    return rows
+
+
+def _code_probe() -> ProbeResult:
+    global _GITNEXUS_CACHE
+    now = time.monotonic()
+    if _GITNEXUS_CACHE and now < _GITNEXUS_CACHE[1]:
+        return _GITNEXUS_CACHE[0]
+    with _GITNEXUS_LOCK:
+        now = time.monotonic()
+        if _GITNEXUS_CACHE and now < _GITNEXUS_CACHE[1]:
+            return _GITNEXUS_CACHE[0]
+        try:
+            payload = _read_http_json(_GITNEXUS_REPOS_URL, timeout=4.0, byte_ceiling=200_000)
+            repos = _repo_rows_from_payload(payload)
+            leaves: list[dict[str, Any]] = []
+            total_nodes = 0
+            total_files = 0
+            indexed: list[str] = []
+            for repo in repos:
+                name = str(repo.get("name") or repo.get("id") or repo.get("path") or "unknown")
+                stats = repo.get("stats") if isinstance(repo.get("stats"), dict) else {}
+                node_count = int(stats.get("nodes") or repo.get("nodes") or repo.get("node_count") or 0)
+                file_count = int(stats.get("files") or repo.get("files") or repo.get("file_count") or 0)
+                community_count = int(stats.get("communities") or repo.get("communities") or 0)
+                indexed_at = str(repo.get("indexedAt") or repo.get("indexed_at") or "")
+                if indexed_at:
+                    indexed.append(indexed_at)
+                total_nodes += node_count
+                total_files += file_count
+                leaves.append(
+                    _node(
+                        f"code:{name}",
+                        name,
+                        "code",
+                        "repo",
+                        "ok",
+                        _prov(_GITNEXUS_REPOS_URL, "GET /api/repos", "indexedAt", indexed_at),
+                        count=node_count,
+                        metric={
+                            "nodes": node_count,
+                            "files": file_count,
+                            "edges": int(stats.get("edges") or 0),
+                            "communities": community_count,
+                            "indexedAt": indexed_at,
+                            "path": repo.get("path"),
+                        },
+                        extra={"repo": name, "indexedAt": indexed_at},
+                    )
+                )
+            hub = _hub_node(
+                "code",
+                len(repos),
+                "ok" if repos else "source unreachable",
+                _prov(_GITNEXUS_REPOS_URL, "GET /api/repos", "indexedAt", ", ".join(indexed) or "none"),
+                detail=f"{len(repos)} repos; {total_nodes} GitNexus nodes summarized, not shipped as leaves",
+                metric={
+                    "repos": len(repos),
+                    "node_total": total_nodes,
+                    "file_total": total_files,
+                    "repo_leaf_count": len(leaves),
+                    "underlying_nodes_materialized": 0,
+                    "byte_ceiling": 200_000,
+                },
+            )
+            result = ProbeResult({"hub": hub, "leaves": leaves, "edges": []})
+            _GITNEXUS_CACHE = (result, now + _GITNEXUS_REPO_TTL)
+            return result
+        except Exception as exc:
+            if _GITNEXUS_CACHE:
+                return _GITNEXUS_CACHE[0]
+            return _unreachable_hub("code", _GITNEXUS_REPOS_URL, "GET /api/repos", exc)
+
+
+def _code_cluster(repo: str | None = None) -> ProbeResult:
+    """Return repo hubs plus, when available, ≤25 bounded graph communities."""
+    base = _code_probe()
+    if not repo:
+        return base
+    leaves = [leaf for leaf in base.get("leaves", []) if leaf.get("repo") == repo]
+    query_url = f"{_GITNEXUS_GRAPH_URL}?repo={repo}"
+    try:
+        graph = _read_http_json(query_url, timeout=4.0, byte_ceiling=_HTTP_BYTE_CEILING)
+        raw_nodes = graph.get("nodes", []) if isinstance(graph, dict) else []
+        communities: dict[str, int] = {}
+        if isinstance(raw_nodes, list):
+            for node in raw_nodes:
+                if not isinstance(node, dict):
+                    continue
+                community = str(node.get("community") or node.get("group") or node.get("kind") or "unknown")
+                communities[community] = communities.get(community, 0) + 1
+        for community, count in sorted(communities.items(), key=lambda kv: (-kv[1], kv[0]))[:_CODE_COMMUNITY_LIMIT]:
+            leaves.append(
+                _node(
+                    f"code:{repo}:community:{community}",
+                    f"{repo} · {community}",
+                    "code",
+                    "community",
+                    "ok",
+                    _prov(query_url, f"GET /api/graph?repo={repo} cap={_CODE_COMMUNITY_LIMIT}", "community", community),
+                    count=count,
+                    metric={"repo": repo, "community": community, "members": count},
+                )
+            )
+    except Exception:
+        # Repo counts are the contract-critical payload. Graph expansion is optional
+        # and bounded; on GitNexus wedge, return the repo node instead of raising.
+        pass
+    return ProbeResult({"hub": base.get("hub"), "leaves": leaves[: _CODE_COMMUNITY_LIMIT + 1], "edges": []})
+
+
+# ---------------------------------------------------------------------------
+# Deferred L4 lane hub — provenance-backed, not an empty fake
 # ---------------------------------------------------------------------------
 
 def _deferred_probe(hub_id: str, source: str, query: str, field: str) -> ProbeResult:
@@ -658,15 +1010,6 @@ def _deferred_probe(hub_id: str, source: str, query: str, field: str) -> ProbeRe
         detail="probe deferred to a later Neural Connectome workstream",
     )
     return ProbeResult({"hub": hub, "leaves": [], "edges": []})
-
-
-def _brain_probe() -> ProbeResult:
-    return _deferred_probe("brain", "MVMS", "L3 _memory_probe", "memory.observations")
-
-
-def _code_probe() -> ProbeResult:
-    return _deferred_probe("code", "GitNexus", "L3 _code_probe", "/api/repos")
-
 
 def _lanes_probe() -> ProbeResult:
     return _deferred_probe("lanes", "Kanban task_runs + git refs", "L4 _lanes_probe", "task_runs.status")
@@ -757,11 +1100,12 @@ def get_connectome_cluster(
     cluster_id: str,
     cursor: str | None = None,
     limit: Annotated[int, Query(ge=1, le=300)] = 80,
+    repo: str | None = None,
 ) -> dict[str, Any]:
     """Return a cursor-paginated leaf page for a cluster; never 500."""
     try:
         safe_limit = min(max(int(limit), 1), 300)
-        cache_key = (cluster_id, cursor, safe_limit)
+        cache_key = (cluster_id if not repo else f"{cluster_id}:{repo}", cursor, safe_limit)
         now = time.monotonic()
         with _CLUSTER_LOCK:
             cached = _CLUSTER_CACHE.get(cache_key)
@@ -776,7 +1120,7 @@ def get_connectome_cluster(
                 "error": "unknown cluster",
             }
         else:
-            probe = _run_probe(cluster_id)
+            probe = _code_cluster(repo) if cluster_id == "code" else _run_probe(cluster_id)
             leaves, next_cursor = _paginate(list(probe.get("leaves", [])), cursor, safe_limit)
             result = {
                 "cluster_id": cluster_id,
