@@ -11939,7 +11939,9 @@ except Exception as _exc:
     _log.warning("Failed to load dashboard_codex_sessions routes: %s", _exc)
 try:
     from hermes_cli.dashboard_os import router as _os_router
+    from hermes_cli.dashboard_connectome import router as _connectome_router
     app.include_router(_os_router)
+    app.include_router(_connectome_router)
     _log.info("Mounted OS tab dashboard API routes at /api/dashboard/os")
 except Exception as _exc:
     _log.warning("Failed to load dashboard_os routes: %s", _exc)
