@@ -309,6 +309,24 @@ def _worst_status(statuses: list[str]) -> str:
     return min(statuses, key=lambda status: STATUS_RANK.get(status, 3))
 
 
+def _hub_rollup_status(statuses: list[str]) -> str:
+    """Health-aware hub headline. A few blocked/queued leaves must NOT flip the whole
+    hub to 'blocked' (e.g. 3 of 67 cards) — the per-status breakdown lives in the hub's
+    `metric` histogram. Flag the headline only when a meaningful share is broken."""
+    if not statuses:
+        return "unknown"
+    n = len(statuses)
+    bad = sum(1 for s in statuses if s in {"blocked", "red", "degraded", "error", "source unreachable"})
+    live = sum(1 for s in statuses if s in {"in-progress", "running", "amber", "active", "live", "serving"})
+    if bad == n:
+        return "source unreachable" if "source unreachable" in statuses else "blocked"
+    if bad >= max(2, round(n * 0.4)):
+        return "degraded"
+    if live:
+        return "active"
+    return "ok"
+
+
 def _safe_envelope(error: str | None = None) -> dict[str, Any]:
     meta: dict[str, Any] = {
         "generated_at": _now(),
@@ -395,7 +413,7 @@ def _projects_probe(db_path: Path = KANBAN_DB) -> ProbeResult:
         hub = _hub_node(
             "projects",
             count,
-            _worst_status(statuses) if statuses else "completed",
+            _hub_rollup_status(statuses) if statuses else "completed",
             _prov(str(db_path), query, "tasks.status", f"{count} non-archived rows"),
             metric={status: statuses.count(status) for status in sorted(set(statuses))},
         )
@@ -566,7 +584,7 @@ def _programs_probe(audits_dir: Path = AUDITS_DIR) -> ProbeResult:
                     extra={"path": str(path)},
                 )
             )
-        hub_status = _worst_status(statuses) if statuses else "source unreachable"
+        hub_status = _hub_rollup_status(statuses) if statuses else "source unreachable"
         hub = _hub_node(
             "programs",
             len(leaves),
@@ -691,7 +709,7 @@ def _os_bound_probe(
         hub = _hub_node(
             hub_id,
             len(leaves),
-            _worst_status(statuses) if statuses else "source unreachable",
+            _hub_rollup_status(statuses) if statuses else "source unreachable",
             _prov("hermes_cli.dashboard_os.get_os_snapshot()", "snapshot['graph']['nodes']", source_field, len(leaves)),
             metric={"os_snapshot_generated_at": snapshot.get("generated_at"), "os_overall": snapshot.get("overall")},
         )
@@ -1174,7 +1192,9 @@ def _lanes_probe(db_path: Path = KANBAN_DB, repo_dir: Path = REPO_ROOT) -> Probe
             )
 
         live_focus = normalized_counts.get("running", 0) + normalized_counts.get("blocked", 0) + normalized_counts.get("queued", 0)
-        hub_status = "running" if normalized_counts.get("running", 0) else ("blocked" if normalized_counts.get("blocked", 0) else "completed")
+        hub_status = _hub_rollup_status(
+            [s for s, c in normalized_counts.items() for _ in range(int(c))]
+        )
         hub = _hub_node(
             "lanes",
             len(rows),
