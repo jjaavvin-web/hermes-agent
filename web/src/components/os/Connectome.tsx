@@ -86,7 +86,12 @@ function useElementSize<T extends HTMLElement>() {
     if (!el) return;
     const update = () => {
       const rect = el.getBoundingClientRect();
-      setSize({ w: Math.max(1, Math.round(rect.width)), h: Math.max(1, Math.round(rect.height)) });
+      const w = Math.max(1, Math.round(rect.width));
+      const h = Math.max(1, Math.round(rect.height));
+      // Only emit a NEW size object when dimensions actually change — otherwise a
+      // fresh {w,h} on every ResizeObserver tick rebuilds the graph memo and
+      // perpetually restarts the force simulation (canvas never settles).
+      setSize((prev) => (prev.w === w && prev.h === h ? prev : { w, h }));
     };
     update();
     const ro = new ResizeObserver(update);
@@ -484,6 +489,35 @@ export default function Connectome() {
       // Non-fatal in tests/headless modes.
     }
   }, []);
+
+  // Fallback: center the camera on the real nodes once data has loaded, even if
+  // the simulation never emits onEngineStop (pinned hubs can settle without it,
+  // and an unstable engine would otherwise leave the camera off the nodes).
+  useEffect(() => {
+    if (size.w <= 0 || size.h <= 0 || realNodeCount === 0) return;
+    const timer = window.setTimeout(() => {
+      const fg = fgRef.current;
+      if (!fg) return;
+      try {
+        fg.zoomToFit(600, 42, (node) => node.simKind !== "halo");
+      } catch {
+        // headless-safe
+      }
+    }, 600);
+    // Pause the engine once the pinned layout has settled — stops the canvas
+    // pegging CPU and freezes a stable frame (also fixes headless capture).
+    const pause = window.setTimeout(() => {
+      try {
+        fgRef.current?.pauseAnimation();
+      } catch {
+        // headless-safe
+      }
+    }, 1600);
+    return () => {
+      window.clearTimeout(timer);
+      window.clearTimeout(pause);
+    };
+  }, [realNodeCount, size.w, size.h]);
 
   const nodeCanvasObject = useCallback(
     (node: SimNode, ctx: CanvasRenderingContext2D, globalScale: number) => {
