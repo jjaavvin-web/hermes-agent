@@ -859,10 +859,13 @@ def _maybe_auto_subscribe(conn: Any, task_id: str) -> bool:
       are intentionally cleared (TUI is a single-channel local UI, not
       a multi-tenant chat surface), but the agent subprocess inherits
       ``HERMES_SESSION_KEY`` from the parent session. We subscribe with
-      ``platform="tui"`` and ``chat_id=<key>``; the TUI notification
-      poller (``tui_gateway/server.py``) reads ``kanban_notify_subs``
-      for these rows and posts the completion message into the running
-      session.
+      ``platform="tui"`` and ``chat_id=<key>``. NOTE (re-diagnosed
+      2026-06-20): the live consumer of ``kanban_notify_subs`` is
+      ``gateway/kanban_watchers.py::_kanban_notifier_watcher`` — GATED on
+      ``kanban.dispatch_in_gateway`` (fork fail-closed default False) — NOT
+      ``tui_gateway/server.py`` (that polls ``process_registry`` only and has
+      zero ``kanban_notify_subs`` refs). So these rows are delivered only when
+      dispatch_in_gateway is enabled; otherwise they accrue inertly (harmless).
 
     - **CLI / cron / test / unattached**: no persistent delivery channel,
       no-op.
