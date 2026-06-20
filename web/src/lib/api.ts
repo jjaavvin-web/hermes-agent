@@ -920,6 +920,18 @@ export const api = {
     fetchJSON<import("@/components/mission/types").QueueHistory>(`/api/dashboard/queue?range=${range}`),
   getOSSnapshot: () =>
     fetchJSON<OSSnapshot>("/api/dashboard/os"),
+  getConnectome: () =>
+    fetchJSON<ConnectomeSnapshot>("/api/dashboard/connectome"),
+  getConnectomeCluster: (clusterId: string, params: { cursor?: string | null; limit?: number; repo?: string | null } = {}) => {
+    const qs = new URLSearchParams();
+    if (params.cursor) qs.set("cursor", params.cursor);
+    if (params.limit) qs.set("limit", String(params.limit));
+    if (params.repo) qs.set("repo", params.repo);
+    const query = qs.toString();
+    return fetchJSON<ConnectomeClusterPage>(
+      `/api/dashboard/connectome/cluster/${encodeURIComponent(clusterId)}${query ? `?${query}` : ""}`,
+    );
+  },
   getProjectsSnapshot: () =>
     fetchJSON<ProjectsSnapshot>("/api/dashboard/projects"),
   getLearning: () =>
@@ -2454,6 +2466,69 @@ export interface OSSnapshot {
   activity?: OSActivitySnapshot;
   /** Static architecture topology with live health bound onto the nodes. */
   graph: { nodes: OSGraphNode[]; edges: OSGraphEdge[] };
+}
+
+// ---------------------------------------------------------------------------
+// Neural Connectome — live graph summary + lazy cluster leaves
+// ---------------------------------------------------------------------------
+
+export interface ConnectomeProvenance {
+  source?: string;
+  query?: string;
+  field?: string;
+  value?: string;
+  lastSeen?: string;
+}
+
+export interface ConnectomeNode {
+  id: string;
+  label: string;
+  cluster: string;
+  kind: string;
+  status?: string;
+  real?: boolean;
+  count?: number;
+  detail?: string;
+  metric?: number | Record<string, unknown>;
+  provenance?: ConnectomeProvenance;
+  provSource?: string;
+  provQuery?: string;
+  provField?: string;
+  provValue?: string;
+  lastSeen?: string;
+  [key: string]: unknown;
+}
+
+export interface ConnectomeEdge {
+  id: string;
+  source: string;
+  target: string;
+  kind: string;
+  label?: string;
+  mechanism?: string;
+  verified?: boolean;
+  provenance?: ConnectomeProvenance;
+  provSource?: string;
+  provQuery?: string;
+  provField?: string;
+  provValue?: string;
+  lastSeen?: string;
+}
+
+export interface ConnectomeSnapshot {
+  nodes: ConnectomeNode[];
+  edges: ConnectomeEdge[];
+  meta?: Record<string, unknown>;
+}
+
+export interface ConnectomeClusterPage {
+  cluster_id: string;
+  hub?: ConnectomeNode;
+  leaves: ConnectomeNode[];
+  next_cursor?: string | null;
+  generated_at?: string;
+  status?: string;
+  error?: string;
 }
 
 export interface ProjectRemainingWorkItem {
