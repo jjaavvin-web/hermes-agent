@@ -63,8 +63,8 @@ const WHITE = "#f4f7fb";
 const SUMMARY_POLL_MS = 20_000;
 const CLUSTER_LOAD_ZOOM = 1.35;
 const ACTIVE_PARTICLE_CAP = 15;
-const REAL_LEAF_MIN_OPACITY = 0.58;
-const HALO_MAX_OPACITY = 0.6;
+const REAL_LEAF_MIN_OPACITY = 0.74;
+const HALO_MAX_OPACITY = 0.84;
 const HUB_LABELS: Record<string, string> = {
   projects: "Projects",
   brain: "Brain",
@@ -175,9 +175,9 @@ function provenancePredicate(node: ConnectomeNode | null): string {
 }
 
 function nodeRadius(node: SimNode): number {
-  if (node.simKind === "halo") return 0.9 + (node.opacity ?? 0.18) * 1.8;
-  if (node.simKind === "hub") return 8 + Math.min(18, Math.log10(Math.max(10, node.metricValue)) * 3.4);
-  return (node.accent ? 3.8 : 3.0) + Math.min(3.2, Math.log10(Math.max(1, node.metricValue)) * 0.7);
+  if (node.simKind === "halo") return 1.14 + (node.opacity ?? 0.22) * 2.45;
+  if (node.simKind === "hub") return 9.5 + Math.min(22, Math.log10(Math.max(10, node.metricValue)) * 4.15);
+  return (node.accent ? 4.4 : 3.4) + Math.min(3.8, Math.log10(Math.max(1, node.metricValue)) * 0.82);
 }
 
 function isLiveNode(node: SimNode): boolean {
@@ -190,11 +190,11 @@ function nodeColor(node: SimNode, selectedId: string | null, neighborIds: Set<st
   const neighbor = neighborIds.has(node.id);
   const dimmed = selectedId !== null && !selected && !neighbor;
   const live = isLiveNode(node);
-  const alpha = dimmed ? 0.16 : selected ? 1 : node.simKind === "hub" ? 0.94 : live ? 0.9 : REAL_LEAF_MIN_OPACITY;
-  if (node.hub === "lanes" && (node.simKind === "hub" || live || selected || neighbor)) return `rgba(246,196,83,${alpha})`;
+  const alpha = dimmed ? 0.2 : selected ? 1 : node.simKind === "hub" ? 1 : live ? 1 : REAL_LEAF_MIN_OPACITY;
+  if (node.hub === "lanes" && (node.simKind === "hub" || live || selected || neighbor)) return `rgba(248,204,92,${alpha})`;
   if (selected || neighbor) return `rgba(255,255,255,${alpha})`;
   if (node.status === "blocked" || node.status === "source unreachable") return `rgba(255,255,255,${alpha})`;
-  return `rgba(220,226,236,${alpha})`;
+  return `rgba(240,245,253,${alpha})`;
 }
 
 function linkColor(link: SimLink, selectedId: string | null, neighborEdgeIds: Set<string>): string {
@@ -205,9 +205,9 @@ function linkColor(link: SimLink, selectedId: string | null, neighborEdgeIds: Se
   if (dimmed) return "rgba(255,255,255,0.025)";
   if (link.kind === "bridge") {
     const touchesLanes = source === "lanes" || target === "lanes";
-    return touchesLanes ? "rgba(246,196,83,0.38)" : selected ? "rgba(255,255,255,0.34)" : "rgba(255,255,255,0.15)";
+    return touchesLanes ? "rgba(248,204,92,0.48)" : selected ? "rgba(255,255,255,0.42)" : "rgba(255,255,255,0.24)";
   }
-  return selected ? "rgba(255,255,255,0.18)" : "rgba(255,255,255,0.05)";
+  return selected ? "rgba(255,255,255,0.26)" : "rgba(255,255,255,0.09)";
 }
 
 function drawHubLabel(
@@ -217,13 +217,13 @@ function drawHubLabel(
   globalScale: number,
 ): void {
   if (node.simKind !== "hub" || typeof node.x !== "number" || typeof node.y !== "number") return;
-  const fontSize = Math.max(8.5, 12 / globalScale);
+  const fontSize = Math.max(9.25, 12.8 / globalScale);
   ctx.font = `${fontSize}px ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, sans-serif`;
   ctx.textAlign = "center";
   ctx.textBaseline = "top";
-  ctx.fillStyle = node.id === "lanes" ? "rgba(246,196,83,0.78)" : "rgba(231,238,251,0.42)";
+  ctx.fillStyle = node.id === "lanes" ? "rgba(248,204,92,0.9)" : "rgba(244,248,255,0.76)";
   ctx.fillText((HUB_LABELS[node.id] ?? node.label).toUpperCase(), node.x, node.y + radius + 8 / globalScale);
-  ctx.fillStyle = "rgba(244,247,251,0.72)";
+  ctx.fillStyle = "rgba(252,253,255,0.94)";
   ctx.font = `${Math.max(8, 10.5 / globalScale)}px ui-monospace, SFMono-Regular, Menlo, monospace`;
   ctx.fillText(formatMetric(node), node.x, node.y + radius + 24 / globalScale);
 }
@@ -259,16 +259,20 @@ function makeHaloNodes(hubs: SimNode[], size: { w: number; h: number }): SimNode
   // reads as a dense neuron, a small hub as a sparse one) — the mockup's organism.
   return hubs.flatMap((hub) => {
     const value = Math.max(1, hub.metricValue);
-    const count = Math.max(38, Math.min(220, Math.round(Math.sqrt(value) * 6.6 + 28)));
-    const maxRing = 130 + Math.min(560, Math.sqrt(value) * 18);
+    const logValue = Math.log10(Math.max(10, value));
+    const hubBoost = hub.id === "code" ? 1.26 : hub.id === "brain" ? 1.22 : hub.id === "lanes" ? 1.12 : hub.id === "projects" ? 1.08 : 1;
+    const count = Math.max(120, Math.min(1350, Math.round((Math.sqrt(value) * 15 + logValue * 112 + 98) * hubBoost)));
+    const maxRing = 118 + Math.min(470, Math.sqrt(value) * 7.8 + logValue * 38);
     const cx = hub.fx ?? size.w / 2;
     const cy = hub.fy ?? size.h / 2;
-    const rings = 8;
+    const rings = 13;
     return Array.from({ length: count }, (_, i): SimNode => {
       const ringIdx = 1 + (i % rings);
-      const ring = maxRing * Math.pow(ringIdx / rings, 0.8) * (0.86 + ((i * 17) % 28) / 100);
-      const angle = (i / count) * Math.PI * 2 * 3.2 + (hub.id.length % 7) * 0.42;
-      const opacity = Math.min(HALO_MAX_OPACITY, (0.52 - (ringIdx / (rings + 2)) * 0.34) * (0.72 + ((i * 13) % 30) / 100));
+      const spoke = (i * 17) % 41;
+      const ring = maxRing * Math.pow(ringIdx / rings, 0.62) * (0.74 + spoke / 205);
+      const angle = (i / count) * Math.PI * 2 * 5.15 + (hub.id.length % 7) * 0.42 + ringIdx * 0.22;
+      const innerBoost = ringIdx <= 4 ? 0.11 : 0;
+      const opacity = Math.min(HALO_MAX_OPACITY, (0.7 + innerBoost - (ringIdx / (rings + 4)) * 0.38) * (0.8 + ((i * 13) % 34) / 100));
       return atmosphereNode(hub, String(i), cx + Math.cos(angle) * ring, cy + Math.sin(angle) * ring, opacity);
     });
   });
@@ -281,11 +285,12 @@ function makeFieldNodes(hubs: SimNode[], size: { w: number; h: number }): SimNod
   const cy = 0;
   const R = Math.min(size.w, size.h) * 1.5;
   const ghost = hubs[0];
-  const N = 820;
+  const N = 2450;
   return Array.from({ length: N }, (_, i): SimNode => {
     const a = (i * 137.508) * (Math.PI / 180); // golden-angle spread
-    const r = R * Math.pow(0.18 + ((i * 0.61803) % 1) * 0.82, 0.6);
-    const opacity = Math.min(HALO_MAX_OPACITY * 0.66, 0.05 + ((i * 7) % 22) / 220);
+    const r = R * Math.pow(0.08 + ((i * 0.61803) % 1) * 0.92, 0.78);
+    const core = r < R * 0.72 ? 0.055 : 0;
+    const opacity = Math.min(HALO_MAX_OPACITY * 0.7, 0.088 + core + ((i * 7) % 30) / 195);
     return atmosphereNode(ghost, `field${i}`, cx + Math.cos(a) * r, cy + Math.sin(a) * r, opacity);
   });
 }
@@ -569,9 +574,10 @@ export default function Connectome() {
       ctx.save();
       if (node.simKind !== "halo") {
         ctx.globalAlpha = dimmed ? 0.45 : 1;
-        ctx.shadowBlur = selected ? 24 : node.simKind === "hub" ? 18 : isLiveNode(node) ? 12 : 0;
-        ctx.shadowColor = node.hub === "lanes" ? "rgba(246,196,83,0.58)" : "rgba(235,241,255,0.24)";
+        ctx.shadowBlur = selected ? 46 : node.simKind === "hub" ? (node.hub === "code" || node.hub === "brain" ? 43 : 34) : isLiveNode(node) ? 24 : 6;
+        ctx.shadowColor = node.hub === "lanes" ? "rgba(248,204,92,0.92)" : "rgba(244,248,255,0.58)";
       }
+
       ctx.beginPath();
       ctx.arc(node.x, node.y, radius, 0, 2 * Math.PI);
       ctx.fillStyle = nodeColor(node, selectedId, neighborIds);
@@ -579,8 +585,8 @@ export default function Connectome() {
 
       if (node.simKind === "hub") {
         ctx.shadowBlur = 0;
-        ctx.lineWidth = node.id === "lanes" || selected ? 1.45 : 0.85;
-        ctx.strokeStyle = node.id === "lanes" ? "rgba(246,196,83,0.82)" : "rgba(255,255,255,0.32)";
+        ctx.lineWidth = node.id === "lanes" || selected ? 1.65 : 1.05;
+        ctx.strokeStyle = node.id === "lanes" ? "rgba(248,204,92,0.96)" : "rgba(255,255,255,0.58)";
         ctx.stroke();
         ctx.beginPath();
         ctx.arc(node.x, node.y, Math.max(2.5, radius * 0.32), 0, 2 * Math.PI);
@@ -592,7 +598,7 @@ export default function Connectome() {
         ctx.shadowBlur = 0;
         ctx.beginPath();
         ctx.arc(node.x, node.y, radius + (selected ? 9 : 6), 0, 2 * Math.PI);
-        ctx.strokeStyle = node.hub === "lanes" ? "rgba(246,196,83,0.42)" : "rgba(255,255,255,0.24)";
+        ctx.strokeStyle = node.hub === "lanes" ? "rgba(248,204,92,0.68)" : "rgba(255,255,255,0.44)";
         ctx.lineWidth = selected ? 1.25 : 0.8;
         ctx.stroke();
       }
@@ -652,7 +658,7 @@ export default function Connectome() {
           nodeCanvasObject={nodeCanvasObject}
           nodePointerAreaPaint={nodePointerAreaPaint}
           linkColor={(link) => linkColor(link, selectedId, neighborEdgeIds)}
-          linkWidth={(link) => (link.kind === "bridge" ? 0.75 : 0.22)}
+          linkWidth={(link) => (link.kind === "bridge" ? 0.95 : 0.3)}
           linkDirectionalParticles={(link) => (!reducedMotion && particleBudget.has(link.id) ? 1 : 0)}
           linkDirectionalParticleWidth={(link) => (particleBudget.has(link.id) ? 1.15 : 0)}
           linkDirectionalParticleSpeed={0.0025}
@@ -671,6 +677,7 @@ export default function Connectome() {
           onBackgroundClick={() => setSelectedId(null)}
         />
       )}
+      <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(ellipse_at_54%_49%,rgba(244,248,255,0.08),rgba(244,248,255,0.028)_36%,transparent_67%),radial-gradient(ellipse_at_48%_58%,rgba(246,196,83,0.045),transparent_42%)] mix-blend-screen" />
       <div className="pointer-events-none absolute inset-0 ring-1 ring-inset ring-white/[0.03]" />
       <ConnectomeHud
         nodeCount={realNodeCount}
