@@ -81,3 +81,84 @@ def test_webhook_deny_patterns_cover_ci_and_push():
                    r"gh\s+pr\s+(?:create|merge|ready)",
                    r"gh\s+workflow\s+run"):
         assert needle in webhook, f"webhook deny patterns no longer cover: {needle}"
+
+
+# --- v0.17 integration folded in here (one suite, not a parallel mechanism) ---
+
+_LIFECYCLE_ENDPOINTS = (
+    "/api/gateway/restart",
+    "/api/gateway/stop",
+    "/api/gateway/start",
+    "/api/hermes/update",  # FORK-WIPE — the highest-consequence dashboard action
+    "/api/webhooks/enable",
+)
+
+
+def test_dashboard_lifecycle_endpoints_stay_token_gated():
+    """The :9119 lifecycle endpoints must NEVER join the public allowlist (0.17 POSTURE-PROBE).
+
+    These five token-only POST routes (gateway restart/stop/start, hermes update=FORK-WIPE,
+    webhooks enable) are gated solely by the global auth_middleware checking each request
+    path against PUBLIC_API_PATHS. Adding any of them to the public set — or removing the
+    global gate symbols — silently exposes a loopback-token action to an unauthenticated
+    caller. An upstream merge (or a fat-fingered allowlist edit) that does either turns this
+    RED before merge, so josep judges from a red check, not a diff.
+    """
+    public = _read("hermes_cli/dashboard_auth/public_paths.py")
+    for ep in _LIFECYCLE_ENDPOINTS:
+        assert f'"{ep}"' not in public, f"lifecycle endpoint joined PUBLIC_API_PATHS: {ep}"
+    web = _read("hermes_cli/web_server.py")
+    assert "_has_valid_session_token" in web, "dashboard token-gate symbol dropped"
+    assert "PUBLIC_API_PATHS" in web, "dashboard no longer consults the public allowlist"
+    for ep in _LIFECYCLE_ENDPOINTS:
+        assert ep in web, f"lifecycle route vanished from web_server.py (gate void): {ep}"
+
+
+def test_backup_should_exclude_recurses_secrets():
+    """backup _should_exclude() must BEHAVIORALLY exclude secrets and KEEP config/soul.
+
+    test_secret_exclusion_set_not_shrunk guards the exclusion *strings*; this guards the
+    *behavior* of the recursive matcher (the 0.16.0 PR#70 regression changed behavior, not
+    just the set). Args are pathlib.Path — the signature is ``rel_path: Path`` and str args
+    raise AttributeError, so a passing str-based test would be fake-green.
+    """
+    from hermes_cli.backup import _should_exclude
+
+    for secret in ("profiles/cheapgrunt/auth.json", "profiles/x/.env", "relay.secret",
+                   "id_rsa.key", "tls/server.pem"):
+        assert _should_exclude(Path(secret)) is True, f"secret no longer excluded: {secret}"
+    for keep in ("hermes_cli/config.py", "SOUL.md", "pyproject.toml"):
+        assert _should_exclude(Path(keep)) is False, f"non-secret wrongly excluded: {keep}"
+
+
+def test_dashboard_bundle_internally_consistent():
+    """The served SPA must not be a phantom: every asset index.html references must exist.
+
+    The 05a0381da failure ('rebuild web_dist after upstream merge') served an index.html
+    pointing at dropped/renamed bundles. A merge that skips the web rebuild leaves index.html
+    and /assets out of sync — a dangling reference — which this catches. (It does not catch a
+    fully-stale-but-self-consistent bundle; the dangerous, common case is the inconsistent one.)
+    """
+    import re
+
+    dist = REPO / "hermes_cli" / "web_dist"
+    index = (dist / "index.html").read_text(encoding="utf-8")
+    refs = re.findall(r"/assets/[A-Za-z0-9._-]+\.(?:js|css)", index)
+    assert refs, "index.html references no /assets bundles — build missing/empty"
+    for ref in refs:
+        assert (dist / ref.lstrip("/")).exists(), f"phantom SPA: missing asset {ref}"
+
+
+def test_send_message_stays_unregistered_for_agent():
+    """The agent-callable send_message tool must stay REMOVED (0.17 safety hardening).
+
+    v0.17 deliberately unregistered send_message so the model cannot ambiently message real
+    people/platforms; the transport engine is retained for cron/kanban/CLI. An upstream merge
+    that re-adds a registry.register for it silently re-opens that path. Our relay/loki
+    automation does not depend on it (HMAC webhook + Discord REST), so this is a pure floor.
+    """
+    src = _read("tools/send_message_tool.py")
+    assert src.count("registry.register") == 0, \
+        "send_message re-registered as an agent tool (0.17 safety removal reverted)"
+    assert "intentionally NOT registered" in src, \
+        "send_message removal-intent marker dropped (merge may have rewritten the guard)"
