@@ -146,8 +146,8 @@ function scaleAnchor(id: string, size: { w: number; h: number }): { x: number; y
   // Centered at the graph origin (0,0) — react-force-graph's default camera looks
   // at (0,0), so centered coords render centered without fighting zoomToFit.
   const anchor = ANCHORS.get(id) ?? { x: DESIGN_W / 2, y: DESIGN_H / 2 };
-  const usableW = Math.max(1, size.w * 0.86);
-  const usableH = Math.max(1, size.h * 0.86);
+  const usableW = Math.max(1, size.w * 3.0);
+  const usableH = Math.max(1, size.h * 3.0);
   return {
     x: (anchor.x / DESIGN_W - 0.5) * usableW,
     y: (anchor.y / DESIGN_H - 0.5) * usableH,
@@ -260,7 +260,7 @@ function makeHaloNodes(hubs: SimNode[], size: { w: number; h: number }): SimNode
   return hubs.flatMap((hub) => {
     const value = Math.max(1, hub.metricValue);
     const count = Math.max(38, Math.min(220, Math.round(Math.sqrt(value) * 6.6 + 28)));
-    const maxRing = 40 + Math.min(172, Math.sqrt(value) * 5.4);
+    const maxRing = 130 + Math.min(560, Math.sqrt(value) * 18);
     const cx = hub.fx ?? size.w / 2;
     const cy = hub.fy ?? size.h / 2;
     const rings = 8;
@@ -279,7 +279,7 @@ function makeFieldNodes(hubs: SimNode[], size: { w: number; h: number }): SimNod
   if (size.w < 2 || size.h < 2 || hubs.length === 0) return [];
   const cx = 0;
   const cy = 0;
-  const R = Math.min(size.w, size.h) * 0.44;
+  const R = Math.min(size.w, size.h) * 1.5;
   const ghost = hubs[0];
   const N = 820;
   return Array.from({ length: N }, (_, i): SimNode => {
