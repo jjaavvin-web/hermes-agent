@@ -51,3 +51,33 @@ def test_cve_pins_not_dropped():
         if not pin or pin.startswith("#"):
             continue
         assert pin in pyproject, f"CVE-annotated pin dropped/loosened: {pin}"
+
+
+def test_disp5_autonomous_floor_present_and_armed():
+    """The DISP-5 push/PR/workflow floor must EXIST and be ARMED at the webhook
+    dispatch site — an upstream merge that drops either turns this RED (SEC-2).
+
+    The floor is the fail-closed backstop consulted when a session deny-list is
+    empty or its key mismatches; losing the symbols (revert) or the arming call
+    (regression) silently re-opens autonomous push/PR/CI-trigger.
+    """
+    approval = _read("tools/approval.py")
+    for sym in ("def mark_autonomous_dispatch", "_GIT_PUSH_FLOOR_RE",
+                "def _floor_block_if_autonomous"):
+        assert sym in approval, f"DISP-5 floor symbol dropped: {sym}"
+    assert "_floor_block_if_autonomous(command)" in approval, \
+        "floor no longer consulted inside check_session_deny_patterns"
+    webhook = _read("gateway/platforms/webhook.py")
+    assert "mark_autonomous_dispatch(True)" in webhook, \
+        "webhook dispatch no longer ARMS the DISP-5 floor (contextvar never set)"
+
+
+def test_webhook_deny_patterns_cover_ci_and_push():
+    """Primary worker protection (DEFAULT_WEBHOOK_DENY_PATTERNS) must block push,
+    PR open/merge, AND CI-workflow triggers — `gh workflow run` can push/merge/deploy.
+    """
+    webhook = _read("gateway/platforms/webhook.py")
+    for needle in (r"git\s+(?:-\S+\s+\S*\s*)*push",
+                   r"gh\s+pr\s+(?:create|merge|ready)",
+                   r"gh\s+workflow\s+run"):
+        assert needle in webhook, f"webhook deny patterns no longer cover: {needle}"

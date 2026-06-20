@@ -305,8 +305,50 @@ function appendProfileParam(url: string, profile?: string): string {
   return `${url}${url.includes("?") ? "&" : "?"}profile=${encodeURIComponent(profile)}`;
 }
 
+export interface CostGroup {
+  provider: string;
+  model: string;
+  promptVersion: string;
+  turns: number;
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  cacheWriteTokens: number;
+  reasoningTokens: number;
+  totalTokens: number;
+  costUsd: number;
+}
+export interface CostRollup {
+  totalCostUsd: number;
+  totalTokens: number;
+  totalTurns: number;
+  groups: CostGroup[];
+}
+export interface CostLeak {
+  turnId: string;
+  sessionId: string;
+  ts: number;
+  provider: string;
+  model: string;
+  promptVersion: string;
+  totalTokens: number;
+  costUsd: number;
+  costStatus: string;
+  costSource: string;
+}
+export interface CostSnapshot {
+  generatedAt: number;
+  dbPath: string;
+  today: CostRollup;
+  last7d: CostRollup;
+  meteredLeak: CostLeak[];
+  meteredLeakCount: number;
+  meteredLeakCostUsd: number;
+}
+
 export const api = {
   getStatus: () => fetchJSON<StatusResponse>("/api/status"),
+  getCost: () => fetchJSON<CostSnapshot>("/api/dashboard/cost"),
   /**
    * Identity probe for the dashboard auth gate (Phase 7).
    *
