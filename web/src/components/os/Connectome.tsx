@@ -64,7 +64,7 @@ const SUMMARY_POLL_MS = 20_000;
 const CLUSTER_LOAD_ZOOM = 1.35;
 const ACTIVE_PARTICLE_CAP = 15;
 const REAL_LEAF_MIN_OPACITY = 0.58;
-const HALO_MAX_OPACITY = 0.44;
+const HALO_MAX_OPACITY = 0.6;
 const HUB_LABELS: Record<string, string> = {
   projects: "Projects",
   brain: "Brain",
@@ -143,14 +143,14 @@ function statusKey(status: string | undefined): string {
 }
 
 function scaleAnchor(id: string, size: { w: number; h: number }): { x: number; y: number } {
+  // Centered at the graph origin (0,0) — react-force-graph's default camera looks
+  // at (0,0), so centered coords render centered without fighting zoomToFit.
   const anchor = ANCHORS.get(id) ?? { x: DESIGN_W / 2, y: DESIGN_H / 2 };
-  const padX = Math.min(120, Math.max(36, size.w * 0.08));
-  const padY = Math.min(96, Math.max(44, size.h * 0.11));
-  const usableW = Math.max(1, size.w - padX * 2);
-  const usableH = Math.max(1, size.h - padY * 2);
+  const usableW = Math.max(1, size.w * 0.86);
+  const usableH = Math.max(1, size.h * 0.86);
   return {
-    x: padX + (anchor.x / DESIGN_W) * usableW,
-    y: padY + (anchor.y / DESIGN_H) * usableH,
+    x: (anchor.x / DESIGN_W - 0.5) * usableW,
+    y: (anchor.y / DESIGN_H - 0.5) * usableH,
   };
 }
 
@@ -228,34 +228,65 @@ function drawHubLabel(
   ctx.fillText(formatMetric(node), node.x, node.y + radius + 24 / globalScale);
 }
 
+function atmosphereNode(hub: SimNode, key: string, x: number, y: number, opacity: number): SimNode {
+  // Pinned (fx/fy) so the static organism never churns the simulation.
+  return {
+    id: `halo:${hub.id}:${key}`,
+    label: "atmosphere",
+    cluster: hub.cluster,
+    hub: hub.hub,
+    kind: "halo",
+    simKind: "halo",
+    status: "atmosphere",
+    real: false,
+    metricValue: 0,
+    opacity,
+    provenance: { source: "visual atmosphere", query: "excluded from counts/focus", field: "real", value: "false" },
+    provSource: "visual atmosphere",
+    provQuery: "excluded from counts/focus",
+    provField: "real",
+    provValue: "false",
+    lastSeen: "",
+    x,
+    y,
+    fx: x,
+    fy: y,
+  };
+}
+
 function makeHaloNodes(hubs: SimNode[], size: { w: number; h: number }): SimNode[] {
+  // Dense dandelion corona per hub, sized by the hub's REAL metric (so a big hub
+  // reads as a dense neuron, a small hub as a sparse one) — the mockup's organism.
   return hubs.flatMap((hub) => {
-    const count = Math.max(8, Math.min(34, Math.round(Math.sqrt(Math.max(1, hub.metricValue)) * 1.4)));
-    const radius = 44 + Math.min(116, Math.sqrt(Math.max(1, hub.metricValue)) * 3.5);
+    const value = Math.max(1, hub.metricValue);
+    const count = Math.max(38, Math.min(220, Math.round(Math.sqrt(value) * 6.6 + 28)));
+    const maxRing = 40 + Math.min(172, Math.sqrt(value) * 5.4);
+    const cx = hub.fx ?? size.w / 2;
+    const cy = hub.fy ?? size.h / 2;
+    const rings = 8;
     return Array.from({ length: count }, (_, i): SimNode => {
-      const angle = (i / count) * Math.PI * 2 + (hub.id.length % 5) * 0.21;
-      const ring = radius * (0.62 + ((i * 37) % 100) / 250);
-      return {
-        id: `halo:${hub.id}:${i}`,
-        label: "atmosphere",
-        cluster: hub.cluster,
-        hub: hub.hub,
-        kind: "halo",
-        simKind: "halo",
-        status: "atmosphere",
-        real: false,
-        metricValue: 0,
-        opacity: Math.min(HALO_MAX_OPACITY, 0.07 + ((i * 13) % 11) / 100),
-        provenance: { source: "visual atmosphere", query: "excluded from counts/focus", field: "real", value: "false" },
-        provSource: "visual atmosphere",
-        provQuery: "excluded from counts/focus",
-        provField: "real",
-        provValue: "false",
-        lastSeen: "",
-        x: Math.min(Math.max(20, (hub.fx ?? size.w / 2) + Math.cos(angle) * ring), size.w - 20),
-        y: Math.min(Math.max(20, (hub.fy ?? size.h / 2) + Math.sin(angle) * ring), size.h - 20),
-      };
+      const ringIdx = 1 + (i % rings);
+      const ring = maxRing * Math.pow(ringIdx / rings, 0.8) * (0.86 + ((i * 17) % 28) / 100);
+      const angle = (i / count) * Math.PI * 2 * 3.2 + (hub.id.length % 7) * 0.42;
+      const opacity = Math.min(HALO_MAX_OPACITY, (0.52 - (ringIdx / (rings + 2)) * 0.34) * (0.72 + ((i * 13) % 30) / 100));
+      return atmosphereNode(hub, String(i), cx + Math.cos(angle) * ring, cy + Math.sin(angle) * ring, opacity);
     });
+  });
+}
+
+function makeFieldNodes(hubs: SimNode[], size: { w: number; h: number }): SimNode[] {
+  // A unifying low-opacity field that ties the hubs into one cohesive disc.
+  if (size.w < 2 || size.h < 2 || hubs.length === 0) return [];
+  const cx = 0;
+  const cy = 0;
+  const R = Math.min(size.w, size.h) * 0.44;
+  const ghost = hubs[0];
+  const N = 820;
+  return Array.from({ length: N }, (_, i): SimNode => {
+    const a = (i * 137.508) * (Math.PI / 180); // golden-angle spread
+    const r = R * Math.pow(0.18 + ((i * 0.61803) % 1) * 0.82, 0.6);
+    const opacity = Math.min(HALO_MAX_OPACITY * 0.66, 0.05 + ((i * 7) % 22) / 220);
+    return atmosphereNode(ghost, `field${i}`, cx + Math.cos(a) * r, cy + Math.sin(a) * r, opacity);
   });
 }
 
@@ -434,7 +465,8 @@ export default function Connectome() {
     const hubNodes = (summary?.nodes ?? []).filter((node) => node.kind === "hub").map((node) => toSimNode(node, size, "hub"));
     const leaves = Object.values(clusterNodes).flat().map((node) => toSimNode(node, size, "leaf"));
     const halo = makeHaloNodes(hubNodes, size);
-    const nodes = [...hubNodes, ...leaves, ...halo];
+    const field = makeFieldNodes(hubNodes, size);
+    const nodes = [...hubNodes, ...leaves, ...field, ...halo];
     const leafLinks: SimLink[] = leaves.map((node) => ({
       id: `membership:${node.hub}:${node.id}`,
       source: node.hub,
@@ -480,14 +512,6 @@ export default function Connectome() {
 
   const handleEngineStop = useCallback(() => {
     setSettled(true);
-    const fg = fgRef.current;
-    if (!fg) return;
-    try {
-      fg.zoomToFit(500, 42, (node) => node.simKind !== "halo");
-      fg.pauseAnimation();
-    } catch {
-      // Non-fatal in tests/headless modes.
-    }
   }, []);
 
   // Fallback: center the camera on the real nodes once data has loaded, even if
@@ -495,29 +519,44 @@ export default function Connectome() {
   // and an unstable engine would otherwise leave the camera off the nodes).
   useEffect(() => {
     if (size.w <= 0 || size.h <= 0 || realNodeCount === 0) return;
-    const timer = window.setTimeout(() => {
+    const applyFrame = () => {
       const fg = fgRef.current;
       if (!fg) return;
+      const xs: number[] = [];
+      const ys: number[] = [];
+      for (const n of graph.nodes) {
+        if (typeof n.x === "number" && Number.isFinite(n.x)) xs.push(n.x);
+        if (typeof n.y === "number" && Number.isFinite(n.y)) ys.push(n.y);
+      }
+      if (!xs.length || !ys.length) return;
+      // Nodes are centered at the origin → center at (0,0) and zoom to the
+      // symmetric extent so the organism fills the frame.
+      const ext = Math.max(...xs.map(Math.abs), ...ys.map(Math.abs), 1);
       try {
-        fg.zoomToFit(600, 42, (node) => node.simKind !== "halo");
+        fg.centerAt(0, 0, 0);
+        fg.zoom(Math.min(size.w, size.h) / (ext * 2 + 56), 0);
       } catch {
         // headless-safe
       }
-    }, 600);
-    // Pause the engine once the pinned layout has settled — stops the canvas
-    // pegging CPU and freezes a stable frame (also fixes headless capture).
-    const pause = window.setTimeout(() => {
+    };
+    // Re-assert the frame a few times to override react-force-graph's own
+    // auto-zoom on first data load, then freeze the engine.
+    const t1 = window.setTimeout(applyFrame, 450);
+    const t2 = window.setTimeout(applyFrame, 1000);
+    const t3 = window.setTimeout(() => {
+      applyFrame();
       try {
         fgRef.current?.pauseAnimation();
       } catch {
         // headless-safe
       }
-    }, 1600);
+    }, 1700);
     return () => {
-      window.clearTimeout(timer);
-      window.clearTimeout(pause);
+      window.clearTimeout(t1);
+      window.clearTimeout(t2);
+      window.clearTimeout(t3);
     };
-  }, [realNodeCount, size.w, size.h]);
+  }, [graph, realNodeCount, size.w, size.h]);
 
   const nodeCanvasObject = useCallback(
     (node: SimNode, ctx: CanvasRenderingContext2D, globalScale: number) => {
