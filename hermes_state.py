@@ -581,6 +581,34 @@ CREATE TABLE IF NOT EXISTS compression_locks (
     expires_at REAL NOT NULL
 );
 
+-- Per-turn cost/latency ledger (audit WC-3/GWR-4 measurement-layer keystone).
+-- Additive: complements (does not alter) the per-session attribution on `sessions`.
+-- The JSONL trace under ~/.hermes/traces/ is the source of truth; this row is a
+-- best-effort queryable index for the /api/dashboard/cost rollup.
+CREATE TABLE IF NOT EXISTS turn_usage (
+    turn_id TEXT PRIMARY KEY,
+    session_id TEXT,
+    ts REAL NOT NULL,
+    provider TEXT,
+    model TEXT,
+    prompt_version TEXT,
+    input_tokens INTEGER DEFAULT 0,
+    output_tokens INTEGER DEFAULT 0,
+    cache_read_tokens INTEGER DEFAULT 0,
+    cache_write_tokens INTEGER DEFAULT 0,
+    reasoning_tokens INTEGER DEFAULT 0,
+    total_tokens INTEGER DEFAULT 0,
+    estimated_cost_usd REAL,
+    cost_status TEXT,
+    cost_source TEXT,
+    latency_ms REAL,
+    retry_count INTEGER DEFAULT 0,
+    tool_count INTEGER DEFAULT 0
+);
+
+CREATE INDEX IF NOT EXISTS idx_turn_usage_session ON turn_usage(session_id, ts);
+CREATE INDEX IF NOT EXISTS idx_turn_usage_ts ON turn_usage(ts DESC);
+
 CREATE INDEX IF NOT EXISTS idx_sessions_source ON sessions(source);
 CREATE INDEX IF NOT EXISTS idx_sessions_source_id ON sessions(source, id);
 CREATE INDEX IF NOT EXISTS idx_sessions_parent ON sessions(parent_session_id);
