@@ -4546,6 +4546,10 @@ class SessionDB:
     # touching it (see optimize_fts).
     _FTS_TABLES = ("messages_fts", "messages_fts_trigram")
 
+    # Message-row growth (since the last optimize) that triggers compaction
+    # independent of prune-count (GWR-1/ARCH-9).
+    _FTS_OPTIMIZE_GROWTH = 5000
+
     def _fts_table_exists(self, name: str) -> bool:
         """True if an FTS5 virtual table is queryable in this DB."""
         try:
@@ -4677,14 +4681,34 @@ class SessionDB:
             )
             result["pruned"] = pruned
 
-            # Only VACUUM if we actually freed rows — VACUUM on a tight DB
-            # is wasted I/O. Threshold keeps small DBs from paying the cost.
-            if vacuum and pruned > 0:
+            # Decouple compaction from prune-count (GWR-1/ARCH-9): all
+            # sessions are usually inside retention so prune returns 0, which
+            # previously meant optimize_fts/VACUUM never fired. Trigger on
+            # actual growth/fragmentation independent of how many rows the
+            # prune freed; a prune that freed rows still vacuums as before.
+            if vacuum:
+                msg_rows = self._conn.execute(
+                    "SELECT COUNT(*) FROM messages"
+                ).fetchone()[0]
+                last_opt_raw = self.get_meta("last_fts_optimize_rowcount")
                 try:
-                    self.vacuum()
-                    result["vacuumed"] = True
-                except Exception as exc:
-                    logger.warning("state.db VACUUM failed: %s", exc)
+                    last_opt = int(last_opt_raw) if last_opt_raw else 0
+                except (TypeError, ValueError):
+                    last_opt = 0
+                freelist = self._conn.execute("PRAGMA freelist_count").fetchone()[0]
+                page_count = self._conn.execute("PRAGMA page_count").fetchone()[0]
+                bloat = (freelist / page_count) if page_count else 0.0
+                grew = (msg_rows - last_opt) > self._FTS_OPTIMIZE_GROWTH
+                freed_rows = pruned > 0
+                if grew or bloat > 0.10 or freed_rows:
+                    try:
+                        self.vacuum()  # runs optimize_fts() then VACUUM
+                        result["vacuumed"] = True
+                        self.set_meta("last_fts_optimize", str(now))
+                        self.set_meta("last_vacuum", str(now))
+                        self.set_meta("last_fts_optimize_rowcount", str(msg_rows))
+                    except Exception as exc:
+                        logger.warning("state.db VACUUM failed: %s", exc)
 
             # Record the attempt even if pruned == 0, so we don't retry
             # every startup within the min_interval_hours window.

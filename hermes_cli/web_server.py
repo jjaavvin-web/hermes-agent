@@ -11951,6 +11951,13 @@ try:
     _log.info("Mounted learning-loop dashboard API routes at /api/dashboard/learning")
 except Exception as _exc:
     _log.warning("Failed to load dashboard_learning routes: %s", _exc)
+
+try:
+    from hermes_cli.dashboard_cost import router as _cost_router  # turn_usage cost ledger (WC-3)
+    app.include_router(_cost_router)
+    _log.info("Mounted cost dashboard API routes at /api/dashboard/cost")
+except Exception as _exc:
+    _log.warning("Failed to load dashboard_cost routes: %s", _exc)
 try:
     from hermes_cli.dashboard_get_some import router as _get_some_router
     app.include_router(_get_some_router)
