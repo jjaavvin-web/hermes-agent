@@ -162,3 +162,25 @@ def test_send_message_stays_unregistered_for_agent():
         "send_message re-registered as an agent tool (0.17 safety removal reverted)"
     assert "intentionally NOT registered" in src, \
         "send_message removal-intent marker dropped (merge may have rewritten the guard)"
+
+
+def test_hermes_state_and_install_dirs_are_hardline_protected():
+    """rm -rf of the Hermes state dir / agent install must be HARDLINE (unconditional,
+    below yolo). They hold the brain (38k observations), all configs, and secrets, and are
+    reachable via the live DISCORD_ALLOW_BOTS bot-bypass. Before the 2026-06-20 fork
+    hardening they were only DANGEROUS (yolo-passable) — a merge that drops the HARDLINE
+    pattern silently re-opens brain destruction by an autonomous worker. Scoped sub-deletes
+    must stay non-hardline so the pattern is not over-broad.
+    """
+    import sys as _sys
+
+    if str(REPO) not in _sys.path:
+        _sys.path.insert(0, str(REPO))
+    from tools.approval import detect_hardline_command as hl
+
+    for cmd in ("rm -rf ~/.hermes", "rm -rf ~/.hermes/", "rm -rf ~/.hermes/*",
+                "rm -rf ~/.local/share/hermes-agent", "rm -rf /home/u/.hermes"):
+        assert hl(cmd)[0], f"critical dir no longer HARDLINE-protected: {cmd!r}"
+    for cmd in ("rm -rf ~/.hermes/cron/output/tmp", "rm -rf /tmp/scratch",
+                "rm -rf ~/.hermes-backup"):
+        assert not hl(cmd)[0], f"HARDLINE pattern over-broad (blocks scoped/other delete): {cmd!r}"

@@ -263,6 +263,13 @@ HARDLINE_PATTERNS = [
     (r'\brm\s+(-[^\s]*\s+)*(/|/\*|/ \*)(\s|$)', "recursive delete of root filesystem"),
     (r'\brm\s+(-[^\s]*\s+)*(/home|/home/\*|/root|/root/\*|/etc|/etc/\*|/usr|/usr/\*|/var|/var/\*|/bin|/bin/\*|/sbin|/sbin/\*|/boot|/boot/\*|/lib|/lib/\*)(\s|$)', "recursive delete of system directory"),
     (r'\brm\s+(-[^\s]*\s+)*(~|\$HOME)(/?|/\*)?(\s|$)', "recursive delete of home directory"),
+    # The Hermes state dir (brain/configs/secrets) and the agent install are as
+    # catastrophic to nuke as $HOME, and there is no legitimate whole-dir delete
+    # of them — so HARDLINE them like the home/root roots. (Fork audit 2026-06-20:
+    # they were only DANGEROUS = yolo-passable and reachable via the live
+    # DISCORD_ALLOW_BOTS bot-bypass.) Scoped sub-deletes (e.g.
+    # ~/.hermes/cron/output/x) deliberately stay DANGEROUS, not HARDLINE.
+    (r'\brm\s+(-[^\s]*\s+)*((~|\$HOME|/home/[^/\s]+)/\.hermes|(~|\$HOME|/home/[^/\s]+)/\.local/share/hermes-agent)(/|/\*)?(\s|$)', "recursive delete of the Hermes state dir or agent install"),
     # Filesystem format
     (r'\bmkfs(\.[a-z0-9]+)?\b', "format filesystem (mkfs)"),
     # Raw block device overwrites (dd + redirection)
