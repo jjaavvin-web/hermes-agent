@@ -81,6 +81,9 @@ _DYNAMIC_ROUTES_FILENAME = "webhook_subscriptions.json"
 DEFAULT_WEBHOOK_DENY_PATTERNS = [
     r"\bgit\s+(?:-\S+\s+\S*\s*)*push\b",       # git push, git -C <dir> push, git push --force
     r"\bgh\s+pr\s+(?:create|merge|ready)\b",   # open / merge / mark-ready a PR
+    r"\bgh\s+workflow\s+run\b",                # trigger a CI workflow (can push/merge/deploy)
+    r"\bgh\s+run\s+(?:rerun|cancel|delete)\b", # re-run / cancel / delete a CI run (list/view/watch stay allowed)
+    r"\bgh\s+release\s+(?:create|delete|upload)\b",  # cut / delete / upload a release asset
     r"\bgh\s+repo\s+(?:create|delete|fork)\b", # create / delete / fork a repo
     r"\bhub\s+(?:pull-request|merge|push)\b",  # legacy hub CLI equivalents
 ]
@@ -714,6 +717,23 @@ class WebhookAdapter(BasePlatformAdapter):
             # as defense-in-depth if server-side registration somehow fails.
             logger.exception(
                 "[webhook] failed to register deny_terminal_patterns for route=%s",
+                route_name,
+            )
+
+        # DISP-5: arm the unconditional push/PR/workflow floor for THIS dispatch.
+        # mark_autonomous_dispatch() sets a contextvar that asyncio.create_task()
+        # (below) copies into the run task, and _run_in_executor_with_context
+        # preserves it across the executor-thread hop into tool-exec time. So the
+        # floor in check_session_deny_patterns fails CLOSED on git push / gh pr /
+        # gh workflow run even if the deny-list registration above was skipped or
+        # the session key mismatched. Interactive Discord/Telegram sessions enter
+        # via a different handler and never reach here, so they are unaffected.
+        try:
+            from tools.approval import mark_autonomous_dispatch
+            mark_autonomous_dispatch(True)
+        except Exception:
+            logger.exception(
+                "[webhook] failed to arm autonomous-dispatch floor route=%s",
                 route_name,
             )
 

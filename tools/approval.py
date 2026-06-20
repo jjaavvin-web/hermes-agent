@@ -703,7 +703,9 @@ _permanent_approved: set = set()
 # "workers cannot push" rail can never silently fail open. Interactive sessions
 # (marker unset) are unaffected.
 _GIT_PUSH_FLOOR_RE = re.compile(
-    r"\bgit\s+push\b|\bgh\s+pr\s+(?:create|merge|ready)\b"
+    # `git -C <dir> push` and other inter-token flags must match too — a codex
+    # worktree worker invokes `git -C /worktree push`, not a bare `git push`.
+    r"\bgit\s+(?:-\S+\s+\S*\s*)*push\b|\bgh\s+pr\s+(?:create|merge|ready)\b"
     r"|\bgh\s+workflow\s+run\b|\bgh\s+run\b"
 )
 _autonomous_dispatch_marker: contextvars.ContextVar[bool] = contextvars.ContextVar(
