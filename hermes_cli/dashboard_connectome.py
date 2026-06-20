@@ -777,7 +777,7 @@ async def _memory_query(limit: int = _MEMORY_LEAF_LIMIT) -> dict[str, Any]:
                     f"""
                     SELECT count(*)::bigint
                     FROM memory.observations
-                    WHERE {MEMORY_SIGNAL_WHERE}
+                    WHERE {MEMORY_QUERY_WHERE}
                       AND kind IN ('completion','lesson')
                     """
                 )
@@ -794,7 +794,7 @@ async def _memory_query(limit: int = _MEMORY_LEAF_LIMIT) -> dict[str, Any]:
                 f"""
                 SELECT id, kind, source, project, importance, created_at, deprecated_at, superseded_by
                 FROM memory.observations
-                WHERE {MEMORY_SIGNAL_WHERE}
+                WHERE {MEMORY_QUERY_WHERE}
                   AND kind IN ('completion','lesson')
                 ORDER BY importance DESC NULLS LAST, id ASC
                 LIMIT $1
@@ -809,7 +809,7 @@ async def _memory_query(limit: int = _MEMORY_LEAF_LIMIT) -> dict[str, Any]:
         "unfiltered_total": unfiltered_total,
         "ict_total": ict_total,
         "rows": [dict(row) for row in rows],
-        "where": MEMORY_SIGNAL_WHERE,
+        "where": MEMORY_QUERY_WHERE,
         "exact_live_where": MEMORY_QUERY_WHERE,
         "clean_where": MEMORY_CLEAN_TOTAL_WHERE,
     }
