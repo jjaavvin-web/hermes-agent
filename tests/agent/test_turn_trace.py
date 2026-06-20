@@ -82,4 +82,7 @@ def test_finalize_turn_calls_emit_turn_trace():
     src = Path(__file__).resolve().parents[2] / "agent" / "turn_finalizer.py"
     text = src.read_text(encoding="utf-8")
     assert "from agent.turn_trace import emit_turn_trace" in text
-    assert "emit_turn_trace(result, turn_id)" in text
+    # Tolerant of the latency_ms kwarg (WC-3/GWR-4 latency wiring); the call must
+    # still exist with the turn_id positional.
+    assert "emit_turn_trace(result, turn_id" in text
+    assert "latency_ms=latency_ms" in text

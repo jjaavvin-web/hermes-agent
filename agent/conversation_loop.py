@@ -396,6 +396,10 @@ def run_conversation(
     Returns:
         Dict: Complete conversation result with final response and message history
     """
+    # Monotonic turn-start for the per-turn latency trace (WC-3/GWR-4). Captured
+    # before any setup so latency_ms reflects the full turn wall-time.
+    _turn_start_monotonic = time.monotonic()
+
     # ── Per-turn setup (the prologue) ──
     # All once-per-turn setup — stdio guarding, retry-counter resets, user
     # message sanitization, todo/nudge hydration, system-prompt restore-or-
@@ -4538,6 +4542,7 @@ def run_conversation(
         original_user_message=original_user_message,
         _should_review_memory=_should_review_memory,
         _turn_exit_reason=_turn_exit_reason,
+        turn_start_monotonic=_turn_start_monotonic,
     )
 
 

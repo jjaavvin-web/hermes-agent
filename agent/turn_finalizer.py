@@ -23,6 +23,7 @@ keep the exact logger name (``"agent.conversation_loop"``).
 from __future__ import annotations
 
 import os
+import time
 
 from agent.codex_responses_adapter import _summarize_user_message_for_log
 from agent.turn_trace import emit_turn_trace
@@ -43,6 +44,7 @@ def finalize_turn(
     original_user_message,
     _should_review_memory,
     _turn_exit_reason,
+    turn_start_monotonic=None,
 ):
     """Run the post-loop finalization and return the turn ``result`` dict.
 
@@ -451,6 +453,11 @@ def finalize_turn(
     # Per-turn cost/latency trace (audit WC-3/GWR-4 measurement keystone).
     # Fail-open inside emit_turn_trace — never breaks the turn. JSONL is the
     # source of truth; the turn_usage SQLite row is best-effort.
-    emit_turn_trace(result, turn_id)
+    latency_ms = (
+        (time.monotonic() - turn_start_monotonic) * 1000.0
+        if turn_start_monotonic is not None
+        else None
+    )
+    emit_turn_trace(result, turn_id, latency_ms=latency_ms)
 
     return result
