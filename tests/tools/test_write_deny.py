@@ -2,6 +2,8 @@
 
 import os
 
+import pytest
+
 from pathlib import Path
 from unittest.mock import patch
 
@@ -64,6 +66,10 @@ class TestWriteDenyExactPaths:
 
         assert _is_write_denied(str(global_env)) is True
 
+    @pytest.mark.skip(
+        reason="fork hardening (file_safety): shell profiles are write-DENIED to stop "
+        "a worker poisoning ~/.bashrc; upstream leaves them writable. 2026-06-20 merge."
+    )
     def test_shell_profiles_are_writable(self):
         home = str(Path.home())
         for name in [".bashrc", ".zshrc", ".profile", ".bash_profile", ".zprofile"]:
