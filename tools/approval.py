@@ -697,6 +697,43 @@ _session_approved: dict[str, set] = {}
 _session_yolo: set[str] = set()
 _permanent_approved: set = set()
 
+# DISP-5: the unconditional git push/PR/workflow floor. A KNOWN autonomous
+# dispatch (loki/relay/codex-worktree worker) fails CLOSED on these even when no
+# session deny list resolves (empty list / contextvar-key mismatch) — so the
+# "workers cannot push" rail can never silently fail open. Interactive sessions
+# (marker unset) are unaffected.
+_GIT_PUSH_FLOOR_RE = re.compile(
+    r"\bgit\s+push\b|\bgh\s+pr\s+(?:create|merge|ready)\b"
+    r"|\bgh\s+workflow\s+run\b|\bgh\s+run\b"
+)
+_autonomous_dispatch_marker: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "approval_autonomous_dispatch", default=False
+)
+
+
+def mark_autonomous_dispatch(value: bool = True) -> "contextvars.Token[bool]":
+    """Mark the current context as a known autonomous dispatch (fail-closed floor)."""
+    return _autonomous_dispatch_marker.set(value)
+
+
+def _is_autonomous_dispatch() -> bool:
+    if os.environ.get("HERMES_AUTONOMOUS_DISPATCH") == "1":
+        return True
+    try:
+        return bool(_autonomous_dispatch_marker.get())
+    except LookupError:
+        return False
+
+
+def _floor_block_if_autonomous(command: str):
+    if _is_autonomous_dispatch() and _GIT_PUSH_FLOOR_RE.search(command or ""):
+        return True, (
+            "git push/PR/workflow floor — autonomous dispatch fails CLOSED "
+            "with no matching deny list (DISP-5)"
+        )
+    return None
+
+
 # Per-session server-side terminal-deny patterns (set by webhook/relay
 # platforms at dispatch). session_key → [(compiled_regex, original_str), …].
 # Enforced in check_all_command_guards BEFORE the yolo/mode=off bypass so a
@@ -851,15 +888,18 @@ def check_session_deny_patterns(command: str, session_key: Optional[str] = None)
     if session_key is None:
         session_key = get_current_session_key(default="")
     if not session_key:
-        return False, None
+        floor = _floor_block_if_autonomous(command)
+        return floor if floor else (False, None)
     with _lock:
         compiled = _session_deny_patterns.get(session_key)
     if not compiled:
-        return False, None
+        floor = _floor_block_if_autonomous(command)
+        return floor if floor else (False, None)
     for rx, original in compiled:
         if rx.search(command):
             return True, original
-    return False, None
+    floor = _floor_block_if_autonomous(command)
+    return floor if floor else (False, None)
 
 
 def clear_session(session_key: str) -> None:
