@@ -25,6 +25,7 @@ from __future__ import annotations
 import os
 
 from agent.codex_responses_adapter import _summarize_user_message_for_log
+from agent.turn_trace import emit_turn_trace
 
 
 def finalize_turn(
@@ -446,5 +447,10 @@ def finalize_turn(
         )
     except Exception as exc:
         logger.warning("on_session_end hook failed: %s", exc)
+
+    # Per-turn cost/latency trace (audit WC-3/GWR-4 measurement keystone).
+    # Fail-open inside emit_turn_trace — never breaks the turn. JSONL is the
+    # source of truth; the turn_usage SQLite row is best-effort.
+    emit_turn_trace(result, turn_id)
 
     return result
