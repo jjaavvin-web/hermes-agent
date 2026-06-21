@@ -13270,6 +13270,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         """
         await asyncio.sleep(3)  # let platforms finish connecting
         from tools.process_registry import process_registry as _pr
+        _last_liveness = 0.0  # throttle for the in-flight liveness heartbeat
         while self._running:
             try:
                 # Peek the queue for async-delegation events. We must NOT
@@ -13299,6 +13300,21 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         logger.error("Async delegation injection error: %s", e)
             except Exception as e:
                 logger.debug("Async delegation watcher error: %s", e)
+            # In-flight liveness: a wedged background subagent is otherwise invisible
+            # until child_timeout. Emit a 'still running Nmin' heartbeat at most once a
+            # minute for any background delegation alive >5min (0.17 bg-subagent
+            # precondition — the rail before the Wave-2 timeout raise).
+            try:
+                _now = time.monotonic()
+                if _now - _last_liveness >= 60:
+                    _last_liveness = _now
+                    from tools.async_delegation import long_running as _lr
+                    for _did, _age in _lr(300.0):
+                        logger.info(
+                            "async-delegation %s still running %.0fmin", _did, _age / 60.0
+                        )
+            except Exception as _e:
+                logger.debug("Async delegation liveness error: %s", _e)
             await asyncio.sleep(interval)
 
     async def _run_process_watcher(self, watcher: dict) -> None:

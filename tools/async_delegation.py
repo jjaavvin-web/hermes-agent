@@ -127,6 +127,23 @@ def active_count() -> int:
         return sum(1 for r in _records.values() if r.get("status") == "running")
 
 
+def long_running(threshold_s: float):
+    """Running delegations older than ``threshold_s`` as (delegation_id, age_seconds),
+    oldest first. Liveness surface: a wedged background child is otherwise invisible
+    until child_timeout — this lets the watcher emit a 'still running Nmin' heartbeat."""
+    now = time.time()
+    with _records_lock:
+        out = [
+            (rid, now - r["dispatched_at"])
+            for rid, r in _records.items()
+            if r.get("status") == "running"
+            and r.get("dispatched_at")
+            and (now - r["dispatched_at"]) >= threshold_s
+        ]
+    out.sort(key=lambda kv: kv[1], reverse=True)
+    return out
+
+
 def _new_delegation_id() -> str:
     return f"deleg_{uuid.uuid4().hex[:8]}"
 
