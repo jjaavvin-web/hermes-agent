@@ -262,6 +262,7 @@ function Hero({ snapshot, loading, onRefresh, onFocusSection }: HeroProps) {
   const work = snapshot.work;
   const workCounts = work?.counts;
   const activity = snapshot.activity;
+  const infra = snapshot.infra;
   const attention = snapshot.attention?.chips ?? [];
   const bestMove = String(repo?.best_move?.text ?? "");
   const repoStatus = findSection(snapshot, "repo")?.status ?? "unknown";
@@ -294,6 +295,10 @@ function Hero({ snapshot, loading, onRefresh, onFocusSection }: HeroProps) {
         <MetricChip label="projects" value={`${work?.projects_completion_pct ?? 0}%`} status={findSection(snapshot, "work")?.status ?? "unknown"} onClick={() => onFocusSection("work")} />
         <MetricChip label="live" value={workCounts?.live_runtimes ?? work?.live_runtimes ?? 0} status={(workCounts?.live_runtimes ?? work?.live_runtimes ?? 0) > 0 ? "green" : "amber"} onClick={() => onFocusSection("work")} />
         <MetricChip label="7d tasks" value={activity?.created_7d ?? 0} status={findSection(snapshot, "activity")?.status ?? "unknown"} onClick={() => onFocusSection("activity")} />
+        <MetricChip label="cost" value={infra?.cost?.label ?? "n/a"} status={infra?.cost?.status ?? "unknown"} onClick={() => onFocusSection("providers")} />
+        <MetricChip label="DR" value={infra?.dr?.label ?? "n/a"} status={infra?.dr?.status ?? "unknown"} onClick={() => onFocusSection("backups")} />
+        <MetricChip label="evals" value={infra?.evals?.label ?? "n/a"} status={infra?.evals?.status ?? "unknown"} onClick={() => onFocusSection("memory_stores")} />
+        <MetricChip label="security" value={infra?.security?.label ?? "n/a"} status={infra?.security?.status ?? "unknown"} onClick={() => onFocusSection("host")} />
         <button
           type="button"
           onClick={() => setMoreOpen((open) => !open)}

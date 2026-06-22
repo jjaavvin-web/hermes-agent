@@ -2533,6 +2533,28 @@ export interface OSActivitySnapshot {
   cards: Array<{ id?: string; board?: string; title?: string; status?: string }>;
 }
 
+export interface OSInfraMetric {
+  status: OSStatus;
+  label: string;
+  detail: string;
+  source?: string;
+  age_hours?: number;
+  today_usd?: number | null;
+  turns?: number;
+  recall_at_k?: number;
+  k?: number;
+  n?: number;
+  ts?: string;
+  returncode?: number;
+}
+
+export interface OSInfraSnapshot {
+  cost?: OSInfraMetric;
+  dr?: OSInfraMetric;
+  evals?: OSInfraMetric;
+  security?: OSInfraMetric;
+}
+
 export interface OSSnapshot {
   generated_at: string;
   overall: OSStatus;
@@ -2546,6 +2568,7 @@ export interface OSSnapshot {
   repo?: OSRepoSnapshot;
   work?: OSWorkSnapshot;
   activity?: OSActivitySnapshot;
+  infra?: OSInfraSnapshot;
   /** Static architecture topology with live health bound onto the nodes. */
   graph: { nodes: OSGraphNode[]; edges: OSGraphEdge[] };
 }

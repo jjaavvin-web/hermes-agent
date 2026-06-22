@@ -100,6 +100,226 @@ def _run(cmd: list[str], timeout: float = 3.0) -> subprocess.CompletedProcess:
     return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
 
 
+def _state_db_path() -> Path:
+    """Resolve the canonical Hermes state.db path, profile-aware when possible."""
+    try:
+        from hermes_constants import get_hermes_home
+
+        return get_hermes_home() / "state.db"
+    except Exception:
+        return HERMES_HOME / "state.db"
+
+
+def _age_hours(path: Path) -> float:
+    return (time.time() - path.stat().st_mtime) / 3600
+
+
+def _age_status(age_h: float, *, green_h: float, amber_h: float) -> Status:
+    if age_h <= green_h:
+        return "green"
+    if age_h <= amber_h:
+        return "amber"
+    return "red"
+
+
+def _latest_file(root: Path) -> Optional[Path]:
+    if not root.exists():
+        return None
+    newest: Optional[Path] = None
+    newest_mtime = -1.0
+    try:
+        candidates = root.rglob("*") if root.is_dir() else [root]
+        for path in candidates:
+            try:
+                if not path.is_file() or "__pycache__" in path.parts or path.suffix == ".pyc":
+                    continue
+                mtime = path.stat().st_mtime
+            except OSError:
+                continue
+            if mtime > newest_mtime:
+                newest = path
+                newest_mtime = mtime
+    except Exception:
+        return None
+    return newest
+
+
+def _cost_summary() -> dict:
+    """Read-only today-cost probe from turn_usage in state.db."""
+    db_path = _state_db_path()
+    payload = {
+        "status": "unknown",
+        "label": "n/a",
+        "detail": "turn_usage unavailable",
+        "today_usd": None,
+    }
+    try:
+        if not db_path.exists():
+            payload["detail"] = "state.db missing"
+            return payload
+        conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=2.0)
+        try:
+            exists = conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='turn_usage'"
+            ).fetchone()
+            if exists is None:
+                payload["detail"] = "turn_usage table missing"
+                return payload
+            day_ago = time.time() - 86_400.0
+            row = conn.execute(
+                """
+                SELECT COALESCE(SUM(estimated_cost_usd), 0.0) AS cost_usd, COUNT(*) AS turns
+                FROM turn_usage
+                WHERE ts >= ?
+                """,
+                (day_ago,),
+            ).fetchone()
+        finally:
+            conn.close()
+        cost = round(float(row[0] or 0.0), 4) if row else 0.0
+        turns = int(row[1] or 0) if row else 0
+        if cost <= 0.50:
+            status: Status = "green"
+        elif cost <= 5.0:
+            status = "amber"
+        else:
+            status = "red"
+        return {
+            "status": status,
+            "label": f"${cost:.2f}",
+            "detail": f"today cost=${cost:.4f} across {turns} turn(s)",
+            "today_usd": cost,
+            "turns": turns,
+            "source": str(db_path),
+        }
+    except Exception as exc:
+        payload["detail"] = f"cost probe failed: {exc}"
+        return payload
+
+
+def _dr_status() -> dict:
+    """Read-only DR freshness probe using dr-status.py when present, else newest backup artifact."""
+    script = HERMES_HOME / "scripts" / "dr-status.py"
+    python = HOME / ".local" / "share" / "hermes-agent" / "venv" / "bin" / "python"
+    if script.exists() and python.exists():
+        try:
+            r = _run([str(python), str(script)], timeout=5.0)
+            output = (r.stdout or r.stderr or "").strip()
+            first_line = output.splitlines()[0][:240] if output else "dr-status.py produced no output"
+            lowered = output.lower()
+            if r.returncode != 0:
+                status: Status = "red"
+            elif "red" in lowered or "fail" in lowered or "critical" in lowered:
+                status = "red"
+            elif "amber" in lowered or "warn" in lowered or "stale" in lowered:
+                status = "amber"
+            else:
+                status = "green"
+            return {
+                "status": status,
+                "label": status.upper(),
+                "detail": first_line,
+                "source": str(script),
+                "returncode": r.returncode,
+            }
+        except Exception as exc:
+            return {"status": "unknown", "label": "n/a", "detail": f"dr-status.py probe failed: {exc}", "source": str(script)}
+
+    newest = _latest_file(HERMES_HOME / "backups")
+    if newest is None:
+        return {"status": "unknown", "label": "n/a", "detail": "no DR script or backup artifact found", "source": str(HERMES_HOME / "backups")}
+    age_h = _age_hours(newest)
+    status = _age_status(age_h, green_h=24.0, amber_h=168.0)
+    return {
+        "status": status,
+        "label": f"{age_h:.1f}h",
+        "detail": f"newest backup {newest.name} age={age_h:.1f}h",
+        "age_hours": round(age_h, 2),
+        "source": str(newest),
+    }
+
+
+def _evals_status() -> dict:
+    """Read-only latest blind recall score from score-history.jsonl."""
+    path = HERMES_HOME / "evals" / "recall" / "score-history.jsonl"
+    try:
+        if not path.exists():
+            return {"status": "unknown", "label": "n/a", "detail": "recall score-history.jsonl missing", "source": str(path)}
+        last: dict[str, Any] | None = None
+        for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+            if not line.strip():
+                continue
+            try:
+                obj = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(obj, dict):
+                last = obj
+        if not last:
+            return {"status": "unknown", "label": "n/a", "detail": "recall score history has no valid JSON rows", "source": str(path)}
+        agg = last.get("agg") if isinstance(last.get("agg"), dict) else {}
+        recall = agg.get("recall_at_k")
+        if recall is None:
+            return {"status": "unknown", "label": "n/a", "detail": "latest recall row missing agg.recall_at_k", "source": str(path)}
+        recall_f = float(recall)
+        if recall_f >= 0.90:
+            status: Status = "green"
+        elif recall_f >= 0.70:
+            status = "amber"
+        else:
+            status = "red"
+        k = int(agg.get("k") or 10)
+        n = int(agg.get("n") or 0)
+        return {
+            "status": status,
+            "label": f"{recall_f * 100:.0f}%",
+            "detail": f"latest RECALL@{k}={recall_f:.4f} over n={n}",
+            "recall_at_k": recall_f,
+            "k": k,
+            "n": n,
+            "ts": last.get("ts"),
+            "source": str(path),
+        }
+    except Exception as exc:
+        return {"status": "unknown", "label": "n/a", "detail": f"evals probe failed: {exc}", "source": str(path)}
+
+
+def _security_status() -> dict:
+    """Read-only freshness probe for red-team/security audit artifacts."""
+    roots = [
+        HERMES_HOME / "measure" / "redteam",
+        HERMES_HOME / "audits" / "security",
+        HERMES_HOME / "audits" / "security-audit",
+    ]
+    newest = None
+    for root in roots:
+        candidate = _latest_file(root)
+        if candidate is None:
+            continue
+        if newest is None or candidate.stat().st_mtime > newest.stat().st_mtime:
+            newest = candidate
+    if newest is None:
+        return {"status": "unknown", "label": "n/a", "detail": "no redteam/security audit artifact found", "source": ", ".join(str(r) for r in roots)}
+    age_h = _age_hours(newest)
+    status = _age_status(age_h, green_h=72.0, amber_h=336.0)
+    return {
+        "status": status,
+        "label": f"{age_h:.1f}h",
+        "detail": f"newest security artifact {newest.name} age={age_h:.1f}h",
+        "age_hours": round(age_h, 2),
+        "source": str(newest),
+    }
+
+
+def _infra_snapshot() -> dict:
+    return {
+        "cost": _cost_summary(),
+        "dr": _dr_status(),
+        "evals": _evals_status(),
+        "security": _security_status(),
+    }
+
+
 # ---------------------------------------------------------------------------
 # Graph helpers (Appendix B)
 # ---------------------------------------------------------------------------
@@ -1598,6 +1818,7 @@ def _build_os_snapshot() -> dict:
     repo_section, repo = _repo_section_from_git_health()
     work_section, work = _work_section_from_command_center()
     activity_section, activity = _activity_section_from_pulse()
+    infra = _infra_snapshot()
     sections.extend([repo_section, work_section, activity_section])
 
     overall_statuses = [s["status"] for s in sections if s.get("status") != "info"]
@@ -1628,6 +1849,7 @@ def _build_os_snapshot() -> dict:
         "repo": repo,
         "work": work,
         "activity": activity,
+        "infra": infra,
         "graph": graph,
     }
 
