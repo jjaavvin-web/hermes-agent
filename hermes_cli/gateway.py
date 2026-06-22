@@ -49,6 +49,84 @@ from hermes_cli.colors import Colors, color
 
 logger = logging.getLogger(__name__)
 
+
+def _sd_notify(state: bytes) -> None:
+    """Send an sd_notify datagram to systemd when NOTIFY_SOCKET is present.
+
+    This intentionally uses only the Python standard library: systemd's notify
+    protocol is just an AF_UNIX datagram write.  Failures are ignored so a
+    missing, malformed, or stale NOTIFY_SOCKET can never destabilize the
+    gateway.
+    """
+    notify_socket = os.getenv("NOTIFY_SOCKET")
+    if not notify_socket:
+        return
+    try:
+        import socket
+
+        address = (
+            "\0" + notify_socket[1:]
+            if notify_socket.startswith("@")
+            else notify_socket
+        )
+        with socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM) as sock:
+            sock.connect(address)
+            sock.sendall(state)
+    except Exception:
+        logger.debug("sd_notify(%r) failed", state, exc_info=True)
+
+
+async def _sd_notify_watchdog_loop(interval: float = 30.0) -> None:
+    """Emit WATCHDOG=1 periodically for systemd WatchdogUSec services."""
+    while True:
+        try:
+            _sd_notify(b"WATCHDOG=1\n")
+        except Exception:
+            logger.debug("sd_notify watchdog tick failed", exc_info=True)
+        await asyncio.sleep(interval)
+
+
+async def _gateway_runtime_ready_for_sd_notify() -> bool:
+    """Return True once the gateway runtime status says startup completed."""
+    try:
+        from gateway.status import read_runtime_status
+
+        state = read_runtime_status() or {}
+        return (
+            state.get("pid") == os.getpid()
+            and state.get("gateway_state") == "running"
+        )
+    except Exception:
+        logger.debug("sd_notify readiness probe failed", exc_info=True)
+        return False
+
+
+async def _run_gateway_with_sd_notify(start_gateway, **kwargs):
+    """Run start_gateway while publishing guarded systemd READY/WATCHDOG pings."""
+    gateway_task = asyncio.create_task(start_gateway(**kwargs))
+    watchdog_task = None
+    ready_sent = False
+    try:
+        while not gateway_task.done():
+            if not ready_sent and await _gateway_runtime_ready_for_sd_notify():
+                _sd_notify(b"READY=1\n")
+                ready_sent = True
+                if os.getenv("NOTIFY_SOCKET"):
+                    watchdog_task = asyncio.create_task(_sd_notify_watchdog_loop())
+            try:
+                await asyncio.wait_for(asyncio.shield(gateway_task), timeout=0.5)
+            except asyncio.TimeoutError:
+                pass
+        return await gateway_task
+    finally:
+        if watchdog_task is not None:
+            watchdog_task.cancel()
+            try:
+                await watchdog_task
+            except asyncio.CancelledError:
+                pass
+
+
 # =============================================================================
 # Process Management (for manual gateway runs)
 # =============================================================================
@@ -4178,7 +4256,11 @@ def run_gateway(verbose: int = 0, quiet: bool = False, replace: bool = False, fo
 
     success = False
     try:
-        success = asyncio.run(start_gateway(replace=replace, verbosity=verbosity))
+        success = asyncio.run(
+            _run_gateway_with_sd_notify(
+                start_gateway, replace=replace, verbosity=verbosity
+            )
+        )
         _exit_diag("asyncio.run.returned", success=success)
     except KeyboardInterrupt:
         # On Windows-detached runs this shouldn't fire (we absorb SIGINT above),
