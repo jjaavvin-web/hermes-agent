@@ -199,3 +199,19 @@ class CodexGcWatcher:
                 )
         except Exception as exc:
             log.warning("CodexGcWatcher: broker.reap_deleted failed: %s", exc)
+
+        try:
+            from gateway.codex_session_reaper import CodexSessionReaper
+
+            decisions = CodexSessionReaper(
+                dispatcher_state=self._dispatcher,
+                broker=self._broker,
+                gh_open_branches_fn=self._gh_list_open_branches,
+            ).reap(reap_idle_days=10, dry_run=True)
+            if decisions:
+                log.info(
+                    "CodexGcWatcher: session reaper dry-run evaluated %d decision(s)",
+                    len(decisions),
+                )
+        except Exception as exc:
+            log.warning("CodexGcWatcher: session reaper dry-run failed: %s", exc)

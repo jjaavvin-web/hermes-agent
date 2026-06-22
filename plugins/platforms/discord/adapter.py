@@ -713,6 +713,26 @@ def _read_dm_role_auth_guild() -> Optional[int]:
     return guild_id if guild_id > 0 else None
 
 
+def _register_discord_session_deny_patterns(source, config: PlatformConfig) -> None:
+    """Register Discord inbound sessions with the shared route deny-rail."""
+    try:
+        from gateway.platforms.webhook import DEFAULT_WEBHOOK_DENY_PATTERNS
+        from gateway.session import build_session_key
+        from tools.approval import register_session_deny_patterns
+
+        extra = getattr(config, "extra", {}) or {}
+        session_key = build_session_key(
+            source,
+            group_sessions_per_user=extra.get("group_sessions_per_user", True),
+            thread_sessions_per_user=extra.get("thread_sessions_per_user", False),
+        )
+        register_session_deny_patterns(session_key, list(DEFAULT_WEBHOOK_DENY_PATTERNS))
+    except Exception:
+        # Fail loud but do not crash Discord delivery/session startup — prompt-level
+        # guards and approval prompts remain available if registration fails.
+        logger.exception("[Discord] Failed to register session deny patterns")
+
+
 class DiscordAdapter(BasePlatformAdapter):
     """
     Discord bot adapter.
@@ -5665,6 +5685,7 @@ class DiscordAdapter(BasePlatformAdapter):
             message_id=str(message.id),
             role_authorized=role_authorized,
         )
+        _register_discord_session_deny_patterns(source, self.config)
 
         # Build media URLs -- download image attachments to local cache so the
         # vision tool can access them reliably (Discord CDN URLs can expire).
