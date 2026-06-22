@@ -773,6 +773,12 @@ class DiscordAdapter(BasePlatformAdapter):
         # in those threads don't require @mention.  Persisted to disk so the
         # set survives gateway restarts.
         self._threads = ThreadParticipationTracker("discord")
+        # Persistent set of bot-authored lifecycle/status message IDs that
+        # should not act as conversational history boundaries after restart.
+        # NOTE: this init must live in __init__ — a prior refactor stranded it
+        # as dead code after a `return` in the dispatcher builder, so it never
+        # ran and every Discord send raised AttributeError (fixed 2026-06-22).
+        self._nonconversational_messages = _DiscordNonConversationalMessageTracker()
         # Persistent typing indicator loops per channel (DMs don't reliably
         # show the standard typing gateway event for bots)
         self._typing_tasks: Dict[str, asyncio.Task] = {}
@@ -940,9 +946,6 @@ class DiscordAdapter(BasePlatformAdapter):
             )
             self._codex_gc_watcher = None
         return dispatcher
-        # Persistent set of bot-authored lifecycle/status message IDs that
-        # should not act as conversational history boundaries after restart.
-        self._nonconversational_messages = _DiscordNonConversationalMessageTracker()
 
     def _handle_bot_task_done(self, task: asyncio.Task) -> None:
         """Surface post-startup discord.py task exits to the gateway supervisor.
