@@ -5,7 +5,7 @@ import { CopyButton } from "@nous-research/ui/ui/components/command-block";
 import { Spinner } from "@nous-research/ui/ui/components/spinner";
 import { H2 } from "@nous-research/ui/ui/components/typography/h2";
 import { api, type OAuthProvider, type OAuthStartResponse } from "@/lib/api";
-import { Input } from "@nous-research/ui/ui/components/input";
+import { Input } from "@/components/ui-shims";
 import { useI18n } from "@/i18n";
 import { cn, themedBody } from "@/lib/utils";
 
