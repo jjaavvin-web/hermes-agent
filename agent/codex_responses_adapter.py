@@ -339,6 +339,23 @@ def _sanitize_tool_schema_for_codex(schema: Any, _defs: Optional[Dict[str, Any]]
     return out
 
 
+# Tool families pruned from Codex requests.  The ChatGPT backend-api/codex
+# endpoint rejects large/complex tool payloads with a generic HTTP 400
+# "Unsupported content type"; ~34 of the ~69 enabled tools were rarely-used MCP
+# tools (Notion, Context7) plus MCP-protocol boilerplate (list_prompts etc.).
+# Drop those for the Codex path only (other providers keep the full set); keep
+# MVMS data tools + all core tools.  Reversible — adjust these lists as needed.
+_CODEX_PRUNE_TOOL_PREFIXES = ("mcp_notion_", "mcp_context7_")
+_CODEX_PRUNE_TOOL_SUFFIXES = ("_get_prompt", "_list_prompts", "_list_resources", "_read_resource")
+
+
+def _should_prune_codex_tool(name: Any) -> bool:
+    """True if ``name`` is a rarely-used MCP tool we omit from Codex requests."""
+    return isinstance(name, str) and (
+        name.startswith(_CODEX_PRUNE_TOOL_PREFIXES) or name.endswith(_CODEX_PRUNE_TOOL_SUFFIXES)
+    )
+
+
 def _responses_tools(tools: Optional[List[Dict[str, Any]]] = None) -> Optional[List[Dict[str, Any]]]:
     """Convert chat-completions tool schemas to Responses function-tool schemas."""
     if not tools:
@@ -920,6 +937,12 @@ def _preflight_codex_api_kwargs(
         for idx, tool in enumerate(tools):
             if not isinstance(tool, dict):
                 raise ValueError(f"Codex Responses tools[{idx}] must be an object.")
+
+            # Prune rarely-used MCP tool families from Codex requests — the
+            # backend rejects oversized/complex tool payloads ("Unsupported
+            # content type").  Codex path only; see _CODEX_PRUNE_* above.
+            if _should_prune_codex_tool(tool.get("name")):
+                continue
 
             tool_type = tool.get("type")
 
