@@ -241,6 +241,104 @@ def _derive_responses_function_call_id(
 # Schema conversion
 # ---------------------------------------------------------------------------
 
+# JSON-Schema keywords the ChatGPT ``backend-api/codex`` function-schema
+# validator rejects (or that are advisory-only and safe to drop).  MCP tool
+# schemas (Context7, MVMS, …) routinely emit ``$ref``/``$defs``/``oneOf``/
+# ``anyOf``/``format``/``const``; forwarding them verbatim makes Codex reject
+# the WHOLE request with a generic ``HTTP 400 {'detail': 'Unsupported content
+# type'}``, which is non-retryable and — because it stays in conversation
+# history — re-fires every turn until the agent dies.  See the 2026-06-23
+# request dumps under ~/.hermes/sessions/.  ``$ref``/``$defs``/``oneOf``/
+# ``anyOf``/``allOf``/``const`` are handled structurally below; these are the
+# leftover advisory keywords we drop.
+_CODEX_DROP_SCHEMA_KEYWORDS = frozenset({
+    "$schema", "$id", "$comment", "$anchor", "examples", "format", "pattern",
+    "contentEncoding", "contentMediaType", "discriminator",
+})
+_CODEX_SCHEMA_DEFS_KEYS = ("$defs", "definitions")
+
+
+def _sanitize_tool_schema_for_codex(schema: Any, _defs: Optional[Dict[str, Any]] = None,
+                                    _depth: int = 0) -> Any:
+    """Flatten a JSON-Schema to the restricted subset the Codex backend accepts.
+
+    Inlines ``$ref``/``$defs``, collapses ``oneOf``/``anyOf``/``allOf``,
+    converts ``const`` -> single-value ``enum``, normalizes list-form ``type``,
+    and drops advisory keywords Codex rejects.  Property names, ``required``,
+    descriptions and the property tree are preserved so tool semantics are
+    unchanged.  Validated against the real 69-tool failing requests.
+    """
+    if not isinstance(schema, dict):
+        return schema
+    if _depth > 16:
+        return {"type": "string"}
+    defs = dict(_defs or {})
+    for _k in _CODEX_SCHEMA_DEFS_KEYS:
+        _d = schema.get(_k)
+        if isinstance(_d, dict):
+            defs.update(_d)
+
+    ref = schema.get("$ref")
+    if isinstance(ref, str):
+        target = defs.get(ref.split("/")[-1])
+        if isinstance(target, dict):
+            merged = _sanitize_tool_schema_for_codex(target, defs, _depth + 1)
+            if isinstance(merged, dict) and "description" in schema and "description" not in merged:
+                merged["description"] = schema["description"]
+            return merged
+        return {"type": "object", "properties": {}, "additionalProperties": True}
+
+    for _uk in ("oneOf", "anyOf"):
+        variants = schema.get(_uk)
+        if isinstance(variants, list) and variants:
+            cand = [v for v in variants if isinstance(v, dict)]
+            chosen = next((v for v in cand if v.get("type") != "null"), cand[0] if cand else {})
+            merged = _sanitize_tool_schema_for_codex(chosen, defs, _depth + 1)
+            if isinstance(merged, dict):
+                for carry in ("description", "title"):
+                    if carry in schema and carry not in merged:
+                        merged[carry] = schema[carry]
+            return merged
+
+    out: Dict[str, Any] = {}
+    if isinstance(schema.get("allOf"), list):
+        for sub in schema["allOf"]:
+            s = _sanitize_tool_schema_for_codex(sub, defs, _depth + 1)
+            if isinstance(s, dict):
+                for k, v in s.items():
+                    if k == "properties" and isinstance(v, dict):
+                        out.setdefault("properties", {}).update(v)
+                    elif k == "required" and isinstance(v, list):
+                        out["required"] = sorted(set(out.get("required", [])) | set(v))
+                    else:
+                        out.setdefault(k, v)
+    if "const" in schema:
+        out["enum"] = [schema["const"]]
+
+    for k, v in schema.items():
+        if k in ("$ref", "oneOf", "anyOf", "allOf", "const") or k in _CODEX_SCHEMA_DEFS_KEYS \
+                or k in _CODEX_DROP_SCHEMA_KEYWORDS:
+            continue
+        if k == "type" and isinstance(v, list):
+            non_null = [t for t in v if t != "null"]
+            out["type"] = non_null[0] if non_null else (v[0] if v else "string")
+        elif k == "properties" and isinstance(v, dict):
+            out["properties"] = {pk: _sanitize_tool_schema_for_codex(pv, defs, _depth + 1)
+                                 for pk, pv in v.items()}
+        elif k == "items":
+            out["items"] = ([_sanitize_tool_schema_for_codex(x, defs, _depth + 1) for x in v]
+                            if isinstance(v, list)
+                            else _sanitize_tool_schema_for_codex(v, defs, _depth + 1))
+        elif isinstance(v, dict):
+            out[k] = _sanitize_tool_schema_for_codex(v, defs, _depth + 1)
+        elif isinstance(v, list):
+            out[k] = [_sanitize_tool_schema_for_codex(x, defs, _depth + 1) if isinstance(x, dict) else x
+                      for x in v]
+        else:
+            out[k] = v
+    return out
+
+
 def _responses_tools(tools: Optional[List[Dict[str, Any]]] = None) -> Optional[List[Dict[str, Any]]]:
     """Convert chat-completions tool schemas to Responses function-tool schemas."""
     if not tools:
@@ -863,7 +961,10 @@ def _preflight_codex_api_kwargs(
                     "name": name.strip(),
                     "description": description,
                     "strict": strict,
-                    "parameters": parameters,
+                    # Flatten MCP/rich JSON-Schema to the subset Codex accepts —
+                    # forwarding $ref/oneOf/anyOf/format/const triggers a generic
+                    # HTTP 400 "Unsupported content type" that kills the agent.
+                    "parameters": _sanitize_tool_schema_for_codex(parameters),
                 }
             )
 
