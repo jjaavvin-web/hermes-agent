@@ -217,6 +217,65 @@ _USER_SENSITIVE_WRITE_TARGET = (
 _PROJECT_SENSITIVE_WRITE_TARGET = rf'(?:{_PROJECT_ENV_PATH}|{_PROJECT_CONFIG_PATH})'
 _COMMAND_TAIL = r'(?:\s*(?:&&|\|\||;).*)?$'
 
+# Credential-exfiltration guard fragments. These are READ targets, not write
+# targets: pair a sensitive local credential path with an outbound network sink
+# before allowing a terminal command to run. The hardline class is intentionally
+# narrow enough to avoid blocking normal curl/cat usage, but broad enough to
+# catch the high-consequence cases reachable from Discord/webhook inbound lanes:
+# provider keys in .env files, Hermes OAuth/auth state, and SSH material.
+_HERMES_AUTH_PATH = (
+    r'(?:~\/\.hermes/|'
+    r'(?:\$home|\$\{home\})/\.hermes/|'
+    r'(?:\$hermes_home|\$\{hermes_home\})/)'
+    r'auth\.json\b'
+)
+_AUTH_JSON_PATH = r'(?:(?:/|\.{1,2}/)?(?:[^\s/"\'`]+/)*auth\.json\b)'
+_PROJECT_ENV_EXFIL_PATH = (
+    r'(?:(?:/|\.{1,2}/)?(?:[^\s/"\'`]+/)*\.env'
+    r'(?!\.(?:example|sample|template)\b)(?:\.[^/\s"\'`]+)?\b)'
+)
+_HARDLINE_EXFIL_READ_TARGET = (
+    rf'(?:{_HERMES_ENV_PATH}|{_PROJECT_ENV_EXFIL_PATH}|{_HERMES_AUTH_PATH}|'
+    rf'{_AUTH_JSON_PATH}|{_SSH_SENSITIVE_PATH})'
+)
+_PROJECT_CREDENTIAL_READ_PATH = (
+    r'(?:(?:/|\.{1,2}/)?(?:[^\s/"\'`]+/)*'
+    r'(?:credentials?|secrets?|tokens?|service[-_]?account|private[-_]?key|'
+    r'id_rsa|id_ed25519|id_ecdsa|\.netrc|\.npmrc|\.pypirc|\.pgpass)'
+    r'[^\s/"\'`]*'
+    r'(?:\.(?:json|ya?ml|toml|env|pem|key|txt|cfg|ini))?\b)'
+)
+_BROAD_EXFIL_READ_TARGET = rf'(?:{_CREDENTIAL_FILES}|{_PROJECT_CREDENTIAL_READ_PATH})'
+
+# Outbound sinks that can carry local stdin/file bytes off-host. Plain GETs are
+# deliberately excluded (`curl https://public-api` stays allowed); curl only
+# becomes an exfil sink when it is asked to upload/post/form data.
+_CURL_EXFIL_SINK = (
+    r'\bcurl\b(?=[\s\S]*'
+    r'(?:--data(?:-[\w-]+)?\b|-d\b|--form\b|-F\b|'
+    r'--upload-file\b|-T\b|--request\s+POST\b|-X\s*POST\b))'
+)
+_NETWORK_EXFIL_SINK = (
+    rf'(?:{_CURL_EXFIL_SINK}|'
+    r'\b(?:nc|netcat|ncat)\b|'
+    r'\bscp\b|'
+    r'\bsocat\b|'
+    r'/dev/tcp/|'
+    r'\bpython[23]?\b[\s\S]*(?:\s-c\b|<<)[\s\S]*\bsocket\b)'
+)
+_EXFIL_READ_COMMAND = r'(?:cat|base64|xxd|od|hexdump|tar|gzip|openssl|gpg)'
+
+# Route deny-list form used by webhook/Discord sessions. The behavioral guard
+# below is authoritative; this regex gives route-level sessions the same broad
+# server-side floor even before ordinary dangerous-command approval is reached.
+CREDENTIAL_EXFIL_DENY_PATTERNS = [
+    rf'(?=[\s\S]*(?:{_HARDLINE_EXFIL_READ_TARGET}))'
+    rf'(?=[\s\S]*(?:{_NETWORK_EXFIL_SINK}))',
+    rf'(?=[\s\S]*(?:\b{_EXFIL_READ_COMMAND}\b|\b(?:curl\b[\s\S]*(?:@|--upload-file\b|-T\b)|scp\b))'
+    rf'[\s\S]*(?:{_BROAD_EXFIL_READ_TARGET}))'
+    rf'(?=[\s\S]*(?:{_NETWORK_EXFIL_SINK}))',
+]
+
 # =========================================================================
 # Hardline (unconditional) blocklist
 # =========================================================================
@@ -336,12 +395,60 @@ def _check_sudo_stdin_guard(command: str) -> tuple:
     return (False, None)
 
 
+def _normalize_exfil_command(command: str) -> str:
+    """Normalize and expand simple same-command variables for exfil checks.
+
+    This is intentionally lexical rather than a shell interpreter. It catches
+    common evasion such as ``P=~/.hermes/.env; cat $P | curl -d @-`` without
+    expanding arbitrary environment variables from the agent process.
+    """
+    normalized = _normalize_command_for_detection(command).lower()
+    assignments = re.findall(
+        r'(?:^|[;\n&|]\s*)([a-z_][a-z0-9_]*)=("[^"]+"|\'[^\']+\'|[^\s;|&]+)',
+        normalized,
+    )
+    for name, raw_value in assignments:
+        value = raw_value.strip().strip('"\'')
+        if not value:
+            continue
+        if re.search(r'(?:\.env\b|auth\.json\b|/\.ssh(?:/|$)|\.netrc\b|\.npmrc\b|\.pypirc\b|\.pgpass\b|secret|credential|token|private[-_]?key)', value, _RE_FLAGS):
+            normalized = re.sub(rf'\$\{{{re.escape(name)}\}}|\${re.escape(name)}\b', value, normalized)
+    return normalized
+
+
+def _detect_credential_exfiltration(command: str) -> tuple[bool, Optional[str], Optional[str]]:
+    """Detect sensitive local credential reads paired with outbound sinks.
+
+    Returns ``(matched, severity, description)`` where severity is ``hardline``
+    for Hermes/project .env, auth.json, and SSH material, and ``dangerous`` for
+    broader credential-looking files such as .netrc or credentials.json.
+    """
+    normalized = _normalize_exfil_command(command)
+    has_sink = re.search(_NETWORK_EXFIL_SINK, normalized, _RE_FLAGS) is not None
+    if not has_sink:
+        return (False, None, None)
+
+    if re.search(_HARDLINE_EXFIL_READ_TARGET, normalized, _RE_FLAGS):
+        return (True, "hardline", "credential exfiltration: sensitive credential path sent to network sink")
+    if re.search(_BROAD_EXFIL_READ_TARGET, normalized, _RE_FLAGS):
+        broad_read = re.search(rf'\b{_EXFIL_READ_COMMAND}\b[\s\S]*(?:{_BROAD_EXFIL_READ_TARGET})', normalized, _RE_FLAGS)
+        broad_structural_upload = re.search(rf'\b(?:curl\b[\s\S]*(?:@|--upload-file\b|-T\b)|scp\b)[\s\S]*(?:{_BROAD_EXFIL_READ_TARGET})', normalized, _RE_FLAGS)
+        if broad_read or broad_structural_upload:
+            return (True, "dangerous", "possible credential exfiltration: credential-looking file sent to network sink")
+        return (False, None, None)
+    return (False, None, None)
+
+
 def detect_hardline_command(command: str) -> tuple:
     """Check if a command matches the unconditional hardline blocklist.
 
     Returns:
         (is_hardline, description) or (False, None)
     """
+    exfil, severity, exfil_desc = _detect_credential_exfiltration(command)
+    if exfil and severity == "hardline":
+        return (True, exfil_desc)
+
     normalized = _normalize_command_for_detection(command).lower()
     for pattern_re, description in HARDLINE_PATTERNS_COMPILED:
         if pattern_re.search(normalized):
@@ -687,6 +794,10 @@ def detect_dangerous_command(command: str) -> tuple:
     Returns:
         (is_dangerous, pattern_key, description) or (False, None, None)
     """
+    exfil, severity, exfil_desc = _detect_credential_exfiltration(command)
+    if exfil and severity == "dangerous":
+        return (True, exfil_desc, exfil_desc)
+
     command_lower = _normalize_command_for_detection(command).lower()
     for pattern_re, description in DANGEROUS_PATTERNS_COMPILED:
         if pattern_re.search(command_lower):

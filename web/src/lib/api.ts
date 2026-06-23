@@ -2533,6 +2533,30 @@ export interface OSActivitySnapshot {
   cards: Array<{ id?: string; board?: string; title?: string; status?: string }>;
 }
 
+export interface OSDRRow {
+  store: string;
+  label?: string;
+  status: OSStatus;
+  verdict: string;
+  rto_obs?: string;
+  rto_target?: string;
+  rpo_obs?: string;
+  rpo_target?: string;
+  offbox?: string;
+}
+
+export interface OSEvalSetRow {
+  holdout: string;
+  status: OSStatus;
+  recall_at_k: number;
+  label: string;
+  k: number;
+  n: number;
+  ts?: string;
+  age_hours?: number | null;
+  fresh: boolean;
+}
+
 export interface OSInfraMetric {
   status: OSStatus;
   label: string;
@@ -2542,10 +2566,17 @@ export interface OSInfraMetric {
   today_usd?: number | null;
   turns?: number;
   recall_at_k?: number;
+  worst_holdout?: string;
   k?: number;
   n?: number;
   ts?: string;
   returncode?: number;
+  rows?: OSDRRow[];
+  sets?: OSEvalSetRow[];
+  breach_count?: number;
+  passed?: number;
+  total?: number;
+  failing?: string[];
 }
 
 export interface OSInfraSnapshot {
@@ -2733,11 +2764,108 @@ export interface LearningHistoryPoint {
   generated_at?: string | null;
 }
 
+export interface LearningSourceBlock {
+  status?: "measured" | "unmeasured" | string;
+  source?: string | null;
+  provenance?: string | null;
+}
+
+export interface LearningSystemdUnit {
+  name?: string;
+  enabled?: string;
+  active?: string;
+  enabled_rc?: number;
+  active_rc?: number;
+  error?: string;
+}
+
+export interface LearningRecallEval extends LearningSourceBlock {
+  label?: string;
+  k?: number | null;
+  n?: number | null;
+  n_target_resolved?: number | null;
+  recall_at_k?: number | null;
+  mrr?: number | null;
+  ndcg_at_k?: number | null;
+  holdout_file?: string | null;
+  ts?: string | null;
+  self_seeded_latest?: {
+    recall_at_k?: number | null;
+    holdout_file?: string | null;
+    ts?: string | null;
+    classification?: string | null;
+  } | null;
+}
+
+export interface LearningRecallActivity extends LearningSourceBlock {
+  total_events?: number;
+  recent_1h?: number;
+  recent_24h?: number;
+  recent_7d?: number;
+  latest_ts?: number | null;
+  latest_at?: string | null;
+  latest_age_seconds?: number | null;
+  sources?: string[];
+}
+
+export interface LearningPromotion extends LearningSourceBlock {
+  jsonl_source?: string;
+  log_source?: string;
+  timer?: LearningSystemdUnit;
+  service?: LearningSystemdUnit;
+  latest?: Record<string, string | number | boolean | null | undefined>;
+}
+
+export interface LearningVerify extends LearningSourceBlock {
+  timer?: LearningSystemdUnit;
+  service?: LearningSystemdUnit;
+  critic_status?: string | null;
+  hard_failures?: number | null;
+  default_recall_at_k?: number | null;
+  default_recall_k?: number | null;
+  default_mrr?: number | null;
+  default_ndcg?: number | null;
+  log_tail?: string | null;
+}
+
+export interface LearningMvmsLessons extends LearningSourceBlock {
+  generated_at?: string | null;
+  lessons_total?: number | null;
+  trusted_count?: number | null;
+  trusted_ratio?: number | null;
+  actionable_lessons_total?: number | null;
+  trusted_actionable_ratio?: number | null;
+  auto_bridged_count?: number | null;
+  quarantine_count?: number | null;
+  dup_ratio?: number | null;
+  importance_hist?: Record<string, number | undefined> | null;
+  embed_coverage?: LearningEmbedCoverage | null;
+  scope?: Record<string, unknown> | null;
+}
+
+export interface LearningCanary extends LearningSourceBlock {
+  pass?: boolean | null;
+  rank?: number | null;
+  recalled?: boolean | null;
+  avoided_mistake?: boolean | null;
+  probe_ranker?: string | null;
+  probe_mode_used?: string | null;
+  embedding_path?: string | null;
+  ts?: string | null;
+}
+
 export interface LearningResponse {
   status: LearningStatus;
   reason?: string;
+  files?: Record<string, string>;
+  mvms_lessons?: LearningMvmsLessons | null;
+  recall_eval?: LearningRecallEval | null;
+  recall_activity?: LearningRecallActivity | null;
+  promotion?: LearningPromotion | null;
+  verify?: LearningVerify | null;
+  canary?: LearningCanary | null;
   snapshot_latest?: LearningSnapshotLatest | null;
-  result_latest?: LearningResultLatest | null;
+  result_latest?: LearningResultLatest | LearningCanary | null;
   recall_filters?: RecallFilter | null;
   weekly_hygiene_latest?: {
     lesson_completion_ratio?: number;
@@ -2746,14 +2874,6 @@ export interface LearningResponse {
     ts?: string;
   } | null;
   distiller?: DistillerStatus | null;
-  canary?: {
-    pass?: boolean;
-    rank?: number;
-    recalled?: number;
-    avoided_mistake?: boolean;
-    embed_present?: boolean;
-    mode?: string;
-  } | null;
   behavioral?: {
     present: boolean;
     demonstrated: boolean;

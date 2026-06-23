@@ -295,10 +295,10 @@ function Hero({ snapshot, loading, onRefresh, onFocusSection }: HeroProps) {
         <MetricChip label="projects" value={`${work?.projects_completion_pct ?? 0}%`} status={findSection(snapshot, "work")?.status ?? "unknown"} onClick={() => onFocusSection("work")} />
         <MetricChip label="live" value={workCounts?.live_runtimes ?? work?.live_runtimes ?? 0} status={(workCounts?.live_runtimes ?? work?.live_runtimes ?? 0) > 0 ? "green" : "amber"} onClick={() => onFocusSection("work")} />
         <MetricChip label="7d tasks" value={activity?.created_7d ?? 0} status={findSection(snapshot, "activity")?.status ?? "unknown"} onClick={() => onFocusSection("activity")} />
-        <MetricChip label="cost" value={infra?.cost?.label ?? "n/a"} status={infra?.cost?.status ?? "unknown"} onClick={() => onFocusSection("providers")} />
-        <MetricChip label="DR" value={infra?.dr?.label ?? "n/a"} status={infra?.dr?.status ?? "unknown"} onClick={() => onFocusSection("backups")} />
-        <MetricChip label="evals" value={infra?.evals?.label ?? "n/a"} status={infra?.evals?.status ?? "unknown"} onClick={() => onFocusSection("memory_stores")} />
-        <MetricChip label="security" value={infra?.security?.label ?? "n/a"} status={infra?.security?.status ?? "unknown"} onClick={() => onFocusSection("host")} />
+        <MetricChip label="cost" value={infra?.cost?.label ?? "n/a"} status={infra?.cost?.status ?? "unknown"} onClick={() => onFocusSection("infra")} />
+        <MetricChip label="DR" value={infra?.dr?.label ?? "n/a"} status={infra?.dr?.status ?? "unknown"} onClick={() => onFocusSection("infra")} />
+        <MetricChip label="evals" value={infra?.evals?.label ?? "n/a"} status={infra?.evals?.status ?? "unknown"} onClick={() => onFocusSection("infra")} />
+        <MetricChip label="security" value={infra?.security?.label ?? "n/a"} status={infra?.security?.status ?? "unknown"} onClick={() => onFocusSection("infra")} />
         <button
           type="button"
           onClick={() => setMoreOpen((open) => !open)}
@@ -436,6 +436,58 @@ function ActivityDetails({ activity }: { activity?: OSActivitySnapshot }) {
   );
 }
 
+function InfraDetails({ snapshot }: { snapshot: OSSnapshot }) {
+  const infra = snapshot.infra;
+  const drRows = infra?.dr?.rows ?? [];
+  const evalSets = infra?.evals?.sets ?? [];
+  const security = infra?.security;
+  return (
+    <div className="space-y-3 border-t border-border px-4 py-3 text-xs text-text-secondary">
+      <div className="grid grid-cols-1 gap-2 lg:grid-cols-3">
+        <span className="rounded-md border border-border p-2">Security breaches <strong className="text-text-primary">{security?.breach_count ?? "—"}</strong></span>
+        <span className="rounded-md border border-border p-2">Red-team pass <strong className="text-text-primary">{security?.passed ?? "—"}/{security?.total ?? "—"}</strong></span>
+        <span className="rounded-md border border-border p-2">Worst eval <strong className="text-text-primary">{infra?.evals?.worst_holdout ?? "—"}</strong></span>
+      </div>
+      {evalSets.length > 0 && (
+        <div>
+          <h4 className="mb-1 font-semibold uppercase tracking-[0.12em] text-text-tertiary">Per-holdout evals</h4>
+          <div className="space-y-1">
+            {evalSets.map((row) => (
+              <div key={row.holdout} className="flex items-center justify-between gap-2 rounded-md border border-border bg-background/30 px-2 py-1.5">
+                <span className="min-w-0 truncate">{row.holdout}{row.fresh ? "" : " · stale"}</span>
+                <span className="flex items-center gap-2"><StatusDot status={row.status} className="h-1.5 w-1.5" /><span className="font-mono text-text-primary">{row.label}</span></span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+      {drRows.length > 0 && (
+        <div>
+          <h4 className="mb-1 font-semibold uppercase tracking-[0.12em] text-text-tertiary">DR stores</h4>
+          <div className="overflow-x-auto rounded-md border border-border">
+            <table className="w-full min-w-[620px] text-left text-[11px]">
+              <thead className="bg-background/60 text-text-tertiary">
+                <tr><th className="px-2 py-1.5">Store</th><th className="px-2 py-1.5">RTO</th><th className="px-2 py-1.5">RPO</th><th className="px-2 py-1.5">Offbox</th><th className="px-2 py-1.5">Verdict</th></tr>
+              </thead>
+              <tbody className="divide-y divide-border">
+                {drRows.map((row) => (
+                  <tr key={row.store}>
+                    <td className="px-2 py-1.5 text-text-primary">{row.store}</td>
+                    <td className="px-2 py-1.5 font-mono">{row.rto_obs}/{row.rto_target}</td>
+                    <td className="px-2 py-1.5 font-mono">{row.rpo_obs}/{row.rpo_target}</td>
+                    <td className="px-2 py-1.5 font-mono">{row.offbox}</td>
+                    <td className="px-2 py-1.5"><span className="inline-flex items-center gap-1.5"><StatusDot status={row.status} className="h-1.5 w-1.5" />{row.verdict}</span></td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function RepoDetails({ snapshot }: { snapshot: OSSnapshot }) {
   const repo = snapshot.repo;
   const lanes = repo?.lanes ?? [];
@@ -487,6 +539,7 @@ function SectionCard({ section, expanded, extra, onToggle }: SectionCardProps) {
           {section.id === "repo" && extra && <RepoDetails snapshot={extra} />}
           {section.id === "work" && <WorkDetails work={extra?.work} />}
           {section.id === "activity" && <ActivityDetails activity={extra?.activity} />}
+          {section.id === "infra" && extra && <InfraDetails snapshot={extra} />}
         </>
       )}
     </div>

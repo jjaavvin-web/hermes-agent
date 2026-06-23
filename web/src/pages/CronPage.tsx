@@ -5,7 +5,7 @@ import { Button } from "@nous-research/ui/ui/components/button";
 import { Select, SelectOption } from "@nous-research/ui/ui/components/select";
 import { Spinner } from "@nous-research/ui/ui/components/spinner";
 import { H2 } from "@nous-research/ui/ui/components/typography/h2";
-import { api } from "@/lib/api";
+import { api, fetchJSON } from "@/lib/api";
 import type { CronJob, CronDeliveryTarget, ProfileInfo, SkillInfo } from "@/lib/api";
 import { DeleteConfirmDialog } from "@/components/DeleteConfirmDialog";
 import {
@@ -174,8 +174,272 @@ const STATUS_TONE: Record<string, "success" | "warning" | "destructive"> = {
   completed: "destructive",
 };
 
+type CronReliabilityHealth = "green" | "amber" | "red" | "gray";
+
+type CronReliabilityHistoryEvent = {
+  timestamp?: string | null;
+  status?: string | null;
+  exit_code?: number | null;
+  excerpt?: string | null;
+};
+
+type CronReliabilityApiRow = {
+  id?: string;
+  name?: string;
+  kind?: string;
+  health?: string;
+  last_exit_status?: number | { code?: number | null; label?: string | null } | null;
+  overdue?: boolean;
+  freshness_vs_interval?: { overdue?: boolean; missed?: boolean; state?: string | null } | null;
+  next_run?: string | null;
+  last_run?: string | null;
+  success_rate?: number | { rate?: number | null; failures?: number | null; observed?: number | null } | null;
+  history?: Array<number | CronReliabilityHistoryEvent>;
+};
+
+type CronReliabilityRow = {
+  name: string;
+  kind: string;
+  health: CronReliabilityHealth;
+  last_exit_status: number | null;
+  overdue: boolean;
+  next_run: string | null;
+  last_run: string | null;
+  success_rate: number | null;
+  history: number[];
+  history_failures: number;
+};
+
+type CronReliabilityPayload =
+  | CronReliabilityApiRow[]
+  | {
+      units?: CronReliabilityApiRow[];
+      cron_jobs?: CronReliabilityApiRow[];
+      systemd_timers?: CronReliabilityApiRow[];
+      systemd_services?: CronReliabilityApiRow[];
+      items?: CronReliabilityApiRow[];
+      rows?: CronReliabilityApiRow[];
+    };
+
+const HEALTH_BADGE_CLASS: Record<CronReliabilityHealth, string> = {
+  green: "border-success/40 bg-success/10 text-success",
+  amber: "border-warning/50 bg-warning/10 text-warning",
+  red: "border-destructive/50 bg-destructive/10 text-destructive",
+  gray: "border-muted-foreground/30 bg-muted/40 text-muted-foreground",
+};
+
+function coerceReliabilityHealth(value: unknown): CronReliabilityHealth {
+  return value === "red" || value === "amber" || value === "green" || value === "gray"
+    ? value
+    : "gray";
+}
+
+function normalizeExitStatus(value: CronReliabilityApiRow["last_exit_status"]): number | null {
+  if (typeof value === "number") return value;
+  if (value && typeof value === "object" && typeof value.code === "number") return value.code;
+  return null;
+}
+
+function normalizeSuccessRate(value: CronReliabilityApiRow["success_rate"]): number | null {
+  if (typeof value === "number") return value;
+  if (value && typeof value === "object" && typeof value.rate === "number") return value.rate;
+  return null;
+}
+
+function normalizeHistory(history: CronReliabilityApiRow["history"]): { values: number[]; failures: number } {
+  if (!Array.isArray(history)) return { values: [], failures: 0 };
+  const values = history.map((entry) => {
+    if (typeof entry === "number") return Number(entry) === 0 ? 0 : 1;
+    const status = String(entry.status ?? "").toLowerCase();
+    const failed =
+      status.includes("fail") ||
+      status.includes("error") ||
+      (typeof entry.exit_code === "number" && entry.exit_code !== 0);
+    return failed ? 1 : 0;
+  });
+  return { values, failures: values.filter((value) => value !== 0).length };
+}
+
+function normalizeReliabilityHealth(row: CronReliabilityRow): CronReliabilityHealth {
+  if (row.overdue || (row.last_exit_status ?? 0) !== 0) return "red";
+  return row.health;
+}
+
+function formatExitStatus(value: number | null): string {
+  if (value === null || value === undefined) return "—";
+  return String(value);
+}
+
+function formatSuccessRate(value: number | null): string {
+  if (typeof value !== "number" || Number.isNaN(value)) return "—";
+  const pct = value <= 1 ? value * 100 : value;
+  return `${Math.round(pct)}%`;
+}
+
+function normalizeReliabilityPayload(payload: CronReliabilityPayload): CronReliabilityRow[] {
+  const rows = Array.isArray(payload)
+    ? payload
+    : payload.units ?? payload.items ?? payload.rows ?? [
+        ...(payload.cron_jobs ?? []),
+        ...(payload.systemd_timers ?? []),
+        ...(payload.systemd_services ?? []),
+      ];
+  return rows.map((row) => {
+    const lastExitStatus = normalizeExitStatus(row.last_exit_status);
+    const freshness = row.freshness_vs_interval;
+    const history = normalizeHistory(row.history);
+    const normalized: CronReliabilityRow = {
+      name: row.name || row.id || "cron unit",
+      kind: row.kind || "unknown",
+      health: coerceReliabilityHealth(row.health),
+      last_exit_status: lastExitStatus,
+      overdue: Boolean(row.overdue || freshness?.overdue || freshness?.missed),
+      next_run: row.next_run ?? null,
+      last_run: row.last_run ?? null,
+      success_rate: normalizeSuccessRate(row.success_rate),
+      history: history.values,
+      history_failures: history.failures,
+    };
+    return { ...normalized, health: normalizeReliabilityHealth(normalized) };
+  });
+}
+
+function Sparkline({ history }: { history: number[] }) {
+  const values = history.length ? history.slice(-24) : [];
+  if (!values.length) {
+    return <span className="text-xs text-muted-foreground">No runs</span>;
+  }
+
+  const width = 96;
+  const height = 24;
+  const step = values.length > 1 ? width / (values.length - 1) : width;
+  const points = values
+    .map((value, i) => {
+      const x = values.length > 1 ? i * step : width / 2;
+      const y = value === 0 ? 7 : 18;
+      return `${x.toFixed(1)},${y}`;
+    })
+    .join(" ");
+
+  return (
+    <svg
+      aria-label={`Run history: ${values.map((v) => (v === 0 ? "ok" : "fail")).join(", ")}`}
+      className="h-6 w-24 overflow-visible"
+      role="img"
+      viewBox={`0 0 ${width} ${height}`}
+    >
+      <polyline
+        fill="none"
+        points={points}
+        stroke="currentColor"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        strokeWidth="2"
+      />
+      {values.map((value, i) => {
+        const x = values.length > 1 ? i * step : width / 2;
+        const y = value === 0 ? 7 : 18;
+        return (
+          <circle
+            key={`${i}-${value}`}
+            cx={x}
+            cy={y}
+            fill="currentColor"
+            r="2.5"
+            className={value === 0 ? "text-success" : "text-destructive"}
+          />
+        );
+      })}
+    </svg>
+  );
+}
+
+function CronReliabilitySection({ rows, loading, error }: { rows: CronReliabilityRow[]; loading: boolean; error: string | null }) {
+  const overdue = rows.filter((row) => row.overdue).length;
+  const failing = rows.filter(
+    (row) => (row.last_exit_status ?? 0) !== 0 || row.history_failures > 0 || row.health === "red",
+  ).length;
+
+  return (
+    <Card>
+      <CardContent className="py-4">
+        <div className="mb-4 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+          <div>
+            <H2 variant="sm" className="text-muted-foreground">
+              Reliability
+            </H2>
+            <p className="text-xs text-muted-foreground">
+              {loading ? "Loading cron reliability..." : `${overdue} overdue / ${failing} failing`}
+            </p>
+          </div>
+          <div className="flex gap-2 text-xs">
+            <Badge tone={overdue ? "destructive" : "success"}>{overdue} overdue</Badge>
+            <Badge tone={failing ? "destructive" : "success"}>{failing} failing</Badge>
+          </div>
+        </div>
+
+        {error && (
+          <p className="mb-3 border border-destructive/40 bg-destructive/10 p-2 text-xs text-destructive">
+            Reliability unavailable: {error}
+          </p>
+        )}
+
+        {!loading && !error && rows.length === 0 && (
+          <p className="text-sm text-muted-foreground">No reliability data yet.</p>
+        )}
+
+        {rows.length > 0 && (
+          <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
+            {rows.map((row) => {
+              const health = normalizeReliabilityHealth(row);
+              const failedRuns = row.history_failures;
+              return (
+                <div
+                  key={`${row.kind}:${row.name}`}
+                  className="border border-border bg-background/40 p-3"
+                >
+                  <div className="mb-2 flex items-start justify-between gap-2">
+                    <div className="min-w-0">
+                      <p className="truncate text-sm font-medium">{row.name}</p>
+                      <p className="text-xs uppercase tracking-wide text-muted-foreground">
+                        {row.kind}
+                      </p>
+                    </div>
+                    <span
+                      className={cn(
+                        "shrink-0 border px-2 py-0.5 text-xs font-semibold uppercase tracking-wide",
+                        HEALTH_BADGE_CLASS[health],
+                      )}
+                    >
+                      {health}
+                    </span>
+                  </div>
+
+                  <div className={cn("mb-2", failedRuns ? "text-destructive" : "text-success")}>
+                    <Sparkline history={row.history} />
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-x-3 gap-y-1 text-xs text-muted-foreground">
+                    <span>Exit: {formatExitStatus(row.last_exit_status)}</span>
+                    <span>Success: {formatSuccessRate(row.success_rate)}</span>
+                    <span>Last: {formatTime(row.last_run)}</span>
+                    <span>Next: {formatTime(row.next_run)}</span>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
 export default function CronPage() {
   const [jobs, setJobs] = useState<CronJob[]>([]);
+  const [reliabilityRows, setReliabilityRows] = useState<CronReliabilityRow[]>([]);
+  const [reliabilityLoading, setReliabilityLoading] = useState(true);
+  const [reliabilityError, setReliabilityError] = useState<string | null>(null);
   const [profiles, setProfiles] = useState<ProfileInfo[]>([]);
   const [selectedProfile, setSelectedProfile] = useState("all");
   const [view, setView] = useState<"jobs" | "blueprints">("jobs");
@@ -263,6 +527,19 @@ export default function CronPage() {
       .finally(() => setLoading(false));
   }, [selectedProfile, showToast, t.common.loading]);
 
+  const loadReliability = useCallback(() => {
+    fetchJSON<CronReliabilityPayload>("/api/cron/reliability")
+      .then((payload) => {
+        setReliabilityRows(normalizeReliabilityPayload(payload));
+        setReliabilityError(null);
+      })
+      .catch((err) => {
+        setReliabilityRows([]);
+        setReliabilityError(err instanceof Error ? err.message : String(err));
+      })
+      .finally(() => setReliabilityLoading(false));
+  }, []);
+
   useEffect(() => {
     api
       .getProfiles()
@@ -285,6 +562,10 @@ export default function CronPage() {
   useEffect(() => {
     loadJobs();
   }, [loadJobs]);
+
+  useEffect(() => {
+    loadReliability();
+  }, [loadReliability]);
 
   // Load installed skills for the profile new jobs will be created under.
   // "" / "default" maps to the dashboard's own profile via the optional
@@ -793,6 +1074,12 @@ export default function CronPage() {
             </Select>
           </div>
         </div>
+
+          <CronReliabilitySection
+            error={reliabilityError}
+            loading={reliabilityLoading}
+            rows={reliabilityRows}
+          />
 
         {jobs.length === 0 && (
           <Card>

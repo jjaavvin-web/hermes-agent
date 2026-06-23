@@ -55,6 +55,7 @@ from gateway.platforms.base import (
     MessageType,
     SendResult,
 )
+from tools.approval import CREDENTIAL_EXFIL_DENY_PATTERNS
 
 logger = logging.getLogger(__name__)
 
@@ -79,6 +80,7 @@ _DYNAMIC_ROUTES_FILENAME = "webhook_subscriptions.json"
 # (before the yolo/mode=off bypass). Routes may ADD patterns via a
 # "deny_terminal_patterns" list in webhook_subscriptions.json.
 DEFAULT_WEBHOOK_DENY_PATTERNS = [
+    *CREDENTIAL_EXFIL_DENY_PATTERNS,
     r"\bgit\s+(?:-\S+\s+\S*\s*)*push\b",       # git push, git -C <dir> push, git push --force
     r"\bgh\s+pr\s+(?:create|merge|ready)\b",   # open / merge / mark-ready a PR
     r"\bgh\s+workflow\s+run\b",                # trigger a CI workflow (can push/merge/deploy)

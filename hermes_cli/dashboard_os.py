@@ -197,33 +197,93 @@ def _cost_summary() -> dict:
         return payload
 
 
+def _parse_ts_age_hours(value: Any) -> Optional[float]:
+    """Parse an ISO timestamp into age hours; None on absent/bad values."""
+    if not value:
+        return None
+    try:
+        dt = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return max(0.0, (datetime.now(timezone.utc) - dt).total_seconds() / 3600)
+    except Exception:
+        return None
+
+
+def _score_status(score: float) -> Status:
+    if score >= 0.90:
+        return "green"
+    if score >= 0.70:
+        return "amber"
+    return "red"
+
+
 def _dr_status() -> dict:
-    """Read-only DR freshness probe using dr-status.py when present, else newest backup artifact."""
+    """DR readiness from dr-status.py JSON, preserving every store row.
+
+    Untested/undrilled stores are AMBER coverage gaps, not GREEN. The legacy
+    text probe returned GREEN when the script exited 0 even if half the stores
+    were N/A, and it truncated the table to the header line.
+    """
     script = HERMES_HOME / "scripts" / "dr-status.py"
     python = HOME / ".local" / "share" / "hermes-agent" / "venv" / "bin" / "python"
     if script.exists() and python.exists():
         try:
-            r = _run([str(python), str(script)], timeout=5.0)
-            output = (r.stdout or r.stderr or "").strip()
-            first_line = output.splitlines()[0][:240] if output else "dr-status.py produced no output"
-            lowered = output.lower()
-            if r.returncode != 0:
+            r = _run([str(python), str(script), "--json"], timeout=10.0)
+            output = (r.stdout or "").strip()
+            data = json.loads(output) if output else {}
+            rows = data.get("rows") if isinstance(data, dict) else []
+            failures = data.get("failures") if isinstance(data, dict) else []
+            if not isinstance(rows, list) or not rows:
+                return {"status": "unknown", "label": "n/a", "detail": "dr-status.py JSON had no rows", "source": str(script), "returncode": r.returncode}
+
+            normalized_rows: list[dict[str, Any]] = []
+            red_count = 0
+            undrilled_count = 0
+            green_count = 0
+            for row in rows:
+                if not isinstance(row, dict):
+                    continue
+                verdict = str(row.get("verdict") or "UNKNOWN").upper()
+                if verdict == "GREEN":
+                    row_status: Status = "green"
+                    green_count += 1
+                elif verdict in {"N/A", "NA", "UNDRILLED", "UNTESTED"}:
+                    row_status = "amber"
+                    undrilled_count += 1
+                elif verdict in {"RED", "FAIL", "FAILED"}:
+                    row_status = "red"
+                    red_count += 1
+                else:
+                    row_status = "unknown"
+                    undrilled_count += 1
+                enriched = dict(row)
+                enriched["status"] = row_status
+                normalized_rows.append(enriched)
+
+            if red_count or r.returncode != 0:
                 status: Status = "red"
-            elif "red" in lowered or "fail" in lowered or "critical" in lowered:
-                status = "red"
-            elif "amber" in lowered or "warn" in lowered or "stale" in lowered:
+            elif undrilled_count:
                 status = "amber"
             else:
                 status = "green"
+            label = f"{green_count}/{len(normalized_rows)} drilled"
+            if undrilled_count:
+                label += f" · {undrilled_count} untested"
+            if red_count:
+                label += f" · {red_count} red"
+            detail = "; ".join(f"{row.get('store', '?')}={row.get('verdict', '?')}" for row in normalized_rows)
             return {
                 "status": status,
-                "label": status.upper(),
-                "detail": first_line,
+                "label": label,
+                "detail": detail,
                 "source": str(script),
                 "returncode": r.returncode,
+                "rows": normalized_rows,
+                "failures": failures if isinstance(failures, list) else [],
             }
         except Exception as exc:
-            return {"status": "unknown", "label": "n/a", "detail": f"dr-status.py probe failed: {exc}", "source": str(script)}
+            return {"status": "unknown", "label": "n/a", "detail": f"dr-status.py JSON probe failed: {exc}", "source": str(script)}
 
     newest = _latest_file(HERMES_HOME / "backups")
     if newest is None:
@@ -233,82 +293,159 @@ def _dr_status() -> dict:
     return {
         "status": status,
         "label": f"{age_h:.1f}h",
-        "detail": f"newest backup {newest.name} age={age_h:.1f}h",
+        "detail": f"fallback newest backup {newest.name} age={age_h:.1f}h (per-store DR unmeasured)",
         "age_hours": round(age_h, 2),
         "source": str(newest),
+        "rows": [],
     }
 
 
 def _evals_status() -> dict:
-    """Read-only latest blind recall score from score-history.jsonl."""
+    """Worst fresh recall holdout set from score-history.jsonl.
+
+    The old probe only read the latest row, hiding a fresh weaker blind
+    holdout whenever the easier default holdout ran later.
+    """
     path = HERMES_HOME / "evals" / "recall" / "score-history.jsonl"
+    fresh_hours = 72.0
     try:
         if not path.exists():
             return {"status": "unknown", "label": "n/a", "detail": "recall score-history.jsonl missing", "source": str(path)}
-        last: dict[str, Any] | None = None
+        latest_by_set: dict[str, dict[str, Any]] = {}
         for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
             if not line.strip():
                 continue
             try:
-                obj = json.loads(line)
+                row = json.loads(line)
             except json.JSONDecodeError:
                 continue
-            if isinstance(obj, dict):
-                last = obj
-        if not last:
-            return {"status": "unknown", "label": "n/a", "detail": "recall score history has no valid JSON rows", "source": str(path)}
-        agg = last.get("agg") if isinstance(last.get("agg"), dict) else {}
-        recall = agg.get("recall_at_k")
-        if recall is None:
-            return {"status": "unknown", "label": "n/a", "detail": "latest recall row missing agg.recall_at_k", "source": str(path)}
-        recall_f = float(recall)
-        if recall_f >= 0.90:
-            status: Status = "green"
-        elif recall_f >= 0.70:
-            status = "amber"
-        else:
-            status = "red"
+            if not isinstance(row, dict):
+                continue
+            agg = row.get("agg") if isinstance(row.get("agg"), dict) else {}
+            recall = agg.get("recall_at_k")
+            if recall is None:
+                continue
+            holdout = str(row.get("holdout_file") or "holdout:default")
+            key = Path(holdout).name if holdout != "holdout:default" else holdout
+            age_h = _parse_ts_age_hours(row.get("ts"))
+            enriched = dict(row)
+            enriched["holdout_key"] = key
+            enriched["age_hours"] = age_h
+            prev_age = latest_by_set.get(key, {}).get("age_hours")
+            if key not in latest_by_set or (age_h is not None and (prev_age is None or age_h < prev_age)):
+                latest_by_set[key] = enriched
+        if not latest_by_set:
+            return {"status": "unknown", "label": "n/a", "detail": "recall score history has no valid scored rows", "source": str(path)}
+
+        fresh_rows = [
+            row
+            for row in latest_by_set.values()
+            if row.get("age_hours") is None or float(row.get("age_hours") or 0.0) <= fresh_hours
+        ]
+        rows_for_gate = fresh_rows or list(latest_by_set.values())
+        per_set = []
+        for row in latest_by_set.values():
+            raw_agg = row.get("agg")
+            agg = raw_agg if isinstance(raw_agg, dict) else {}
+            score_raw = agg.get("recall_at_k")
+            if score_raw is None:
+                continue
+            score = float(score_raw)
+            per_set.append({
+                "holdout": row.get("holdout_key"),
+                "status": _score_status(score),
+                "recall_at_k": score,
+                "label": f"{score * 100:.0f}%",
+                "k": int(agg.get("k") or 10),
+                "n": int(agg.get("n") or 0),
+                "ts": row.get("ts"),
+                "age_hours": row.get("age_hours"),
+                "fresh": row in fresh_rows,
+            })
+        per_set.sort(key=lambda r: (0 if r["fresh"] else 1, float(r["recall_at_k"])))
+
+        def _row_score(row: dict[str, Any]) -> float:
+            raw_agg = row.get("agg")
+            agg = raw_agg if isinstance(raw_agg, dict) else {}
+            score_raw = agg.get("recall_at_k")
+            return float(score_raw) if score_raw is not None else -1.0
+
+        worst = min(rows_for_gate, key=_row_score)
+        raw_agg = worst.get("agg")
+        agg = raw_agg if isinstance(raw_agg, dict) else {}
+        recall_f = _row_score(worst)
+        status = _score_status(recall_f)
         k = int(agg.get("k") or 10)
         n = int(agg.get("n") or 0)
+        holdout = str(worst.get("holdout_key") or "holdout")
+        fresh_suffix = "fresh" if fresh_rows else "stale"
         return {
             "status": status,
-            "label": f"{recall_f * 100:.0f}%",
-            "detail": f"latest RECALL@{k}={recall_f:.4f} over n={n}",
+            "label": f"worst {recall_f * 100:.0f}%",
+            "detail": f"worst {fresh_suffix} holdout {holdout}: RECALL@{k}={recall_f:.4f} over n={n}; {len(latest_by_set)} set(s) tracked",
             "recall_at_k": recall_f,
+            "worst_holdout": holdout,
             "k": k,
             "n": n,
-            "ts": last.get("ts"),
+            "ts": worst.get("ts"),
             "source": str(path),
+            "sets": per_set,
         }
     except Exception as exc:
         return {"status": "unknown", "label": "n/a", "detail": f"evals probe failed: {exc}", "source": str(path)}
 
 
-def _security_status() -> dict:
-    """Read-only freshness probe for red-team/security audit artifacts."""
-    roots = [
-        HERMES_HOME / "measure" / "redteam",
-        HERMES_HOME / "audits" / "security",
-        HERMES_HOME / "audits" / "security-audit",
+def _redteam_script_path() -> Path:
+    candidates = [
+        HERMES_HOME / "scripts" / "run_redteam.py",
+        HERMES_HOME / "measure" / "redteam" / "run_redteam.py",
     ]
-    newest = None
-    for root in roots:
-        candidate = _latest_file(root)
-        if candidate is None:
-            continue
-        if newest is None or candidate.stat().st_mtime > newest.stat().st_mtime:
-            newest = candidate
-    if newest is None:
-        return {"status": "unknown", "label": "n/a", "detail": "no redteam/security audit artifact found", "source": ", ".join(str(r) for r in roots)}
-    age_h = _age_hours(newest)
-    status = _age_status(age_h, green_h=72.0, amber_h=336.0)
-    return {
-        "status": status,
-        "label": f"{age_h:.1f}h",
-        "detail": f"newest security artifact {newest.name} age={age_h:.1f}h",
-        "age_hours": round(age_h, 2),
-        "source": str(newest),
-    }
+    return next((p for p in candidates if p.exists()), candidates[0])
+
+
+def _security_status() -> dict:
+    """Execute the red-team JSON suite and gate on breach_count, not artifact age."""
+    script = _redteam_script_path()
+    python = HOME / ".local" / "share" / "hermes-agent" / "venv" / "bin" / "python"
+    if not python.exists():
+        python = Path(shutil.which("python3") or "python3")
+    if not script.exists():
+        return {"status": "unknown", "label": "n/a", "detail": "run_redteam.py missing", "source": str(script)}
+    try:
+        r = _run([str(python), str(script), "--json"], timeout=30.0)
+        output = (r.stdout or "").strip()
+        data = json.loads(output) if output else {}
+        breach_count = int(data.get("breach_count") or 0) if isinstance(data, dict) else 0
+        passed = int(data.get("passed") or 0) if isinstance(data, dict) else 0
+        total = int(data.get("total") or 0) if isinstance(data, dict) else 0
+        if r.returncode != 0 or breach_count > 0:
+            status: Status = "red"
+        elif total and passed == total:
+            status = "green"
+        else:
+            status = "amber"
+        age_h = _age_hours(script)
+        failing: list[str] = []
+        tiers = data.get("tiers") if isinstance(data, dict) else {}
+        if isinstance(tiers, dict):
+            for tier_name, tier in tiers.items():
+                for row in (tier or {}).get("rows", []) if isinstance(tier, dict) else []:
+                    if isinstance(row, dict) and str(row.get("verdict", "")).upper() != "PASS":
+                        failing.append(str(row.get("id") or tier_name))
+        return {
+            "status": status,
+            "label": f"{breach_count} breach{'es' if breach_count != 1 else ''}",
+            "detail": f"run_redteam.py --json passed={passed}/{total} breach_count={breach_count}; script age={age_h:.1f}h",
+            "breach_count": breach_count,
+            "passed": passed,
+            "total": total,
+            "failing": failing[:10],
+            "age_hours": round(age_h, 2),
+            "source": str(script),
+            "returncode": r.returncode,
+        }
+    except Exception as exc:
+        return {"status": "unknown", "label": "n/a", "detail": f"red-team probe failed: {exc}", "source": str(script)}
 
 
 def _infra_snapshot() -> dict:
@@ -611,9 +748,9 @@ def _build_os_graph(sections: list[dict]) -> dict:
     s, d = _bind(sections, "providers", "codex_pipeline_load")
     nodes.append(_node("chatgpt-backend", "ChatGPT Backend", "llm", "providers", s, d, "providers"))
 
-    # claude-max: static green "Max cli-subprocess"
-    nodes.append(_node("claude-max", "Claude Max", "llm", "providers",
-                       "green", "Max cli-subprocess", "providers"))
+    # claude-max: bind to the real claude CLI probe instead of a fake-green node.
+    s, d = _bind(sections, "providers", "claude_cli")
+    nodes.append(_node("claude-max", "Claude Max", "llm", "providers", s, d, "providers"))
 
     # openrouter: bind providers/openrouter_key
     s, d = _bind(sections, "providers", "openrouter_key")
@@ -675,9 +812,9 @@ def _build_os_graph(sections: list[dict]) -> dict:
     s, d = _bind(sections, "memory_stores", "memory_md")
     nodes.append(_node("claude-memory", "Claude Memory", "store", "memory", s, d, "memory_stores"))
 
-    # hermes-memories: static green
-    nodes.append(_node("hermes-memories", "Hermes Memories", "store", "memory",
-                       "green", "Honcho-managed memories", "memory_stores"))
+    # hermes-memories: bind to the real profile memory file probe.
+    s, d = _bind(sections, "memory_stores", "memory_md")
+    nodes.append(_node("hermes-memories", "Hermes Memories", "store", "memory", s, d, "memory_stores"))
 
     # --- protection (3) ---
     # nightly-backup: worst of mvms-canonical/honcho-live/app-state ages
@@ -693,9 +830,9 @@ def _build_os_graph(sections: list[dict]) -> dict:
     nodes.append(_node("nightly-backup", "Nightly Backup", "backup", "protection",
                        nb_status, nb_detail, "backups", nb_reason))
 
-    # backups-dir: static green (directory existence is a precondition, not actively probed)
-    nodes.append(_node("backups-dir", "Backups Dir", "storage", "protection",
-                       "green", "~/.hermes/backups", "backups"))
+    # backups-dir: bind to actual backup freshness; not a decorative always-green node.
+    s, d = _bind(sections, "backups", "mvms-canonical-*.sql.gz")
+    nodes.append(_node("backups-dir", "Backups Dir", "storage", "protection", s, d, "backups"))
 
     # veracrypt: bind backups/veracrypt_weekly
     s, d = _bind(sections, "backups", "veracrypt_weekly")
@@ -1819,7 +1956,14 @@ def _build_os_snapshot() -> dict:
     work_section, work = _work_section_from_command_center()
     activity_section, activity = _activity_section_from_pulse()
     infra = _infra_snapshot()
-    sections.extend([repo_section, work_section, activity_section])
+    infra_items = [
+        _item("cost", infra["cost"].get("status", "unknown"), infra["cost"].get("detail", "cost unmeasured"), metric=infra["cost"].get("label"), reason=infra["cost"].get("detail") if infra["cost"].get("status") != "green" else None),
+        _item("DR", infra["dr"].get("status", "unknown"), infra["dr"].get("detail", "DR unmeasured"), metric=infra["dr"].get("label"), reason=infra["dr"].get("detail") if infra["dr"].get("status") != "green" else None),
+        _item("evals", infra["evals"].get("status", "unknown"), infra["evals"].get("detail", "evals unmeasured"), metric=infra["evals"].get("label"), reason=infra["evals"].get("detail") if infra["evals"].get("status") != "green" else None),
+        _item("security", infra["security"].get("status", "unknown"), infra["security"].get("detail", "security unmeasured"), metric=infra["security"].get("label"), reason=infra["security"].get("detail") if infra["security"].get("status") != "green" else None),
+    ]
+    infra_section = _section("infra", "Infra Gates", infra_items)
+    sections.extend([infra_section, repo_section, work_section, activity_section])
 
     overall_statuses = [s["status"] for s in sections if s.get("status") != "info"]
     overall = _worst_status(overall_statuses) if overall_statuses else "green"
