@@ -349,11 +349,33 @@ _CODEX_PRUNE_TOOL_PREFIXES = ("mcp_notion_", "mcp_context7_")
 _CODEX_PRUNE_TOOL_SUFFIXES = ("_get_prompt", "_list_prompts", "_list_resources", "_read_resource")
 
 
-def _should_prune_codex_tool(name: Any) -> bool:
-    """True if ``name`` is a rarely-used MCP tool we omit from Codex requests."""
-    return isinstance(name, str) and (
-        name.startswith(_CODEX_PRUNE_TOOL_PREFIXES) or name.endswith(_CODEX_PRUNE_TOOL_SUFFIXES)
-    )
+def _should_prune_codex_tool_boilerplate(name: Any) -> bool:
+    """MCP-protocol boilerplate (list_prompts/get_prompt/read_resource/…) — unused
+    on ALL platforms; always pruned from Codex requests to keep them smaller."""
+    return isinstance(name, str) and name.endswith(_CODEX_PRUNE_TOOL_SUFFIXES)
+
+
+def _should_prune_codex_mcp_prefix(name: Any) -> bool:
+    """Notion / Context7 tools — pruned for loki/webhook lanes (which never use
+    them and risk the backend 400), but KEPT for the Discord MOTHERSHIP."""
+    return isinstance(name, str) and name.startswith(_CODEX_PRUNE_TOOL_PREFIXES)
+
+
+def _codex_keep_mcp_prefix_tools() -> bool:
+    """True only for an explicit Discord (MOTHERSHIP) turn → keep Notion/Context7.
+
+    Gated on ``== "discord"`` so EVERY other platform value (webhook/loki, relay,
+    "", unknown, cli, tests) and any error falls through to False → prune.  This
+    fail-safe direction means loki can never accidentally ship the full tool set
+    and re-trigger the ``Unsupported content type`` 400; the only way MOTHERSHIP
+    loses Notion is the platform contextvar being absent at adapter time — the
+    same one prompt_builder relies on every turn, so reliable in practice.
+    """
+    try:
+        from gateway.session_context import get_session_env
+        return get_session_env("HERMES_SESSION_PLATFORM", "") == "discord"
+    except Exception:
+        return False  # fail-safe: prune
 
 
 def _responses_tools(tools: Optional[List[Dict[str, Any]]] = None) -> Optional[List[Dict[str, Any]]]:
@@ -934,14 +956,19 @@ def _preflight_codex_api_kwargs(
         if not isinstance(tools, list):
             raise ValueError("Codex Responses request 'tools' must be a list when provided.")
         normalized_tools = []
+        # Boilerplate MCP tools are pruned for ALL codex turns; Notion/Context7
+        # only for non-Discord (loki/webhook) turns — MOTHERSHIP keeps them.
+        # Backend rejects oversized/complex tool payloads ("Unsupported content
+        # type"); fail-safe — anything not explicitly Discord prunes.
+        _keep_mcp_prefix = _codex_keep_mcp_prefix_tools()
         for idx, tool in enumerate(tools):
             if not isinstance(tool, dict):
                 raise ValueError(f"Codex Responses tools[{idx}] must be an object.")
 
-            # Prune rarely-used MCP tool families from Codex requests — the
-            # backend rejects oversized/complex tool payloads ("Unsupported
-            # content type").  Codex path only; see _CODEX_PRUNE_* above.
-            if _should_prune_codex_tool(tool.get("name")):
+            _tool_name = tool.get("name")
+            if _should_prune_codex_tool_boilerplate(_tool_name):
+                continue
+            if not _keep_mcp_prefix and _should_prune_codex_mcp_prefix(_tool_name):
                 continue
 
             tool_type = tool.get("type")
