@@ -261,7 +261,7 @@ function makeHaloNodes(hubs: SimNode[], size: { w: number; h: number }): SimNode
     const value = Math.max(1, hub.metricValue);
     const logValue = Math.log10(Math.max(10, value));
     const hubBoost = hub.id === "code" ? 1.26 : hub.id === "brain" ? 1.22 : hub.id === "lanes" ? 1.12 : hub.id === "projects" ? 1.08 : 1;
-    const count = Math.max(120, Math.min(1350, Math.round((Math.sqrt(value) * 15 + logValue * 112 + 98) * hubBoost)));
+    const count = Math.max(40, Math.min(160, Math.round((Math.sqrt(value) * 15 + logValue * 112 + 98) * hubBoost)));
     const maxRing = 118 + Math.min(470, Math.sqrt(value) * 7.8 + logValue * 38);
     const cx = hub.fx ?? size.w / 2;
     const cy = hub.fy ?? size.h / 2;
@@ -285,7 +285,7 @@ function makeFieldNodes(hubs: SimNode[], size: { w: number; h: number }): SimNod
   const cy = 0;
   const R = Math.min(size.w, size.h) * 1.5;
   const ghost = hubs[0];
-  const N = 2450;
+  const N = 600;
   return Array.from({ length: N }, (_, i): SimNode => {
     const a = (i * 137.508) * (Math.PI / 180); // golden-angle spread
     const r = R * Math.pow(0.08 + ((i * 0.61803) % 1) * 0.92, 0.78);
@@ -555,6 +555,9 @@ export default function Connectome() {
       } catch {
         // headless-safe
       }
+      // Engine is paused → reflect "cooled" in the HUD even if onEngineStop
+      // never fired (pinned hubs can settle without emitting it).
+      setSettled(true);
     }, 1700);
     return () => {
       window.clearTimeout(t1);
@@ -627,10 +630,11 @@ export default function Connectome() {
   }, [loadCluster]);
 
   const particleBudget = useMemo(() => {
+    if (selectedId === null) return new Set<string>();
     const active = graph.links.filter((link) => {
       const source = endpointId(link.source);
       const target = endpointId(link.target);
-      return link.kind === "bridge" || source === selectedId || target === selectedId || source === "lanes" || target === "lanes";
+      return source === selectedId || target === selectedId;
     }).slice(0, ACTIVE_PARTICLE_CAP);
     return new Set(active.map((link) => link.id));
   }, [graph.links, selectedId]);
@@ -643,6 +647,7 @@ export default function Connectome() {
     >
       <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_50%_51%,rgba(20,23,30,0.92),rgba(8,9,11,1)_72%)]" />
       {size.w > 0 && size.h > 0 && (
+        <div className="absolute inset-0">
         <ForceGraph2D<SimNode, SimLink>
           ref={fgRef}
           width={size.w}
@@ -671,11 +676,12 @@ export default function Connectome() {
           enableNodeDrag={false}
           enablePointerInteraction={true}
           onEngineStop={handleEngineStop}
-          onZoom={(transform) => setZoom(transform.k)}
+          onZoom={(transform) => setZoom((z) => (Math.abs(z - transform.k) < 0.01 ? z : transform.k))}
           onNodeHover={(node) => setHovered(node && node.simKind !== "halo" ? node : null)}
           onNodeClick={handleNodeClick}
           onBackgroundClick={() => setSelectedId(null)}
         />
+        </div>
       )}
       <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(ellipse_at_54%_49%,rgba(244,248,255,0.08),rgba(244,248,255,0.028)_36%,transparent_67%),radial-gradient(ellipse_at_48%_58%,rgba(246,196,83,0.045),transparent_42%)] mix-blend-screen" />
       <div className="pointer-events-none absolute inset-0 ring-1 ring-inset ring-white/[0.03]" />
