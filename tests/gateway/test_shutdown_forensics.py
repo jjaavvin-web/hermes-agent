@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import builtins
+import io
 import json
 import os
 import signal
@@ -116,6 +118,63 @@ class TestSnapshotShutdownContext:
         )
         ctx = sf.snapshot_shutdown_context(signal.SIGTERM)
         assert "planned_stop_marker" in ctx
+
+
+
+# ---------------------------------------------------------------------------
+# /proc helpers / _proc_summary
+# ---------------------------------------------------------------------------
+
+class TestProcSummary:
+    @pytest.mark.parametrize("pid", [-1, 0])
+    def test_non_positive_pid_returns_pid_only(self, pid):
+        assert sf._proc_summary(pid) == {"pid": pid}
+
+    def test_assembles_fields_from_proc_helpers(self, monkeypatch):
+        long_cmdline = "python " + "x" * 500
+        fields = {
+            "Name": "hermes",
+            "State": "S (sleeping)",
+            "PPid": "123",
+            "Uid": "1000 1000 1000 1000",
+        }
+
+        def fake_read_proc_field(pid, key):
+            assert pid == 4242
+            return fields.get(key)
+
+        def fake_read_proc_cmdline(pid):
+            assert pid == 4242
+            return long_cmdline
+
+        monkeypatch.setattr(sf, "_read_proc_field", fake_read_proc_field)
+        monkeypatch.setattr(sf, "_read_proc_cmdline", fake_read_proc_cmdline)
+
+        summary = sf._proc_summary(4242)
+
+        assert summary == {
+            "pid": 4242,
+            "name": "hermes",
+            "state": "S (sleeping)",
+            "ppid": 123,
+            "uid": "1000",
+            "cmdline": long_cmdline[:300],
+        }
+        assert len(summary["cmdline"]) == 300
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="Linux /proc not present")
+    def test_real_read_smoke_for_current_process_on_linux(self):
+        summary = sf._proc_summary(os.getpid())
+
+        assert summary["pid"] == os.getpid()
+        assert isinstance(summary.get("cmdline"), str)
+        assert summary["cmdline"]
+
+    def test_read_proc_helpers_missing_pid_return_none(self):
+        missing_pid = 2_000_000_000
+
+        assert sf._read_proc_field(missing_pid, "Name") is None
+        assert sf._read_proc_cmdline(missing_pid) is None
 
 
 # ---------------------------------------------------------------------------
@@ -234,6 +293,27 @@ class TestParseSystemdDuration:
 # check_systemd_timing_alignment
 # ---------------------------------------------------------------------------
 
+
+
+class TestParseSystemdDurationEdges:
+    @pytest.mark.parametrize(
+        ("raw", "expected"),
+        [
+            ("2us", 2),
+            ("90", 90_000_000),
+            ("1.5s", 1_500_000),
+            ("2sec", 2_000_000),
+            ("1hr", 3_600_000_000),
+        ],
+    )
+    def test_edge_formats(self, raw, expected):
+        assert sf._parse_systemd_duration_to_us(raw) == expected
+
+    @pytest.mark.parametrize("raw", ["abc", "12x"])
+    def test_garbage_returns_none(self, raw):
+        assert sf._parse_systemd_duration_to_us(raw) is None
+
+
 class TestCheckSystemdTimingAlignment:
     def test_returns_none_when_not_under_systemd(self, monkeypatch):
         monkeypatch.delenv("INVOCATION_ID", raising=False)
@@ -248,3 +328,90 @@ class TestCheckSystemdTimingAlignment:
         # for whatever unit pytest IS in.  Both are valid; we just ensure
         # the function doesn't raise.
         assert result is None or isinstance(result, dict)
+
+class TestTimingAlignmentBranches:
+    @staticmethod
+    def _patch_systemd_probe(monkeypatch, stdout):
+        original_open = builtins.open
+        calls = []
+
+        def fake_open(path, *args, **kwargs):
+            if path == "/proc/self/cgroup":
+                return io.StringIO(
+                    "0::/user.slice/user-1000.slice/user@1000.service/"
+                    "app.slice/hermes-gateway.service\n"
+                )
+            return original_open(path, *args, **kwargs)
+
+        def fake_run(cmd, **kwargs):
+            calls.append((cmd, kwargs))
+            return type(
+                "Completed",
+                (),
+                {"returncode": 0, "stdout": stdout},
+            )()
+
+        monkeypatch.setenv("INVOCATION_ID", "test-invocation")
+        monkeypatch.setattr(builtins, "open", fake_open)
+        monkeypatch.setattr(sf.subprocess, "run", fake_run)
+        return calls
+
+    def test_aligned_timeout_reports_mismatch_false(self, monkeypatch):
+        calls = self._patch_systemd_probe(
+            monkeypatch, "TimeoutStopUSec=90000000\n"
+        )
+
+        result = sf.check_systemd_timing_alignment(30.0)
+
+        assert result is not None
+        assert list(result) == [
+            "unit",
+            "timeout_stop_sec",
+            "drain_timeout",
+            "expected_min",
+            "mismatch",
+        ]
+        assert result == {
+            "unit": "hermes-gateway.service",
+            "timeout_stop_sec": 90.0,
+            "drain_timeout": 30.0,
+            "expected_min": 60.0,
+            "mismatch": False,
+        }
+        assert calls == [
+            (
+                [
+                    "systemctl",
+                    "--user",
+                    "show",
+                    "hermes-gateway.service",
+                    "--property=TimeoutStopUSec",
+                ],
+                {"capture_output": True, "text": True, "timeout": 2.0},
+            )
+        ]
+
+    def test_misaligned_timeout_reports_mismatch_true(self, monkeypatch):
+        calls = self._patch_systemd_probe(
+            monkeypatch, "TimeoutStopUSec=1min 30s\n"
+        )
+
+        result = sf.check_systemd_timing_alignment(120.0)
+
+        assert result is not None
+        assert list(result) == [
+            "unit",
+            "timeout_stop_sec",
+            "drain_timeout",
+            "expected_min",
+            "mismatch",
+        ]
+        assert result == {
+            "unit": "hermes-gateway.service",
+            "timeout_stop_sec": 90.0,
+            "drain_timeout": 120.0,
+            "expected_min": 150.0,
+            "mismatch": True,
+        }
+        assert len(calls) == 1
+        assert calls[0][0][0] == "systemctl"
