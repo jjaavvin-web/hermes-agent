@@ -133,6 +133,23 @@ def _read_mvms_snapshot(paths: dict[str, Path]) -> tuple[dict[str, Any], list[st
     }, errors
 
 
+def _read_history_tail(paths: dict[str, Path], *, limit: int = 10) -> tuple[list[dict[str, Any]], int, str]:
+    rows, _errors = _read_jsonl(paths["mvms_history"], limit_tail=limit)
+    keys = (
+        "generated_at",
+        "lessons_total",
+        "trusted_count",
+        "trusted_ratio",
+        "dup_ratio",
+        "actionable_lessons_total",
+        "quarantine_count",
+        "SIGNAL_SCORE",
+    )
+    tail = [{key: row.get(key) for key in keys} for row in rows]
+    status = "measured" if tail else "unmeasured"
+    return tail, len(tail), status
+
+
 def _read_recall_activity(paths: dict[str, Path]) -> tuple[dict[str, Any], list[str]]:
     source = paths["recall_events_primary"] if paths["recall_events_primary"].exists() else paths["recall_events_fallback"]
     rows, errors = _read_jsonl(source)
@@ -347,6 +364,7 @@ def get_learning_snapshot() -> dict[str, Any]:
         promotion, e = _read_promotion(paths); errors.extend(e)
         verify, e = _read_verify(paths); errors.extend(e)
         canary, e = _read_canary(paths); errors.extend(e)
+        history_tail, history_tail_count, history_status = _read_history_tail(paths)
         blocks = [mvms, recall_eval, recall_activity, promotion, verify, canary]
 
         payload: dict[str, Any] = {
@@ -375,8 +393,12 @@ def get_learning_snapshot() -> dict[str, Any]:
                 "embed_coverage": mvms.get("embed_coverage"),
             },
             "result_latest": canary,
-            "history_tail": [],
-            "history_tail_count": 0,
+            "history": {
+                "status": history_status,
+                "source": str(paths["mvms_history"]),
+            },
+            "history_tail": history_tail,
+            "history_tail_count": history_tail_count,
             "recall_filters": {
                 "include_quarantine": False,
                 "exclude_auto_bridged": True,
