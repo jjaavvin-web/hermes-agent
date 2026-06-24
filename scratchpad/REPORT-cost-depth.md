@@ -9,7 +9,7 @@ Reason: `hermes-dashboard.service` is wired to `/home/josep/.hermes/scripts/cock
 ## Commit
 
 - Lane branch: `burn/burn-01-cost-tab-30-day-spend-trend-cach`
-- Code/evidence commit SHA: `8d9f227523650a9e5395028069be571eb6473f77`
+- Code/evidence commit SHA: `4a8af93b36860a35128146c0637700f9079151a0`
 
 ## PROOF 1 — backend JSON
 
