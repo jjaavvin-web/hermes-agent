@@ -16,7 +16,7 @@ import logging
 import re
 import uuid
 from types import SimpleNamespace
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, NamedTuple, Optional
 
 from agent.prompt_builder import DEFAULT_AGENT_IDENTITY
 
@@ -347,6 +347,60 @@ def _sanitize_tool_schema_for_codex(schema: Any, _defs: Optional[Dict[str, Any]]
 # MVMS data tools + all core tools.  Reversible — adjust these lists as needed.
 _CODEX_PRUNE_TOOL_PREFIXES = ("mcp_notion_", "mcp_context7_")
 _CODEX_PRUNE_TOOL_SUFFIXES = ("_get_prompt", "_list_prompts", "_list_resources", "_read_resource")
+_CODEX_CORE_MCP_TOOL_PREFIXES = ("mcp_mvms_",)
+
+
+class _CodexToolPolicy(NamedTuple):
+    """Config-driven least-privilege MCP allowlist for Codex tools.
+
+    Audit rec #3: route/profile-aware workers should only receive the MCP server
+    families their role needs.  An absent route entry intentionally means
+    "legacy 400-safe behavior" so new/unknown platforms keep the exact current
+    fail-safe prune path instead of widening access.
+    """
+
+    allowed_mcp_prefixes: tuple[str, ...]
+    allowed_boilerplate_suffixes: tuple[str, ...] = ()
+
+
+# Present behavior expressed as reversible route policy data.  Discord
+# MOTHERSHIP keeps Notion/Context7 data tools; webhook/loki lanes keep only core
+# MCP data families such as MVMS.  Boilerplate suffixes remain pruned globally.
+_CODEX_TOOL_POLICIES: dict[str, _CodexToolPolicy] = {
+    "discord": _CodexToolPolicy(
+        allowed_mcp_prefixes=(*_CODEX_CORE_MCP_TOOL_PREFIXES, *_CODEX_PRUNE_TOOL_PREFIXES),
+    ),
+    "webhook": _CodexToolPolicy(
+        allowed_mcp_prefixes=_CODEX_CORE_MCP_TOOL_PREFIXES,
+    ),
+}
+
+
+def _codex_tool_policy(route: str, profile: str = "") -> _CodexToolPolicy | None:
+    """Resolve the Codex least-privilege tool policy for a route/profile.
+
+    ``profile`` is a forward-compat hook for future per-profile policy keys; the
+    adapter does not read a profile contextvar today.  ``None`` means no explicit
+    entry exists, so callers must fall back to the legacy Codex 400-safe prune
+    behavior unchanged.
+    """
+
+    if profile:
+        profile_policy = _CODEX_TOOL_POLICIES.get(f"{route}:{profile}")
+        if profile_policy is not None:
+            return profile_policy
+    return _CODEX_TOOL_POLICIES.get(route)
+
+
+def _mcp_tool_prefix(name: Any) -> str | None:
+    """Return the MCP server-family prefix for a tool name, if it has one."""
+
+    if not isinstance(name, str) or not name.startswith("mcp_"):
+        return None
+    parts = name.split("_", 2)
+    if len(parts) < 3:
+        return name
+    return f"{parts[0]}_{parts[1]}_"
 
 
 def _should_prune_codex_tool_boilerplate(name: Any) -> bool:
@@ -956,10 +1010,16 @@ def _preflight_codex_api_kwargs(
         if not isinstance(tools, list):
             raise ValueError("Codex Responses request 'tools' must be a list when provided.")
         normalized_tools = []
-        # Boilerplate MCP tools are pruned for ALL codex turns; Notion/Context7
-        # only for non-Discord (loki/webhook) turns — MOTHERSHIP keeps them.
-        # Backend rejects oversized/complex tool payloads ("Unsupported content
-        # type"); fail-safe — anything not explicitly Discord prunes.
+        # Boilerplate MCP tools are pruned for ALL codex turns; explicit route
+        # policies can narrow MCP server-family prefixes further.  If a route is
+        # absent from the policy table, fall back to the legacy 400-safe
+        # Discord-vs-everything-else behavior verbatim.
+        try:
+            from gateway.session_context import get_session_env
+            _codex_route = get_session_env("HERMES_SESSION_PLATFORM", "")
+        except Exception:
+            _codex_route = ""
+        _tool_policy = _codex_tool_policy(_codex_route)
         _keep_mcp_prefix = _codex_keep_mcp_prefix_tools()
         for idx, tool in enumerate(tools):
             if not isinstance(tool, dict):
@@ -968,8 +1028,13 @@ def _preflight_codex_api_kwargs(
             _tool_name = tool.get("name")
             if _should_prune_codex_tool_boilerplate(_tool_name):
                 continue
-            if not _keep_mcp_prefix and _should_prune_codex_mcp_prefix(_tool_name):
-                continue
+            if _tool_policy is None:
+                if not _keep_mcp_prefix and _should_prune_codex_mcp_prefix(_tool_name):
+                    continue
+            else:
+                _tool_prefix = _mcp_tool_prefix(_tool_name)
+                if _tool_prefix is not None and _tool_prefix not in _tool_policy.allowed_mcp_prefixes:
+                    continue
 
             tool_type = tool.get("type")
 
