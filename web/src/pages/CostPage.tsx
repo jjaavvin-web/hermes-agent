@@ -12,6 +12,11 @@ function fmtUsd(n: number): string {
   return `$${n.toFixed(n > 0 && n < 1 ? 4 : 2)}`;
 }
 
+function fmtMs(n: number): string {
+  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}k ms`;
+  return `${n.toFixed(1)} ms`;
+}
+
 function RollupCard({ title, rollup }: { title: string; rollup: CostRollup }) {
   return (
     <div className="rounded-lg border border-border bg-card p-5">
@@ -57,6 +62,9 @@ export default function CostPage() {
 
   const groups = data.last7d.groups;
   const empty = data.today.totalTurns === 0 && data.last7d.totalTurns === 0;
+  const dailySeries = data.dailySeries ?? [];
+  const maxDailyCost = Math.max(...dailySeries.map((p) => p.costUsd), 0);
+  const cacheLatency = data.cacheLatency7d ?? { cacheHitRatio: 0, avgLatencyMs: 0, p95LatencyMs: 0 };
 
   return (
     <div className="space-y-6 p-6">
@@ -82,6 +90,74 @@ export default function CostPage() {
       <div className="grid gap-4 sm:grid-cols-2">
         <RollupCard title="Today" rollup={data.today} />
         <RollupCard title="Last 7 days" rollup={data.last7d} />
+      </div>
+
+      <div className="grid gap-4 lg:grid-cols-[minmax(0,2fr)_minmax(280px,1fr)]">
+        <div className="rounded-lg border border-border bg-card p-5">
+          <div className="flex items-baseline justify-between gap-3">
+            <div>
+              <div className="text-xs uppercase tracking-wide text-muted-foreground">30-day daily spend</div>
+              <div className="mt-1 text-sm text-muted-foreground">
+                Credit burn by recorded day; short until more ledger days accrue.
+              </div>
+            </div>
+            <div className="shrink-0 text-sm font-medium text-foreground">
+              {dailySeries.length ? `${dailySeries.length} day${dailySeries.length === 1 ? "" : "s"}` : "no spend yet"}
+            </div>
+          </div>
+          {dailySeries.length ? (
+            <svg
+              data-testid="cost-daily-spark"
+              viewBox="0 0 300 96"
+              role="img"
+              aria-label="30-day daily spend bars"
+              className="mt-4 h-24 w-full overflow-visible"
+              preserveAspectRatio="none"
+            >
+              {dailySeries.map((point, i) => {
+                const gap = 4;
+                const barWidth = Math.max(4, (300 - gap * Math.max(dailySeries.length - 1, 0)) / dailySeries.length);
+                const scaled = maxDailyCost > 0 ? point.costUsd / maxDailyCost : 0;
+                const height = Math.max(3, scaled * 82);
+                const x = i * (barWidth + gap);
+                const y = 92 - height;
+                return (
+                  <rect
+                    key={point.date}
+                    x={x}
+                    y={y}
+                    width={barWidth}
+                    height={height}
+                    rx="2"
+                    className="fill-emerald-400/80"
+                  />
+                );
+              })}
+            </svg>
+          ) : (
+            <div className="mt-4 rounded-md border border-dashed border-border p-6 text-center text-sm text-muted-foreground">
+              No daily spend recorded in the last 30 days.
+            </div>
+          )}
+        </div>
+
+        <div className="rounded-lg border border-border bg-card p-5">
+          <div className="text-xs uppercase tracking-wide text-muted-foreground">Last 7 days quality</div>
+          <div className="mt-4 flex flex-wrap gap-2">
+            <span
+              data-testid="cost-cache-chip"
+              className="rounded-full border border-border bg-background px-3 py-1 text-sm text-foreground"
+            >
+              Cache hit {(cacheLatency.cacheHitRatio * 100).toFixed(1)}%
+            </span>
+            <span
+              data-testid="cost-latency-chip"
+              className="rounded-full border border-border bg-background px-3 py-1 text-sm text-foreground"
+            >
+              avg {fmtMs(cacheLatency.avgLatencyMs)} · p95 {fmtMs(cacheLatency.p95LatencyMs)}
+            </span>
+          </div>
+        </div>
       </div>
 
       {data.meteredLeakCount > 0 ? (

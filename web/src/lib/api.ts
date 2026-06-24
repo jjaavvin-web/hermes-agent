@@ -336,6 +336,17 @@ export interface CostLeak {
   costStatus: string;
   costSource: string;
 }
+export interface CostDailyPoint {
+  date: string;
+  costUsd: number;
+  totalTokens: number;
+  turns: number;
+}
+export interface CostCacheLatency {
+  cacheHitRatio: number;
+  avgLatencyMs: number;
+  p95LatencyMs: number;
+}
 export interface CostSnapshot {
   generatedAt: number;
   dbPath: string;
@@ -344,6 +355,8 @@ export interface CostSnapshot {
   meteredLeak: CostLeak[];
   meteredLeakCount: number;
   meteredLeakCostUsd: number;
+  dailySeries?: CostDailyPoint[];
+  cacheLatency7d?: CostCacheLatency;
 }
 
 export const api = {
