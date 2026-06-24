@@ -1502,9 +1502,11 @@ def _section_memory_stores() -> dict:
             st = state_db.stat()
             size_kb = st.st_size / 1024
             age_h = (time.time() - st.st_mtime) / 3600
-            items.append(_item("state_db", "green",
+            s = _age_status(age_h, green_h=24.0, amber_h=168.0)
+            items.append(_item("state_db", s,
                                f"size={size_kb:.0f}KB mtime={age_h:.1f}h ago",
-                               metric=f"{size_kb:.0f}KB"))
+                               metric=f"{size_kb:.0f}KB",
+                               reason=(None if s == "green" else f"state.db last modified {age_h:.1f}h ago (stale)")))
         else:
             items.append(_item("state_db", "amber", "state.db not found", reason="Hermes state DB missing"))
     except Exception as e:
@@ -1525,8 +1527,9 @@ def _section_memory_stores() -> dict:
                              if k not in ("done", "archived", "complete"))
             total = sum(by_status.values())
             detail = f"{open_count} open / {total} total"
-            s: Status = "green"
-            items.append(_item("kanban_db", s, detail, metric=str(open_count)))
+            s: Status = "amber" if total == 0 else "green"
+            items.append(_item("kanban_db", s, detail, metric=str(open_count),
+                               reason="kanban board has zero tasks" if total == 0 else None))
         else:
             items.append(_item("kanban_db", "amber", "kanban.db not found at expected path", reason="Hermes board DB missing at expected path"))
     except Exception as e:
