@@ -36,6 +36,30 @@ def test_resolve_max_concurrent_sessions_values(caplog):
     )
 
 
+def test_resolve_max_concurrent_agent_runs_values(caplog):
+    assert active_sessions.resolve_max_concurrent_agent_runs({}) == 4
+    assert active_sessions.resolve_max_concurrent_agent_runs({"gateway": {}}) == 4
+    assert (
+        active_sessions.resolve_max_concurrent_agent_runs(
+            {"gateway": {"max_concurrent_agent_runs": "3"}}
+        )
+        == 3
+    )
+    assert active_sessions.resolve_max_concurrent_agent_runs({"max_concurrent_agent_runs": 2}) == 2
+
+    caplog.set_level(logging.WARNING)
+    assert (
+        active_sessions.resolve_max_concurrent_agent_runs(
+            {"gateway": {"max_concurrent_agent_runs": 0}}
+        )
+        == 4
+    )
+    assert any(
+        "Ignoring invalid gateway.max_concurrent_agent_runs=0" in record.message
+        for record in caplog.records
+    )
+
+
 def test_active_session_lease_blocks_until_release(tmp_path, monkeypatch):
     home = tmp_path / ".hermes"
     monkeypatch.setenv("HERMES_HOME", str(home))

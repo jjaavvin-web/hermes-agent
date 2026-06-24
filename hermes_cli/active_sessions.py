@@ -21,6 +21,9 @@ from hermes_constants import get_hermes_home
 logger = logging.getLogger(__name__)
 
 
+DEFAULT_MAX_CONCURRENT_AGENT_RUNS = 4
+
+
 def coerce_max_concurrent_sessions(value: Any, key: str = "max_concurrent_sessions") -> Optional[int]:
     """Return a positive integer cap, or None when disabled/invalid."""
     if value is None:
@@ -53,6 +56,56 @@ def coerce_max_concurrent_sessions(value: Any, key: str = "max_concurrent_sessio
     return parsed
 
 
+def coerce_max_concurrent_agent_runs(
+    value: Any,
+    key: str = "gateway.max_concurrent_agent_runs",
+    *,
+    default: int = DEFAULT_MAX_CONCURRENT_AGENT_RUNS,
+) -> int:
+    """Return a positive webhook/gateway agent-run cap, defaulting fail-closed.
+
+    Unlike ``max_concurrent_sessions`` this is a gateway event-loop safety
+    ceiling, so unset/invalid/non-positive values fall back to ``default``
+    instead of disabling backpressure.
+    """
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        logger.warning(
+            "Ignoring invalid %s=%r (expected a positive integer; using default %d)",
+            key,
+            value,
+            default,
+        )
+        return default
+    try:
+        if isinstance(value, float):
+            if not value.is_integer():
+                raise ValueError(value)
+            parsed = int(value)
+        elif isinstance(value, str):
+            parsed = int(value.strip(), 10)
+        else:
+            parsed = int(value)
+    except (TypeError, ValueError):
+        logger.warning(
+            "Ignoring invalid %s=%r (expected a positive integer; using default %d)",
+            key,
+            value,
+            default,
+        )
+        return default
+    if parsed <= 0:
+        logger.warning(
+            "Ignoring invalid %s=%r (expected a positive integer; using default %d)",
+            key,
+            value,
+            default,
+        )
+        return default
+    return parsed
+
+
 def resolve_max_concurrent_sessions(config: Any) -> Optional[int]:
     """Resolve top-level max_concurrent_sessions with gateway.* fallback."""
     raw: Any = None
@@ -68,6 +121,28 @@ def resolve_max_concurrent_sessions(config: Any) -> Optional[int]:
     else:
         raw = getattr(config, "max_concurrent_sessions", None)
     return coerce_max_concurrent_sessions(raw, key=key)
+
+
+def resolve_max_concurrent_agent_runs(config: Any) -> int:
+    """Resolve gateway.max_concurrent_agent_runs, defaulting to 4.
+
+    The knob intentionally lives under ``gateway`` because it protects inbound
+    gateway/webhook execution, not user-facing active chat slots.
+    """
+    raw: Any = None
+    key = "gateway.max_concurrent_agent_runs"
+    if isinstance(config, dict):
+        gateway_cfg = config.get("gateway")
+        if isinstance(gateway_cfg, dict):
+            raw = gateway_cfg.get("max_concurrent_agent_runs")
+        elif "max_concurrent_agent_runs" in config:
+            # Tolerate a flat dict from unit tests or older config plumbing, but
+            # keep the public documented key nested under gateway.*.
+            raw = config.get("max_concurrent_agent_runs")
+            key = "max_concurrent_agent_runs"
+    else:
+        raw = getattr(config, "max_concurrent_agent_runs", None)
+    return coerce_max_concurrent_agent_runs(raw, key=key)
 
 
 def active_session_limit_message(active_count: int, max_sessions: int) -> str:

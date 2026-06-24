@@ -2508,6 +2508,10 @@ DEFAULT_CONFIG = {
     # Gateway settings — control how messaging platforms (Telegram, Discord,
     # Slack, etc.) deliver agent-produced files as native attachments.
     "gateway": {
+        # Inbound gateway/webhook agent-run backpressure. This protects the
+        # async event loop from too many autonomous lanes running at once.
+        # Must remain positive; invalid/non-positive values fall back to 4.
+        "max_concurrent_agent_runs": 4,
         # Inject a human-readable timestamp prefix (e.g.
         # "[Tue 2026-04-28 13:40:53 CEST]") onto user messages IN THE MODEL'S
         # CONTEXT so the agent has temporal awareness of when each message was
