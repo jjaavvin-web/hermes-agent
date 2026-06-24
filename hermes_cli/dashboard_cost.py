@@ -22,6 +22,8 @@ from typing import Any, Optional
 
 from fastapi import APIRouter, HTTPException
 
+from hermes_cli import cost_reconcile
+
 router = APIRouter(prefix="/api/dashboard", tags=["dashboard-cost"])
 
 
@@ -302,3 +304,39 @@ def get_cost() -> dict[str, Any]:
         raise
     except Exception as exc:  # pragma: no cover - defensive
         raise HTTPException(status_code=500, detail=f"cost snapshot failed: {exc}") from exc
+
+
+@router.get("/cost/reconcile")
+def get_cost_reconciliation() -> dict[str, Any]:
+    """Read-only budget-vs-provider-policy reconciliation.
+
+    This surfaces ``cost_reconcile.build_reconciliation()`` for OBS-1 alarms:
+    billing-mode totals, lane/provider budget rollups, and paid-fallback
+    violations.  The route inherits the same dashboard session-token middleware
+    as ``GET /api/dashboard/cost`` because it is mounted under the same router
+    and is not public-allowlisted.
+    """
+    try:
+        return cost_reconcile.build_reconciliation()
+    except FileNotFoundError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "error": "provider_stack_lock_missing",
+                "message": str(exc),
+                "hint": f"Regenerate provider-stack lock with {cost_reconcile.LOCK_REGENERATOR}",
+            },
+        ) from exc
+    except cost_reconcile.ReconciliationError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "error": "provider_stack_lock_invalid",
+                "message": str(exc),
+                "hint": f"Regenerate provider-stack lock with {cost_reconcile.LOCK_REGENERATOR}",
+            },
+        ) from exc
+    except HTTPException:
+        raise
+    except Exception as exc:  # pragma: no cover - defensive
+        raise HTTPException(status_code=500, detail=f"cost reconciliation failed: {exc}") from exc
