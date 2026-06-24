@@ -296,6 +296,7 @@ function Hero({ snapshot, loading, onRefresh, onFocusSection }: HeroProps) {
         <MetricChip label="live" value={workCounts?.live_runtimes ?? work?.live_runtimes ?? 0} status={(workCounts?.live_runtimes ?? work?.live_runtimes ?? 0) > 0 ? "green" : "amber"} onClick={() => onFocusSection("work")} />
         <MetricChip label="7d tasks" value={activity?.created_7d ?? 0} status={findSection(snapshot, "activity")?.status ?? "unknown"} onClick={() => onFocusSection("activity")} />
         <MetricChip label="cost" value={infra?.cost?.label ?? "n/a"} status={infra?.cost?.status ?? "unknown"} onClick={() => onFocusSection("infra")} />
+        <MetricChip label="config drift" value={infra?.config_drift?.label ?? "n/a"} status={infra?.config_drift?.status ?? "unknown"} onClick={() => onFocusSection("infra")} />
         <MetricChip label="DR" value={infra?.dr?.label ?? "n/a"} status={infra?.dr?.status ?? "unknown"} onClick={() => onFocusSection("infra")} />
         <MetricChip label="evals" value={infra?.evals?.label ?? "n/a"} status={infra?.evals?.status ?? "unknown"} onClick={() => onFocusSection("infra")} />
         <MetricChip label="security" value={infra?.security?.label ?? "n/a"} status={infra?.security?.status ?? "unknown"} onClick={() => onFocusSection("infra")} />
@@ -444,6 +445,8 @@ function InfraDetails({ snapshot }: { snapshot: OSSnapshot }) {
   return (
     <div className="space-y-3 border-t border-border px-4 py-3 text-xs text-text-secondary">
       <div className="grid grid-cols-1 gap-2 lg:grid-cols-3">
+        <span className="rounded-md border border-border p-2">Config drift <strong className="text-text-primary">{infra?.config_drift?.label ?? "—"}</strong></span>
+        <span className="rounded-md border border-border p-2">Config/authz/authority <strong className="text-text-primary">{infra?.config_drift?.detail ?? "—"}</strong></span>
         <span className="rounded-md border border-border p-2">Security breaches <strong className="text-text-primary">{security?.breach_count ?? "—"}</strong></span>
         <span className="rounded-md border border-border p-2">Red-team pass <strong className="text-text-primary">{security?.passed ?? "—"}/{security?.total ?? "—"}</strong></span>
         <span className="rounded-md border border-border p-2">Worst eval <strong className="text-text-primary">{infra?.evals?.worst_holdout ?? "—"}</strong></span>

@@ -51,7 +51,7 @@ def test_os_snapshot_includes_consolidated_sections(monkeypatch):
 
     section_ids = [section["id"] for section in snapshot["sections"]]
     assert section_ids[-3:] == ["repo", "work", "activity"]
-    assert len(snapshot["sections"]) == 11
+    assert len(snapshot["sections"]) == 12
     assert snapshot["attention"]["posture"] == snapshot["overall"]
     assert snapshot["repo"]["readiness_pct"] == 50
     assert snapshot["work"]["projects_completion_pct"] == 90

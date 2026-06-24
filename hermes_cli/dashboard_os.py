@@ -403,6 +403,113 @@ def _redteam_script_path() -> Path:
     return next((p for p in candidates if p.exists()), candidates[0])
 
 
+def _config_drift_status(latest_path: Path | None = None, *, stale_hours: float = 36.0) -> dict:
+    """Read config-drift wrapper output and gate on the combined wrapper result.
+
+    ``config-drift-check.sh`` runs three independent checks:
+    ``config_drift_lint.py``, ``discord_authz_check.py``, and
+    ``authority_lint.py``.  The capstone signal is green only when all three are
+    clean.  Reading only the first ``SUMMARY {DRIFT: 0}`` is fake-green because
+    the wrapper exits non-zero when either the authz or authority section drifts.
+    """
+    path = latest_path or (HERMES_HOME / "health-checks" / "config-drift" / "latest.txt")
+    try:
+        if not path.exists():
+            return {
+                "status": "unknown",
+                "label": "n/a",
+                "detail": f"config-drift latest report missing: {path}",
+                "source": str(path),
+                "combined_rc": None,
+                "config_drift": None,
+                "authz_drift": None,
+                "authority_drift": None,
+            }
+
+        text = path.read_text(encoding="utf-8", errors="replace")
+        age_h = _age_hours(path)
+        before_authz, _, after_authz = text.partition("== discord-authz drift ==")
+        authz_block, _, authority_block = after_authz.partition("== authority-matrix drift ==")
+
+        def _summary_drift(block: str) -> int | None:
+            drift: int | None = None
+            for line in block.splitlines():
+                if not line.startswith("SUMMARY"):
+                    continue
+                try:
+                    payload = json.loads(line.split("SUMMARY", 1)[1].strip())
+                    raw = payload.get("DRIFT")
+                    if raw is not None:
+                        drift = int(raw)
+                except Exception:
+                    continue
+            return drift
+
+        config_drift = _summary_drift(before_authz)
+        authority_drift = _summary_drift(authority_block) if authority_block else None
+        authz_lines = [line.strip() for line in authz_block.splitlines() if line.strip()]
+        authz_drift = sum(1 for line in authz_lines if line.startswith("DRIFT")) if after_authz else None
+
+        parse_gaps = []
+        if config_drift is None:
+            parse_gaps.append("config SUMMARY missing")
+        if authz_drift is None:
+            parse_gaps.append("discord-authz section missing")
+        if authority_drift is None:
+            parse_gaps.append("authority SUMMARY missing")
+        if parse_gaps:
+            return {
+                "status": "unknown",
+                "label": "parse gap",
+                "detail": "; ".join(parse_gaps),
+                "source": str(path),
+                "combined_rc": None,
+                "config_drift": config_drift,
+                "authz_drift": authz_drift,
+                "authority_drift": authority_drift,
+                "age_hours": round(age_h, 2),
+            }
+
+        config_drift_value = 0 if config_drift is None else config_drift
+        authz_drift_value = 0 if authz_drift is None else authz_drift
+        authority_drift_value = 0 if authority_drift is None else authority_drift
+        combined_drift = config_drift_value + authz_drift_value + authority_drift_value
+        combined_rc = 1 if combined_drift else 0
+        stale = age_h > stale_hours
+        if combined_rc:
+            status: Status = "red"
+        elif stale:
+            status = "amber"
+        else:
+            status = "green"
+        label = f"combined rc={combined_rc}"
+        detail = (
+            f"config_drift={config_drift} authz_drift={authz_drift} "
+            f"authority_drift={authority_drift}; latest age={age_h:.1f}h"
+        )
+        if stale and not combined_rc:
+            detail += f" (stale >{stale_hours:.0f}h)"
+        return {
+            "status": status,
+            "label": label,
+            "detail": detail,
+            "source": str(path),
+            "combined_rc": combined_rc,
+            "config_drift": config_drift,
+            "authz_drift": authz_drift,
+            "authority_drift": authority_drift,
+            "age_hours": round(age_h, 2),
+        }
+    except Exception as exc:
+        return {
+            "status": "unknown",
+            "label": "n/a",
+            "detail": f"config drift wrapper-status probe failed: {exc}",
+            "source": str(path),
+            "combined_rc": None,
+        }
+
+
 def _security_status() -> dict:
     """Execute the red-team JSON suite and gate on breach_count, not artifact age."""
     script = _redteam_script_path()
@@ -451,6 +558,7 @@ def _security_status() -> dict:
 def _infra_snapshot() -> dict:
     return {
         "cost": _cost_summary(),
+        "config_drift": _config_drift_status(),
         "dr": _dr_status(),
         "evals": _evals_status(),
         "security": _security_status(),
@@ -1978,6 +2086,7 @@ def _build_os_snapshot() -> dict:
     infra = _infra_snapshot()
     infra_items = [
         _item("cost", infra["cost"].get("status", "unknown"), infra["cost"].get("detail", "cost unmeasured"), metric=infra["cost"].get("label"), reason=infra["cost"].get("detail") if infra["cost"].get("status") != "green" else None),
+        _item("config_drift", infra["config_drift"].get("status", "unknown"), infra["config_drift"].get("detail", "config drift unmeasured"), metric=infra["config_drift"].get("label"), reason=infra["config_drift"].get("detail") if infra["config_drift"].get("status") != "green" else None),
         _item("DR", infra["dr"].get("status", "unknown"), infra["dr"].get("detail", "DR unmeasured"), metric=infra["dr"].get("label"), reason=infra["dr"].get("detail") if infra["dr"].get("status") != "green" else None),
         _item("evals", infra["evals"].get("status", "unknown"), infra["evals"].get("detail", "evals unmeasured"), metric=infra["evals"].get("label"), reason=infra["evals"].get("detail") if infra["evals"].get("status") != "green" else None),
         _item("security", infra["security"].get("status", "unknown"), infra["security"].get("detail", "security unmeasured"), metric=infra["security"].get("label"), reason=infra["security"].get("detail") if infra["security"].get("status") != "green" else None),
