@@ -1,0 +1,26 @@
+--- /home/josep/.hermes/scripts/config-drift-check.sh
++++ /home/josep/.hermes/scripts/config-drift-check.sh.proposed
+@@ -26,10 +26,21 @@
+ AUTHORITY="$HOME/.hermes/scripts/config_canon/authority_lint.py"
+ { echo; echo "== authority-matrix drift =="; "$PY" "$AUTHORITY"; } >>"$REPORT" 2>&1
+ authority_rc=$?
++# Provider-lane canary (folded into the SAME armed daily check, not a parallel
++# mechanism): catches forbidden provider/model route drift including the P0
++# anthropic-provider-on-claude-cli footgun, OpenRouter fallback coupling,
++# Gemini preview routes, native Anthropic pins, and bare Claude subprocess
++# callsites. Read-only; non-zero marks the unit failed -> OnFailure Discord
++# alert. The canary also persists machine JSON + Markdown under its own
++# health-check directory for review.
++PROVIDER_CANARY_OUT="$HOME/.hermes/health-checks/provider-lane-canary"
++REPO="/home/josep/.local/share/hermes-agent"
++{ echo; echo "== provider-lane canary =="; PYTHONPATH="$REPO${PYTHONPATH:+:$PYTHONPATH}" "$PY" -m hermes_cli.provider_lane_canary --output-dir "$PROVIDER_CANARY_OUT"; } >>"$REPORT" 2>&1
++provider_rc=$?
+ cp -f "$REPORT" "$OUT_DIR/latest.txt"
+ find "$OUT_DIR" -name 'drift-*.txt' -mtime +30 -delete 2>/dev/null
+-final_rc="$rc"; [ "$authz_rc" -ne 0 ] && final_rc="$authz_rc"; [ "$authority_rc" -ne 0 ] && final_rc="$authority_rc"
++final_rc="$rc"; [ "$authz_rc" -ne 0 ] && final_rc="$authz_rc"; [ "$authority_rc" -ne 0 ] && final_rc="$authority_rc"; [ "$provider_rc" -ne 0 ] && final_rc="$provider_rc"
+ if [ "$final_rc" -ne 0 ]; then
+-  echo "$(date -Iseconds) DRIFT (config_rc=$rc authz_rc=$authz_rc authority_rc=$authority_rc) -> $REPORT" >>"$OUT_DIR/alerts.log"
++  echo "$(date -Iseconds) DRIFT (config_rc=$rc authz_rc=$authz_rc authority_rc=$authority_rc provider_rc=$provider_rc) -> $REPORT" >>"$OUT_DIR/alerts.log"
+ fi
+ exit "$final_rc"
