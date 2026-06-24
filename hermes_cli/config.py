@@ -1352,21 +1352,6 @@ DEFAULT_CONFIG = {
                                       # global threshold regardless.
     },
 
-    # Kanban subsystem (orchestrator workers + dispatcher-driven child tasks).
-    # See tools/kanban_tools.py and hermes_cli/kanban_db.py for the actual
-    # implementations. Per-platform notification opt-out is handled by the
-    # kanban dashboard (see ``hermes dashboard`` -> Notifications).
-    "kanban": {
-        # Auto-subscribe the originating gateway/TUI session to task
-        # completion + block events when ``kanban_create`` is called from
-        # inside a session that has a persistent delivery channel. The
-        # agent that dispatched the task will get notified automatically
-        # instead of having to poll. Disable to mirror pre-feature
-        # behaviour — e.g. for a profile that prefers explicit
-        # ``kanban_notify-subscribe`` calls per task.
-        "auto_subscribe_on_create": True,
-    },
-
     # Anthropic prompt caching (Claude via OpenRouter or native Anthropic API).
     # cache_ttl must be "5m" or "1h" (Anthropic-supported tiers); other values are ignored.
     "prompt_caching": {
@@ -2363,6 +2348,10 @@ DEFAULT_CONFIG = {
         "max_parallel_jobs": None,
     },
 
+    # Kanban subsystem (orchestrator workers + dispatcher-driven child tasks).
+    # See tools/kanban_tools.py and hermes_cli/kanban_db.py for the actual
+    # implementations. Per-platform notification opt-out is handled by the
+    # kanban dashboard (see ``hermes dashboard`` -> Notifications).
     # Kanban multi-agent coordination — controls the dispatcher loop that
     # spawns workers for ready tasks. The dispatcher ticks every N seconds
     # (default 60), reclaims stale claims, promotes dependency-satisfied
@@ -2370,6 +2359,14 @@ DEFAULT_CONFIG = {
     # each claimable ready task. One dispatcher per profile is sufficient;
     # running more than one on the same kanban.db will race for claims.
     "kanban": {
+        # Auto-subscribe the originating gateway/TUI session to task
+        # completion + block events when ``kanban_create`` is called from
+        # inside a session that has a persistent delivery channel. The
+        # agent that dispatched the task will get notified automatically
+        # instead of having to poll. Disable to mirror pre-feature
+        # behaviour — e.g. for a profile that prefers explicit
+        # ``kanban_notify-subscribe`` calls per task.
+        "auto_subscribe_on_create": True,
         # Run the dispatcher inside the gateway process.
         # FORK-LOCAL INVARIANT (audit DISP-1/ARCH-2, 2026-06-19): default False so
         # config-loss / an upstream merge fails CLOSED (no unbounded multi-board worker
