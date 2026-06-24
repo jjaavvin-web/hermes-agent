@@ -12,9 +12,12 @@ import shutil
 import signal
 import subprocess
 import sys
+import threading
 import textwrap
+import time
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 PROJECT_ROOT = Path(__file__).parent.parent.resolve()
 
@@ -49,6 +52,10 @@ from hermes_cli.colors import Colors, color
 
 logger = logging.getLogger(__name__)
 
+_DEFAULT_SD_NOTIFY_WATCHDOG_INTERVAL_SEC = 30.0
+_DEFAULT_LOOP_WEDGE_BUDGET_SEC = 60.0
+_DEFAULT_LOOP_LIVENESS_TICK_SEC = 1.0
+
 
 def _sd_notify(state: bytes) -> None:
     """Send an sd_notify datagram to systemd when NOTIFY_SOCKET is present.
@@ -76,14 +83,142 @@ def _sd_notify(state: bytes) -> None:
         logger.debug("sd_notify(%r) failed", state, exc_info=True)
 
 
-async def _sd_notify_watchdog_loop(interval: float = 30.0) -> None:
-    """Emit WATCHDOG=1 periodically for systemd WatchdogUSec services."""
-    while True:
+class _LoopLivenessGate:
+    """Track whether the gateway asyncio loop is still making progress.
+
+    The systemd watchdog heartbeat intentionally runs off-loop in a daemon
+    thread. This gate gives that thread one signal from the loop: a monotonic
+    timestamp refreshed by a tiny recurring task. If the timestamp gets older
+    than ``wedge_budget_sec``, the thread withholds WATCHDOG=1 so systemd can
+    restart a genuinely wedged gateway instead of being fooled by a healthy
+    heartbeat thread.
+    """
+
+    def __init__(
+        self,
+        *,
+        wedge_budget_sec: float = _DEFAULT_LOOP_WEDGE_BUDGET_SEC,
+        tick_interval_sec: float = _DEFAULT_LOOP_LIVENESS_TICK_SEC,
+        clock=time.monotonic,
+    ) -> None:
+        self.wedge_budget_sec = max(float(wedge_budget_sec), 0.1)
+        self.tick_interval_sec = max(float(tick_interval_sec), 0.05)
+        self._clock = clock
+        self._lock = threading.Lock()
+        self._last_loop_tick = self._clock()
+        self._task: Any | None = None
+
+    def touch(self) -> None:
+        with self._lock:
+            self._last_loop_tick = self._clock()
+
+    def age(self, now: float | None = None) -> float:
+        if now is None:
+            now = self._clock()
+        with self._lock:
+            return max(0.0, now - self._last_loop_tick)
+
+    def loop_is_live(self, now: float | None = None) -> bool:
+        return self.age(now) <= self.wedge_budget_sec
+
+    async def _tick_loop(self) -> None:
+        while True:
+            self.touch()
+            await asyncio.sleep(self.tick_interval_sec)
+
+    def start(self) -> None:
+        if self._task is None or self._task.done():
+            self.touch()
+            self._task = asyncio.create_task(self._tick_loop())
+
+    async def stop(self) -> None:
+        task = self._task
+        self._task = None
+        if task is None:
+            return
+        task.cancel()
         try:
-            _sd_notify(b"WATCHDOG=1\n")
+            await task
+        except asyncio.CancelledError:
+            pass
+
+
+@dataclass
+class _SdNotifyWatchdogThread:
+    stop_event: threading.Event
+    thread: threading.Thread
+
+    def stop(self, timeout: float = 2.0) -> None:
+        self.stop_event.set()
+        try:
+            self.thread.join(timeout=timeout)
+        except Exception:
+            logger.debug("sd_notify watchdog thread join failed", exc_info=True)
+
+
+def _coerce_positive_float(value: object, default: float) -> float:
+    try:
+        parsed = float(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return default
+    return parsed if parsed > 0 else default
+
+
+def _gateway_loop_wedge_budget_sec(
+    default: float = _DEFAULT_LOOP_WEDGE_BUDGET_SEC,
+) -> float:
+    """Read gateway.loop_wedge_budget_sec from config, falling back safely."""
+    try:
+        raw_cfg = read_raw_config()
+        gateway_cfg = raw_cfg.get("gateway") if isinstance(raw_cfg, dict) else None
+        if isinstance(gateway_cfg, dict):
+            return _coerce_positive_float(
+                gateway_cfg.get("loop_wedge_budget_sec"), default
+            )
+    except Exception:
+        logger.debug("Failed to read gateway.loop_wedge_budget_sec", exc_info=True)
+    return default
+
+
+def _sd_notify_watchdog_thread_loop(
+    stop_event: threading.Event,
+    liveness_gate: _LoopLivenessGate,
+    interval: float,
+) -> None:
+    """Daemon-thread body for systemd WATCHDOG=1 pings."""
+    while not stop_event.is_set():
+        try:
+            if liveness_gate.loop_is_live():
+                _sd_notify(b"WATCHDOG=1\n")
+            else:
+                logger.warning(
+                    "Withholding systemd WATCHDOG=1: gateway event loop stale "
+                    "for %.1fs (budget %.1fs)",
+                    liveness_gate.age(),
+                    liveness_gate.wedge_budget_sec,
+                )
         except Exception:
             logger.debug("sd_notify watchdog tick failed", exc_info=True)
-        await asyncio.sleep(interval)
+        stop_event.wait(interval)
+
+
+def _start_sd_notify_watchdog_thread(
+    liveness_gate: _LoopLivenessGate,
+    *,
+    interval: float = _DEFAULT_SD_NOTIFY_WATCHDOG_INTERVAL_SEC,
+) -> _SdNotifyWatchdogThread | None:
+    """Start the off-loop systemd watchdog heartbeat thread if configured."""
+    if not os.getenv("NOTIFY_SOCKET"):
+        return None
+    stop_event = threading.Event()
+    thread = threading.Thread(
+        target=_sd_notify_watchdog_thread_loop,
+        args=(stop_event, liveness_gate, max(float(interval), 0.1)),
+        name="systemd-watchdog-notify",
+        daemon=True,
+    )
+    thread.start()
+    return _SdNotifyWatchdogThread(stop_event=stop_event, thread=thread)
 
 
 async def _gateway_runtime_ready_for_sd_notify() -> bool:
@@ -101,30 +236,42 @@ async def _gateway_runtime_ready_for_sd_notify() -> bool:
         return False
 
 
-async def _run_gateway_with_sd_notify(start_gateway, **kwargs):
+def _run_gateway_with_sd_notify(start_gateway, **kwargs):
     """Run start_gateway while publishing guarded systemd READY/WATCHDOG pings."""
-    gateway_task = asyncio.create_task(start_gateway(**kwargs))
-    watchdog_task = None
-    ready_sent = False
-    try:
-        while not gateway_task.done():
-            if not ready_sent and await _gateway_runtime_ready_for_sd_notify():
-                _sd_notify(b"READY=1\n")
-                ready_sent = True
-                if os.getenv("NOTIFY_SOCKET"):
-                    watchdog_task = asyncio.create_task(_sd_notify_watchdog_loop())
-            try:
-                await asyncio.wait_for(asyncio.shield(gateway_task), timeout=0.5)
-            except asyncio.TimeoutError:
-                pass
-        return await gateway_task
-    finally:
-        if watchdog_task is not None:
-            watchdog_task.cancel()
-            try:
-                await watchdog_task
-            except asyncio.CancelledError:
-                pass
+    start_result = start_gateway(**kwargs)
+
+    async def _runner():
+        if asyncio.isfuture(start_result) or asyncio.iscoroutine(start_result):
+            gateway_task = asyncio.ensure_future(start_result)
+        else:
+            gateway_task = asyncio.get_running_loop().create_future()
+            gateway_task.set_result(start_result)
+        liveness_gate = None
+        watchdog_thread = None
+        ready_sent = False
+        try:
+            while not gateway_task.done():
+                if not ready_sent and await _gateway_runtime_ready_for_sd_notify():
+                    _sd_notify(b"READY=1\n")
+                    ready_sent = True
+                    if os.getenv("NOTIFY_SOCKET"):
+                        liveness_gate = _LoopLivenessGate(
+                            wedge_budget_sec=_gateway_loop_wedge_budget_sec()
+                        )
+                        liveness_gate.start()
+                        watchdog_thread = _start_sd_notify_watchdog_thread(liveness_gate)
+                try:
+                    await asyncio.wait_for(asyncio.shield(gateway_task), timeout=0.5)
+                except asyncio.TimeoutError:
+                    pass
+            return await gateway_task
+        finally:
+            if watchdog_thread is not None:
+                watchdog_thread.stop()
+            if liveness_gate is not None:
+                await liveness_gate.stop()
+
+    return _runner()
 
 
 # =============================================================================

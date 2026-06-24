@@ -2556,6 +2556,12 @@ DEFAULT_CONFIG = {
         # multi-tool agent turn. Bridged to HERMES_MEDIA_TRUST_RECENT_SECONDS.
         # Only consulted when ``strict`` is true.
         "trust_recent_files_seconds": 600,
+        # Systemd watchdog safety gate. The WATCHDOG=1 heartbeat runs on a
+        # daemon thread so event-loop starvation cannot kill the heartbeat
+        # thread itself, but that thread withholds pings when the loop's cheap
+        # liveness timestamp is older than this budget. Default 60s leaves
+        # headroom under the staged WatchdogSec=90s unit setting.
+        "loop_wedge_budget_sec": 60,
     },
 
     # Real-time token streaming to messaging platforms (Telegram, Discord,

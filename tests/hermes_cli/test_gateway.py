@@ -1,6 +1,7 @@
 """Tests for hermes_cli.gateway."""
 
 import argparse
+import asyncio
 import sys
 from types import ModuleType, SimpleNamespace
 
@@ -966,3 +967,165 @@ def test_module_has_logger():
     """Verify module has a logger instance (regression guard for #27154)."""
     assert hasattr(gateway, "logger")
     assert gateway.logger.name == "hermes_cli.gateway"
+
+
+# ---------------------------------------------------------------------------
+# systemd sd_notify watchdog thread + loop-liveness gate
+# ---------------------------------------------------------------------------
+
+
+def test_sd_notify_noops_when_notify_socket_absent_or_malformed(monkeypatch):
+    monkeypatch.delenv("NOTIFY_SOCKET", raising=False)
+    gateway._sd_notify(b"WATCHDOG=1\n")
+
+    monkeypatch.setenv("NOTIFY_SOCKET", "/definitely/missing/hermes-notify.sock")
+    gateway._sd_notify(b"WATCHDOG=1\n")
+
+    monkeypatch.setenv("NOTIFY_SOCKET", "@definitely-missing-hermes-notify")
+    gateway._sd_notify(b"WATCHDOG=1\n")
+
+
+def test_gateway_loop_wedge_budget_default_and_config(monkeypatch):
+    monkeypatch.setattr(gateway, "read_raw_config", lambda: {})
+    assert gateway._gateway_loop_wedge_budget_sec() == 60.0
+
+    monkeypatch.setattr(
+        gateway,
+        "read_raw_config",
+        lambda: {"gateway": {"loop_wedge_budget_sec": "45"}},
+    )
+    assert gateway._gateway_loop_wedge_budget_sec() == 45.0
+
+    monkeypatch.setattr(
+        gateway,
+        "read_raw_config",
+        lambda: {"gateway": {"loop_wedge_budget_sec": "nope"}},
+    )
+    assert gateway._gateway_loop_wedge_budget_sec() == 60.0
+
+
+def test_watchdog_daemon_thread_keeps_pinging_when_loop_blocked_over_90s(monkeypatch):
+    now = 1000.0
+
+    def clock():
+        return now
+
+    # Simulate a loop tick that is >90s old but still inside the configured
+    # wedge budget: burst-slow is not dead, so the off-loop daemon thread must
+    # keep feeding systemd.
+    gate = gateway._LoopLivenessGate(wedge_budget_sec=120.0, clock=clock)
+    now += 91.0
+    pings = []
+    pinged = gateway.threading.Event()
+
+    def fake_notify(state):
+        pings.append(state)
+        pinged.set()
+
+    monkeypatch.setenv("NOTIFY_SOCKET", "/tmp/hermes-test-notify.sock")
+    monkeypatch.setattr(gateway, "_sd_notify", fake_notify)
+
+    watchdog = gateway._start_sd_notify_watchdog_thread(gate, interval=0.01)
+    assert watchdog is not None
+    try:
+        assert watchdog.thread.daemon is True
+        assert pinged.wait(1.0), "watchdog thread did not ping"
+    finally:
+        watchdog.stop(timeout=1.0)
+
+    assert pings[0] == b"WATCHDOG=1\n"
+
+
+def test_watchdog_thread_withholds_when_loop_tick_exceeds_budget(monkeypatch):
+    now = 1000.0
+
+    def clock():
+        return now
+
+    gate = gateway._LoopLivenessGate(wedge_budget_sec=60.0, clock=clock)
+    gate.touch()
+    now += 61.0
+
+    pings = []
+    monkeypatch.setattr(gateway, "_sd_notify", lambda state: pings.append(state))
+
+    stop_event = gateway.threading.Event()
+    monkeypatch.setattr(stop_event, "wait", lambda _timeout: stop_event.set() or True)
+    gateway._sd_notify_watchdog_thread_loop(stop_event, gate, interval=0.01)
+
+    assert pings == []
+
+
+@pytest.mark.asyncio
+async def test_loop_liveness_gate_distinguishes_slow_from_wedged_loop():
+    now = 0.0
+
+    def clock():
+        return now
+
+    gate = gateway._LoopLivenessGate(
+        wedge_budget_sec=60.0,
+        tick_interval_sec=0.05,
+        clock=clock,
+    )
+    gate.start()
+    await asyncio.sleep(0)
+
+    now = 45.0
+    assert gate.loop_is_live() is True
+
+    # Once the loop gets a scheduling slice after a slow burst, the cheap tick
+    # refreshes immediately, so a merely-slow 45s stall under WatchdogSec=90s
+    # does not trip the watchdog.
+    await asyncio.sleep(0.06)
+    assert gate.loop_is_live() is True
+
+    now += 61.0
+    assert gate.loop_is_live() is False
+    await gate.stop()
+
+
+@pytest.mark.asyncio
+async def test_run_gateway_stops_watchdog_thread_cleanly(monkeypatch):
+    calls = []
+
+    async def fake_start_gateway(**kwargs):
+        calls.append(("start", kwargs))
+        return True
+
+    async def fake_ready():
+        return True
+
+    class FakeWatchdog:
+        def stop(self, timeout=2.0):
+            calls.append(("watchdog-stop", timeout))
+
+    class FakeGate:
+        def __init__(self, *, wedge_budget_sec):
+            calls.append(("gate-init", wedge_budget_sec))
+
+        def start(self):
+            calls.append(("gate-start", None))
+
+        async def stop(self):
+            calls.append(("gate-stop", None))
+
+    monkeypatch.setenv("NOTIFY_SOCKET", "/tmp/hermes-test-notify.sock")
+    monkeypatch.setattr(gateway, "_gateway_runtime_ready_for_sd_notify", fake_ready)
+    monkeypatch.setattr(gateway, "_sd_notify", lambda state: calls.append(("notify", state)))
+    monkeypatch.setattr(gateway, "_gateway_loop_wedge_budget_sec", lambda: 45.0)
+    monkeypatch.setattr(gateway, "_LoopLivenessGate", FakeGate)
+    monkeypatch.setattr(
+        gateway,
+        "_start_sd_notify_watchdog_thread",
+        lambda gate: calls.append(("watchdog-start", gate)) or FakeWatchdog(),
+    )
+
+    assert await gateway._run_gateway_with_sd_notify(fake_start_gateway, replace=True) is True
+
+    assert ("notify", b"READY=1\n") in calls
+    assert ("gate-init", 45.0) in calls
+    assert ("gate-start", None) in calls
+    assert any(call[0] == "watchdog-start" for call in calls)
+    assert ("watchdog-stop", 2.0) in calls
+    assert ("gate-stop", None) in calls
