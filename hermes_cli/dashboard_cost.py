@@ -138,6 +138,73 @@ def _rollup(conn: sqlite3.Connection, since_ts: float) -> dict[str, Any]:
     }
 
 
+def _daily_series(conn: sqlite3.Connection, since_ts: float, limit_days: int = 30) -> list[dict[str, Any]]:
+    """Return daily turn_usage spend totals since ``since_ts``.
+
+    The current ledger may contain fewer than ``limit_days`` distinct days; the
+    frontend handles a short 1..30-point series rather than padded zero days.
+    """
+    cur = conn.execute(
+        """
+        SELECT date(ts,'unixepoch') AS day, COUNT(*) AS turns,
+               COALESCE(SUM(total_tokens),0) AS total_tokens,
+               COALESCE(SUM(estimated_cost_usd),0.0) AS cost_usd
+        FROM turn_usage WHERE ts >= ? GROUP BY day ORDER BY day ASC
+        """,
+        (since_ts,),
+    )
+    points: list[dict[str, Any]] = []
+    for row in cur.fetchall():
+        points.append(
+            {
+                "date": row["day"],
+                "costUsd": round(float(row["cost_usd"] or 0.0), 6),
+                "totalTokens": int(row["total_tokens"] or 0),
+                "turns": int(row["turns"] or 0),
+            }
+        )
+    return points[-limit_days:]
+
+
+def _cache_latency_rollup(conn: sqlite3.Connection, since_ts: float) -> dict[str, Any]:
+    """Return cache-hit ratio and latency summary for turns since ``since_ts``."""
+    agg = conn.execute(
+        """
+        SELECT COALESCE(SUM(input_tokens),0) AS input_tokens,
+               COALESCE(SUM(cache_read_tokens),0) AS cache_read_tokens,
+               COALESCE(AVG(latency_ms),0.0) AS avg_latency_ms
+        FROM turn_usage
+        WHERE ts >= ?
+        """,
+        (since_ts,),
+    ).fetchone()
+    input_tokens = int(agg["input_tokens"] or 0) if agg is not None else 0
+    cache_read_tokens = int(agg["cache_read_tokens"] or 0) if agg is not None else 0
+    denom = input_tokens + cache_read_tokens
+    cache_hit_ratio = round(cache_read_tokens / denom, 4) if denom else 0.0
+
+    cur = conn.execute(
+        """
+        SELECT latency_ms
+        FROM turn_usage
+        WHERE ts >= ? AND latency_ms IS NOT NULL
+        ORDER BY latency_ms ASC
+        """,
+        (since_ts,),
+    )
+    latencies = [float(row["latency_ms"]) for row in cur.fetchall()]
+    if latencies:
+        p95_latency_ms = latencies[int(0.95 * (len(latencies) - 1))]
+    else:
+        p95_latency_ms = 0.0
+
+    return {
+        "cacheHitRatio": cache_hit_ratio,
+        "avgLatencyMs": round(float(agg["avg_latency_ms"] or 0.0), 1) if agg is not None else 0.0,
+        "p95LatencyMs": round(p95_latency_ms, 1),
+    }
+
+
 def _metered_leaks(conn: sqlite3.Connection, since_ts: float, limit: int = 200) -> list[dict[str, Any]]:
     """Return individual turn rows whose cost_source/cost_status indicates a
     metered Anthropic / OpenRouter charge accrued (a billing leak).
@@ -197,6 +264,8 @@ def _build_cost_snapshot() -> dict[str, Any]:
         "meteredLeak": [],
         "meteredLeakCount": 0,
         "meteredLeakCostUsd": 0.0,
+        "dailySeries": [],
+        "cacheLatency7d": {"cacheHitRatio": 0.0, "avgLatencyMs": 0.0, "p95LatencyMs": 0.0},
     }
 
     conn = _connect_ro(db_path)
@@ -208,6 +277,8 @@ def _build_cost_snapshot() -> dict[str, Any]:
             return snapshot
         snapshot["today"] = _rollup(conn, day_ago)
         snapshot["last7d"] = _rollup(conn, week_ago)
+        snapshot["dailySeries"] = _daily_series(conn, now - 30 * 86_400.0)
+        snapshot["cacheLatency7d"] = _cache_latency_rollup(conn, week_ago)
         leaks = _metered_leaks(conn, week_ago)
         snapshot["meteredLeak"] = leaks
         snapshot["meteredLeakCount"] = len(leaks)

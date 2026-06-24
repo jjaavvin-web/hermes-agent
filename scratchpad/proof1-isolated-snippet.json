@@ -1,0 +1,195 @@
+{
+  "dailySeries": [
+    {
+      "date": "2026-06-20",
+      "costUsd": 0,
+      "totalTokens": 23011936,
+      "turns": 29
+    },
+    {
+      "date": "2026-06-21",
+      "costUsd": 0,
+      "totalTokens": 33899962,
+      "turns": 31
+    },
+    {
+      "date": "2026-06-22",
+      "costUsd": 0.130782,
+      "totalTokens": 56411437,
+      "turns": 53
+    },
+    {
+      "date": "2026-06-23",
+      "costUsd": 0,
+      "totalTokens": 200988213,
+      "turns": 78
+    },
+    {
+      "date": "2026-06-24",
+      "costUsd": 0,
+      "totalTokens": 22563387,
+      "turns": 32
+    }
+  ],
+  "cacheLatency7d": {
+    "cacheHitRatio": 0.9055,
+    "avgLatencyMs": 360231.9,
+    "p95LatencyMs": 1364980.1
+  },
+  "today": {
+    "totalCostUsd": 0,
+    "totalTokens": 223551600,
+    "totalTurns": 110,
+    "groups": [
+      {
+        "provider": "openai-codex",
+        "model": "gpt-5.5",
+        "promptVersion": "2026-06-19.1",
+        "turns": 100,
+        "inputTokens": 12936765,
+        "outputTokens": 1204787,
+        "cacheReadTokens": 209410048,
+        "cacheWriteTokens": 0,
+        "reasoningTokens": 495866,
+        "totalTokens": 223551600,
+        "costUsd": 0
+      },
+      {
+        "provider": "openai-compat",
+        "model": "test-model",
+        "promptVersion": "2026-06-19.1",
+        "turns": 10,
+        "inputTokens": 0,
+        "outputTokens": 0,
+        "cacheReadTokens": 0,
+        "cacheWriteTokens": 0,
+        "reasoningTokens": 0,
+        "totalTokens": 0,
+        "costUsd": 0
+      }
+    ]
+  },
+  "last7d": {
+    "totalCostUsd": 0.130782,
+    "totalTokens": 336874935,
+    "totalTurns": 223,
+    "groups": [
+      {
+        "provider": "openrouter",
+        "model": "google/gemini-3.5-flash",
+        "promptVersion": "2026-06-19.1",
+        "turns": 5,
+        "inputTokens": 63320,
+        "outputTokens": 3978,
+        "cacheReadTokens": 0,
+        "cacheWriteTokens": 0,
+        "reasoningTokens": 0,
+        "totalTokens": 67298,
+        "costUsd": 0.130782
+      },
+      {
+        "provider": "openai-codex",
+        "model": "gpt-5.5",
+        "promptVersion": "2026-06-19.1",
+        "turns": 201,
+        "inputTokens": 31555460,
+        "outputTokens": 2146129,
+        "cacheReadTokens": 303106048,
+        "cacheWriteTokens": 0,
+        "reasoningTokens": 834729,
+        "totalTokens": 336807637,
+        "costUsd": 0
+      },
+      {
+        "provider": "",
+        "model": "",
+        "promptVersion": "2026-06-19.1",
+        "turns": 2,
+        "inputTokens": 0,
+        "outputTokens": 0,
+        "cacheReadTokens": 0,
+        "cacheWriteTokens": 0,
+        "reasoningTokens": 0,
+        "totalTokens": 0,
+        "costUsd": 0
+      },
+      {
+        "provider": "openai-compat",
+        "model": "test-model",
+        "promptVersion": "2026-06-19.1",
+        "turns": 15,
+        "inputTokens": 0,
+        "outputTokens": 0,
+        "cacheReadTokens": 0,
+        "cacheWriteTokens": 0,
+        "reasoningTokens": 0,
+        "totalTokens": 0,
+        "costUsd": 0
+      }
+    ]
+  },
+  "meteredLeak": [
+    {
+      "turnId": "20260622_115102_e6698b:2eb72547-6d6b-40b4-8909-d1ccde9446f4:80bbc510",
+      "sessionId": "20260622_115102_e6698b",
+      "ts": 1782154277.4,
+      "provider": "openrouter",
+      "model": "google/gemini-3.5-flash",
+      "promptVersion": "2026-06-19.1",
+      "totalTokens": 21085,
+      "costUsd": 0.038355,
+      "costStatus": "estimated",
+      "costSource": "provider_models_api"
+    },
+    {
+      "turnId": "20260622_112714_cfc63b:95c36bb7-3b4d-412c-83fa-9037fb0a827a:702ef26d",
+      "sessionId": "20260622_112714_cfc63b",
+      "ts": 1782152850.993,
+      "provider": "openrouter",
+      "model": "google/gemini-3.5-flash",
+      "promptVersion": "2026-06-19.1",
+      "totalTokens": 21079,
+      "costUsd": 0.037971,
+      "costStatus": "estimated",
+      "costSource": "provider_models_api"
+    },
+    {
+      "turnId": "20260622_111035_95e9ad:a2a429b0-1b00-48f5-9ddc-34ed946d2efa:a9e10d21",
+      "sessionId": "20260622_111035_95e9ad",
+      "ts": 1782151850.319,
+      "provider": "openrouter",
+      "model": "google/gemini-3.5-flash",
+      "promptVersion": "2026-06-19.1",
+      "totalTokens": 20998,
+      "costUsd": 0.037242,
+      "costStatus": "estimated",
+      "costSource": "provider_models_api"
+    },
+    {
+      "turnId": "20260622_110247_6893ba:249d59f2-55eb-4ad9-8395-506cc2bcb7e6:005eeb39",
+      "sessionId": "20260622_110247_6893ba",
+      "ts": 1782151383.126,
+      "provider": "openrouter",
+      "model": "google/gemini-3.5-flash",
+      "promptVersion": "2026-06-19.1",
+      "totalTokens": 2087,
+      "costUsd": 0.008793,
+      "costStatus": "estimated",
+      "costSource": "provider_models_api"
+    },
+    {
+      "turnId": "20260622_110424_05b314:69d248aa-04bc-4053-b5f3-a3ef9b33dfe2:c08e0894",
+      "sessionId": "20260622_110424_05b314",
+      "ts": 1782151479.295,
+      "provider": "openrouter",
+      "model": "google/gemini-3.5-flash",
+      "promptVersion": "2026-06-19.1",
+      "totalTokens": 2049,
+      "costUsd": 0.008421,
+      "costStatus": "estimated",
+      "costSource": "provider_models_api"
+    }
+  ],
+  "meteredLeakCount": 5,
+  "meteredLeakCostUsd": 0.130782
+}
