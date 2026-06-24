@@ -774,3 +774,22 @@ def test_cron_and_dream_readers_handle_missing_staged_and_latest_files():
     (dreams / "2026-06-10.md").write_text("# Title\n\nInsight line\n")
     assert d._get_last_dream() == "Insight line"
     assert _run(d.get_latest_dream())["filename"] == "2026-06-10.md"
+
+def test_swarm_status_no_fabrication_from_stale_ruflo_dirs(monkeypatch):
+    ruflo_work = d.HERMES_HOME / "ruflo-work"
+    (ruflo_work / "test-hive").mkdir(parents=True)
+
+    def failed_ruflo_status(cmd, *args, **kwargs):
+        assert cmd == ["ruflo", "swarm", "status", "--json"]
+        return SimpleNamespace(returncode=1, stdout="", stderr="ruflo retired")
+
+    monkeypatch.setattr(d.subprocess, "run", failed_ruflo_status)
+
+    import inspect
+
+    source = inspect.getsource(d._get_swarm_status)
+    assert d._get_swarm_status() is None
+    assert _run(d.get_swarm()) == {"active": False, "message": "No active swarm detected"}
+    assert "Hive Mind Swarm" not in source
+    assert "hierarchical-mesh" not in source
+

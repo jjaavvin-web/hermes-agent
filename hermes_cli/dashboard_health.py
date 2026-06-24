@@ -1109,22 +1109,6 @@ def _get_swarm_status() -> Optional[dict]:
     except Exception:
         pass
 
-    # Fall back to hive process scan — look for hive-* working dirs
-    try:
-        hive_dirs = list((HERMES_HOME / "ruflo-work").glob("*hive*")) if (HERMES_HOME / "ruflo-work").exists() else []
-        active = [d for d in hive_dirs if d.is_dir()]
-        if active:
-            return {
-                "id": "hive-local",
-                "name": "Hive Mind Swarm",
-                "topology": "hierarchical-mesh",
-                "workerCount": len(active),
-                "activeWorkers": 0,
-                "queueDepth": 0,
-                "lastActivity": _now(),
-            }
-    except Exception:
-        pass
     return None
 
 
