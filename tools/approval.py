@@ -234,10 +234,6 @@ _PROJECT_ENV_EXFIL_PATH = (
     r'(?:(?:/|\.{1,2}/)?(?:[^\s/"\'`]+/)*\.env'
     r'(?!\.(?:example|sample|template)\b)(?:\.[^/\s"\'`]+)?\b)'
 )
-_HARDLINE_EXFIL_READ_TARGET = (
-    rf'(?:{_HERMES_ENV_PATH}|{_PROJECT_ENV_EXFIL_PATH}|{_HERMES_AUTH_PATH}|'
-    rf'{_AUTH_JSON_PATH}|{_SSH_SENSITIVE_PATH})'
-)
 _PROJECT_CREDENTIAL_READ_PATH = (
     r'(?:(?:/|\.{1,2}/)?(?:[^\s/"\'`]+/)*'
     r'(?:credentials?|secrets?|tokens?|service[-_]?account|private[-_]?key|'
@@ -245,33 +241,74 @@ _PROJECT_CREDENTIAL_READ_PATH = (
     r'[^\s/"\'`]*'
     r'(?:\.(?:json|ya?ml|toml|env|pem|key|txt|cfg|ini))?\b)'
 )
+_SYSTEM_SECRET_EXFIL_PATH = r'(?:/etc/(?:shadow|sudoers)\b|/private/etc/sudoers\b)'
+_HARDLINE_EXFIL_READ_TARGET = (
+    rf'(?:{_HERMES_ENV_PATH}|{_PROJECT_ENV_EXFIL_PATH}|{_HERMES_AUTH_PATH}|'
+    rf'{_AUTH_JSON_PATH}|{_SSH_SENSITIVE_PATH}|{_SYSTEM_SECRET_EXFIL_PATH})'
+)
+_HERMES_STATE_DIR_EXPOSE_TARGET = (
+    r'(?:~\/\.hermes\b|'
+    r'(?:\$home|\$\{home\})/\.hermes\b|'
+    r'(?:\$hermes_home|\$\{hermes_home\})(?:\b|/))'
+)
+_SSH_DIR_EXPOSE_TARGET = r'(?:~|\$home|\$\{home\})/\.ssh\b'
+_HARDLINE_HTTP_SERVER_EXPOSE_TARGET = rf'(?:{_HERMES_STATE_DIR_EXPOSE_TARGET}|{_SSH_DIR_EXPOSE_TARGET})'
 _BROAD_EXFIL_READ_TARGET = rf'(?:{_CREDENTIAL_FILES}|{_PROJECT_CREDENTIAL_READ_PATH})'
+_EXFIL_READ_COMMAND = r'(?:cat|base64|xxd|od|hexdump|tar|gzip|openssl|gpg)'
+_COMMAND_SUBSTITUTION_EXFIL_READ = rf'(?:\$\(\s*(?:sudo\s+)?{_EXFIL_READ_COMMAND}\b|`\s*(?:sudo\s+)?{_EXFIL_READ_COMMAND}\b)'
 
 # Outbound sinks that can carry local stdin/file bytes off-host. Plain GETs are
 # deliberately excluded (`curl https://public-api` stays allowed); curl only
-# becomes an exfil sink when it is asked to upload/post/form data.
+# becomes an exfil sink when it is asked to upload/post/form data or when a
+# command substitution reads local bytes into a GET URL/header argument.
 _CURL_EXFIL_SINK = (
     r'\bcurl\b(?=[\s\S]*'
     r'(?:--data(?:-[\w-]+)?\b|-d\b|--form\b|-F\b|'
     r'--upload-file\b|-T\b|--request\s+POST\b|-X\s*POST\b))'
 )
+_CURL_SUBSTITUTION_EXFIL_SINK = rf'\bcurl\b[\s\S]*(?:{_COMMAND_SUBSTITUTION_EXFIL_READ})'
+_WGET_EXFIL_SINK = (
+    r'\bwget\b(?=[\s\S]*'
+    r'(?:--post-file\b|--post-data\b|--body-file\b|--body-data\b|--method\s+POST\b))'
+)
+_PYTHON_HTTP_CLIENT_EXFIL_SINK = (
+    r'\bpython[23]?\b[\s\S]*(?:\s-c\b|<<)[\s\S]*'
+    r'\b(?:urllib(?:\.request)?|requests|httpx|urlopen)\b'
+)
+_HTTP_SERVER_EXFIL_SINK = r'\bpython[23]?\b\s+-m\s+(?:http\.server|simplehttpserver)\b'
+_HTTP_SERVER_SENSITIVE_EXPOSE = (
+    rf'(?:\bcd\s+["\']?(?:{_HARDLINE_HTTP_SERVER_EXPOSE_TARGET})["\']?\s*(?:&&|;|\n)[\s\S]*{_HTTP_SERVER_EXFIL_SINK}|'
+    rf'{_HTTP_SERVER_EXFIL_SINK}[\s\S]*--directory\s+["\']?(?:{_HARDLINE_HTTP_SERVER_EXPOSE_TARGET})["\']?)'
+)
+_DNS_SUBSTITUTION_EXFIL_SINK = rf'\b(?:nslookup|dig|host)\b[\s\S]*(?:{_COMMAND_SUBSTITUTION_EXFIL_READ})'
 _NETWORK_EXFIL_SINK = (
     rf'(?:{_CURL_EXFIL_SINK}|'
+    rf'{_CURL_SUBSTITUTION_EXFIL_SINK}|'
+    rf'{_WGET_EXFIL_SINK}|'
+    rf'{_PYTHON_HTTP_CLIENT_EXFIL_SINK}|'
+    rf'{_HTTP_SERVER_EXFIL_SINK}|'
+    rf'{_DNS_SUBSTITUTION_EXFIL_SINK}|'
     r'\b(?:nc|netcat|ncat)\b|'
     r'\bscp\b|'
     r'\bsocat\b|'
     r'/dev/tcp/|'
     r'\bpython[23]?\b[\s\S]*(?:\s-c\b|<<)[\s\S]*\bsocket\b)'
 )
-_EXFIL_READ_COMMAND = r'(?:cat|base64|xxd|od|hexdump|tar|gzip|openssl|gpg)'
+_BROAD_STRUCTURAL_EXFIL_UPLOAD = (
+    r'(?:\bcurl\b[\s\S]*(?:@|--upload-file\b|-T\b)|'
+    r'\bwget\b[\s\S]*(?:--post-file\b|--post-data\b|--body-file\b|--body-data\b)|'
+    r'\bscp\b)'
+)
 
 # Route deny-list form used by webhook/Discord sessions. The behavioral guard
 # below is authoritative; this regex gives route-level sessions the same broad
 # server-side floor even before ordinary dangerous-command approval is reached.
 CREDENTIAL_EXFIL_DENY_PATTERNS = [
-    rf'(?=[\s\S]*(?:{_HARDLINE_EXFIL_READ_TARGET}))'
-    rf'(?=[\s\S]*(?:{_NETWORK_EXFIL_SINK}))',
-    rf'(?=[\s\S]*(?:\b{_EXFIL_READ_COMMAND}\b|\b(?:curl\b[\s\S]*(?:@|--upload-file\b|-T\b)|scp\b))'
+    rf'(?:'
+    rf'(?=[\s\S]*(?:{_HARDLINE_EXFIL_READ_TARGET}))(?=[\s\S]*(?:{_NETWORK_EXFIL_SINK}))|'
+    rf'(?:{_HTTP_SERVER_SENSITIVE_EXPOSE})'
+    rf')',
+    rf'(?=[\s\S]*(?:\b{_EXFIL_READ_COMMAND}\b|{_BROAD_STRUCTURAL_EXFIL_UPLOAD})'
     rf'[\s\S]*(?:{_BROAD_EXFIL_READ_TARGET}))'
     rf'(?=[\s\S]*(?:{_NETWORK_EXFIL_SINK}))',
 ]
@@ -428,11 +465,14 @@ def _detect_credential_exfiltration(command: str) -> tuple[bool, Optional[str], 
     if not has_sink:
         return (False, None, None)
 
+    if re.search(_HTTP_SERVER_SENSITIVE_EXPOSE, normalized, _RE_FLAGS):
+        return (True, "hardline", "credential exfiltration: sensitive directory exposed via http.server")
+
     if re.search(_HARDLINE_EXFIL_READ_TARGET, normalized, _RE_FLAGS):
         return (True, "hardline", "credential exfiltration: sensitive credential path sent to network sink")
     if re.search(_BROAD_EXFIL_READ_TARGET, normalized, _RE_FLAGS):
         broad_read = re.search(rf'\b{_EXFIL_READ_COMMAND}\b[\s\S]*(?:{_BROAD_EXFIL_READ_TARGET})', normalized, _RE_FLAGS)
-        broad_structural_upload = re.search(rf'\b(?:curl\b[\s\S]*(?:@|--upload-file\b|-T\b)|scp\b)[\s\S]*(?:{_BROAD_EXFIL_READ_TARGET})', normalized, _RE_FLAGS)
+        broad_structural_upload = re.search(rf'{_BROAD_STRUCTURAL_EXFIL_UPLOAD}[\s\S]*(?:{_BROAD_EXFIL_READ_TARGET})', normalized, _RE_FLAGS)
         if broad_read or broad_structural_upload:
             return (True, "dangerous", "possible credential exfiltration: credential-looking file sent to network sink")
         return (False, None, None)
