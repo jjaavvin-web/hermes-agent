@@ -1,0 +1,45 @@
+{
+  "allOf": [
+    {
+      "description": "Base allOf fragment description",
+      "properties": {
+        "limit": {
+          "default": 10,
+          "type": "integer"
+        },
+        "query": {
+          "description": "Search query to execute",
+          "type": "string"
+        }
+      },
+      "required": [
+        "query"
+      ],
+      "type": "object"
+    },
+    {
+      "properties": {
+        "mode": {
+          "description": "Search mode",
+          "enum": [
+            "fts",
+            "semantic",
+            "hybrid"
+          ],
+          "type": "string"
+        },
+        "tags": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "mode"
+      ],
+      "type": "object"
+    }
+  ],
+  "description": "Merged allOf schema for an MVMS search call"
+}

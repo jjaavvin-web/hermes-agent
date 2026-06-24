@@ -931,10 +931,9 @@ class MatrixAdapter(BasePlatformAdapter):
         # Matrix reaction-based dangerous command approvals.
         self._approval_reaction_map = {
             "✅": "once",
+            # Both the emoji + escaped forms collapse to these two keys.
             "♾️": "always",
             "♾": "always",
-            "\u267e\ufe0f": "always",
-            "\u267e": "always",
             "❌": "deny",
             "❎": "deny",
         }

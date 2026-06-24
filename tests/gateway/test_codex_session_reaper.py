@@ -10,7 +10,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from gateway.codex_session_reaper import CodexSessionReaper
+from gateway.codex_session_reaper import CodexSessionReaper, _parse_iso
 
 
 # --------------------------------------------------------------------------- #
@@ -264,3 +264,302 @@ def test_ledger_records_every_decision(tmp_path):
     assert len(lines) == 2
     outcomes = {json.loads(line)["session_id"]: json.loads(line)["outcome"] for line in lines}
     assert outcomes == {"a": "released", "b": "orphaned"}
+
+
+# --------------------------------------------------------------------------- #
+# parsing and small pure helpers
+# --------------------------------------------------------------------------- #
+def test_parse_iso_accepts_trailing_z_as_utc():
+    parsed = _parse_iso("2026-06-23T12:34:56Z")
+
+    assert parsed == datetime(2026, 6, 23, 12, 34, 56, tzinfo=timezone.utc)
+
+
+def test_parse_iso_assumes_naive_datetime_is_utc():
+    parsed = _parse_iso("2026-06-23T12:34:56")
+
+    assert parsed == datetime(2026, 6, 23, 12, 34, 56, tzinfo=timezone.utc)
+
+
+@pytest.mark.parametrize("value", ["not-a-date", None, 123])
+def test_parse_iso_returns_none_for_invalid_values(value):
+    assert _parse_iso(value) is None
+
+
+def test_branch_for_uses_sid_and_isa_slug(tmp_path):
+    disp = _FakeDispatcher(tmp_path, {})
+    reaper = _reaper(disp)
+
+    assert reaper._branch_for({"session_id": "sid1", "isa_slug": "task-a"}) == "codex/sid1/task-a"
+
+
+def test_branch_for_uses_sid_only_when_isa_slug_missing(tmp_path):
+    disp = _FakeDispatcher(tmp_path, {})
+    reaper = _reaper(disp)
+
+    assert reaper._branch_for({"session_id": "sid1"}) == "codex/sid1"
+
+
+def test_branch_for_returns_empty_without_sid(tmp_path):
+    disp = _FakeDispatcher(tmp_path, {})
+    reaper = _reaper(disp)
+
+    assert reaper._branch_for({"isa_slug": "task-a"}) == ""
+
+
+# --------------------------------------------------------------------------- #
+# git-backed gates, with git calls stubbed out
+# --------------------------------------------------------------------------- #
+@pytest.mark.parametrize(
+    ("git_stdout", "expected"),
+    [
+        ("", False),
+        ("?? untracked.txt\n M changed.py\n", True),
+        (None, True),
+    ],
+)
+def test_has_uncommitted_work_uses_porcelain_and_fails_safe(tmp_path, git_stdout, expected):
+    wt = tmp_path / "wt"
+    wt.mkdir()
+    disp = _FakeDispatcher(tmp_path, {})
+    reaper = _reaper(disp)
+    calls = []
+
+    def fake_git(worktree: Path, *args: str):
+        calls.append((worktree, args))
+        return git_stdout
+
+    reaper._git = fake_git
+
+    assert reaper._has_uncommitted_work(wt) is expected
+    assert calls == [(wt, ("status", "--porcelain"))]
+
+
+def test_has_uncommitted_work_missing_worktree_is_not_dirty(tmp_path):
+    disp = _FakeDispatcher(tmp_path, {})
+    reaper = _reaper(disp)
+    reaper._git = MagicMock(return_value="?? would-not-be-called\n")
+
+    assert reaper._has_uncommitted_work(tmp_path / "missing") is False
+    reaper._git.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    ("git_stdout", "expected"),
+    [
+        ("", False),
+        ("abc123 progress\n", True),
+        (None, True),
+    ],
+)
+def test_has_commits_since_uses_log_and_fails_safe(tmp_path, git_stdout, expected):
+    wt = tmp_path / "wt"
+    wt.mkdir()
+    disp = _FakeDispatcher(tmp_path, {})
+    reaper = _reaper(disp)
+    since = datetime(2026, 6, 23, 12, 0, tzinfo=timezone.utc)
+    calls = []
+
+    def fake_git(worktree: Path, *args: str):
+        calls.append((worktree, args))
+        return git_stdout
+
+    reaper._git = fake_git
+
+    assert reaper._has_commits_since(wt, since) is expected
+    assert calls == [
+        (
+            wt,
+            ("log", "--since=2026-06-23T12:00:00", "--oneline", "-n", "1"),
+        )
+    ]
+
+
+def test_has_commits_since_missing_worktree_assumes_progress(tmp_path):
+    disp = _FakeDispatcher(tmp_path, {})
+    reaper = _reaper(disp)
+    reaper._git = MagicMock(return_value="")
+
+    assert reaper._has_commits_since(tmp_path / "missing", datetime.now(timezone.utc)) is True
+    reaper._git.assert_not_called()
+
+
+# --------------------------------------------------------------------------- #
+# open-PR branch helpers
+# --------------------------------------------------------------------------- #
+def test_branch_in_open_prs_matches_exact_branch(tmp_path):
+    disp = _FakeDispatcher(tmp_path, {})
+    reaper = _reaper(disp)
+
+    assert reaper._branch_in_open_prs("codex/s1/task", "s1", {"codex/s1/task"}) is True
+
+
+def test_branch_in_open_prs_returns_false_when_absent(tmp_path):
+    disp = _FakeDispatcher(tmp_path, {})
+    reaper = _reaper(disp)
+
+    assert reaper._branch_in_open_prs("codex/s1/task", "s1", {"codex/other/task"}) is False
+
+
+def test_branch_in_open_prs_matches_sid_substring_heuristic(tmp_path):
+    disp = _FakeDispatcher(tmp_path, {})
+    reaper = _reaper(disp)
+
+    assert reaper._branch_in_open_prs("renamed", "s1", {"review/s1/downstream"}) is True
+
+
+def test_branch_in_open_prs_matches_branch_ending_with_sid(tmp_path):
+    disp = _FakeDispatcher(tmp_path, {})
+    reaper = _reaper(disp)
+
+    assert reaper._branch_in_open_prs("renamed", "s1", {"review/s1"}) is True
+
+
+def test_branch_in_open_prs_empty_open_branches_is_false(tmp_path):
+    disp = _FakeDispatcher(tmp_path, {})
+    reaper = _reaper(disp)
+
+    assert reaper._branch_in_open_prs("codex/s1/task", "s1", set()) is False
+
+
+def test_safe_open_branches_returns_set_success(tmp_path):
+    disp = _FakeDispatcher(tmp_path, {})
+    reaper = CodexSessionReaper(disp, MagicMock(), lambda: {"codex/s1/task"})
+
+    assert reaper._safe_open_branches() == {"codex/s1/task"}
+
+
+def test_safe_open_branches_coerces_list(tmp_path):
+    disp = _FakeDispatcher(tmp_path, {})
+    reaper = CodexSessionReaper(disp, MagicMock(), lambda: ["codex/s1/task", "codex/s2/task"])
+
+    assert reaper._safe_open_branches() == {"codex/s1/task", "codex/s2/task"}
+
+
+def test_safe_open_branches_coerces_none_to_empty_set(tmp_path):
+    disp = _FakeDispatcher(tmp_path, {})
+    reaper = CodexSessionReaper(disp, MagicMock(), lambda: None)
+
+    assert reaper._safe_open_branches() == set()
+
+
+def test_safe_open_branches_returns_empty_set_on_lookup_error(tmp_path):
+    disp = _FakeDispatcher(tmp_path, {})
+
+    def boom():
+        raise RuntimeError("gh unavailable")
+
+    reaper = CodexSessionReaper(disp, MagicMock(), boom)
+
+    assert reaper._safe_open_branches() == set()
+
+
+# --------------------------------------------------------------------------- #
+# ledger and idle-boundary behavior
+# --------------------------------------------------------------------------- #
+def test_append_ledger_autocreates_parent_and_appends_sorted_json_lines(tmp_path):
+    disp = _FakeDispatcher(tmp_path, {})
+    reaper = _reaper(disp)
+    reaper._ledger_path = tmp_path / "new" / "nested" / "ledger.jsonl"
+
+    reaper._append_ledger({"b": 2, "a": 1})
+    reaper._append_ledger({"d": 4, "c": 3})
+
+    lines = reaper._ledger_path.read_text(encoding="utf-8").splitlines()
+    assert lines == ['{"a": 1, "b": 2}', '{"c": 3, "d": 4}']
+    assert [json.loads(line) for line in lines] == [{"a": 1, "b": 2}, {"c": 3, "d": 4}]
+
+
+def test_idle_reason_fires_at_exact_reap_idle_days_boundary(tmp_path):
+    disp = _FakeDispatcher(tmp_path, {})
+    reaper = _reaper(disp)
+    now = datetime(2026, 6, 23, 12, 0, tzinfo=timezone.utc)
+    row = {"last_message_at": (now - timedelta(days=10)).isoformat()}
+
+    assert reaper._idle_reason(row, None, now, reap_idle_days=10).startswith(
+        "last_message_at idle 10.0d >= 10d"
+    )
+
+
+def test_idle_reason_does_not_fire_just_below_reap_idle_days_boundary(tmp_path):
+    disp = _FakeDispatcher(tmp_path, {})
+    reaper = _reaper(disp)
+    now = datetime(2026, 6, 23, 12, 0, tzinfo=timezone.utc)
+    row = {"last_message_at": (now - timedelta(days=10) + timedelta(seconds=1)).isoformat()}
+
+    assert reaper._idle_reason(row, None, now, reap_idle_days=10) is None
+
+
+def test_idle_reason_fires_just_above_reap_idle_days_boundary(tmp_path):
+    disp = _FakeDispatcher(tmp_path, {})
+    reaper = _reaper(disp)
+    now = datetime(2026, 6, 23, 12, 0, tzinfo=timezone.utc)
+    row = {"last_message_at": (now - timedelta(days=10, seconds=1)).isoformat()}
+
+    assert reaper._idle_reason(row, None, now, reap_idle_days=10).startswith(
+        "last_message_at idle 10.0d >= 10d"
+    )
+
+
+# --------------------------------------------------------------------------- #
+# load-bearing safety invariants: idle work with WIP/open PR never releases
+# --------------------------------------------------------------------------- #
+def test_reap_dry_run_orphans_idle_uncommitted_work_but_releases_same_clean_session(tmp_path):
+    wt = tmp_path / "wt"
+    wt.mkdir()
+    rows = {"t-safety": _row("safety", wt, last_message_at=_iso(20), created_at=_iso(20))}
+    disp = _FakeDispatcher(tmp_path, rows)
+    dirty_reaper = _reaper(disp)
+    dirty_reaper._ledger_path = tmp_path / "dirty-ledger.jsonl"
+    dirty_reaper._git = lambda worktree, *args: "?? uncommitted.txt\n"
+
+    dirty_out = dirty_reaper.reap(reap_idle_days=10, dry_run=True)
+
+    assert dirty_out[0]["idle_reason"] is not None
+    assert dirty_out[0]["uncommitted_work"] is True
+    assert dirty_out[0]["outcome"] == "orphaned"
+    assert dirty_out[0]["outcome"] != "released"
+
+    clean_reaper = _reaper(disp)
+    clean_reaper._ledger_path = tmp_path / "clean-ledger.jsonl"
+    clean_reaper._git = lambda worktree, *args: ""
+
+    clean_out = clean_reaper.reap(reap_idle_days=10, dry_run=True)
+
+    assert clean_out[0]["uncommitted_work"] is False
+    assert clean_out[0]["outcome"] == "released"
+
+
+def test_reap_dry_run_orphans_idle_open_pr_branch_but_releases_without_open_pr(tmp_path):
+    wt = tmp_path / "wt"
+    wt.mkdir()
+    rows = {
+        "t-pr": _row(
+            "openpr",
+            wt,
+            last_message_at=_iso(20),
+            created_at=_iso(20),
+            isa_slug="feature",
+        )
+    }
+    disp = _FakeDispatcher(tmp_path, rows)
+    open_pr_reaper = _reaper(disp, open_branches={"codex/openpr/feature"})
+    open_pr_reaper._ledger_path = tmp_path / "open-pr-ledger.jsonl"
+    open_pr_reaper._git = lambda worktree, *args: ""
+
+    open_pr_out = open_pr_reaper.reap(reap_idle_days=10, dry_run=True)
+
+    assert open_pr_out[0]["idle_reason"] is not None
+    assert open_pr_out[0]["uncommitted_work"] is False
+    assert open_pr_out[0]["in_open_pr"] is True
+    assert open_pr_out[0]["outcome"] == "orphaned"
+    assert open_pr_out[0]["outcome"] != "released"
+
+    no_pr_reaper = _reaper(disp, open_branches=set())
+    no_pr_reaper._ledger_path = tmp_path / "no-pr-ledger.jsonl"
+    no_pr_reaper._git = lambda worktree, *args: ""
+
+    no_pr_out = no_pr_reaper.reap(reap_idle_days=10, dry_run=True)
+
+    assert no_pr_out[0]["in_open_pr"] is False
+    assert no_pr_out[0]["outcome"] == "released"
