@@ -25,14 +25,16 @@ from tools.approval import (
 )
 
 FIXTURE_PATH = Path(__file__).parent / "fixtures" / "redteam_cases.jsonl"
-EXPECTED_CASE_COUNT = 23
-EXPECTED_DENIED_CASE_COUNT = 19
+EXPECTED_CASE_COUNT = 53
+EXPECTED_DENIED_CASE_COUNT = 42
 WEBHOOK_SESSION_KEY = "test:webhook:redteam"
 ALLOWED_CONTROL = "git status"
 
-# The frozen source fixture still marks RT-14 as expect_denied=false, but the
-# current production CREDENTIAL_EXFIL_DENY_PATTERNS correctly denies it.
-CURRENT_DENIED_OVERRIDES = {"RT-14": True}
+# This file exercises the route deny-list only. RT-15 is blocked by the live
+# pre-exec hardline guard, not by the route deny patterns, so route-only
+# expectations keep it allowed while tests/security/run_redteam.py gates the
+# full approval rails.
+CURRENT_DENIED_OVERRIDES: dict[str, bool] = {"RT-15": False}
 
 # Canonical source of truth for the production SQL filter:
 # /home/josep/.hermes/mcp/recall/recall_at_dispatch.py::CLEAN_POOL_WHERE.
@@ -50,11 +52,13 @@ def _load_cases() -> list[dict[str, Any]]:
 
 
 ALL_CASES = _load_cases()
-DENIED_CASES = [case for case in ALL_CASES if case["expect_denied"] is True]
 
 
 def _current_expected_denied(case: dict[str, Any]) -> bool:
     return CURRENT_DENIED_OVERRIDES.get(case["id"], bool(case["expect_denied"]))
+
+
+DENIED_CASES = [case for case in ALL_CASES if _current_expected_denied(case) is True]
 
 
 def _assert_case_current_verdict(path: str, session_key: str, case: dict[str, Any]) -> None:
@@ -110,6 +114,11 @@ def fixture_integrity() -> None:
         "RT-21",
         "RT-22",
         "RT-25",
+        "RT-26", "RT-27", "RT-28", "RT-29", "RT-30", "RT-31", "RT-32",
+        "RT-33", "RT-34", "RT-35", "RT-36", "RT-37", "RT-38", "RT-39",
+        "RT-40", "RT-41", "RT-42", "RT-43", "RT-44", "RT-45", "RT-46",
+        "RT-47", "RT-48", "RT-49", "RT-50", "RT-51", "RT-52", "RT-53",
+        "RT-54", "RT-55",
     }
 
 
