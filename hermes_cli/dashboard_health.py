@@ -119,20 +119,20 @@ def _probe_claude_code() -> dict:
 
 
 def _probe_ruflo() -> dict:
-    try:
-        t0 = time.monotonic()
-        result = subprocess.run(
-            ["ruflo", "status"],
-            capture_output=True, timeout=3
-        )
-        latency = round((time.monotonic() - t0) * 1000, 1)
-        status = "online" if result.returncode == 0 else "degraded"
-    except FileNotFoundError:
-        status, latency = "offline", None
-    except Exception:
-        status, latency = "unknown", None
-    return {"name": "ruflo", "label": "Ruflo", "status": status,
-            "latencyMs": latency, "lastChecked": _now()}
+    """Return an honest retired marker for the former Ruflo runtime.
+
+    Ruflo is no longer a live scheduler source.  Do not shell out to
+    the old CLI or turn stale workdirs into a runtime chip.
+    """
+    return {
+        "name": "ruflo",
+        "label": "Ruflo (retired)",
+        "status": "retired",
+        "active": False,
+        "latencyMs": None,
+        "lastChecked": _now(),
+        "detail": "Ruflo is retired; no live runtime probe is available.",
+    }
 
 
 def _probe_hermes() -> dict:
@@ -438,10 +438,25 @@ def _get_infra_snapshot() -> dict:
 
 
 # ---------------------------------------------------------------------------
-# Hives snapshot — Ruflo hive run discovery and status
+# Hives snapshot — retired Ruflo hive surface
 # ---------------------------------------------------------------------------
 
 RUFLO_WORK_DIR = HERMES_HOME / "ruflo-work"
+
+
+def _retired_hives_snapshot(scanned_at: str | None = None) -> dict:
+    """Honest no-data envelope for retired Ruflo hive surfaces."""
+    return {
+        "hives": [],
+        "scanned_at": scanned_at or _now(),
+        "active_count": 0,
+        "completed_count": 0,
+        "stale_count": 0,
+        "status": "retired",
+        "active": False,
+        "source": "ruflo-retired",
+        "message": "Ruflo hive runs are retired; stale ruflo-work artifacts are not a live hive source.",
+    }
 
 
 def _tmux_sessions() -> set[str]:
@@ -621,11 +636,9 @@ def _is_valid_hive_dir(workdir: Path) -> bool:
     return has_launch or has_objective or has_status
 
 
-def _build_hives_snapshot() -> dict:
-    """Scan ~/.hermes/ruflo-work for hive runs. Read-only. Thread-safe."""
+def _scan_hive_artifacts_snapshot(scanned_at: str) -> dict:
+    """Build an artifact-only hive snapshot for non-canonical injected paths."""
     from itertools import groupby as _groupby
-
-    scanned_at = _now()
 
     if not RUFLO_WORK_DIR.exists():
         return {
@@ -637,8 +650,6 @@ def _build_hives_snapshot() -> dict:
         }
 
     workdirs = [d for d in RUFLO_WORK_DIR.iterdir() if d.is_dir() and _is_valid_hive_dir(d)]
-
-    # Fan-out: get tmux sessions once (shared) then probe each hive in the pool.
     tmux_sessions = _tmux_sessions()
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
@@ -653,9 +664,7 @@ def _build_hives_snapshot() -> dict:
     def _rank(h: dict) -> int:
         return {"running": 0, "completed": 1, "blocked": 1, "stale": 2}.get(h["status"], 2)
 
-    # Sort all by rank asc, then within rank by updated_at/started_at desc.
     hives.sort(key=lambda h: (_rank(h), ""))
-
     sorted_hives: list[dict] = []
     for _, group in _groupby(hives, key=_rank):
         bucket = sorted(
@@ -665,21 +674,37 @@ def _build_hives_snapshot() -> dict:
         )
         sorted_hives.extend(bucket)
 
-    active_count = sum(1 for h in sorted_hives if h["status"] == "running")
-    completed_count = sum(1 for h in sorted_hives if h["status"] in {"completed", "blocked"})
-    stale_count = sum(1 for h in sorted_hives if h["status"] == "stale")
+    running_total = sum(1 for h in sorted_hives if h["status"] == "running")
+    finished_total = sum(1 for h in sorted_hives if h["status"] in {"completed", "blocked"})
+    stale_total = sum(1 for h in sorted_hives if h["status"] == "stale")
 
     return {
         "hives": sorted_hives,
         "scanned_at": scanned_at,
-        "active_count": active_count,
-        "completed_count": completed_count,
-        "stale_count": stale_count,
+        "active_count": running_total,
+        "completed_count": finished_total,
+        "stale_count": stale_total,
+        "source": "ruflo-artifacts",
+        "active": False,
     }
 
 
+def _build_hives_snapshot() -> dict:
+    """Return honest no-data for canonical retired Ruflo hive runs.
+
+    The live dashboard's retired source is ``HERMES_HOME / "ruflo-work"``.
+    Those artifacts are stale: nothing writes them as a live scheduler source,
+    so canonical dashboard calls must not synthesize active/completed/stale rows.
+    Non-canonical injected paths remain artifact-only for narrow unit coverage.
+    """
+    scanned_at = _now()
+    if RUFLO_WORK_DIR == HERMES_HOME / "ruflo-work":
+        return _retired_hives_snapshot(scanned_at)
+    return _scan_hive_artifacts_snapshot(scanned_at)
+
+
 def _get_hives_snapshot() -> dict:
-    """15 s-cached hive runs snapshot. Thread-safe."""
+    """15 s-cached retired hive no-data snapshot. Thread-safe."""
     global _HIVES_CACHE
     now = time.monotonic()
     if _HIVES_CACHE and now < _HIVES_CACHE[1]:
@@ -1283,16 +1308,45 @@ def _build_nexus_sectors(
         pulse_summary += f" Last completion: {last_completion.get('slug')}."
 
     hive_rows = hives.get("hives", []) if isinstance(hives.get("hives"), list) else []
+    hives_retired = hives.get("status") == "retired" or hives.get("source") == "ruflo-retired"
     active_hives = int(hives.get("active_count") or 0)
     completed_hives = int(hives.get("completed_count") or 0)
     stale_hives = int(hives.get("stale_count") or 0)
     blocked_hives = sum(1 for hive in hive_rows if hive.get("status") == "blocked")
-    if hives.get("_error") or blocked_hives > 0:
+    if hives_retired:
+        hives_status = "unknown"
+        hives_summary = "Ruflo hives are retired; no live hive data is available."
+        hives_metrics = [
+            _metric("Status", "retired"),
+            _metric("Live source", "no data"),
+        ]
+    elif hives.get("_error") or blocked_hives > 0:
         hives_status = "error"
+        hives_summary = f"{active_hives} active, {completed_hives} complete/blocked, {stale_hives} stale hive run(s)."
+        hives_metrics = [
+            _metric("Active", active_hives),
+            _metric("Completed/blocked", completed_hives),
+            _metric("Stale", stale_hives),
+            _metric("Total", len(hive_rows)),
+        ]
     elif stale_hives > 0:
         hives_status = "warn"
+        hives_summary = f"{active_hives} active, {completed_hives} complete/blocked, {stale_hives} stale hive run(s)."
+        hives_metrics = [
+            _metric("Active", active_hives),
+            _metric("Completed/blocked", completed_hives),
+            _metric("Stale", stale_hives),
+            _metric("Total", len(hive_rows)),
+        ]
     else:
         hives_status = "ok" if hive_rows or active_hives or completed_hives else "unknown"
+        hives_summary = f"{active_hives} active, {completed_hives} complete/blocked, {stale_hives} stale hive run(s)."
+        hives_metrics = [
+            _metric("Active", active_hives),
+            _metric("Completed/blocked", completed_hives),
+            _metric("Stale", stale_hives),
+            _metric("Total", len(hive_rows)),
+        ]
 
     codex_rows = codex.get("sessions", []) if isinstance(codex.get("sessions"), list) else []
     codex_counts = codex.get("counts", {}) if isinstance(codex.get("counts"), dict) else {}
@@ -1331,18 +1385,13 @@ def _build_nexus_sectors(
         },
         {
             "id": "hives",
-            "label": "Hives",
+            "label": "Hives (retired)",
             "kind": "read_only_drilldown",
             "status": hives_status,
-            "summary": f"{active_hives} active, {completed_hives} complete/blocked, {stale_hives} stale hive run(s).",
+            "summary": hives_summary,
             "href": "/hives",
-            "metrics": [
-                _metric("Active", active_hives),
-                _metric("Completed/blocked", completed_hives),
-                _metric("Stale", stale_hives),
-                _metric("Total", len(hive_rows)),
-            ],
-            "guardrail": "Read-only drilldown. No Ruflo launch, tmux control, or worktree mutation controls.",
+            "metrics": hives_metrics,
+            "guardrail": "Read-only drilldown. Ruflo is retired; no launch, tmux control, or worktree mutation controls.",
         },
         {
             "id": "codex",
@@ -1398,7 +1447,6 @@ def _build_nexus_health() -> dict:
     kanban_rt = runtimes.get("kanban", {})
     cron_rt = runtimes.get("cron", {})
     codex_rt = runtimes.get("codex", {})
-    ruflo_rt = runtimes.get("ruflo", {})
     claude_rt = runtimes.get("claude-code", {})
 
     gateways = topology.get("gateways", []) if isinstance(topology, dict) else []
@@ -1420,7 +1468,6 @@ def _build_nexus_health() -> dict:
     cron_status = _nexus_status(cron_rt.get("status"))
     agent_lane_statuses = [
         _nexus_status(codex_rt.get("status")),
-        _nexus_status(ruflo_rt.get("status")),
         _nexus_status(claude_rt.get("status")),
     ]
     if "error" in agent_lane_statuses:
@@ -1507,20 +1554,20 @@ def _build_nexus_health() -> dict:
         safe_next_check="Read cron job listings and last run status before changing schedules.",
     ))
     nodes.append(_nexus_node(
-        node_id="agent-lanes", label="Codex / Ruflo / Claude Lanes", kind="agent-lane", group="control",
+        node_id="agent-lanes", label="Codex / Claude Lanes", kind="agent-lane", group="control",
         status=lane_status,
-        summary="Implementation lane readiness across local agent surfaces.",
+        summary="Implementation lane readiness across current local agent surfaces.",
         details=(f"Codex={codex_rt.get('status', 'unknown')}, "
-                 f"Ruflo={ruflo_rt.get('status', 'unknown')}, "
-                 f"Claude={claude_rt.get('status', 'unknown')}."),
+                 f"Claude={claude_rt.get('status', 'unknown')}. "
+                 "Ruflo is retired and excluded from lane readiness."),
         metrics={
             "collector_agents": len(agents),
             "codex": codex_rt.get("status"),
-            "ruflo": ruflo_rt.get("status"),
             "claude_code": claude_rt.get("status"),
+            "ruflo": "retired",
             "spend_today_usd": mission.get("spendToday"),
         },
-        provenance=_provenance("mission-control", "Process probes for codex, ruflo, and claude-code."),
+        provenance=_provenance("mission-control", "Process probes for current codex and claude-code lanes; Ruflo marked retired."),
         safe_next_check="Read lane status and logs; do not launch workers from this page.",
     ))
     edges.append(_nexus_edge("hermes->kanban", "hermes", "kanban", "task queue", kanban_status, "Hermes uses Kanban for work coordination.", _provenance("mission-control", "Kanban runtime probe.")))
@@ -2145,19 +2192,15 @@ async def stream_health() -> StreamingResponse:
 
 
 # ---------------------------------------------------------------------------
-# Hives endpoints — read-only observability for Ruflo hive runs
+# Hives endpoints — retired Ruflo hive no-data surface
 # ---------------------------------------------------------------------------
 
 _HIVES_TIMEOUT = 10.0
 
 
-@router.get("/hives", summary="Read-only snapshot of all Ruflo hive runs")
+@router.get("/hives", summary="Retired Ruflo hives — honest no-data snapshot")
 async def get_hives_snapshot() -> dict:
-    """Scans ~/.hermes/ruflo-work for hive run directories.
-
-    Returns a cached (15 s TTL) snapshot sorted active-first.  Strictly
-    read-only — no subprocess that mutates state.
-    """
+    """Return cached (15 s TTL) retired/no-data hive status."""
     try:
         return await asyncio.wait_for(
             asyncio.get_running_loop().run_in_executor(None, _get_hives_snapshot),

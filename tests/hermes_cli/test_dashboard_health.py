@@ -307,13 +307,13 @@ def test_nexus_health_safe_caution_and_stop_postures(monkeypatch):
 
     caution_mission = _healthy_mission()
     for runtime in caution_mission["runtimes"]:
-        if runtime["name"] == "ruflo":
+        if runtime["name"] == "codex":
             runtime["status"] = "degraded"
     _wire_nexus_inputs(monkeypatch, mission=caution_mission)
     caution = d._build_nexus_health()
     assert caution["posture"] == "caution"
     assert "need attention" in caution["summary"]
-    assert "Codex / Ruflo / Claude Lanes" in caution["summary"]
+    assert "Codex / Claude Lanes" in caution["summary"]
 
     gated_topology = _healthy_topology()
     gated_topology["mcp"] = [{"id": "honcho", "name": "honcho", "status": "auth_gated"}]
@@ -373,7 +373,7 @@ def test_build_nexus_sectors_classifies_degraded_dashboard_sources():
     assert any(metric == {"label": "Spend today", "value": "$1.25"} for metric in sectors["pulse"]["metrics"])
     assert any(metric == {"label": "States", "value": "ESCALATED:1, EXECUTING:1"} for metric in sectors["codex"]["metrics"])
     assert "No dispatch" in sectors["pulse"]["guardrail"]
-    assert "No Ruflo launch" in sectors["hives"]["guardrail"]
+    assert "Ruflo is retired" in sectors["hives"]["guardrail"]
     assert "No launch or merge" in sectors["codex"]["guardrail"]
 
 
@@ -494,15 +494,16 @@ def test_docker_and_port_probes_are_filtered_and_offline_without_real_network(mo
 
 
 def test_runtime_process_probes_classify_missing_and_degraded_tools(monkeypatch):
-    monkeypatch.setattr(d.subprocess, "run", lambda *args, **kwargs: (_ for _ in ()).throw(FileNotFoundError("ruflo")))
-    missing = d._probe_ruflo()
-    assert missing["status"] == "offline"
-    assert missing["latencyMs"] is None
+    def fail_if_called(*args, **kwargs):
+        raise AssertionError("retired Ruflo probe must not shell out")
 
-    monkeypatch.setattr(d.subprocess, "run", lambda *args, **kwargs: SimpleNamespace(returncode=1, stdout=""))
-    degraded = d._probe_ruflo()
-    assert degraded["status"] == "degraded"
-    assert degraded["latencyMs"] is not None
+    monkeypatch.setattr(d.subprocess, "run", fail_if_called)
+    retired = d._probe_ruflo()
+
+    assert retired["status"] == "retired"
+    assert retired["active"] is False
+    assert retired["latencyMs"] is None
+    assert "retired" in retired["detail"]
 
     monkeypatch.setattr(d, "_process_alive", lambda name: ("offline", 7.0))
     monkeypatch.setattr(d.subprocess, "run", lambda *args, **kwargs: SimpleNamespace(returncode=0, stdout="123\n"))
@@ -793,3 +794,56 @@ def test_swarm_status_no_fabrication_from_stale_ruflo_dirs(monkeypatch):
     assert "Hive Mind Swarm" not in source
     assert "hierarchical-mesh" not in source
 
+
+
+
+def test_retired_ruflo_probe_and_hives_ignore_stale_workdir(monkeypatch):
+    stale_hive = d.RUFLO_WORK_DIR / "dead-but-live-hive"
+    stale_hive.mkdir(parents=True)
+    (stale_hive / "LAUNCH.sh").write_text(
+        '#!/bin/bash\nTRACK_TITLE="Do Not Fabricate"\n',
+        encoding="utf-8",
+    )
+    (stale_hive / ".ruflo-status.json").write_text(
+        json.dumps({"session": "dead-session", "tracking_card": "card-123"}),
+        encoding="utf-8",
+    )
+    (stale_hive / "hive-mind.log").write_text("old log line\n", encoding="utf-8")
+
+    def no_ruflo_status(cmd, *args, **kwargs):
+        if cmd and cmd[0] == "ruflo":
+            raise FileNotFoundError("ruflo retired")
+        return SimpleNamespace(returncode=1, stdout="")
+
+    monkeypatch.setattr(d.subprocess, "run", no_ruflo_status)
+    monkeypatch.setattr(d, "_HIVES_CACHE", None)
+    monkeypatch.setattr(d, "_NEXUS_CACHE", None)
+
+    probe = d._probe_ruflo()
+    snapshot = d._build_hives_snapshot()
+    endpoint = _run(d.get_hives_snapshot())
+    sectors = {sector["id"]: sector for sector in d._build_nexus_sectors(
+        pulse={"pending_cards": 0, "active_hives": 0, "today_pr_merges": 0, "today_spend_usd": 0},
+        hives=snapshot,
+        codex={"sessions": [], "counts": {"total": 0, "by_state": {}}},
+    )}
+
+    assert probe["status"] == "retired"
+    assert probe["active"] is False
+    assert probe["latencyMs"] is None
+    assert snapshot["status"] == "retired"
+    assert snapshot["active"] is False
+    assert snapshot["hives"] == []
+    assert snapshot["active_count"] == 0
+    assert snapshot["completed_count"] == 0
+    assert snapshot["stale_count"] == 0
+    assert endpoint["hives"] == []
+    assert endpoint["source"] == "ruflo-retired"
+    assert sectors["hives"]["status"] == "unknown"
+    assert sectors["hives"]["summary"] == "Ruflo hives are retired; no live hive data is available."
+    assert sectors["hives"]["metrics"] == [
+        {"label": "Status", "value": "retired"},
+        {"label": "Live source", "value": "no data"},
+    ]
+    assert "dead-but-live-hive" not in json.dumps(endpoint)
+    assert "Do Not Fabricate" not in json.dumps(endpoint)
