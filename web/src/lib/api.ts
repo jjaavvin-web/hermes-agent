@@ -2594,6 +2594,7 @@ export interface OSInfraMetric {
 
 export interface OSInfraSnapshot {
   cost?: OSInfraMetric;
+  config_drift?: OSInfraMetric;
   dr?: OSInfraMetric;
   evals?: OSInfraMetric;
   security?: OSInfraMetric;
