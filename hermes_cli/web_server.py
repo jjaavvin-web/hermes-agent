@@ -13002,6 +13002,12 @@ try:
 except Exception as _exc:
     _log.warning("Failed to load dashboard_cost routes: %s", _exc)
 try:
+    from hermes_cli.dashboard_slo import router as _slo_router
+    app.include_router(_slo_router)
+    _log.info("Mounted SLO observability dashboard API routes at /api/dashboard/slo")
+except Exception as _exc:
+    _log.warning("Failed to load dashboard_slo routes: %s", _exc)
+try:
     from hermes_cli.dashboard_cron_reliability import router as _cron_reliability_router
     app.include_router(_cron_reliability_router)
     _log.info("Mounted cron reliability API route at /api/cron/reliability")
