@@ -32,7 +32,7 @@ import sys
 import uuid
 from pathlib import Path
 from typing import List
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -313,3 +313,132 @@ async def test_archive_is_idempotent(env):
 
     state = json.loads((env["hermes_home"] / "codex_sessions.json").read_text())
     assert state["sessions"] == {}
+
+
+# ---------------------------------------------------------------------------
+# TESTS-5 coverage: merge/finalize/revive/restart ordering edges
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_finalize_under_merge_conflict_keeps_session_merging_without_pr_meta(env):
+    """Fake-adapter path: an APPROVE whose merge broker reports a conflict
+    must not fake-finalize or leave watcher-visible PR metadata behind."""
+    from agent.peer_review import Verdict
+
+    dispatcher = env["dispatcher"]
+    await dispatcher.on_thread_create(
+        ThreadEvent(thread_id="merge-conflict", channel_id="chan", isa_slug="merge-conflict")
+    )
+
+    peer_review = MagicMock()
+    peer_review.start = AsyncMock()
+    peer_review.review = AsyncMock(
+        return_value=Verdict(
+            kind="APPROVE",
+            rationale="looks mergeable except conflict",
+            iteration=1,
+            raw_capture="VERDICT: APPROVE",
+            duration_sec=0.1,
+            pane_id="review-pane",
+        )
+    )
+
+    merge_broker = MagicMock()
+
+    async def conflict_merge(**_kwargs):
+        from agent.merge_broker import MergeResult
+
+        return MergeResult(ok=False, error="merge conflict in gateway/codex_session_dispatcher.py")
+
+    merge_broker.merge = conflict_merge
+    dispatcher._peer_review = peer_review
+    dispatcher._merge_broker = merge_broker
+
+    await dispatcher.on_phase_verify("merge-conflict")
+
+    row = dispatcher._load_state()["sessions"]["merge-conflict"]
+    assert row["state"] == "MERGING"
+    assert "pr_number" not in row
+    assert "pr_url" not in row
+    assert "pr_state" not in row
+    assert any(
+        "Merge failed" in call.args[1] and "merge conflict" in call.args[1]
+        for call in env["discord_send"].await_args_list
+    )
+
+
+@pytest.mark.asyncio
+async def test_revive_after_crash_archives_previous_isa_and_allocates_fresh_session(env):
+    """Fake-adapter revive: after restart marks a missing worktree ORPHANED,
+    /revive archives the old ISA and allocates a new row on the same thread."""
+    await env["dispatcher"].on_thread_create(
+        ThreadEvent(thread_id="revive-crash", channel_id="chan", isa_slug="revive-crash")
+    )
+    original = env["dispatcher"]._load_state()["sessions"]["revive-crash"]
+    old_sid = original["session_id"]
+    old_isa = Path(original["isa_path"])
+    old_isa.write_text(old_isa.read_text(encoding="utf-8") + "\nold progress\n", encoding="utf-8")
+
+    # Simulate a crash/manual cleanup where the registered worktree vanished.
+    env["broker"].release(old_sid)
+    restart_results = await env["dispatcher"].on_bot_restart()
+    assert [r.status for r in restart_results] == ["orphaned"]
+    assert env["dispatcher"]._load_state()["sessions"]["revive-crash"]["state"] == "ORPHANED"
+
+    from gateway.codex_session_dispatcher import SlashContext
+
+    response = await env["dispatcher"].slash_command(
+        "revive",
+        SlashContext(thread_id="revive-crash", channel_id="chan", options={}),
+    )
+
+    revived = env["dispatcher"]._load_state()["sessions"]["revive-crash"]
+    assert "revived" in response.content.lower()
+    assert revived["session_id"] != old_sid
+    assert revived["state"] == "CLAIMED"
+    assert Path(revived["worktree_path"]).exists()
+    archive_files = list((old_isa.parent / "_ephemeral").glob("orphaned-*.md"))
+    assert len(archive_files) == 1
+    assert "old progress" in archive_files[0].read_text(encoding="utf-8")
+
+
+@pytest.mark.asyncio
+async def test_reaper_vs_in_flight_merge_ordering_preserves_merging_session(env):
+    """Restart/reaper ordering: a MERGING row without a worktree is in-flight
+    merge state and must not be downgraded to ORPHANED before the watcher can
+    finalize it."""
+    await env["dispatcher"].on_thread_create(
+        ThreadEvent(thread_id="reaper-merge", channel_id="chan", isa_slug="reaper-merge")
+    )
+    state = env["dispatcher"]._load_state()
+    row = state["sessions"]["reaper-merge"]
+    sid = row["session_id"]
+    row["state"] = "MERGING"
+    row["pr_number"] = 77
+    row["pr_url"] = "https://example/pr/77"
+    row["pr_state"] = "OPEN"
+    env["dispatcher"]._write_state(state)
+
+    env["broker"].release(sid)
+
+    restart_results = await env["dispatcher"].on_bot_restart()
+    persisted = env["dispatcher"]._load_state()["sessions"]["reaper-merge"]
+    assert restart_results == []
+    assert persisted["state"] == "MERGING"
+    assert persisted["pr_state"] == "OPEN"
+
+    await env["dispatcher"].on_pr_merged(
+        "reaper-merge",
+        {
+            "state": "MERGED",
+            "mergedAt": "2026-06-24T12:00:00Z",
+            "mergeCommit": {"oid": "facefeed"},
+            "url": "https://example/pr/77",
+            "number": 77,
+        },
+    )
+    finalized = env["dispatcher"]._load_state()["sessions"]["reaper-merge"]
+    assert finalized["state"] == "COMPLETE"
+    assert finalized["pr_state"] == "MERGED"
+    assert finalized["merge_commit_oid"] == "facefeed"

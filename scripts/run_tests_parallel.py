@@ -44,6 +44,7 @@ import subprocess
 import sys
 import threading
 import time
+import uuid
 from concurrent.futures import ThreadPoolExecutor, Future
 from pathlib import Path
 from typing import Dict, List, Tuple
@@ -78,6 +79,9 @@ _DEFAULT_FILE_TIMEOUT_SECONDS = 140.0 # set by observing the slowest file at com
 # wall-clock seconds. Used by ``--slice`` to distribute files across
 # CI jobs by estimated total time, so no one job gets all the slow files.
 _DURATIONS_FILE = "test_durations.json"
+_COVERAGE_XML_FILE = "coverage.xml"
+_COVERAGE_DIFF_FILE = "diff-cover.txt"
+_COVERAGE_INCLUDE_PATTERNS = ["agent/*", "gateway/*", "tools/*", "hermes_cli/*"]
 
 
 def _count_tests(
@@ -108,12 +112,19 @@ def _count_tests(
             if d.is_dir():
                 ignore_args.extend(["--ignore", str(d)])
 
+    # Keep collection stable even when the actual per-file pytest run uses
+    # quiet/verbose flags. ``pytest --co -q -q`` prints only the final count
+    # summary, not node ids, so strip output-verbosity flags here.
+    collection_args = [
+        arg for arg in pytest_passthrough
+        if arg not in {"-q", "--quiet", "-v", "--verbose"}
+    ]
     cmd = [
         sys.executable, "-m", "pytest",
         "--co", "-q",
         *ignore_args,
         *[str(f) for f in files],
-        *pytest_passthrough,
+        *collection_args,
     ]
     try:
         result = subprocess.run(
@@ -132,7 +143,8 @@ def _count_tests(
         if "::" not in line:
             continue
         file_part = line.split("::", 1)[0]
-        key = repo_root / file_part
+        raw_path = Path(file_part)
+        key = raw_path if raw_path.is_absolute() else repo_root / raw_path
         counts[key] = counts.get(key, 0) + 1
 
     return counts
@@ -248,6 +260,8 @@ def _run_one_file(
     pytest_args: List[str],
     repo_root: Path,
     file_timeout: float,
+    coverage: bool = False,
+    coverage_dir: Path | None = None,
 ) -> Tuple[Path, int, str, dict[str, int], float]:
     """Run ``python -m pytest <file> <pytest_args>`` in a fresh subprocess.
 
@@ -274,8 +288,21 @@ def _run_one_file(
     orphan onto PID 1. This outer timeout exists only to
     bound a pathologically slow or hung file as a whole.
     """
-    cmd = [sys.executable, "-m", "pytest", str(file), *pytest_args]
-    
+    if coverage:
+        cmd = [sys.executable, "-m", "coverage", "run", "--parallel-mode", "-m", "pytest", str(file), *pytest_args]
+    else:
+        cmd = [sys.executable, "-m", "pytest", str(file), *pytest_args]
+
+    env = {**os.environ, "PYTHONDONTWRITEBYTECODE": "1"}
+    if coverage:
+        if coverage_dir is None:
+            raise ValueError("coverage_dir is required when coverage=True")
+        coverage_dir.mkdir(parents=True, exist_ok=True)
+        rel_name = _format_file(file, repo_root).replace(os.sep, "_").replace("/", "_")
+        env["COVERAGE_FILE"] = str(
+            coverage_dir / f".coverage.{rel_name}.{os.getpid()}.{uuid.uuid4().hex}"
+        )
+
     subproc_start = time.monotonic()
     # launch the pytest process
     proc = subprocess.Popen(
@@ -285,7 +312,7 @@ def _run_one_file(
         stderr=subprocess.STDOUT,
         text=True,
         # skipping writing bytecode because we're running a bunch of parallel python processes on the same code
-        env={**os.environ, 'PYTHONDONTWRITEBYTECODE': '1'},
+        env=env,
         # POSIX: place the child at the head of its own process group so
         # _kill_tree can SIGKILL the group atomically.
         # Windows: this maps to CREATE_NEW_PROCESS_GROUP in CPython 3.12+;
@@ -511,6 +538,7 @@ def _load_durations(repo_root: Path) -> dict[str, float]:
 def _save_durations(
     file_times: List[Tuple[Path, float]],
     repo_root: Path,
+    output_path: Path | None = None,
 ) -> None:
     """Write the duration cache so future ``--slice`` runs can use it.
 
@@ -523,9 +551,101 @@ def _save_durations(
     for f, t in file_times:
         key = _format_file(f, repo_root)
         data[key] = round(t, 3)
-    path = repo_root / _DURATIONS_FILE
-    path.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n")
+    path = output_path or (repo_root / _DURATIONS_FILE)
+    path.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
+
+
+def _combine_coverage(repo_root: Path, coverage_dir: Path) -> bool:
+    """Combine per-file coverage fragments and write coverage.xml.
+
+    Returns True when a combined report was produced. Coverage is advisory:
+    command failures are printed and do not change the runner exit code.
+    """
+    fragments = sorted(coverage_dir.glob(".coverage.*"))
+    if not fragments:
+        print("  Coverage: no per-file fragments found; skipping combine")
+        return False
+
+    print(f"  Coverage: combining {len(fragments)} fragment(s) from {coverage_dir.relative_to(repo_root)}")
+    combine = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "coverage",
+            "combine",
+            "--keep",
+            "--data-file",
+            str(repo_root / ".coverage"),
+            str(coverage_dir),
+        ],
+        cwd=repo_root,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if combine.returncode != 0:
+        print("  Coverage combine failed (advisory):")
+        print((combine.stdout + combine.stderr).strip())
+        return False
+
+    xml = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "coverage",
+            "xml",
+            "-o",
+            _COVERAGE_XML_FILE,
+            "--data-file",
+            str(repo_root / ".coverage"),
+        ],
+        cwd=repo_root,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if xml.returncode != 0:
+        print("  Coverage XML generation failed (advisory):")
+        print((xml.stdout + xml.stderr).strip())
+        return False
+    print(f"  Coverage XML written to {_COVERAGE_XML_FILE}")
+    return True
+
+
+def _run_diff_cover(repo_root: Path, compare_branch: str | None, fail_under: float) -> None:
+    """Run diff-cover as an advisory report and always return normally."""
+    coverage_xml = repo_root / _COVERAGE_XML_FILE
+    if not coverage_xml.exists():
+        print("  diff-cover: coverage.xml missing; skipping")
+        return
+
+    cmd = [
+        sys.executable,
+        "-m",
+        "diff_cover.diff_cover_tool",
+        _COVERAGE_XML_FILE,
+        "--show-uncovered",
+        "--include",
+        *_COVERAGE_INCLUDE_PATTERNS,
+        "--fail-under",
+        str(fail_under),
+    ]
+    if compare_branch:
+        cmd.extend(["--compare-branch", compare_branch])
+
+    result = subprocess.run(
+        cmd,
+        cwd=repo_root,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    output = (result.stdout + result.stderr).strip()
+    (repo_root / _COVERAGE_DIFF_FILE).write_text(output + ("\n" if output else ""), encoding="utf-8")
+    print(f"  diff-cover advisory written to {_COVERAGE_DIFF_FILE} (exit {result.returncode}, ignored)")
+    if output:
+        print(output)
 
 def _slice_files(
     files: List[Path],
@@ -639,6 +759,31 @@ def main() -> int:
         ),
     )
     parser.add_argument(
+        "--coverage",
+        action="store_true",
+        help=(
+            "Run each test file under coverage run --parallel-mode, then "
+            "combine fragments and write coverage.xml. Advisory-only: "
+            "coverage/diff-cover failures do not change the test exit code."
+        ),
+    )
+    parser.add_argument(
+        "--coverage-dir",
+        default=os.environ.get("HERMES_TEST_COVERAGE_DIR", ".coverage-fragments"),
+        help="Directory for per-file .coverage.* fragments (default: .coverage-fragments).",
+    )
+    parser.add_argument(
+        "--diff-cover-compare-branch",
+        default=os.environ.get("HERMES_DIFF_COVER_COMPARE_BRANCH"),
+        help="Optional branch/ref for advisory diff-cover comparison.",
+    )
+    parser.add_argument(
+        "--diff-cover-fail-under",
+        type=float,
+        default=float(os.environ.get("HERMES_DIFF_COVER_FAIL_UNDER", "85")),
+        help="Advisory diff-cover threshold; exit is always ignored (default: 85).",
+    )
+    parser.add_argument(
         "paths_positional",
         nargs="*",
         metavar="PATH",
@@ -712,7 +857,8 @@ def main() -> int:
     print(
         f"Discovered {len(files)} test files ({total_tests} tests) under "
         f"{[str(r.relative_to(repo_root)) if r.is_relative_to(repo_root) else str(r) for r in roots]}; "
-        f"running with -j {args.jobs}",
+        f"running with -j {args.jobs}"
+        f"{' + coverage' if args.coverage else ''}",
         flush=True,
     )
 
@@ -720,6 +866,14 @@ def main() -> int:
     # terminal clean rather than interleaving N parallel pytest outputs).
     failures: List[Tuple[Path, str, Dict[str, int]]] = []
     file_times: List[Tuple[Path, float]] = []  # (file, subprocess_wall) for distribution
+    coverage_dir = repo_root / args.coverage_dir
+    if args.coverage:
+        coverage_dir.mkdir(parents=True, exist_ok=True)
+        for old_fragment in coverage_dir.glob(".coverage.*"):
+            old_fragment.unlink()
+        for stale in [repo_root / ".coverage", repo_root / _COVERAGE_XML_FILE, repo_root / _COVERAGE_DIFF_FILE]:
+            if stale.exists():
+                stale.unlink()
     started = time.monotonic()
     files_done = 0
     tests_done = 0
@@ -776,7 +930,13 @@ def main() -> int:
         for file in files:
             t0 = time.monotonic()
             fut = pool.submit(
-                _run_one_file, file, pytest_passthrough, repo_root, args.file_timeout
+                _run_one_file,
+                file,
+                pytest_passthrough,
+                repo_root,
+                args.file_timeout,
+                args.coverage,
+                coverage_dir,
             )
             fut.add_done_callback(lambda f, file=file, t0=t0: _on_done(file, t0, f))
             futures.append(fut)
@@ -796,8 +956,17 @@ def main() -> int:
     # Locally, _save_durations merges with any existing cache so entries
     # from previous runs aren't lost.
     if file_times:
-        _save_durations(file_times, repo_root)
+        duration_output = repo_root / _DURATIONS_FILE
+        _save_durations(file_times, repo_root, duration_output)
         print(f"  Durations cached to {_DURATIONS_FILE} ({len(file_times)} files)")
+
+    if args.coverage:
+        if _combine_coverage(repo_root, coverage_dir):
+            _run_diff_cover(
+                repo_root,
+                compare_branch=args.diff_cover_compare_branch,
+                fail_under=args.diff_cover_fail_under,
+            )
 
     # Per-file time distribution (throwaway diagnostic — shows how
     # subprocess time is distributed so we can see if startup dominates).

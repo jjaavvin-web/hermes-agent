@@ -628,9 +628,9 @@ class CodexSessionDispatcher(_CommandsMixin):
                 # P3.5: COMPLETE / ESCALATED sessions have already been
                 # finalized; their worktree may have been released, but
                 # that's expected and must not flip them to ORPHANED.
-                if row.get("state") in {"COMPLETE", "ESCALATED"}:
+                if row.get("state") in {"COMPLETE", "ESCALATED", "MERGING"}:
                     log.debug(
-                        "on_bot_restart: session %s in terminal state %s — skipping",
+                        "on_bot_restart: session %s in terminal/in-flight state %s — skipping",
                         sid, row.get("state"),
                     )
                     continue
