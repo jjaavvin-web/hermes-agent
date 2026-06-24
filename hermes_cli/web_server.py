@@ -13008,6 +13008,12 @@ try:
 except Exception as _exc:
     _log.warning("Failed to load dashboard_cron_reliability routes: %s", _exc)
 try:
+    from hermes_cli.dashboard_action_preflight import register as _register_action_preflight
+    _register_action_preflight(app)
+    _log.info("Mounted dashboard action preflight API route at /api/dashboard/action-preflight")
+except Exception as _exc:
+    _log.warning("Failed to load dashboard_action_preflight routes: %s", _exc)
+try:
     from hermes_cli.dashboard_get_some import router as _get_some_router
     app.include_router(_get_some_router)
     _log.info("Mounted Get Some dashboard API routes at /api/dashboard/projects + /work-nexus")
