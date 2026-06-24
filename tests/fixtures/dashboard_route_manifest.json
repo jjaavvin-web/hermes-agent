@@ -1,0 +1,2243 @@
+{
+  "generated_by": "hermes_cli.dashboard_smoke.route_manifest",
+  "notes": "Repo-controlled routes only; user-installed dashboard plugin API routes are enumerated by the smoke report but ignored for checked-in manifest drift.",
+  "route_count": 280,
+  "routes": [
+    {
+      "methods": [
+        "GET"
+      ],
+      "name": "_gitnexus_explorer_page",
+      "path": "/_gitnexus-app/{full_path:path}",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "GET"
+      ],
+      "name": "get_action_status",
+      "path": "/api/actions/{name}/status",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "GET"
+      ],
+      "name": "get_models_analytics",
+      "path": "/api/analytics/models",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "GET"
+      ],
+      "name": "get_usage_analytics",
+      "path": "/api/analytics/usage",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "GET"
+      ],
+      "name": "get_elevenlabs_voices",
+      "path": "/api/audio/elevenlabs/voices",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "POST"
+      ],
+      "name": "speak_text",
+      "path": "/api/audio/speak",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "POST"
+      ],
+      "name": "transcribe_audio_upload",
+      "path": "/api/audio/transcribe",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "GET"
+      ],
+      "name": "auth_me",
+      "path": "/api/auth/me",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "GET"
+      ],
+      "name": "auth_providers",
+      "path": "/api/auth/providers",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "POST"
+      ],
+      "name": "auth_ws_ticket",
+      "path": "/api/auth/ws-ticket",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "GET"
+      ],
+      "name": "get_config",
+      "path": "/api/config",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "PUT"
+      ],
+      "name": "update_config",
+      "path": "/api/config",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "GET"
+      ],
+      "name": "get_defaults",
+      "path": "/api/config/defaults",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "GET"
+      ],
+      "name": "get_config_raw",
+      "path": "/api/config/raw",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "PUT"
+      ],
+      "name": "update_config_raw",
+      "path": "/api/config/raw",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "GET"
+      ],
+      "name": "get_schema",
+      "path": "/api/config/schema",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "GET"
+      ],
+      "name": "list_credential_pool",
+      "path": "/api/credentials/pool",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "POST"
+      ],
+      "name": "add_credential_pool_entry",
+      "path": "/api/credentials/pool",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "DELETE"
+      ],
+      "name": "remove_credential_pool_entry",
+      "path": "/api/credentials/pool/{provider}/{index}",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "GET"
+      ],
+      "name": "list_cron_blueprints",
+      "path": "/api/cron/blueprints",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "POST"
+      ],
+      "name": "instantiate_blueprint",
+      "path": "/api/cron/blueprints/instantiate",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "GET"
+      ],
+      "name": "get_cron_delivery_targets",
+      "path": "/api/cron/delivery-targets",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "POST"
+      ],
+      "name": "cron_fire_webhook",
+      "path": "/api/cron/fire",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "GET"
+      ],
+      "name": "list_cron_jobs",
+      "path": "/api/cron/jobs",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "POST"
+      ],
+      "name": "create_cron_job",
+      "path": "/api/cron/jobs",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "DELETE"
+      ],
+      "name": "delete_cron_job",
+      "path": "/api/cron/jobs/{job_id}",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "GET"
+      ],
+      "name": "get_cron_job",
+      "path": "/api/cron/jobs/{job_id}",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "PUT"
+      ],
+      "name": "update_cron_job",
+      "path": "/api/cron/jobs/{job_id}",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "POST"
+      ],
+      "name": "pause_cron_job",
+      "path": "/api/cron/jobs/{job_id}/pause",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "POST"
+      ],
+      "name": "resume_cron_job",
+      "path": "/api/cron/jobs/{job_id}/resume",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "GET"
+      ],
+      "name": "list_cron_job_runs",
+      "path": "/api/cron/jobs/{job_id}/runs",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "POST"
+      ],
+      "name": "trigger_cron_job",
+      "path": "/api/cron/jobs/{job_id}/trigger",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "GET"
+      ],
+      "name": "get_cron_reliability",
+      "path": "/api/cron/reliability",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "GET"
+      ],
+      "name": "get_curator_status",
+      "path": "/api/curator",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "PUT"
+      ],
+      "name": "set_curator_paused",
+      "path": "/api/curator/paused",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "POST"
+      ],
+      "name": "run_curator",
+      "path": "/api/curator/run",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "POST"
+      ],
+      "name": "post_agent_plugin_install",
+      "path": "/api/dashboard/agent-plugins/install",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "DELETE"
+      ],
+      "name": "delete_agent_plugin",
+      "path": "/api/dashboard/agent-plugins/{name:path}",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "POST"
+      ],
+      "name": "post_agent_plugin_disable",
+      "path": "/api/dashboard/agent-plugins/{name:path}/disable",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "POST"
+      ],
+      "name": "post_agent_plugin_enable",
+      "path": "/api/dashboard/agent-plugins/{name:path}/enable",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "POST"
+      ],
+      "name": "post_agent_plugin_update",
+      "path": "/api/dashboard/agent-plugins/{name:path}/update",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "GET"
+      ],
+      "name": "get_snapshot",
+      "path": "/api/dashboard/codex-sessions",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "GET"
+      ],
+      "name": "get_detail",
+      "path": "/api/dashboard/codex-sessions/{sid}",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "POST"
+      ],
+      "name": "post_force_merge",
+      "path": "/api/dashboard/codex-sessions/{sid}/force-merge",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "POST"
+      ],
+      "name": "post_kill",
+      "path": "/api/dashboard/codex-sessions/{sid}/kill",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "GET"
+      ],
+      "name": "get_log",
+      "path": "/api/dashboard/codex-sessions/{sid}/log",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "POST"
+      ],
+      "name": "post_pause",
+      "path": "/api/dashboard/codex-sessions/{sid}/pause",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "POST"
+      ],
+      "name": "post_resume",
+      "path": "/api/dashboard/codex-sessions/{sid}/resume",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "GET"
+      ],
+      "name": "get_command_center",
+      "path": "/api/dashboard/command-center",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "GET"
+      ],
+      "name": "get_connectome",
+      "path": "/api/dashboard/connectome",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "GET"
+      ],
+      "name": "get_connectome_cluster",
+      "path": "/api/dashboard/connectome/cluster/{cluster_id}",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "GET"
+      ],
+      "name": "get_cost",
+      "path": "/api/dashboard/cost",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "GET"
+      ],
+      "name": "get_cron",
+      "path": "/api/dashboard/cron",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "GET"
+      ],
+      "name": "get_latest_dream",
+      "path": "/api/dashboard/dreams/latest",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "GET"
+      ],
+      "name": "get_dashboard_font",
+      "path": "/api/dashboard/font",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "PUT"
+      ],
+      "name": "set_dashboard_font",
+      "path": "/api/dashboard/font",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "GET"
+      ],
+      "name": "git_graph",
+      "path": "/api/dashboard/git-graph",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "GET"
+      ],
+      "name": "git_health",
+      "path": "/api/dashboard/git-health",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "GET"
+      ],
+      "name": "git_river",
+      "path": "/api/dashboard/git-river",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "GET"
+      ],
+      "name": "get_runtime_health",
+      "path": "/api/dashboard/health/runtime/{name}",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "GET"
+      ],
+      "name": "get_hives_snapshot",
+      "path": "/api/dashboard/hives",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "GET"
+      ],
+      "name": "get_hive_log",
+      "path": "/api/dashboard/hives/{hive_id}/log",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "GET"
+      ],
+      "name": "get_learning",
+      "path": "/api/dashboard/learning",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "GET"
+      ],
+      "name": "get_mission_snapshot",
+      "path": "/api/dashboard/mission",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "GET"
+      ],
+      "name": "get_nexus_health",
+      "path": "/api/dashboard/nexus-health",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "GET"
+      ],
+      "name": "get_nexus_health_node",
+      "path": "/api/dashboard/nexus-health/node/{node_id}",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "GET"
+      ],
+      "name": "get_os",
+      "path": "/api/dashboard/os",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "PUT"
+      ],
+      "name": "put_plugin_providers",
+      "path": "/api/dashboard/plugin-providers",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "GET"
+      ],
+      "name": "get_dashboard_plugins",
+      "path": "/api/dashboard/plugins",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "GET"
+      ],
+      "name": "get_plugins_hub",
+      "path": "/api/dashboard/plugins/hub",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "GET"
+      ],
+      "name": "rescan_dashboard_plugins",
+      "path": "/api/dashboard/plugins/rescan",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "POST"
+      ],
+      "name": "post_plugin_visibility",
+      "path": "/api/dashboard/plugins/{name:path}/visibility",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "GET"
+      ],
+      "name": "get_projects",
+      "path": "/api/dashboard/projects",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "GET"
+      ],
+      "name": "get_queue",
+      "path": "/api/dashboard/queue",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "GET"
+      ],
+      "name": "get_spend",
+      "path": "/api/dashboard/spend",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "GET"
+      ],
+      "name": "stream_health",
+      "path": "/api/dashboard/stream",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "GET"
+      ],
+      "name": "get_swarm",
+      "path": "/api/dashboard/swarm",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "PUT"
+      ],
+      "name": "set_dashboard_theme",
+      "path": "/api/dashboard/theme",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "GET"
+      ],
+      "name": "get_dashboard_themes",
+      "path": "/api/dashboard/themes",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "GET"
+      ],
+      "name": "get_work_nexus",
+      "path": "/api/dashboard/work-nexus",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "DELETE"
+      ],
+      "name": "remove_env_var",
+      "path": "/api/env",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "GET"
+      ],
+      "name": "get_env_vars",
+      "path": "/api/env",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "PUT"
+      ],
+      "name": "set_env_var",
+      "path": "/api/env",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "POST"
+      ],
+      "name": "reveal_env_var",
+      "path": "/api/env/reveal",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [],
+      "name": "events_ws",
+      "path": "/api/events",
+      "route_type": "APIWebSocketRoute"
+    },
+    {
+      "methods": [
+        "DELETE"
+      ],
+      "name": "delete_managed_file",
+      "path": "/api/files",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "GET"
+      ],
+      "name": "list_managed_files",
+      "path": "/api/files",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "GET"
+      ],
+      "name": "download_managed_file",
+      "path": "/api/files/download",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "POST"
+      ],
+      "name": "create_managed_directory",
+      "path": "/api/files/mkdir",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "GET"
+      ],
+      "name": "read_managed_file",
+      "path": "/api/files/read",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "POST"
+      ],
+      "name": "upload_managed_file",
+      "path": "/api/files/upload",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "POST"
+      ],
+      "name": "upload_managed_file_stream",
+      "path": "/api/files/upload-stream",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "GET"
+      ],
+      "name": "fs_default_cwd",
+      "path": "/api/fs/default-cwd",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "GET"
+      ],
+      "name": "fs_git_root",
+      "path": "/api/fs/git-root",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "GET"
+      ],
+      "name": "fs_list",
+      "path": "/api/fs/list",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "GET"
+      ],
+      "name": "fs_read_data_url",
+      "path": "/api/fs/read-data-url",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "GET"
+      ],
+      "name": "fs_read_text",
+      "path": "/api/fs/read-text",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "POST"
+      ],
+      "name": "restart_gateway",
+      "path": "/api/gateway/restart",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "POST"
+      ],
+      "name": "start_gateway",
+      "path": "/api/gateway/start",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "POST"
+      ],
+      "name": "stop_gateway",
+      "path": "/api/gateway/stop",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "DELETE",
+        "GET",
+        "PATCH",
+        "POST",
+        "PUT"
+      ],
+      "name": "_gitnexus_proxy",
+      "path": "/api/gitnexus/{path:path}",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "POST"
+      ],
+      "name": "update_hermes",
+      "path": "/api/hermes/update",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "GET"
+      ],
+      "name": "check_hermes_update",
+      "path": "/api/hermes/update/check",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "GET"
+      ],
+      "name": "get_logs",
+      "path": "/api/logs",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "GET"
+      ],
+      "name": "list_mcp_catalog",
+      "path": "/api/mcp/catalog",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "POST"
+      ],
+      "name": "install_mcp_catalog_entry",
+      "path": "/api/mcp/catalog/install",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "GET"
+      ],
+      "name": "list_mcp_servers",
+      "path": "/api/mcp/servers",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "POST"
+      ],
+      "name": "add_mcp_server",
+      "path": "/api/mcp/servers",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "DELETE"
+      ],
+      "name": "remove_mcp_server",
+      "path": "/api/mcp/servers/{name}",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "PUT"
+      ],
+      "name": "set_mcp_server_enabled",
+      "path": "/api/mcp/servers/{name}/enabled",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "POST"
+      ],
+      "name": "test_mcp_server",
+      "path": "/api/mcp/servers/{name}/test",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "GET"
+      ],
+      "name": "get_media",
+      "path": "/api/media",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "GET"
+      ],
+      "name": "get_memory_status",
+      "path": "/api/memory",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "PUT"
+      ],
+      "name": "set_memory_provider",
+      "path": "/api/memory/provider",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "GET"
+      ],
+      "name": "get_memory_provider_config",
+      "path": "/api/memory/providers/{name}/config",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "PUT"
+      ],
+      "name": "update_memory_provider_config",
+      "path": "/api/memory/providers/{name}/config",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "POST"
+      ],
+      "name": "reset_memory",
+      "path": "/api/memory/reset",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "GET"
+      ],
+      "name": "get_messaging_platforms",
+      "path": "/api/messaging/platforms",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "PUT"
+      ],
+      "name": "update_messaging_platform",
+      "path": "/api/messaging/platforms/{platform_id}",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "POST"
+      ],
+      "name": "test_messaging_platform",
+      "path": "/api/messaging/platforms/{platform_id}/test",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "POST"
+      ],
+      "name": "start_telegram_onboarding",
+      "path": "/api/messaging/telegram/onboarding/start",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "DELETE"
+      ],
+      "name": "cancel_telegram_onboarding",
+      "path": "/api/messaging/telegram/onboarding/{pairing_id}",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "GET"
+      ],
+      "name": "get_telegram_onboarding_status",
+      "path": "/api/messaging/telegram/onboarding/{pairing_id}",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "POST"
+      ],
+      "name": "apply_telegram_onboarding",
+      "path": "/api/messaging/telegram/onboarding/{pairing_id}/apply",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "GET"
+      ],
+      "name": "get_auxiliary_models",
+      "path": "/api/model/auxiliary",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "GET"
+      ],
+      "name": "get_model_info",
+      "path": "/api/model/info",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "GET"
+      ],
+      "name": "get_model_options",
+      "path": "/api/model/options",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "GET"
+      ],
+      "name": "get_recommended_default_model",
+      "path": "/api/model/recommended-default",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "POST"
+      ],
+      "name": "set_model_assignment",
+      "path": "/api/model/set",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "POST"
+      ],
+      "name": "run_backup",
+      "path": "/api/ops/backup",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "GET"
+      ],
+      "name": "list_checkpoints",
+      "path": "/api/ops/checkpoints",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "POST"
+      ],
+      "name": "prune_checkpoints",
+      "path": "/api/ops/checkpoints/prune",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "POST"
+      ],
+      "name": "run_config_migrate",
+      "path": "/api/ops/config-migrate",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "POST"
+      ],
+      "name": "run_debug_share_endpoint",
+      "path": "/api/ops/debug-share",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "POST"
+      ],
+      "name": "run_doctor",
+      "path": "/api/ops/doctor",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "POST"
+      ],
+      "name": "run_dump",
+      "path": "/api/ops/dump",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "DELETE"
+      ],
+      "name": "delete_hook",
+      "path": "/api/ops/hooks",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "GET"
+      ],
+      "name": "list_hooks",
+      "path": "/api/ops/hooks",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "POST"
+      ],
+      "name": "create_hook",
+      "path": "/api/ops/hooks",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "POST"
+      ],
+      "name": "run_import",
+      "path": "/api/ops/import",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "POST"
+      ],
+      "name": "run_prompt_size",
+      "path": "/api/ops/prompt-size",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "POST"
+      ],
+      "name": "run_security_audit",
+      "path": "/api/ops/security-audit",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "GET"
+      ],
+      "name": "list_pairing",
+      "path": "/api/pairing",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "POST"
+      ],
+      "name": "approve_pairing",
+      "path": "/api/pairing/approve",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "POST"
+      ],
+      "name": "clear_pending_pairing",
+      "path": "/api/pairing/clear-pending",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "POST"
+      ],
+      "name": "revoke_pairing",
+      "path": "/api/pairing/revoke",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "GET"
+      ],
+      "name": "list_personas",
+      "path": "/api/personas",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "POST"
+      ],
+      "name": "create_persona",
+      "path": "/api/personas",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "DELETE"
+      ],
+      "name": "delete_persona",
+      "path": "/api/personas/{slug}",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "GET"
+      ],
+      "name": "get_persona",
+      "path": "/api/personas/{slug}",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "PATCH"
+      ],
+      "name": "update_persona",
+      "path": "/api/personas/{slug}",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "POST"
+      ],
+      "name": "summon_persona",
+      "path": "/api/personas/{slug}/summon",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "GET"
+      ],
+      "name": "achievements",
+      "path": "/api/plugins/hermes-achievements/achievements",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "GET"
+      ],
+      "name": "recent_unlocks",
+      "path": "/api/plugins/hermes-achievements/recent-unlocks",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "POST"
+      ],
+      "name": "rescan",
+      "path": "/api/plugins/hermes-achievements/rescan",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "POST"
+      ],
+      "name": "reset_state",
+      "path": "/api/plugins/hermes-achievements/reset-state",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "GET"
+      ],
+      "name": "scan_status",
+      "path": "/api/plugins/hermes-achievements/scan-status",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "GET"
+      ],
+      "name": "session_badges",
+      "path": "/api/plugins/hermes-achievements/sessions/{session_id}/badges",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "GET"
+      ],
+      "name": "get_assignees",
+      "path": "/api/plugins/kanban/assignees",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "DELETE"
+      ],
+      "name": "remove_attachment",
+      "path": "/api/plugins/kanban/attachments/{attachment_id}",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "GET"
+      ],
+      "name": "download_attachment",
+      "path": "/api/plugins/kanban/attachments/{attachment_id}",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "GET"
+      ],
+      "name": "get_board",
+      "path": "/api/plugins/kanban/board",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "GET"
+      ],
+      "name": "list_boards",
+      "path": "/api/plugins/kanban/boards",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "POST"
+      ],
+      "name": "create_board_endpoint",
+      "path": "/api/plugins/kanban/boards",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "DELETE"
+      ],
+      "name": "delete_board",
+      "path": "/api/plugins/kanban/boards/{slug}",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "PATCH"
+      ],
+      "name": "rename_board",
+      "path": "/api/plugins/kanban/boards/{slug}",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "POST"
+      ],
+      "name": "switch_board",
+      "path": "/api/plugins/kanban/boards/{slug}/switch",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "GET"
+      ],
+      "name": "get_config",
+      "path": "/api/plugins/kanban/config",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "GET"
+      ],
+      "name": "list_diagnostics",
+      "path": "/api/plugins/kanban/diagnostics",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "POST"
+      ],
+      "name": "dispatch",
+      "path": "/api/plugins/kanban/dispatch",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [],
+      "name": "stream_events",
+      "path": "/api/plugins/kanban/events",
+      "route_type": "APIWebSocketRoute"
+    },
+    {
+      "methods": [
+        "GET"
+      ],
+      "name": "get_home_channels",
+      "path": "/api/plugins/kanban/home-channels",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "DELETE"
+      ],
+      "name": "delete_link",
+      "path": "/api/plugins/kanban/links",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "POST"
+      ],
+      "name": "add_link",
+      "path": "/api/plugins/kanban/links",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "GET"
+      ],
+      "name": "get_orchestration_settings",
+      "path": "/api/plugins/kanban/orchestration",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "PUT"
+      ],
+      "name": "set_orchestration_settings",
+      "path": "/api/plugins/kanban/orchestration",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "GET"
+      ],
+      "name": "list_profile_roster",
+      "path": "/api/plugins/kanban/profiles",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "PATCH"
+      ],
+      "name": "update_profile_description",
+      "path": "/api/plugins/kanban/profiles/{profile_name}",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "POST"
+      ],
+      "name": "auto_describe_profile",
+      "path": "/api/plugins/kanban/profiles/{profile_name}/describe-auto",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "GET"
+      ],
+      "name": "get_run_endpoint",
+      "path": "/api/plugins/kanban/runs/{run_id}",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "GET"
+      ],
+      "name": "inspect_run_endpoint",
+      "path": "/api/plugins/kanban/runs/{run_id}/inspect",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "POST"
+      ],
+      "name": "terminate_run_endpoint",
+      "path": "/api/plugins/kanban/runs/{run_id}/terminate",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "GET"
+      ],
+      "name": "get_stats",
+      "path": "/api/plugins/kanban/stats",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "POST"
+      ],
+      "name": "create_task",
+      "path": "/api/plugins/kanban/tasks",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "POST"
+      ],
+      "name": "bulk_update",
+      "path": "/api/plugins/kanban/tasks/bulk",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "DELETE"
+      ],
+      "name": "delete_task",
+      "path": "/api/plugins/kanban/tasks/{task_id}",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "GET"
+      ],
+      "name": "get_task",
+      "path": "/api/plugins/kanban/tasks/{task_id}",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "PATCH"
+      ],
+      "name": "update_task",
+      "path": "/api/plugins/kanban/tasks/{task_id}",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "GET"
+      ],
+      "name": "list_task_attachments",
+      "path": "/api/plugins/kanban/tasks/{task_id}/attachments",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "POST"
+      ],
+      "name": "upload_task_attachment",
+      "path": "/api/plugins/kanban/tasks/{task_id}/attachments",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "POST"
+      ],
+      "name": "add_comment",
+      "path": "/api/plugins/kanban/tasks/{task_id}/comments",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "POST"
+      ],
+      "name": "decompose_task_endpoint",
+      "path": "/api/plugins/kanban/tasks/{task_id}/decompose",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "DELETE"
+      ],
+      "name": "unsubscribe_home",
+      "path": "/api/plugins/kanban/tasks/{task_id}/home-subscribe/{platform}",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "POST"
+      ],
+      "name": "subscribe_home",
+      "path": "/api/plugins/kanban/tasks/{task_id}/home-subscribe/{platform}",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "GET"
+      ],
+      "name": "get_task_log",
+      "path": "/api/plugins/kanban/tasks/{task_id}/log",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "POST"
+      ],
+      "name": "reassign_task_endpoint",
+      "path": "/api/plugins/kanban/tasks/{task_id}/reassign",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "POST"
+      ],
+      "name": "reclaim_task_endpoint",
+      "path": "/api/plugins/kanban/tasks/{task_id}/reclaim",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "POST"
+      ],
+      "name": "specify_task_endpoint",
+      "path": "/api/plugins/kanban/tasks/{task_id}/specify",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "GET"
+      ],
+      "name": "list_active_workers",
+      "path": "/api/plugins/kanban/workers/active",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "GET"
+      ],
+      "name": "get_portal_status",
+      "path": "/api/portal",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "GET"
+      ],
+      "name": "list_profiles_endpoint",
+      "path": "/api/profiles",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "POST"
+      ],
+      "name": "create_profile_endpoint",
+      "path": "/api/profiles",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "GET"
+      ],
+      "name": "get_active_profile_endpoint",
+      "path": "/api/profiles/active",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "POST"
+      ],
+      "name": "set_active_profile_endpoint",
+      "path": "/api/profiles/active",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "GET"
+      ],
+      "name": "get_profiles_sessions",
+      "path": "/api/profiles/sessions",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "DELETE"
+      ],
+      "name": "delete_profile_endpoint",
+      "path": "/api/profiles/{name}",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "PATCH"
+      ],
+      "name": "rename_profile_endpoint",
+      "path": "/api/profiles/{name}",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "POST"
+      ],
+      "name": "describe_profile_auto_endpoint",
+      "path": "/api/profiles/{name}/describe-auto",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "PUT"
+      ],
+      "name": "update_profile_description_endpoint",
+      "path": "/api/profiles/{name}/description",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "PUT"
+      ],
+      "name": "update_profile_model_endpoint",
+      "path": "/api/profiles/{name}/model",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "POST"
+      ],
+      "name": "open_profile_terminal_endpoint",
+      "path": "/api/profiles/{name}/open-terminal",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "GET"
+      ],
+      "name": "get_profile_setup_command",
+      "path": "/api/profiles/{name}/setup-command",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "GET"
+      ],
+      "name": "get_profile_soul",
+      "path": "/api/profiles/{name}/soul",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "PUT"
+      ],
+      "name": "update_profile_soul",
+      "path": "/api/profiles/{name}/soul",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "GET"
+      ],
+      "name": "list_oauth_providers",
+      "path": "/api/providers/oauth",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "DELETE"
+      ],
+      "name": "cancel_oauth_session",
+      "path": "/api/providers/oauth/sessions/{session_id}",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "DELETE"
+      ],
+      "name": "disconnect_oauth_provider",
+      "path": "/api/providers/oauth/{provider_id}",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "GET"
+      ],
+      "name": "poll_oauth_session",
+      "path": "/api/providers/oauth/{provider_id}/poll/{session_id}",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "POST"
+      ],
+      "name": "start_oauth_login",
+      "path": "/api/providers/oauth/{provider_id}/start",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "POST"
+      ],
+      "name": "submit_oauth_code",
+      "path": "/api/providers/oauth/{provider_id}/submit",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "POST"
+      ],
+      "name": "validate_provider_credential",
+      "path": "/api/providers/validate",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [],
+      "name": "pty_ws",
+      "path": "/api/pty",
+      "route_type": "APIWebSocketRoute"
+    },
+    {
+      "methods": [],
+      "name": "pub_ws",
+      "path": "/api/pub",
+      "route_type": "APIWebSocketRoute"
+    },
+    {
+      "methods": [
+        "GET"
+      ],
+      "name": "api_pulse_graph",
+      "path": "/api/pulse/graph",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "GET"
+      ],
+      "name": "api_pulse_kpis",
+      "path": "/api/pulse/kpis",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "GET"
+      ],
+      "name": "api_pulse_queue",
+      "path": "/api/pulse/queue",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "GET"
+      ],
+      "name": "api_pulse_stream",
+      "path": "/api/pulse/stream",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "GET"
+      ],
+      "name": "get_sessions",
+      "path": "/api/sessions",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "POST"
+      ],
+      "name": "bulk_delete_sessions_endpoint",
+      "path": "/api/sessions/bulk-delete",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "DELETE"
+      ],
+      "name": "delete_empty_sessions_endpoint",
+      "path": "/api/sessions/empty",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "GET"
+      ],
+      "name": "count_empty_sessions_endpoint",
+      "path": "/api/sessions/empty/count",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "POST"
+      ],
+      "name": "prune_sessions_endpoint",
+      "path": "/api/sessions/prune",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "GET"
+      ],
+      "name": "search_sessions",
+      "path": "/api/sessions/search",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "GET"
+      ],
+      "name": "get_session_stats",
+      "path": "/api/sessions/stats",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "DELETE"
+      ],
+      "name": "delete_session_endpoint",
+      "path": "/api/sessions/{session_id}",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "GET"
+      ],
+      "name": "get_session_detail",
+      "path": "/api/sessions/{session_id}",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "PATCH"
+      ],
+      "name": "rename_session_endpoint",
+      "path": "/api/sessions/{session_id}",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "GET"
+      ],
+      "name": "export_session_endpoint",
+      "path": "/api/sessions/{session_id}/export",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "GET"
+      ],
+      "name": "get_session_latest_descendant",
+      "path": "/api/sessions/{session_id}/latest-descendant",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "GET"
+      ],
+      "name": "get_session_messages",
+      "path": "/api/sessions/{session_id}/messages",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "GET"
+      ],
+      "name": "get_skills",
+      "path": "/api/skills",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "POST"
+      ],
+      "name": "create_skill",
+      "path": "/api/skills",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "GET"
+      ],
+      "name": "get_skill_content",
+      "path": "/api/skills/content",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "PUT"
+      ],
+      "name": "update_skill_content",
+      "path": "/api/skills/content",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "POST"
+      ],
+      "name": "install_skill_hub",
+      "path": "/api/skills/hub/install",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "GET"
+      ],
+      "name": "preview_skill_hub",
+      "path": "/api/skills/hub/preview",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "GET"
+      ],
+      "name": "scan_skill_hub",
+      "path": "/api/skills/hub/scan",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "GET"
+      ],
+      "name": "search_skills_hub",
+      "path": "/api/skills/hub/search",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "GET"
+      ],
+      "name": "list_skills_hub_sources",
+      "path": "/api/skills/hub/sources",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "POST"
+      ],
+      "name": "uninstall_skill_hub",
+      "path": "/api/skills/hub/uninstall",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "POST"
+      ],
+      "name": "update_skills_hub",
+      "path": "/api/skills/hub/update",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "PUT"
+      ],
+      "name": "toggle_skill",
+      "path": "/api/skills/toggle",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "GET"
+      ],
+      "name": "get_status",
+      "path": "/api/status",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "GET"
+      ],
+      "name": "get_system_stats",
+      "path": "/api/system/stats",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "GET"
+      ],
+      "name": "get_toolsets",
+      "path": "/api/tools/toolsets",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "PUT"
+      ],
+      "name": "toggle_toolset",
+      "path": "/api/tools/toolsets/{name}",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "GET"
+      ],
+      "name": "get_toolset_config",
+      "path": "/api/tools/toolsets/{name}/config",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "PUT"
+      ],
+      "name": "save_toolset_env",
+      "path": "/api/tools/toolsets/{name}/env",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "POST"
+      ],
+      "name": "run_toolset_post_setup",
+      "path": "/api/tools/toolsets/{name}/post-setup",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "PUT"
+      ],
+      "name": "select_toolset_provider",
+      "path": "/api/tools/toolsets/{name}/provider",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "GET"
+      ],
+      "name": "list_webhooks",
+      "path": "/api/webhooks",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "POST"
+      ],
+      "name": "create_webhook",
+      "path": "/api/webhooks",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "POST"
+      ],
+      "name": "enable_webhooks",
+      "path": "/api/webhooks/enable",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "DELETE"
+      ],
+      "name": "delete_webhook",
+      "path": "/api/webhooks/{name}",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "PUT"
+      ],
+      "name": "set_webhook_enabled",
+      "path": "/api/webhooks/{name}/enabled",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "GET"
+      ],
+      "name": "welcome_first_run",
+      "path": "/api/welcome/first-run-status",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [],
+      "name": "gateway_ws",
+      "path": "/api/ws",
+      "route_type": "APIWebSocketRoute"
+    },
+    {
+      "methods": [],
+      "name": "assets",
+      "path": "/assets",
+      "route_type": "Mount"
+    },
+    {
+      "methods": [
+        "GET"
+      ],
+      "name": "serve_css",
+      "path": "/assets/{filename}.css",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "GET"
+      ],
+      "name": "auth_callback",
+      "path": "/auth/callback",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "GET"
+      ],
+      "name": "auth_login",
+      "path": "/auth/login",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "POST"
+      ],
+      "name": "auth_logout",
+      "path": "/auth/logout",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "POST"
+      ],
+      "name": "auth_password_login",
+      "path": "/auth/password-login",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "GET"
+      ],
+      "name": "serve_plugin_asset",
+      "path": "/dashboard-plugins/{plugin_name}/{file_path:path}",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "GET",
+        "HEAD"
+      ],
+      "name": "swagger_ui_html",
+      "path": "/docs",
+      "route_type": "Route"
+    },
+    {
+      "methods": [
+        "GET",
+        "HEAD"
+      ],
+      "name": "swagger_ui_redirect",
+      "path": "/docs/oauth2-redirect",
+      "route_type": "Route"
+    },
+    {
+      "methods": [
+        "GET"
+      ],
+      "name": "login_page",
+      "path": "/login",
+      "route_type": "APIRoute"
+    },
+    {
+      "methods": [
+        "GET",
+        "HEAD"
+      ],
+      "name": "openapi",
+      "path": "/openapi.json",
+      "route_type": "Route"
+    },
+    {
+      "methods": [
+        "GET",
+        "HEAD"
+      ],
+      "name": "redoc_html",
+      "path": "/redoc",
+      "route_type": "Route"
+    },
+    {
+      "methods": [
+        "GET"
+      ],
+      "name": "serve_spa",
+      "path": "/{full_path:path}",
+      "route_type": "APIRoute"
+    }
+  ]
+}
