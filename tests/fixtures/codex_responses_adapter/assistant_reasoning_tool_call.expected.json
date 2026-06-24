@@ -1,0 +1,26 @@
+[
+  {
+    "content": "https://discord.gg/ZQEaHHGeQ",
+    "role": "user"
+  },
+  {
+    "encrypted_content": "gAAAAA...xA==",
+    "summary": [],
+    "type": "reasoning"
+  },
+  {
+    "content": "",
+    "role": "assistant"
+  },
+  {
+    "arguments": "{\"name\":\"discord-gateway-provider\"}",
+    "call_id": "call_8gTW3wAqn5KGfdbxhiJ0EXNd",
+    "name": "skill_view",
+    "type": "function_call"
+  },
+  {
+    "call_id": "call_8gTW3wAqn5KGfdbxhiJ0EXNd",
+    "output": "{\"success\": true, \"name\": \"discord-gateway-provider\"}",
+    "type": "function_call_output"
+  }
+]

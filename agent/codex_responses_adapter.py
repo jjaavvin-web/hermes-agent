@@ -339,6 +339,42 @@ def _sanitize_tool_schema_for_codex(schema: Any, _defs: Optional[Dict[str, Any]]
     return out
 
 
+def _force_strict_additional_properties_false(schema: Any) -> Any:
+    """Enforce Responses strict-mode object closure recursively.
+
+    OpenAI Responses strict JSON Schema rejects object schemas unless every
+    object node has ``additionalProperties: false``.  MCP/Pydantic schemas often
+    omit it on nested objects, so strict tools need a final pass after the
+    Codex schema flattening step.
+    """
+    if isinstance(schema, list):
+        return [_force_strict_additional_properties_false(item) for item in schema]
+    if not isinstance(schema, dict):
+        return schema
+
+    out: Dict[str, Any] = {}
+    is_object = schema.get("type") == "object" or isinstance(schema.get("properties"), dict)
+    for key, value in schema.items():
+        if key == "additionalProperties" and is_object:
+            out[key] = False
+        elif key in {"properties", "$defs", "definitions"} and isinstance(value, dict):
+            out[key] = {
+                prop_name: _force_strict_additional_properties_false(prop_schema)
+                for prop_name, prop_schema in value.items()
+            }
+        elif key in {"items", "anyOf", "oneOf", "allOf"}:
+            out[key] = _force_strict_additional_properties_false(value)
+        elif isinstance(value, dict):
+            out[key] = _force_strict_additional_properties_false(value)
+        elif isinstance(value, list):
+            out[key] = _force_strict_additional_properties_false(value)
+        else:
+            out[key] = value
+    if is_object:
+        out["additionalProperties"] = False
+    return out
+
+
 # Tool families pruned from Codex requests.  The ChatGPT backend-api/codex
 # endpoint rejects large/complex tool payloads with a generic HTTP 400
 # "Unsupported content type"; ~34 of the ~69 enabled tools were rarely-used MCP
@@ -537,6 +573,10 @@ def _chat_messages_to_responses_input(
     """
     items: List[Dict[str, Any]] = []
     seen_item_ids: set = set()
+    seen_function_call_ids: set[str] = set()
+
+    if not isinstance(messages, list):
+        return items
 
     for msg in messages:
         if not isinstance(msg, dict):
@@ -717,6 +757,7 @@ def _chat_messages_to_responses_input(
                             "name": fn_name,
                             "arguments": arguments,
                         })
+                        seen_function_call_ids.add(call_id)
                 continue
 
             # Non-assistant (user) role: emit multimodal parts when present,
@@ -734,6 +775,8 @@ def _chat_messages_to_responses_input(
                 if isinstance(raw_tool_call_id, str) and raw_tool_call_id.strip():
                     call_id = raw_tool_call_id.strip()
             if not isinstance(call_id, str) or not call_id.strip():
+                continue
+            if call_id not in seen_function_call_ids:
                 continue
 
             # Multimodal tool result: convert OpenAI-style content list into
@@ -1070,6 +1113,10 @@ def _preflight_codex_api_kwargs(
             if not isinstance(strict, bool):
                 strict = bool(strict)
 
+            sanitized_parameters = _sanitize_tool_schema_for_codex(parameters)
+            if strict:
+                sanitized_parameters = _force_strict_additional_properties_false(sanitized_parameters)
+
             normalized_tools.append(
                 {
                     "type": "function",
@@ -1079,7 +1126,7 @@ def _preflight_codex_api_kwargs(
                     # Flatten MCP/rich JSON-Schema to the subset Codex accepts —
                     # forwarding $ref/oneOf/anyOf/format/const triggers a generic
                     # HTTP 400 "Unsupported content type" that kills the agent.
-                    "parameters": _sanitize_tool_schema_for_codex(parameters),
+                    "parameters": sanitized_parameters,
                 }
             )
 
