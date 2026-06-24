@@ -1849,7 +1849,16 @@ def _work_section_from_command_center() -> tuple[dict, dict]:
         }
         return section, payload
     except Exception as exc:
-        payload = {"error": str(exc), "projects": [], "live": {"runtimes": []}, "decisions": [], "stalled": [], "projects_completion_pct": 0, "live_runtimes": 0, "counts": {"projects": 0, "decisions": 0, "live_runtimes": 0, "stalled": 0}}
+        payload = {
+            "error": str(exc),
+            "projects": [],
+            "live": {"runtimes": []},
+            "decisions": [],
+            "stalled": [],
+            "projects_completion_pct": None,
+            "live_runtimes": None,
+            "counts": {"projects": None, "decisions": None, "live_runtimes": None, "stalled": None},
+        }
         return _section("work", "Work", [_item("command_center", "unknown", str(exc), reason="command center payload probe raised")]), payload
 
 
@@ -1889,7 +1898,15 @@ def _activity_section_from_pulse() -> tuple[dict, dict]:
         }
         return section, payload
     except Exception as exc:
-        payload = {"error": str(exc), "queue_7d": {"range": "7d", "points": [], "openNow": 0}, "queue": {"cards": []}, "kpis": {}, "created_7d": 0, "open_now": 0, "cards": []}
+        payload = {
+            "error": str(exc),
+            "queue_7d": {"range": "7d", "points": [], "openNow": None},
+            "queue": {"cards": []},
+            "kpis": {},
+            "created_7d": None,
+            "open_now": None,
+            "cards": [],
+        }
         return _section("activity", "Activity", [_item("pulse", "unknown", str(exc), reason="pulse KPI/queue probe raised")]), payload
 
 
