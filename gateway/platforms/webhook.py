@@ -55,6 +55,7 @@ from gateway.platforms.base import (
     MessageType,
     SendResult,
 )
+from hermes_cli.active_sessions import resolve_max_concurrent_agent_runs
 from tools.approval import CREDENTIAL_EXFIL_DENY_PATTERNS
 
 logger = logging.getLogger(__name__)
@@ -99,6 +100,21 @@ _LOOPBACK_HOSTS = frozenset({
     "ip6-localhost",
     "ip6-loopback",
 })
+
+_AGENT_RUN_SEMAPHORE: Optional[asyncio.Semaphore] = None
+_AGENT_RUN_SEMAPHORE_CAP: Optional[int] = None
+
+
+def _get_agent_run_semaphore(max_concurrent_agent_runs: int) -> asyncio.Semaphore:
+    """Return the process-global inbound agent-run semaphore for webhook runs."""
+    global _AGENT_RUN_SEMAPHORE, _AGENT_RUN_SEMAPHORE_CAP
+    if (
+        _AGENT_RUN_SEMAPHORE is None
+        or _AGENT_RUN_SEMAPHORE_CAP != max_concurrent_agent_runs
+    ):
+        _AGENT_RUN_SEMAPHORE = asyncio.Semaphore(max_concurrent_agent_runs)
+        _AGENT_RUN_SEMAPHORE_CAP = max_concurrent_agent_runs
+    return _AGENT_RUN_SEMAPHORE
 
 
 def _is_loopback_host(host: str) -> bool:
@@ -156,6 +172,14 @@ class WebhookAdapter(BasePlatformAdapter):
         # Rate limiting: per-route timestamps in a fixed window.
         self._rate_counts: Dict[str, List[float]] = {}
         self._rate_limit: int = int(config.extra.get("rate_limit", 30))  # per minute
+
+        # Agent-run backpressure: global in-process cap across all webhook
+        # routes. This limits concurrent in-flight agent tasks, not request
+        # arrival rate, and fails fast with HTTP 429 when saturated.
+        self._max_concurrent_agent_runs: int = resolve_max_concurrent_agent_runs(
+            {"gateway": {"max_concurrent_agent_runs": config.extra.get("max_concurrent_agent_runs")}}
+        )
+        self._agent_run_semaphore = _get_agent_run_semaphore(self._max_concurrent_agent_runs)
 
         # Body size limit (auth-before-body pattern)
         self._max_body_bytes: int = int(
@@ -699,7 +723,8 @@ class WebhookAdapter(BasePlatformAdapter):
         # The key is computed with the SAME build_session_key call the dispatcher
         # uses (gateway/platforms/base.py), so the approval contextvar key at
         # tool-exec time matches this registration and the deny actually fires.
-        # Cleared at end-of-run in gateway/run.py's agent finally block.
+        # Cleared at end-of-run in the agent-task finally block below.
+        _approval_key: Optional[str] = None
         try:
             from gateway.session import build_session_key
             from tools.approval import register_session_deny_patterns
@@ -757,12 +782,68 @@ class WebhookAdapter(BasePlatformAdapter):
         )
 
         # Non-blocking — return 202 Accepted immediately.
-        # Phase 3: when HERMES_WEBHOOK_WORKTREE is on, bind the run to the relay
-        # git worktree so it works on a branch, not the live tree. If a worktree
-        # can't be guaranteed, REFUSE (503) — NEVER fall through to the live cwd.
+        # Acquire capacity BEFORE spawning the background task. A saturated
+        # semaphore means the gateway is already at its configured in-flight
+        # agent-run ceiling, so reject with Retry-After instead of creating an
+        # unbounded task that can starve the async event loop.
+        if self._agent_run_semaphore.locked():
+            retry_after = "30"
+            logger.warning(
+                "[webhook] rejecting run: max_concurrent_agent_runs reached (%d) route=%s delivery=%s",
+                self._max_concurrent_agent_runs,
+                route_name,
+                delivery_id,
+            )
+            self._seen_deliveries.pop(delivery_id, None)
+            return web.json_response(
+                {
+                    "status": "rate_limited",
+                    "error": "max_concurrent_agent_runs_exhausted",
+                    "retry_after": int(retry_after),
+                    "delivery_id": delivery_id,
+                },
+                status=429,
+                headers={"Retry-After": retry_after},
+            )
+        await self._agent_run_semaphore.acquire()
+
+        async def _run_with_backpressure() -> None:
+            try:
+                # Phase 3: when HERMES_WEBHOOK_WORKTREE is on, bind the run to the relay
+                # git worktree so it works on a branch, not the live tree. If a worktree
+                # can't be guaranteed, REFUSE (503) — NEVER fall through to the live cwd.
+                if self._wt_enabled:
+                    from agent.codex_session_context import (
+                        set_active_worktree, reset_active_worktree,
+                    )
+                    _tok = set_active_worktree(_wt_for_run)
+                    try:
+                        await self.handle_message(event)
+                    finally:
+                        reset_active_worktree(_tok)
+                else:
+                    await self.handle_message(event)
+            finally:
+                try:
+                    from tools.approval import clear_session
+                    if _approval_key:
+                        clear_session(_approval_key)
+                except Exception:
+                    logger.debug(
+                        "[webhook] failed to clear deny_terminal_patterns for route=%s",
+                        route_name,
+                        exc_info=True,
+                    )
+                self._agent_run_semaphore.release()
+
+        # Phase 3 worktree preflight must happen after capacity acquisition but
+        # before task creation; release the slot if setup refuses the run.
+        _wt_for_run: Optional[str] = None
         if self._wt_enabled:
             _wt_for_run = self._ensure_relay_worktree()
             if _wt_for_run is None:
+                self._agent_run_semaphore.release()
+                self._seen_deliveries.pop(delivery_id, None)
                 logger.error(
                     "[webhook] relay worktree unavailable; refusing run route=%s delivery=%s",
                     route_name, delivery_id,
@@ -773,19 +854,7 @@ class WebhookAdapter(BasePlatformAdapter):
                     status=503,
                 )
 
-            async def _run_bound():
-                from agent.codex_session_context import (
-                    set_active_worktree, reset_active_worktree,
-                )
-                _tok = set_active_worktree(_wt_for_run)
-                try:
-                    await self.handle_message(event)
-                finally:
-                    reset_active_worktree(_tok)
-
-            task = asyncio.create_task(_run_bound())
-        else:
-            task = asyncio.create_task(self.handle_message(event))
+        task = asyncio.create_task(_run_with_backpressure())
         self._background_tasks.add(task)
         task.add_done_callback(self._background_tasks.discard)
 

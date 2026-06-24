@@ -251,6 +251,26 @@ class TestGatewayConfigRoundtrip:
 
         assert config.max_concurrent_sessions == 2
 
+    def test_max_concurrent_agent_runs_from_dict_defaults_to_four(self):
+        assert GatewayConfig.from_dict({}).max_concurrent_agent_runs == 4
+        assert GatewayConfig.from_dict({"gateway": {}}).max_concurrent_agent_runs == 4
+
+    def test_max_concurrent_agent_runs_from_dict_accepts_nested_positive_integer(self):
+        config = GatewayConfig.from_dict({"gateway": {"max_concurrent_agent_runs": "3"}})
+
+        assert config.max_concurrent_agent_runs == 3
+
+    def test_max_concurrent_agent_runs_from_dict_invalid_falls_back_to_default(self, caplog):
+        caplog.set_level(logging.WARNING, logger="hermes_cli.active_sessions")
+
+        config = GatewayConfig.from_dict({"gateway": {"max_concurrent_agent_runs": 0}})
+
+        assert config.max_concurrent_agent_runs == 4
+        assert any(
+            "Ignoring invalid gateway.max_concurrent_agent_runs=0" in record.message
+            for record in caplog.records
+        )
+
     def test_roundtrip_preserves_unauthorized_dm_behavior(self):
         config = GatewayConfig(
             unauthorized_dm_behavior="ignore",
@@ -440,6 +460,22 @@ class TestLoadGatewayConfig:
         config = load_gateway_config()
 
         assert config.max_concurrent_sessions == 2
+
+    def test_bridges_nested_max_concurrent_agent_runs_from_config_yaml(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "gateway:\n"
+            "  max_concurrent_agent_runs: 3\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config = load_gateway_config()
+
+        assert config.max_concurrent_agent_runs == 3
 
     def test_bridges_discord_thread_require_mention_from_config_yaml(self, tmp_path, monkeypatch):
         """discord.thread_require_mention in config.yaml should reach the runtime env var."""

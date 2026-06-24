@@ -17,6 +17,7 @@ from typing import Dict, List, Optional, Any, Callable
 from enum import Enum
 
 from hermes_cli.config import get_hermes_home
+from hermes_cli.active_sessions import resolve_max_concurrent_agent_runs
 from utils import is_truthy_value
 
 logger = logging.getLogger(__name__)
@@ -544,6 +545,7 @@ class GatewayConfig:
     group_sessions_per_user: bool = True  # Isolate group/channel sessions per participant when user IDs are available
     thread_sessions_per_user: bool = False  # When False (default), threads are shared across all participants
     max_concurrent_sessions: Optional[int] = None  # Positive int caps simultaneous active chat sessions
+    max_concurrent_agent_runs: int = 4  # Positive int caps simultaneous gateway/webhook agent runs
 
     # Multi-profile multiplexing (opt-in; default off preserves one-gateway-per-profile).
     # When True, the default profile's gateway serves inbound messages for every
@@ -657,6 +659,7 @@ class GatewayConfig:
             "group_sessions_per_user": self.group_sessions_per_user,
             "thread_sessions_per_user": self.thread_sessions_per_user,
             "max_concurrent_sessions": self.max_concurrent_sessions,
+            "max_concurrent_agent_runs": self.max_concurrent_agent_runs,
             "multiplex_profiles": self.multiplex_profiles,
             "unauthorized_dm_behavior": self.unauthorized_dm_behavior,
             "streaming": self.streaming.to_dict(),
@@ -719,6 +722,7 @@ class GatewayConfig:
             max_concurrent_raw,
             max_concurrent_key,
         )
+        max_concurrent_agent_runs = resolve_max_concurrent_agent_runs(data)
         unauthorized_dm_behavior = _normalize_unauthorized_dm_behavior(
             data.get("unauthorized_dm_behavior"),
             "pair",
@@ -747,6 +751,7 @@ class GatewayConfig:
             thread_sessions_per_user=_coerce_bool(thread_sessions_per_user, False),
             multiplex_profiles=_coerce_bool(multiplex_profiles, False),
             max_concurrent_sessions=max_concurrent_sessions,
+            max_concurrent_agent_runs=max_concurrent_agent_runs,
             unauthorized_dm_behavior=unauthorized_dm_behavior,
             streaming=StreamingConfig.from_dict(data.get("streaming", {})),
             session_store_max_age_days=session_store_max_age_days,
@@ -855,6 +860,10 @@ def load_gateway_config() -> GatewayConfig:
             gateway_section = yaml_cfg.get("gateway")
             if isinstance(gateway_section, dict) and "max_concurrent_sessions" in gateway_section:
                 gw_data["max_concurrent_sessions"] = gateway_section["max_concurrent_sessions"]
+            if isinstance(gateway_section, dict) and "max_concurrent_agent_runs" in gateway_section:
+                gw_data.setdefault("gateway", {})["max_concurrent_agent_runs"] = gateway_section[
+                    "max_concurrent_agent_runs"
+                ]
 
             if "max_concurrent_sessions" in yaml_cfg:
                 gw_data["max_concurrent_sessions"] = yaml_cfg["max_concurrent_sessions"]

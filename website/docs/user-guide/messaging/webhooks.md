@@ -456,11 +456,21 @@ Webhook payloads contain attacker-controlled data — PR titles, commit messages
 - GitLab events use values like `merge_request`, `push` (the `X-GitLab-Event` header value)
 - If `events` is empty or not set, all events are accepted
 
+### Agent run backpressure / HTTP 429
+
+Webhook-triggered agent runs are globally capped by `gateway.max_concurrent_agent_runs` (default `4`) so autonomous lanes cannot starve the gateway event loop. When all slots are busy, new agent-mode webhook requests return `429` with `Retry-After: 30` instead of spawning another task. Retry the same delivery after the indicated delay; the rejected delivery is not kept in the idempotency cache.
+
+```yaml
+gateway:
+  max_concurrent_agent_runs: 4
+```
+
 ### Agent not responding
 
 - Run the gateway in foreground to see logs: `hermes gateway run`
 - Check that the prompt template is rendering correctly
 - Verify the delivery target is configured and connected
+- If the caller sees `HTTP 429`, respect the `Retry-After` header and retry later
 
 ### Duplicate responses
 

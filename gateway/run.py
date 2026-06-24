@@ -7121,6 +7121,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if not check_webhook_requirements():
                 logger.warning("Webhook: aiohttp not installed")
                 return None
+            config.extra = {
+                **config.extra,
+                "max_concurrent_agent_runs": self.config.max_concurrent_agent_runs,
+            }
             adapter = WebhookAdapter(config)
             adapter.gateway_runner = self  # For cross-platform delivery
             return adapter

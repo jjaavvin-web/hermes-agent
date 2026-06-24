@@ -545,9 +545,13 @@ session_reset:
 # unlimited concurrent sessions. When the limit is reached, new sessions get a
 # clean error while existing active sessions keep their normal behavior. This
 # top-level key takes precedence over gateway.max_concurrent_sessions. The cap
-# is a best-effort single-host/profile runtime guard; Hermes fails open if the
-# local runtime lease registry cannot be read or locked.
+# is disabled by default for backwards compatibility.
 max_concurrent_sessions: null
+
+# Gateway/webhook agent-run backpressure. Protects the gateway event loop from
+# unbounded autonomous agent runs; invalid/non-positive values fall back to 4.
+gateway:
+  max_concurrent_agent_runs: 4
 
 # When true, group/channel chats use one session per participant when the platform
 # provides a user ID. This is the secure default and prevents users in the same
