@@ -57,7 +57,7 @@ def file_entries(path: Path, limit: int) -> list[tuple[int, str, dict[str, str]]
     if not path.exists() or not path.is_file():
         return []
     try:
-        lines = path.read_text(errors="replace").splitlines()[-limit:]
+        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()[-limit:]
         base_ns = int(path.stat().st_mtime * 1_000_000_000)
     except OSError:
         return []

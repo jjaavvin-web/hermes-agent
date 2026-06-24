@@ -223,7 +223,7 @@ def read_recall_hit_rate(path: Path = DEFAULT_RECALL_EVENTS, *, since_epoch: flo
     if not expanded.exists():
         return {"status": "no_data", "source_exists": False, "path": str(expanded), "hit_rate": None, "total": 0, "hits": 0}
     total = hits = 0
-    for raw in expanded.read_text(errors="replace").splitlines():
+    for raw in expanded.read_text(encoding="utf-8", errors="replace").splitlines():
         if not raw.strip():
             continue
         try:
