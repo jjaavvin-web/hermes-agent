@@ -24,7 +24,7 @@ DEFAULT_STATE_DB = HERMES_HOME / "state.db"
 DEFAULT_OUTPUT_DIR = HERMES_HOME / "observability"
 DEFAULT_TIMESERIES = DEFAULT_OUTPUT_DIR / "slo-timeseries.jsonl"
 DEFAULT_LATEST = DEFAULT_OUTPUT_DIR / "slo-latest.json"
-DEFAULT_RECALL_EVENTS = HERMES_HOME / "state" / "recall-events.jsonl"
+DEFAULT_RECALL_EVENTS = HERMES_HOME / "state" / "learning-index" / "recall-events.jsonl"
 
 WINDOW_SECONDS = 24 * 60 * 60
 BUCKET_SECONDS = 5 * 60
@@ -56,7 +56,7 @@ SLO_DEFINITIONS: dict[str, dict[str, Any]] = {
         "warn": 0.80,
         "critical": 0.65,
         "unit": "ratio",
-        "source": "~/.hermes/state/recall-events.jsonl hit records when present; reports no_data when missing",
+        "source": "~/.hermes/state/learning-index/recall-events.jsonl injection records (hit = n_lessons>0); reports no_data when missing",
     },
     "watchdog_restart_count": {
         "target": "<=0 per 24h",
@@ -242,7 +242,14 @@ def read_recall_hit_rate(path: Path = DEFAULT_RECALL_EVENTS, *, since_epoch: flo
         if since_epoch is not None and epoch is not None and epoch < since_epoch:
             continue
         total += 1
-        if bool(event.get("hit") or event.get("matched") or event.get("recalled") or event.get("success")):
+        # Warm-recall injection ledger records {"n_lessons": k, ...} per dispatch
+        # (no explicit hit flag); treat any dispatch that surfaced >=1 lesson as a
+        # hit. Explicit hit/matched/recalled/success flags still honoured.
+        n_lessons = event.get("n_lessons")
+        if bool(
+            event.get("hit") or event.get("matched") or event.get("recalled") or event.get("success")
+            or (isinstance(n_lessons, (int, float)) and not isinstance(n_lessons, bool) and n_lessons > 0)
+        ):
             hits += 1
     return {
         "status": "ok" if total else "no_events",
