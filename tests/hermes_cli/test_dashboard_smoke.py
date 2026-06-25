@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import importlib
+import json
 import os
 import subprocess
 import sys
@@ -15,6 +16,7 @@ from fastapi.routing import APIRoute
 from hermes_cli import dashboard_smoke
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
+_ROUTE_MANIFEST = _REPO_ROOT / "tests" / "fixtures" / "dashboard_route_manifest.json"
 
 
 def test_dashboard_router_expected_count_matches_mounted_routes():
@@ -125,3 +127,113 @@ def test_dashboard_stream_query_token_allowed_and_missing_token_rejected():
     assert response.ok is True
     assert response.status_code == 200
     assert response.content_type == "text/event-stream"
+
+
+def test_dashboard_smoke_enumerates_full_app_and_probes_all_api_get_routes(tmp_path):
+    from hermes_cli import web_server
+
+    report = dashboard_smoke.run_dashboard_smoke(
+        web_server.app,
+        status_file=tmp_path / "dashboard-smoke.json",
+        expected_manifest=dashboard_smoke.load_route_manifest(_ROUTE_MANIFEST),
+    )
+
+    assert report.ok is True
+    assert report.route_count_total == len(web_server.app.routes)
+    assert report.route_count_total >= 273
+    assert len(report.route_results) == report.route_count_total
+    assert report.api_get_route_count_total >= 120
+    assert report.mutating_route_count_total >= 130
+    assert report.missing_app_routes == []
+    assert report.unexpected_app_routes == []
+    assert report.route_manifest_actual_count is not None
+    assert report.route_manifest_expected_count is not None
+    assert report.route_manifest_actual_count >= report.route_manifest_expected_count
+    assert report.expected_import_errors == {}
+    assert report.missing_dashboard_routes == []
+    assert report.unexpected_dashboard_router_routes == []
+
+    api_get_results = [
+        route for route in report.route_results if route.is_api_route and route.is_get_route
+    ]
+    assert len(api_get_results) == report.api_get_route_count_total
+    assert api_get_results
+    for route in api_get_results:
+        assert route.probed or route.skipped, f"{route.methods} {route.path} had no probe/skip result"
+        if route.skipped:
+            assert route.skip_reason
+        else:
+            assert route.probe is not None
+            assert route.probe.ok, route.probe.error
+
+    mutating_results = [route for route in report.route_results if route.is_mutating_route]
+    assert len(mutating_results) == report.mutating_route_count_total
+    for route in mutating_results:
+        assert route.registered is True
+        assert route.handler_importable is True, route.handler_import_error
+        assert route.probed is False
+        assert route.skipped is True
+        assert "without executing side effects" in (route.skip_reason or "")
+
+    written = json.loads((tmp_path / "dashboard-smoke.json").read_text(encoding="utf-8"))
+    assert len(written["route_results"]) == report.route_count_total
+    assert written["api_get_route_count_total"] == report.api_get_route_count_total
+
+
+def test_dashboard_smoke_declared_4xx_seed_for_parameterized_get():
+    from hermes_cli import web_server
+
+    route = cast(
+        APIRoute,
+        next(
+            route
+            for route in web_server.app.routes
+            if isinstance(route, APIRoute) and route.path == "/api/sessions/{session_id}"
+        ),
+    )
+    expected, reason = dashboard_smoke._declared_expected_for_route(route)
+
+    assert 404 in expected
+    assert 422 in expected
+    assert reason is not None
+    assert "path seed" in reason
+
+
+def test_dashboard_route_manifest_gate_fails_on_missing_and_unexpected_route():
+    from hermes_cli import web_server
+
+    expected = dashboard_smoke.load_route_manifest(_ROUTE_MANIFEST)
+    assert expected
+    dropped = expected[1:]
+    comparison = dashboard_smoke.compare_route_manifest(web_server.app, dropped)
+
+    assert comparison["ok"] is False
+    assert comparison["unexpected"]
+
+    with_extra = list(expected) + [
+        {
+            "path": "/api/dashboard-smoke/nonexistent",
+            "methods": ["GET"],
+            "name": "missing_for_test",
+            "route_type": "APIRoute",
+        }
+    ]
+    comparison = dashboard_smoke.compare_route_manifest(web_server.app, with_extra)
+
+    assert comparison["ok"] is False
+    assert "GET /api/dashboard-smoke/nonexistent" in comparison["missing"]
+
+
+def test_dashboard_route_manifest_fixture_matches_live_app():
+    from hermes_cli import web_server
+
+    expected = dashboard_smoke.load_route_manifest(_ROUTE_MANIFEST)
+    comparison = dashboard_smoke.compare_route_manifest(web_server.app, expected)
+
+    assert comparison == {
+        "ok": True,
+        "expected_count": len(expected),
+        "actual_count": len(dashboard_smoke.route_manifest(web_server.app)),
+        "missing": [],
+        "unexpected": [],
+    }

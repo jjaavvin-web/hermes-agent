@@ -1,6 +1,6 @@
 import { useCallback } from "react";
-import { Input } from "@nous-research/ui/ui/components/input";
-import { Label } from "@nous-research/ui/ui/components/label";
+import { Input } from "@/components/ui-shims";
+import { Label } from "@/components/ui-shims";
 import { Select, SelectOption } from "@nous-research/ui/ui/components/select";
 import { Button } from "@nous-research/ui/ui/components/button";
 import { useI18n } from "@/i18n";

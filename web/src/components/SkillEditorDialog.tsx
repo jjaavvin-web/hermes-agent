@@ -1,8 +1,8 @@
 import { useEffect, useState } from "react";
 import { api } from "@/lib/api";
 import { Button } from "@nous-research/ui/ui/components/button";
-import { Input } from "@nous-research/ui/ui/components/input";
-import { Label } from "@nous-research/ui/ui/components/label";
+import { Input } from "@/components/ui-shims";
+import { Label } from "@/components/ui-shims";
 import { Spinner } from "@nous-research/ui/ui/components/spinner";
 import {
   Dialog,
@@ -10,7 +10,7 @@ import {
   DialogDescription,
   DialogHeader,
   DialogTitle,
-} from "@nous-research/ui/ui/components/dialog";
+} from "@/components/ui-shims";
 
 /* ------------------------------------------------------------------ */
 /*  SkillEditorDialog — create or edit a SKILL.md from the dashboard   */

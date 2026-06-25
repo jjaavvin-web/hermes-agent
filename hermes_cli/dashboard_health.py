@@ -1391,7 +1391,7 @@ def _build_nexus_sectors(
             "summary": hives_summary,
             "href": "/hives",
             "metrics": hives_metrics,
-            "guardrail": "Read-only drilldown. Ruflo is retired; no launch, tmux control, or worktree mutation controls.",
+            "guardrail": "Read-only drilldown. No Ruflo launch, tmux control, or worktree mutation controls; Ruflo is retired.",
         },
         {
             "id": "codex",
