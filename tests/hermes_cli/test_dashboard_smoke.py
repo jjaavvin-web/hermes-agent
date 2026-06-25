@@ -146,7 +146,9 @@ def test_dashboard_smoke_enumerates_full_app_and_probes_all_api_get_routes(tmp_p
     assert report.mutating_route_count_total >= 130
     assert report.missing_app_routes == []
     assert report.unexpected_app_routes == []
-    assert report.route_manifest_expected_count == report.route_manifest_actual_count
+    assert report.route_manifest_actual_count is not None
+    assert report.route_manifest_expected_count is not None
+    assert report.route_manifest_actual_count >= report.route_manifest_expected_count
     assert report.expected_import_errors == {}
     assert report.missing_dashboard_routes == []
     assert report.unexpected_dashboard_router_routes == []

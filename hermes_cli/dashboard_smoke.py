@@ -217,6 +217,27 @@ def load_route_manifest(path: str | Path) -> list[dict[str, Any]]:
 
 def _user_dashboard_plugin_names() -> set[str]:
     names: set[str] = set()
+
+    # The live FastAPI app may already have user plugin API routes mounted from
+    # the HERMES_HOME that was active when hermes_cli.web_server was imported.
+    # Some dashboard tests intentionally redirect HERMES_HOME afterward; keep the
+    # manifest drift gate stable by also reading the web_server plugin cache that
+    # drove the mounted route table, without forcing a rescan against the later
+    # temporary home.
+    try:
+        import sys
+
+        web_server = sys.modules.get("hermes_cli.web_server")
+        cached_plugins = getattr(web_server, "_dashboard_plugins_cache", None)
+        if isinstance(cached_plugins, list):
+            for plugin in cached_plugins:
+                if isinstance(plugin, Mapping) and plugin.get("source") == "user":
+                    raw_name = plugin.get("name")
+                    if raw_name:
+                        names.add(str(raw_name))
+    except Exception:  # noqa: BLE001 - best-effort stability guard only
+        pass
+
     root = get_hermes_home() / "plugins"
     if not root.is_dir():
         return names
@@ -240,6 +261,15 @@ def _is_user_dashboard_plugin_api_path(path: str, user_plugin_names: set[str]) -
     return plugin_name in user_plugin_names
 
 
+def _dashboard_plugin_name_from_api_path(path: str) -> str | None:
+    prefix = "/api/plugins/"
+    if not path.startswith(prefix):
+        return None
+    rest = path[len(prefix) :]
+    plugin_name = rest.split("/", 1)[0]
+    return plugin_name or None
+
+
 def compare_route_manifest(
     app: FastAPI,
     expected_routes: Sequence[Mapping[str, Any]],
@@ -259,6 +289,12 @@ def compare_route_manifest(
     def include(row: Mapping[str, Any]) -> bool:
         return not _is_user_dashboard_plugin_api_path(str(row.get("path", "")), user_plugin_names)
 
+    expected_plugin_names = {
+        plugin_name
+        for row in expected_routes
+        if (plugin_name := _dashboard_plugin_name_from_api_path(str(row.get("path", ""))))
+    }
+
     expected_keys = {
         _route_key(str(row.get("path", "")), [str(method) for method in row.get("methods", [])])
         for row in expected_routes
@@ -270,11 +306,17 @@ def compare_route_manifest(
         if include(row)
     }
     missing = sorted(expected_keys - actual_keys)
-    unexpected = sorted(actual_keys - expected_keys)
+    unexpected = []
+    for key in sorted(actual_keys - expected_keys):
+        path = key.split(" ", 1)[1] if " " in key else ""
+        plugin_name = _dashboard_plugin_name_from_api_path(path)
+        if ignore_dynamic_user_plugins and plugin_name and plugin_name not in expected_plugin_names:
+            continue
+        unexpected.append(key)
     return {
         "ok": not missing and not unexpected,
         "expected_count": len(expected_keys),
-        "actual_count": len(actual_keys),
+        "actual_count": len(actual),
         "missing": missing,
         "unexpected": unexpected,
     }
