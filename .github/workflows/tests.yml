@@ -89,6 +89,19 @@ jobs:
         # re-download, keeping the persisted cache small and fast to restore.
         run: uv cache prune --ci
 
+      - name: Dashboard full route smoke gate
+        # Fail loudly if app.routes drifts, a dashboard router silently drops,
+        # an /api GET route is unprobed/unskipped, or mutating handlers stop
+        # being importable. Kept outside the sliced runner so the route-table
+        # contract is always visible as a named CI gate.
+        run: |
+          source .venv/bin/activate
+          python -m pytest tests/hermes_cli/test_dashboard_smoke.py -q
+        env:
+          OPENROUTER_API_KEY: ""
+          OPENAI_API_KEY: ""
+          NOUS_API_KEY: ""
+
       - name: Run tests (slice ${{ matrix.slice }}/6)
         # Per-file isolation via scripts/run_tests_parallel.py: discovers
         # every test_*.py file under tests/ (excluding integration/ + e2e/),

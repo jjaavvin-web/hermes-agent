@@ -37,7 +37,7 @@ import {
 import "@xyflow/react/dist/style.css";
 import "@/components/system-health/system-health.css";
 import { Maximize2, X } from "lucide-react";
-import { useBelowBreakpoint } from "@nous-research/ui/hooks/use-below-breakpoint";
+import { useBelowBreakpoint } from "@/components/ui-shims";
 import type {
   OSDiagnostic,
   OSGraphEdge,
