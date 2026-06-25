@@ -39,6 +39,8 @@ def breaches(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
     metrics = snapshot.get("metrics") or {}
     found = []
     for key, spec in SLO_DEFINITIONS.items():
+        if not spec.get("page", True):
+            continue  # informational metric (e.g. p95 over mixed lane/interactive turns) — tracked, not paged
         value = metrics.get(key)
         if value is None:
             if key == "recall_hit_rate":

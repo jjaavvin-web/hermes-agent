@@ -28,6 +28,10 @@ DEFAULT_RECALL_EVENTS = HERMES_HOME / "state" / "learning-index" / "recall-event
 
 WINDOW_SECONDS = 24 * 60 * 60
 BUCKET_SECONDS = 5 * 60
+# 2026-06-25: turns whose latency_ms spans a WSL2 suspend gap (the box sleeps) are
+# multi-hour artifacts that inflated p95 to ~23min and made the SLO unarmable. Exclude
+# per-turn latencies above this ceiling from p95 (the turn still counts toward turn_count).
+MAX_PLAUSIBLE_LATENCY_MS = int(os.environ.get("SLO_MAX_PLAUSIBLE_LATENCY_MS", str(30 * 60 * 1000)))
 
 SLO_DEFINITIONS: dict[str, dict[str, Any]] = {
     "gateway_turn_p95_latency_ms": {
@@ -35,7 +39,13 @@ SLO_DEFINITIONS: dict[str, dict[str, Any]] = {
         "warn": 90000,
         "critical": 120000,
         "unit": "ms",
-        "source": "~/.hermes/state.db turn_usage.latency_ms (read-only SQLite URI)",
+        # 2026-06-25: INFORMATIONAL (page=False). p95 mixes long lane/codex turns with
+        # interactive turns, so a 120s budget over all turns is not a clean health signal
+        # (it reads ~18min because ~40% of turns are multi-minute lane runs). Tracked in
+        # the timeseries + dashboard; re-enable paging once turn_usage tags interactive
+        # vs lane turns. >30min suspend-gap turns are already excluded from the value.
+        "page": False,
+        "source": "~/.hermes/state.db turn_usage.latency_ms (read-only; >30min suspend-gap turns excluded)",
     },
     "turn_error_rate": {
         "target": "<=0.05",
@@ -75,6 +85,10 @@ SLO_DEFINITIONS: dict[str, dict[str, Any]] = {
 }
 
 _ERROR_RE = re.compile(r"\b(error|exception|traceback|failed|failure|timeout|crash)\b", re.I)
+# 2026-06-25: tool-level noise that is NOT a gateway turn error — a lane's shell tool
+# returning an error (e.g. missing module), title-generation hiccups, MCP memory-limit
+# rejections. Normal agent operation, not gateway health failures; excluded from the rate.
+_ERROR_EXCLUDE_RE = re.compile(r"returned error|tool_executor|title[_ ]generat|memory would be at", re.I)
 _FALLBACK_RE = re.compile(r"\bfallback|fallback-trigger|provider fallback|model fallback\b", re.I)
 _WATCHDOG_RE = re.compile(r"\b(started|starting|restart|failed|failure|watchdog)\b", re.I)
 _TS_PREFIX_RE = re.compile(r"^(?P<ts>\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(?P<tz>Z|[+-]\d{2}:?\d{2})?")
@@ -142,13 +156,20 @@ def journalctl_lines(unit: str, since_epoch: float, *, limit: int = 2000) -> lis
 def parse_journal_counts(gateway_lines: Iterable[str], watchdog_lines: Iterable[str] = ()) -> JournalCounts:
     errors = fallbacks = watchdogs = 0
     for line in gateway_lines:
-        if _ERROR_RE.search(line):
+        if _ERROR_RE.search(line) and not _ERROR_EXCLUDE_RE.search(line):
             errors += 1
         if _FALLBACK_RE.search(line):
             fallbacks += 1
     for line in watchdog_lines:
         text = line.lower()
-        if _WATCHDOG_RE.search(text) and ("started" in text or "restart" in text or "failed" in text or "failure" in text):
+        # 2026-06-25: this watchdog is ALERT-ONLY (its unit description literally says
+        # "(no restart)") and gateway NRestarts=0. Skip its own start/finish heartbeats
+        # (whose description contains the word "restart" -> 266 false positives/24h) and
+        # count only genuine restart ACTIONS. A restarting watchdog logs
+        # "restarting"/"restarted"/"scheduled restart".
+        if "no restart" in text:
+            continue
+        if "restarted" in text or "restarting" in text or "scheduled restart" in text:
             watchdogs += 1
     return JournalCounts(errors, fallbacks, watchdogs)
 
@@ -185,7 +206,7 @@ def build_bucket_series(rows: list[dict[str, Any]], gateway_lines: Iterable[str]
         bucket = _bucket_start(float(row["ts"]), bucket_seconds)
         item = buckets[bucket]
         item["turn_count"] += 1
-        if row.get("latency_ms") is not None:
+        if row.get("latency_ms") is not None and float(row["latency_ms"]) <= MAX_PLAUSIBLE_LATENCY_MS:
             item["latencies_ms"].append(float(row["latency_ms"]))
         if int(row.get("retry_count") or 0) > 0:
             item["retry_turns"] += 1
@@ -195,7 +216,7 @@ def build_bucket_series(rows: list[dict[str, Any]], gateway_lines: Iterable[str]
         if epoch is None:
             continue
         bucket = _bucket_start(epoch, bucket_seconds)
-        if _ERROR_RE.search(line):
+        if _ERROR_RE.search(line) and not _ERROR_EXCLUDE_RE.search(line):
             buckets[bucket]["error_events"] += 1
         if _FALLBACK_RE.search(line):
             buckets[bucket]["fallback_events"] += 1
@@ -203,7 +224,7 @@ def build_bucket_series(rows: list[dict[str, Any]], gateway_lines: Iterable[str]
     for bucket in sorted(buckets):
         item = buckets[bucket]
         turn_count = item["turn_count"]
-        fallback_events = item["fallback_events"] + item["retry_turns"]
+        fallback_events = item["fallback_events"]  # retries are not fallbacks (2026-06-25)
         series.append({
             "bucket_start": utc_iso(bucket),
             "bucket_epoch": bucket,
@@ -280,11 +301,16 @@ def build_slo_snapshot(
     if watchdog_lines is None:
         watchdog_lines = journalctl_lines("hermes-gateway-watchdog.service", since)
     counts = parse_journal_counts(gateway_lines, watchdog_lines)
-    latencies = [float(row["latency_ms"]) for row in rows if row.get("latency_ms") is not None]
+    latencies = [
+        float(row["latency_ms"]) for row in rows
+        if row.get("latency_ms") is not None and float(row["latency_ms"]) <= MAX_PLAUSIBLE_LATENCY_MS
+    ]
     turn_count = len(rows)
     retry_turns = sum(1 for row in rows if int(row.get("retry_count") or 0) > 0)
     total_cost = sum(float(row.get("estimated_cost_usd") or 0.0) for row in rows)
-    fallback_events = counts.fallback_events + retry_turns
+    # 2026-06-25: provider fallbacks come from gateway journald only; ordinary turn
+    # retries (retry_count>0) are NOT fallbacks and are reported separately as retry_turns.
+    fallback_events = counts.fallback_events
     recall = read_recall_hit_rate(recall_events_path, since_epoch=since)
     metrics = {
         "gateway_turn_p95_latency_ms": percentile(latencies, 0.95),
