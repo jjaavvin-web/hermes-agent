@@ -90,6 +90,10 @@ BARE_CLAUDE_PATTERNS = (
     re.compile(r"\bclaude\s+-p\b"),
     re.compile(r"\bclaude\s+--print\b"),
 )
+# This canary's own source contains the forbidden literal (doctrine strings + the
+# flag message at provider_lane_canary.py:688), so the source scan must exclude
+# itself or it self-flags as a bare-claude leak.
+SELF_SOURCE_PATH = Path(__file__).resolve()
 
 
 @dataclass
@@ -641,6 +645,13 @@ def scan_bare_claude(paths: Iterable[Path]) -> list[Lane]:
         for path in candidates:
             if any(part in {".git", "venv", "__pycache__", "node_modules"} for part in path.parts):
                 continue
+            # Exclude this canary's own source so it does not self-flag on the
+            # forbidden literal it must carry (doctrine strings + line 688 message).
+            try:
+                if path.resolve() == SELF_SOURCE_PATH:
+                    continue
+            except OSError:
+                pass
             try:
                 text = path.read_text(encoding="utf-8", errors="replace")
             except OSError:

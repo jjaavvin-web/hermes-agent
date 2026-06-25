@@ -62,6 +62,8 @@ DASHBOARD_ROUTER_MODULES: tuple[str, ...] = (
     "hermes_cli.dashboard_cost",
     "hermes_cli.dashboard_get_some",
     "hermes_cli.dashboard_command_center",
+    "hermes_cli.dashboard_slo",
+    "hermes_cli.dashboard_action_preflight",
 )
 
 # GET routes that are registration-covered but not body-probed by default.  The

@@ -546,7 +546,11 @@ session_reset:
 # clean error while existing active sessions keep their normal behavior. This
 # top-level key takes precedence over gateway.max_concurrent_sessions. The cap
 # is disabled by default for backwards compatibility.
-max_concurrent_sessions: null
+# 2026-06-25 (spine audit): recommend 3 — one below the ~4 gateway async event-loop
+# starvation ceiling, beyond which concurrent loki lanes miss the sd_notify heartbeat
+# and the systemd watchdog SIGABRT-restarts the gateway. The cap returns a clean error,
+# not a crash, so this enforces the ceiling gracefully.
+max_concurrent_sessions: 3
 
 # Gateway/webhook agent-run backpressure. Protects the gateway event loop from
 # unbounded autonomous agent runs; invalid/non-positive values fall back to 4.

@@ -437,14 +437,14 @@ class WebhookAdapter(BasePlatformAdapter):
             ref_check = subprocess.run(
                 ["git", "-C", repo_root, "rev-parse", "--verify", "--quiet",
                  f"refs/heads/{self._wt_branch}"],
-                capture_output=True, text=True,
+                capture_output=True, text=True, timeout=25,
             )
             add_cmd = ["git", "-C", repo_root, "worktree", "add", str(wt_dir)]
             if ref_check.returncode == 0:
                 add_cmd.append(self._wt_branch)
             else:
                 add_cmd += ["-b", self._wt_branch, self._wt_base_branch]
-            res = subprocess.run(add_cmd, capture_output=True, text=True)
+            res = subprocess.run(add_cmd, capture_output=True, text=True, timeout=25)
             if res.returncode != 0 or not wt_dir.is_dir():
                 logger.error(
                     "[webhook] relay worktree add failed rc=%s: %s",
@@ -840,7 +840,7 @@ class WebhookAdapter(BasePlatformAdapter):
         # before task creation; release the slot if setup refuses the run.
         _wt_for_run: Optional[str] = None
         if self._wt_enabled:
-            _wt_for_run = self._ensure_relay_worktree()
+            _wt_for_run = await asyncio.to_thread(self._ensure_relay_worktree)
             if _wt_for_run is None:
                 self._agent_run_semaphore.release()
                 self._seen_deliveries.pop(delivery_id, None)
