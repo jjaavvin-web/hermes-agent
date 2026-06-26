@@ -408,6 +408,27 @@ _LOOPBACK_HOST_VALUES: frozenset = frozenset({
 })
 
 
+def _extra_accepted_hosts() -> frozenset:
+    """Operator-allowlisted Host values beyond the bound interface.
+
+    Set ``HERMES_DASHBOARD_EXTRA_HOSTS`` to a comma-separated list of
+    hostnames that legitimately front the dashboard via a reverse proxy
+    the operator controls end-to-end — e.g. a Tailscale ``serve`` MagicDNS
+    name (``fresh.tailadb109.ts.net``) bridging to ``127.0.0.1:9119``.
+
+    This is SAFE against the DNS-rebinding threat the Host guard defends
+    (GHSA-ppp5-vxwm-4cf7): rebinding requires the attacker to control how
+    the name resolves for the victim's browser. They cannot do that for a
+    tailnet MagicDNS name (resolution is tailnet-internal, WireGuard-authed)
+    or an operator-owned proxy host. Only add names you fully control.
+    """
+    raw = os.environ.get("HERMES_DASHBOARD_EXTRA_HOSTS", "")
+    return frozenset(h.strip().lower() for h in raw.split(",") if h.strip())
+
+
+_EXTRA_ACCEPTED_HOSTS: frozenset = _extra_accepted_hosts()
+
+
 def should_require_auth(host: str, allow_public: bool) -> bool:
     """Return True iff the dashboard OAuth auth gate must be active.
 
@@ -452,6 +473,12 @@ def _is_accepted_host(host_header: str, bound_host: str) -> bool:
     else:
         host_only = h.rsplit(":", 1)[0] if ":" in h else h
     host_only = host_only.lower()
+
+    # Operator-allowlisted reverse-proxy / tailnet hostnames (opt-in via
+    # HERMES_DASHBOARD_EXTRA_HOSTS). See _extra_accepted_hosts() for why
+    # this is safe against DNS rebinding.
+    if host_only in _EXTRA_ACCEPTED_HOSTS:
+        return True
 
     # 0.0.0.0 bind means operator explicitly opted into all-interfaces
     # (requires --insecure per web_server.start_server). No Host-layer
