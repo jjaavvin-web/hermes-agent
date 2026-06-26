@@ -517,6 +517,24 @@ class SessionEntry:
     resume_reason: Optional[str] = None  # e.g. "restart_timeout"
     last_resume_marked_at: Optional[datetime] = None
 
+    # Autonomous-dispatch security envelope.  Persisted so a gateway restart's
+    # auto-resume (which takes the generic handle_message path) can re-arm the
+    # in-process safety setup the original webhook/loki dispatch installed: the
+    # DISP-5 push/PR/workflow floor (a per-task ContextVar), the per-session
+    # terminal-deny list (an in-memory dict), and worktree isolation (a
+    # ContextVar).  All three are wiped by a restart — without this durable
+    # marker a resumed run silently regains git-push / gh-pr / live-tree access
+    # (finding #8).
+    autonomous_dispatch: bool = False
+    worktree_path: Optional[str] = None
+    deny_patterns: Optional[list] = None
+    # The session key the ORIGINAL dispatch registered its deny patterns under
+    # (build_session_key in the webhook/relay dispatcher).  Persisted because it
+    # can diverge from ``session_key`` (e.g. profile namespacing) — the resume
+    # re-registers under BOTH so the deny stays live no matter which key
+    # check_session_deny_patterns resolves at tool-exec time (finding #8).
+    approval_key: Optional[str] = None
+
     def to_dict(self) -> Dict[str, Any]:
         result = {
             "session_key": self.session_key,
@@ -547,6 +565,10 @@ class SessionEntry:
             "was_auto_reset": self.was_auto_reset,
             "auto_reset_reason": self.auto_reset_reason,
             "reset_had_activity": self.reset_had_activity,
+            "autonomous_dispatch": self.autonomous_dispatch,
+            "worktree_path": self.worktree_path,
+            "deny_patterns": self.deny_patterns,
+            "approval_key": self.approval_key,
         }
         if self.origin:
             result["origin"] = self.origin.to_dict()
@@ -599,6 +621,10 @@ class SessionEntry:
             was_auto_reset=data.get("was_auto_reset", False),
             auto_reset_reason=data.get("auto_reset_reason"),
             reset_had_activity=data.get("reset_had_activity", False),
+            autonomous_dispatch=data.get("autonomous_dispatch", False),
+            worktree_path=data.get("worktree_path"),
+            deny_patterns=data.get("deny_patterns"),
+            approval_key=data.get("approval_key"),
         )
 
 
@@ -1102,6 +1128,38 @@ class SessionStore:
                 self._save()
                 return True
         return False
+
+    def set_autonomous_envelope(
+        self,
+        session_key: str,
+        *,
+        autonomous: bool = True,
+        worktree_path: Optional[str] = None,
+        deny_patterns: Optional[list] = None,
+        approval_key: Optional[str] = None,
+    ) -> bool:
+        """Persist the autonomous-dispatch security envelope onto a session.
+
+        Stored so gateway-restart auto-resume can re-arm the DISP-5 push/PR/
+        workflow floor, the per-session terminal-deny list, and worktree
+        isolation that the original webhook/loki dispatch installed in-process
+        (those live in per-task ContextVars + an in-memory dict that a restart
+        wipes — finding #8).  Returns True if the session existed and was
+        updated.
+        """
+        if not session_key:
+            return False
+        with self._lock:
+            self._ensure_loaded_locked()
+            entry = self._entries.get(session_key)
+            if entry is None:
+                return False
+            entry.autonomous_dispatch = bool(autonomous)
+            entry.worktree_path = worktree_path or None
+            entry.deny_patterns = list(deny_patterns) if deny_patterns else None
+            entry.approval_key = approval_key or None
+            self._save()
+            return True
 
     def clear_resume_pending(self, session_key: str) -> bool:
         """Clear the resume-pending flag after a successful resumed turn.

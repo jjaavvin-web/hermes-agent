@@ -254,19 +254,45 @@ _HERMES_STATE_DIR_EXPOSE_TARGET = (
 _SSH_DIR_EXPOSE_TARGET = r'(?:~|\$home|\$\{home\})/\.ssh\b'
 _HARDLINE_HTTP_SERVER_EXPOSE_TARGET = rf'(?:{_HERMES_STATE_DIR_EXPOSE_TARGET}|{_SSH_DIR_EXPOSE_TARGET})'
 _BROAD_EXFIL_READ_TARGET = rf'(?:{_CREDENTIAL_FILES}|{_PROJECT_CREDENTIAL_READ_PATH})'
-_EXFIL_READ_COMMAND = r'(?:cat|base64|xxd|od|hexdump|tar|gzip|openssl|gpg)'
+# ACTUAL credential files only — used by the two-step stage detector so the taint
+# bit fires on a REAL secret, regardless of the copy verb, but NOT on any path
+# that merely contains a `token`/`secret` substring (so `cat ./src/auth/
+# token_service.py` does not taint). This is the hardline set (.env/auth.json/ssh
+# material/etc) plus the explicit credential-file class: ~/.netrc/.pgpass/…,
+# .aws/credentials, id_rsa/id_ed25519/id_ecdsa, a bare .netrc, and any *.pem/*.key.
+_REAL_CREDENTIAL_FILE_TARGET = (
+    rf'(?:{_HARDLINE_EXFIL_READ_TARGET}|'
+    rf'{_CREDENTIAL_FILES}|'
+    r'\.aws/credentials\b|'
+    r'\bid_(?:rsa|ed25519|ecdsa)\b|'
+    r'\.netrc\b|'
+    r'[^\s"\'`]+\.(?:pem|key)\b)'
+)
+# File-content readers. The streaming/partial variants (tail/head/cut/dd/sort/…)
+# are just as effective at piping a credential file to a sink as `cat`, so the
+# rail must enumerate them too — a tight allowlist of file-content readers ONLY;
+# deliberately NO general shell builtins (echo/printf/read) which never read a
+# file's bytes by themselves.
+_EXFIL_READ_COMMAND = (
+    r'(?:cat|base64|xxd|od|hexdump|tar|gzip|openssl|gpg|'
+    r'tail|head|cut|dd|sort|tac|strings|nl|paste|fold)'
+)
 _COMMAND_SUBSTITUTION_EXFIL_READ = rf'(?:\$\(\s*(?:sudo\s+)?{_EXFIL_READ_COMMAND}\b|`\s*(?:sudo\s+)?{_EXFIL_READ_COMMAND}\b)'
 
 # Outbound sinks that can carry local stdin/file bytes off-host. Plain GETs are
 # deliberately excluded (`curl https://public-api` stays allowed); curl only
 # becomes an exfil sink when it is asked to upload/post/form data or when a
 # command substitution reads local bytes into a GET URL/header argument.
+# NOTE: the POST/body flag lookahead binds to curl's OWN argument span — it stops
+# at the first pipe (`[^|]*`, not `[\s\S]*`) so a downstream piped tool whose
+# flags happen to include `-d`/`-F` (e.g. `curl -s … | cut -d, -f1`) is NOT
+# mis-read as a curl upload sink.
 _CURL_EXFIL_SINK = (
-    r'\bcurl\b(?=[\s\S]*'
+    r'\bcurl\b(?=[^|]*'
     r'(?:--data(?:-[\w-]+)?\b|-d\b|--form\b|-F\b|'
     r'--upload-file\b|-T\b|--request\s+POST\b|-X\s*POST\b))'
 )
-_CURL_SUBSTITUTION_EXFIL_SINK = rf'\bcurl\b[\s\S]*(?:{_COMMAND_SUBSTITUTION_EXFIL_READ})'
+_CURL_SUBSTITUTION_EXFIL_SINK = rf'\bcurl\b[^|]*(?:{_COMMAND_SUBSTITUTION_EXFIL_READ})'
 _WGET_EXFIL_SINK = (
     r'\bwget\b(?=[\s\S]*'
     r'(?:--post-file\b|--post-data\b|--body-file\b|--body-data\b|--method\s+POST\b))'
@@ -300,6 +326,143 @@ _BROAD_STRUCTURAL_EXFIL_UPLOAD = (
     r'\bscp\b)'
 )
 
+# Curated set of HIGH-VALUE secret env-var NAMES — live provider keys, cloud
+# credentials, and VCS/registry tokens that sit in the agent process env. Used by
+# two narrow rails below: a TARGETED `printenv <KEY>` value dump (item 5) and a
+# by-NAME `$KEY` / `${KEY}` reference reaching a network sink (item 6). Matched
+# case-insensitively (the detection path lowercases its input; the route floor
+# uses re.IGNORECASE). PATH/HOME/USER and other non-secret vars are deliberately
+# absent so `printenv PATH` and `echo $HOME | curl` stay benign.
+_SENSITIVE_ENV_VAR_NAME = (
+    r'(?:'
+    r'ANTHROPIC_(?:API_KEY|AUTH_TOKEN)|'
+    r'OPENAI_API_KEY|'
+    r'OPENROUTER_API_KEY|'
+    r'XAI_[A-Z0-9_]+|'
+    r'GROK_API_KEY|'
+    r'AWS_SECRET_ACCESS_KEY|'
+    r'AWS_SESSION_TOKEN|'
+    r'GITHUB_TOKEN|'
+    r'GH_TOKEN|'
+    r'GITLAB_TOKEN|'
+    r'HF_TOKEN|'
+    r'HUGGINGFACE_[A-Z0-9_]*TOKEN|'
+    r'GEMINI_API_KEY|'
+    r'GOOGLE_API_KEY|'
+    r'SLACK_(?:BOT_|APP_|USER_)?TOKEN|'
+    r'DISCORD_(?:BOT_)?TOKEN|'
+    r'NPM_TOKEN|'
+    r'PYPI_TOKEN|'
+    r'HERMES_SESSION_TOKEN'
+    r')'
+)
+# Item 6 read-surface: a sensitive var referenced by name as `$KEY` or `${KEY}`.
+_SENSITIVE_ENV_VAR_REFERENCE = rf'\$\{{?{_SENSITIVE_ENV_VAR_NAME}\}}?'
+
+# Class A — process-environment dump surface. Live provider keys
+# (ANTHROPIC/OPENAI/OPENROUTER/XAI) sit in the agent process env, so dumping the
+# whole environment to a sink is the canonical secret exfil. Match env AS A DUMP,
+# not env AS A PREFIX: `env FOO=bar cmd` and `printenv PATH` (single var) are
+# legitimate, so the `env` arm is disambiguated to exclude a trailing `VAR=`
+# assignment and bare `set` only counts when it is piped onward.
+#
+# DEFENSE-IN-DEPTH NOTE: this is a best-effort *lexical* rail. It catches the
+# enumerable one-command full-env dumps (env/printenv/export/declare/typeset/
+# readonly/`set |`//proc/<pid>/environ + interpreter ENVIRON/%ENV/os.environ)
+# and named-key references, and `_normalize_exfil_command` first dequotes the
+# command so the UNIVERSAL intra-token quote-split bypass (`e'n'v`, `"env"`,
+# `d'e'clare -p`, `print'e'nv KEY`) collapses back to the bare token before any
+# of these arms run.
+#
+# IRREDUCIBLE RESIDUAL (do NOT chase with more lexical patterns): after dequoting
+# + this builtin set, the class that survives is the one where the dangerous
+# TOKEN or secret VALUE is never literally present even after normalization —
+#   • ANSI-C / hex quoting:        $'\x65nv' | curl -d @-   (env never spelled)
+#   • eval / $(...) of an encoded string, base64-decode-then-exec
+#   • indirect expansion:          k=ANTHROPIC_API_KEY; echo ${!k} | curl
+#   • variable renaming:           X=$ANTHROPIC_API_KEY; echo $X | curl
+# No static lexical rail can catch this class (the byte stream is synthesized at
+# runtime from tokens that look benign). Complete coverage is owned by (a) the
+# two-step credential-taint floor (stage→exfil, which fires on the credential
+# PRESENCE regardless of how the upload is spelled) and (b) autonomous-lane
+# sandboxing/gating. This regex is best-effort defense-in-depth, not the floor.
+_ENV_DUMP_READ_SURFACE = (
+    r'(?:'
+    # bare/piped `printenv` only — a single NAMED var (`printenv PATH`) is an
+    # inspection, not a whole-env dump, so a following var name is excluded...
+    r'\bprintenv\b(?!\s+[A-Za-z_])|'
+    # ...EXCEPT a targeted `printenv <PROVIDER_KEY>` prints that key's VALUE and
+    # IS a dump (item 5): `printenv ANTHROPIC_API_KEY | curl -d @-`.
+    rf'\bprintenv\s+{_SENSITIVE_ENV_VAR_NAME}\b|'
+    # env-as-dump: command-position `env` with an OPTIONAL executable path prefix
+    # (so `/usr/bin/env`, `/bin/env` ARE caught) but fires ONLY as a dump — bare,
+    # or carrying only DUMP-ONLY flags (`-0`/`--null`), then piped/terminated. A
+    # LAUNCHER flag (`env -i`, `env -u VAR`) or command/assignment token
+    # (`env FOO=bar cmd`, `env python`) is excluded. `venv`/`.env` cannot match:
+    # the leading anchor requires start/space/separator and the path arm requires
+    # a trailing `/`.
+    r'(?:^|[\s|;&(`])(?:\S*/)?env\b(?:\s+(?:-0|--null))*\s*(?=$|[|;&)>`\n])|'
+    # `export` with NO args prints every exported var WITH VALUES; `export -p` is
+    # the explicit portable-dump flag. `export FOO=bar`, `export PATH`,
+    # `export VAR` (assignment / single-name re-export) are NOT dumps — the bare
+    # arm requires nothing but a pipe/terminator after `export`.
+    r'(?:^|[\s|;&(`])export\b\s*(?=$|[|;&)>`\n])|'
+    r'\bexport\s+-p\b|'
+    # `declare` with any flag combo containing p or x prints ALL vars+values
+    # (`declare -p`, `declare -px`, `declare -xp`); a bare piped `declare`
+    # likewise. `declare -f func`, `declare -i n=5`, `declare -a arr` (function /
+    # integer / array — no p/x) are NOT dumps and are excluded.
+    r'\bdeclare\s+-[a-z]*[px][a-z]*\b|'
+    r'(?:^|[\s|;&(`])declare\b\s*(?=$|[|;&)>`\n])|'
+    # `typeset` is the ksh/zsh spelling of `declare` (bash aliases them), so it
+    # dumps ALL vars+values identically: `typeset -p`, `typeset -px`, and a bare
+    # piped `typeset`. Same exclusions as `declare` — `typeset -f func`,
+    # `typeset -i n=5` (function / integer attr, no p/x) are NOT dumps.
+    r'\btypeset\s+-[a-z]*[px][a-z]*\b|'
+    r'(?:^|[\s|;&(`])typeset\b\s*(?=$|[|;&)>`\n])|'
+    # `readonly` with NO args prints every readonly var WITH VALUES; `readonly -p`
+    # is the explicit portable-dump flag (POSIX, mirrors `export`). `readonly VAR`
+    # (mark existing) and `readonly VAR=x` (assignment) are NOT dumps — the bare
+    # arm requires nothing but a pipe/terminator after `readonly`.
+    r'(?:^|[\s|;&(`])readonly\b\s*(?=$|[|;&)>`\n])|'
+    r'\breadonly\s+-p\b|'
+    r'(?<![\w./])set\s*\||'                      # bare `set` only when piped onward
+    # /proc/<pid>/environ for ANY pid form (self, literal pid, $$, ${BASHPID}…)
+    # AND any number of path segments, e.g. /proc/self/task/<tid>/environ.
+    r'/proc/[^\s|;&>]*environ\b|'
+    # interpreter-native environment dumps (paired with a sink by the caller):
+    # awk ENVIRON[], perl %ENV, python os.environ.
+    r'\bawk\b[\s\S]*\bENVIRON\b|'
+    r'\bperl\b[\s\S]*%ENV\b|'
+    r'\bos\.environ\b'
+    r')'
+)
+
+# Byte-carrying upload sinks — the file/stdin/body-carrying subset of the
+# network sinks (NOT plain GET / inline non-file POST). Used by the two-step
+# credential-taint floor: while a session is tainted, ANY outbound BODY/UPLOAD/
+# socket is the upload half of a stage-then-exfil and is denied — not just the
+# `@`-file carrier. This is the FULL `_NETWORK_EXFIL_SINK` with the curl arm
+# narrowed to its byte-carrying subset: an `@`-file, `--upload-file`/`-T`, OR a
+# command substitution that reads a file into the body (`--data "$(cat …)"`),
+# which closes the inline-substitution upload bypass (HIGH #1). A plain
+# authenticated GET and a literal inline POST (`curl -d '{"k":"v"}'`) carry no
+# file/stdin bytes and stay allowed.
+_CURL_BYTE_CARRYING_SINK = (
+    rf'(?:\bcurl\b[^|]*(?:@|--upload-file\b|-T\b)|{_CURL_SUBSTITUTION_EXFIL_SINK})'
+)
+_BYTE_CARRYING_UPLOAD_SINK = (
+    rf'(?:{_CURL_BYTE_CARRYING_SINK}|'
+    rf'{_WGET_EXFIL_SINK}|'
+    rf'{_PYTHON_HTTP_CLIENT_EXFIL_SINK}|'
+    rf'{_DNS_SUBSTITUTION_EXFIL_SINK}|'
+    r'\bscp\b|'
+    r'\b(?:nc|netcat|ncat)\b|'
+    r'\bsocat\b|'
+    r'/dev/tcp/|'
+    r'\bpython[23]?\b[\s\S]*(?:\s-c\b|<<)[\s\S]*\bsocket\b)'
+)
+
 # Route deny-list form used by webhook/Discord sessions. The behavioral guard
 # below is authoritative; this regex gives route-level sessions the same broad
 # server-side floor even before ordinary dangerous-command approval is reached.
@@ -308,9 +471,20 @@ CREDENTIAL_EXFIL_DENY_PATTERNS = [
     rf'(?=[\s\S]*(?:{_HARDLINE_EXFIL_READ_TARGET}))(?=[\s\S]*(?:{_NETWORK_EXFIL_SINK}))|'
     rf'(?:{_HTTP_SERVER_SENSITIVE_EXPOSE})'
     rf')',
-    rf'(?=[\s\S]*(?:\b{_EXFIL_READ_COMMAND}\b|{_BROAD_STRUCTURAL_EXFIL_UPLOAD})'
-    rf'[\s\S]*(?:{_BROAD_EXFIL_READ_TARGET}))'
+    # Class B — broad credential read paired with a sink, ORDER-INDEPENDENT:
+    # three separate lookaheads (read-verb/structural-upload, credential target,
+    # network sink) so `cut … creds | curl` AND `curl --data-binary @creds` both
+    # trip regardless of which token comes first. The standalone-`cat file` case
+    # stays unmatched because the sink lookahead must also be satisfied.
+    rf'(?=[\s\S]*(?:\b{_EXFIL_READ_COMMAND}\b|{_BROAD_STRUCTURAL_EXFIL_UPLOAD}))'
+    rf'(?=[\s\S]*(?:{_BROAD_EXFIL_READ_TARGET}))'
     rf'(?=[\s\S]*(?:{_NETWORK_EXFIL_SINK}))',
+    # Class A — process-environment dump paired with an outbound sink.
+    rf'(?=[\s\S]*(?:{_ENV_DUMP_READ_SURFACE}))(?=[\s\S]*(?:{_NETWORK_EXFIL_SINK}))',
+    # Class A (heuristic) — a known-sensitive env var referenced BY NAME
+    # (`$ANTHROPIC_API_KEY`, `${OPENAI_API_KEY}`) reaching a network sink. Partial
+    # close of the var-expansion class; `$PATH`/`$HOME` are absent from the set.
+    rf'(?=[\s\S]*(?:{_SENSITIVE_ENV_VAR_REFERENCE}))(?=[\s\S]*(?:{_NETWORK_EXFIL_SINK}))',
 ]
 
 # =========================================================================
@@ -438,6 +612,16 @@ def _normalize_exfil_command(command: str) -> str:
     This is intentionally lexical rather than a shell interpreter. It catches
     common evasion such as ``P=~/.hermes/.env; cat $P | curl -d @-`` without
     expanding arbitrary environment variables from the agent process.
+
+    A final dequoting pass strips unescaped single/double quote CHARACTERS while
+    keeping their contents, which defeats the UNIVERSAL intra-token quote-split
+    bypass: ``e'n'v``, ``"env"``, ``d'e'clare -p``, ``print'e'nv KEY`` all
+    collapse to their bare builtin token so EVERY exfil/env-dump/sink pattern
+    below matches the real command. It runs AFTER the assignment-expansion pass
+    (which relies on quotes to capture quoted RHS values) and only ever MERGES
+    split tokens — it can make a read/dump/sink match MORE likely, never hide a
+    sink (the rail still requires a sink co-occurrence, so a benign quoted
+    literal like ``curl -d "$(date)"`` stays allowed).
     """
     normalized = _normalize_command_for_detection(command).lower()
     assignments = re.findall(
@@ -450,6 +634,11 @@ def _normalize_exfil_command(command: str) -> str:
             continue
         if re.search(r'(?:\.env\b|auth\.json\b|/\.ssh(?:/|$)|\.netrc\b|\.npmrc\b|\.pypirc\b|\.pgpass\b|secret|credential|token|private[-_]?key)', value, _RE_FLAGS):
             normalized = re.sub(rf'\$\{{{re.escape(name)}\}}|\${re.escape(name)}\b', value, normalized)
+    # Dequoting pass — see docstring. Backslash escapes and empty-quote pairs are
+    # already removed by _normalize_command_for_detection, so every remaining
+    # quote is literal shell quoting; dropping the bare ' and " characters undoes
+    # intra-token quote-splitting for all rails at once.
+    normalized = normalized.replace("'", "").replace('"', "")
     return normalized
 
 
@@ -468,11 +657,32 @@ def _detect_credential_exfiltration(command: str) -> tuple[bool, Optional[str], 
     if re.search(_HTTP_SERVER_SENSITIVE_EXPOSE, normalized, _RE_FLAGS):
         return (True, "hardline", "credential exfiltration: sensitive directory exposed via http.server")
 
+    # Class A — a process-environment dump (env/printenv/export -p/declare -x/
+    # `set |`//proc/self/environ) reaching a network sink. The agent process env
+    # holds live provider keys, so this is as catastrophic as reading auth.json.
+    if re.search(_ENV_DUMP_READ_SURFACE, normalized, _RE_FLAGS):
+        return (True, "hardline", "credential exfiltration: process environment dumped to network sink")
+
     if re.search(_HARDLINE_EXFIL_READ_TARGET, normalized, _RE_FLAGS):
         return (True, "hardline", "credential exfiltration: sensitive credential path sent to network sink")
+
+    # Class A (heuristic, item 6) — a known-sensitive provider/cloud/VCS env var
+    # named directly as `$KEY`/`${KEY}` reaching a sink (`echo $ANTHROPIC_API_KEY
+    # | curl -d @-`, `curl -d "$OPENAI_API_KEY" …`). "dangerous" rather than
+    # hardline: a legit provider POST (`curl -X POST -H "x-api-key:$KEY" -d @body
+    # https://api.anthropic.com`) is the same shape, so this should be
+    # APPROVABLE interactively while still tripping the autonomous/route floor.
+    # `$PATH`/`$HOME` are absent from the curated set, so they pass.
+    if re.search(_SENSITIVE_ENV_VAR_REFERENCE, normalized, _RE_FLAGS):
+        return (True, "dangerous", "possible credential exfiltration: sensitive env var referenced into a network sink")
+
     if re.search(_BROAD_EXFIL_READ_TARGET, normalized, _RE_FLAGS):
-        broad_read = re.search(rf'\b{_EXFIL_READ_COMMAND}\b[\s\S]*(?:{_BROAD_EXFIL_READ_TARGET})', normalized, _RE_FLAGS)
-        broad_structural_upload = re.search(rf'{_BROAD_STRUCTURAL_EXFIL_UPLOAD}[\s\S]*(?:{_BROAD_EXFIL_READ_TARGET})', normalized, _RE_FLAGS)
+        # ORDER-INDEPENDENT: a credential target and a sink are both already
+        # confirmed present (target above, has_sink at the top), so a read verb
+        # OR a structural upload appearing ANYWHERE in the command completes the
+        # exfil — `cut … creds | curl` and `curl --data-binary @creds` alike.
+        broad_read = re.search(rf'\b{_EXFIL_READ_COMMAND}\b', normalized, _RE_FLAGS)
+        broad_structural_upload = re.search(_BROAD_STRUCTURAL_EXFIL_UPLOAD, normalized, _RE_FLAGS)
         if broad_read or broad_structural_upload:
             return (True, "dangerous", "possible credential exfiltration: credential-looking file sent to network sink")
         return (False, None, None)
@@ -877,6 +1087,21 @@ def mark_autonomous_dispatch(value: bool = True) -> "contextvars.Token[bool]":
     return _autonomous_dispatch_marker.set(value)
 
 
+def reset_autonomous_dispatch(token) -> None:
+    """Reset the autonomous-dispatch marker using a token from mark_autonomous_dispatch.
+
+    Lets a caller that armed the floor in its own context (e.g. the restart
+    auto-resume rehydration) tear it back down without reaching into the
+    private ContextVar.  Best-effort — a stale/foreign token is ignored.
+    """
+    if token is None:
+        return
+    try:
+        _autonomous_dispatch_marker.reset(token)
+    except (ValueError, LookupError):
+        pass
+
+
 def _is_autonomous_dispatch() -> bool:
     if os.environ.get("HERMES_AUTONOMOUS_DISPATCH") == "1":
         return True
@@ -900,6 +1125,77 @@ def _floor_block_if_autonomous(command: str):
 # Enforced in check_all_command_guards BEFORE the yolo/mode=off bypass so a
 # dispatched agent physically cannot run a denied command (e.g. git push).
 _session_deny_patterns: dict[str, list] = {}
+
+# Per-session credential-taint set (two-step stage-then-upload exfil floor).
+# Exfil is inherently two-step: stage a credential to a benign temp path in one
+# tool call, upload that path in another — neither call alone trips the exfil
+# rail. In an autonomous-dispatch lane, a credential-stage read taints the
+# session; a later byte-carrying upload while tainted is blocked. Holds the set
+# of currently-tainted session keys. Cleared in the SAME teardown that clears
+# the deny patterns (clear_session + register_session_deny_patterns empty-clear).
+_session_credential_taint: set[str] = set()
+
+
+def mark_session_credential_tainted(session_key: str) -> None:
+    """Mark a session as having staged a sensitive credential (no sink yet)."""
+    if not session_key:
+        return
+    with _lock:
+        _session_credential_taint.add(session_key)
+
+
+def is_session_credential_tainted(session_key: str) -> bool:
+    """Return True when this session previously staged a credential."""
+    if not session_key:
+        return False
+    with _lock:
+        return session_key in _session_credential_taint
+
+
+def clear_session_credential_taint(session_key: str) -> None:
+    """Drop the credential-stage taint for a session (teardown / deny-clear)."""
+    if not session_key:
+        return
+    with _lock:
+        _session_credential_taint.discard(session_key)
+
+
+def _detect_credential_stage(command: str) -> bool:
+    """Detect staging a REAL credential file to a benign path with NO sink.
+
+    The first half of a two-step exfil: a sink-free command that touches an
+    actual credential file. The taint fires on the PRESENCE of the credential,
+    regardless of the copy verb — ``cat``/``cp``/``mv``/``tee``/redirect are no
+    longer the gate, so non-enumerated movers (``ln``/``install``/``rsync``)
+    that stage a secret also taint the session. The credential target is the
+    narrow ``_REAL_CREDENTIAL_FILE_TARGET`` (NOT the broad token/secret-substring
+    class), so a benign source path such as ``./src/auth/token_service.py`` does
+    not taint. A command that BOTH reads a credential AND has a sink is the
+    single-shot case the exfil rail already blocks, so it is excluded here.
+    """
+    normalized = _normalize_exfil_command(command)
+    if re.search(_NETWORK_EXFIL_SINK, normalized, _RE_FLAGS):
+        return False
+    return re.search(_REAL_CREDENTIAL_FILE_TARGET, normalized, _RE_FLAGS) is not None
+
+
+def _credential_taint_block_result() -> dict:
+    """Block result for the two-step credential stage-then-upload floor."""
+    return {
+        "approved": False,
+        "route_denied": True,
+        "credential_taint": True,
+        "message": (
+            "BLOCKED (credential-taint floor): this autonomous-dispatch session "
+            "previously staged a sensitive credential to disk, and this command "
+            "would stream a file/stdin off-host — the upload half of a two-step "
+            "exfiltration. Server-side denial cannot be lifted by --yolo, /yolo, "
+            "approvals.mode=off, or cron approve mode. Authenticated API calls "
+            "(plain GET / inline POST) are unaffected; surface the data for "
+            "review instead of uploading it from the dispatch lane."
+        ),
+    }
+
 
 # =========================================================================
 # Blocking gateway approval (mirrors CLI's synchronous input() flow)
@@ -1038,6 +1334,26 @@ def register_session_deny_patterns(session_key: str, patterns) -> None:
             _session_deny_patterns[session_key] = compiled
         else:
             _session_deny_patterns.pop(session_key, None)
+            # Empty-clear is also a session-boundary signal: drop any stale
+            # credential-stage taint so it cannot bleed into a reused key.
+            _session_credential_taint.discard(session_key)
+
+
+def get_session_deny_pattern_strings(session_key: str) -> list:
+    """Return the registered deny-pattern source strings for a session.
+
+    Used to snapshot the in-memory deny list onto the durable SessionEntry
+    envelope so a gateway-restart auto-resume can re-register exactly what the
+    original dispatch installed (finding #8).  Returns ``[]`` when the session
+    has no registered patterns.
+    """
+    if not session_key:
+        return []
+    with _lock:
+        compiled = _session_deny_patterns.get(session_key)
+    if not compiled:
+        return []
+    return [original for _rx, original in compiled]
 
 
 def check_session_deny_patterns(command: str, session_key: Optional[str] = None) -> tuple[bool, Optional[str]]:
@@ -1071,6 +1387,7 @@ def clear_session(session_key: str) -> None:
         _session_approved.pop(session_key, None)
         _session_yolo.discard(session_key)
         _session_deny_patterns.pop(session_key, None)
+        _session_credential_taint.discard(session_key)
         _pending.pop(session_key, None)
         entries = _gateway_queues.pop(session_key, [])
     for entry in entries:
@@ -1693,6 +2010,35 @@ def check_all_command_guards(command: str, env_type: str,
         logger.warning("Route deny-pattern block: %s (command: %s)",
                        deny_pattern, command[:200])
         return _route_deny_block_result(deny_pattern)
+
+    # == Two-step credential-taint floor (autonomous-dispatch lanes only) ==
+    # Exfil is inherently two-step: stage a credential to a benign path in one
+    # call, upload it in another — neither call alone trips the exfil rail above.
+    # Track a per-session taint bit: a credential-stage read sets it; a later
+    # byte-carrying upload while tainted is blocked. Gated on a KNOWN autonomous
+    # dispatch AND a resolvable session key, and fires BEFORE the yolo/mode=off
+    # bypass so no session setting can lift it. Interactive sessions (marker
+    # unset) are untouched, and plain GET / inline POST stay allowed so
+    # authenticated API calls survive.
+    if _is_autonomous_dispatch():
+        _taint_key = get_current_session_key(default="")
+        if _taint_key:
+            if _detect_credential_stage(command):
+                mark_session_credential_tainted(_taint_key)
+            elif (
+                is_session_credential_tainted(_taint_key)
+                and re.search(
+                    _BYTE_CARRYING_UPLOAD_SINK,
+                    _normalize_exfil_command(command),
+                    _RE_FLAGS,
+                )
+            ):
+                logger.warning(
+                    "Credential-taint block: byte-carrying upload after a "
+                    "credential stage (session=%s command=%s)",
+                    _taint_key, command[:200],
+                )
+                return _credential_taint_block_result()
 
     # --yolo or approvals.mode=off: bypass all approval prompts.
     # Gateway /yolo is session-scoped; CLI --yolo remains process-scoped.

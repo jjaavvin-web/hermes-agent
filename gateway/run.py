@@ -1657,6 +1657,37 @@ logger = logging.getLogger(__name__)
 _AGENT_PENDING_SENTINEL = object()
 
 
+class _AutonomousResumeArmError(RuntimeError):
+    """Raised when re-arming the DISP-5 floor FAILS for a KNOWN-autonomous
+    resume.  The caller MUST abort the resumed turn (fail CLOSED) rather than
+    run the dispatch unguarded — see ``_arm_autonomous_resume_floor`` (a).
+    """
+
+
+# finding #8 (worktree-gone fail-closed): when the persisted relay worktree no
+# longer exists on resume, isolation is lost — the run would operate directly
+# on the LIVE checkout.  Augment the per-session deny list with local
+# git-mutation + filesystem-escape regexes so the resumed run cannot commit /
+# reset / delete against the live tree even though no worktree can be bound.
+# Matched case-insensitively (search) by check_session_deny_patterns.
+WORKTREE_GONE_EXTRA_DENY = [
+    # local git history / index / ref mutation against the live checkout
+    r"\bgit\s+(?:-\S+\s+\S*\s*)*"
+    r"(?:commit|add|rm|mv|reset|checkout|switch|clean|stash|merge|rebase|"
+    r"restore|apply|am|cherry-pick|revert|update-ref|fetch|pull)\b",
+    r"\bgit\s+(?:-\S+\s+\S*\s*)*branch\s+-[dDmM]\b",  # delete/rename branches
+    r"\bgit\s+(?:-\S+\s+\S*\s*)*tag\s+(?:-d\b|-f\b|[^\s-])",  # mutate tags
+    # recursive/forced filesystem deletion that can escape into the live tree.
+    # Deny EVERY destructive rm form — bundled short flags (-rf / -fr / -r / -f),
+    # space-separated short flags (rm -r -f), and GNU long flags
+    # (rm --recursive --force / --dir) — by matching an rm whose argv carries any
+    # flag token bearing an r or f (covers --recursive, --force, --no-preserve-root).
+    # Leading unrelated tokens (other flags, even a path in `rm dir -r`) may
+    # precede the destructive flag.  Fail-closed over-deny is the intended posture.
+    r"\brm\b(?:\s+\S+)*\s+-\S*[rf]",
+]
+
+
 def _resolve_runtime_agent_kwargs() -> dict:
     """Resolve provider credentials for gateway-created AIAgent instances.
 
@@ -4962,6 +4993,189 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         {"restart_timeout", "shutdown_timeout", "restart_interrupted"}
     )
 
+    def _arm_autonomous_resume_floor(
+        self, event: MessageEvent, session_key: str
+    ):
+        """Re-arm the DISP-5 floor + deny-list + worktree for a resumed dispatch.
+
+        finding #8: on gateway restart an in-flight webhook/loki run is
+        auto-resumed via the GENERIC handle_message path, which never re-runs
+        the webhook dispatch's safety setup (mark_autonomous_dispatch /
+        register_session_deny_patterns / set_active_worktree).  Those live in
+        per-task ContextVars + an in-memory dict that a restart wipes, so the
+        resumed run could ``git push`` / ``gh pr`` / operate on the live tree —
+        re-opening exactly what the original dispatch physically blocked.
+
+        Re-arm HERE, in the caller coroutine, so ``handle_message``'s internal
+        ``asyncio.create_task`` copies the ContextVars into the run task (same
+        mechanism the webhook dispatch relies on).  Returns reset tokens to be
+        passed to ``_disarm_autonomous_resume_floor`` in a finally block, or
+        ``None`` when this is not an autonomous dispatch.
+
+        Failure semantics, by leg:
+          (a) FLOOR  — fails CLOSED.  A KNOWN-autonomous entry whose floor
+              cannot be armed raises ``_AutonomousResumeArmError`` so the caller
+              ABORTS the turn rather than running unguarded.
+          (b) DENY   — fails OPEN-to-SAFE; an autonomous entry whose persisted
+              deny list could not be recovered falls back to
+              ``DEFAULT_WEBHOOK_DENY_PATTERNS`` (never deny-list-naked).
+          (c) WORKTREE — a persisted worktree that no longer exists fails
+              CLOSED: isolation is lost, so the deny list is augmented with
+              local git-mutation + filesystem-escape patterns
+              (``WORKTREE_GONE_EXTRA_DENY``) before registration.
+        """
+        autonomous_token = None
+        worktree_token = None
+        divergent_approval_key = None
+
+        # --- determine autonomy (lookup is never fatal) -----------------
+        source = getattr(event, "source", None)
+        is_webhook = bool(
+            source is not None
+            and getattr(source, "platform", None) == Platform.WEBHOOK
+        )
+        entry = None
+        try:
+            with self.session_store._lock:  # noqa: SLF001
+                self.session_store._ensure_loaded_locked()  # noqa: SLF001
+                entry = self.session_store._entries.get(session_key)  # noqa: SLF001
+        except Exception:
+            entry = None
+
+        # A non-webhook autonomous lane (loki/relay) whose ``autonomous_dispatch``
+        # bit failed to persist would otherwise resume floor-naked.  Treat ANY
+        # persisted envelope component (deny list / worktree / approval key) as
+        # proof this was an autonomous dispatch, not just the explicit bit or
+        # the WEBHOOK platform.
+        autonomous = (
+            bool(getattr(entry, "autonomous_dispatch", False))
+            or is_webhook
+            or bool(getattr(entry, "deny_patterns", None))
+            or bool(getattr(entry, "worktree_path", None))
+            or bool(getattr(entry, "approval_key", None))
+        )
+        if not autonomous:
+            return None
+
+        from tools.approval import (
+            mark_autonomous_dispatch,
+            register_session_deny_patterns,
+        )
+
+        # (a) FLOOR — isolated try so an arming failure on a KNOWN-autonomous
+        # entry FAILS CLOSED (abort the resume) instead of running unguarded.
+        try:
+            autonomous_token = mark_autonomous_dispatch(True)
+        except Exception as exc:
+            logger.exception(
+                "failed to arm DISP-5 floor on resume for %s — aborting turn",
+                session_key,
+            )
+            raise _AutonomousResumeArmError(session_key) from exc
+
+        # (b)+(c) deny-list + worktree.  These legs are best-effort-to-SAFE: a
+        # failure here leaves the floor (a) up, so the resume is never naked.
+        try:
+            deny = list(getattr(entry, "deny_patterns", None) or [])
+            if not deny:
+                from gateway.platforms.webhook import DEFAULT_WEBHOOK_DENY_PATTERNS
+                deny = list(DEFAULT_WEBHOOK_DENY_PATTERNS)
+
+            # (c) worktree status BEFORE registration so a gone worktree can
+            # augment the deny list in the SAME registration.
+            wt = getattr(entry, "worktree_path", None)
+            worktree_present = bool(wt and os.path.isdir(wt))
+            if wt and not worktree_present:
+                # Persisted worktree GONE — isolation lost.  Fail CLOSED: block
+                # local git-mutation / fs-escape so the run cannot operate on
+                # the LIVE tree (push is already covered by the floor + deny).
+                logger.warning(
+                    "autonomous resume %s: persisted worktree %r is gone — "
+                    "isolation lost, arming git-mutation/fs-escape deny floor",
+                    session_key, wt,
+                )
+                for _p in WORKTREE_GONE_EXTRA_DENY:
+                    if _p not in deny:
+                        deny.append(_p)
+
+            # (b) re-register under EVERY key tool-exec might query: the resume
+            # run's own key (session_key) AND the approval key the original
+            # dispatch registered under (they can diverge — e.g. profile
+            # namespacing).  Registering under both keeps the deny live no
+            # matter which key check_session_deny_patterns resolves at exec.
+            _keys = {session_key}
+            _ak = getattr(entry, "approval_key", None)
+            if _ak:
+                _keys.add(_ak)
+            for _k in _keys:
+                register_session_deny_patterns(_k, deny)
+            # A DIVERGENT approval_key (e.g. profile-namespace skew) is the one
+            # registration the resumed run's own end-of-turn teardown will NOT
+            # reach: that teardown clears only session_key (= the run's
+            # _approval_session_key).  Remember it so _disarm can clear it —
+            # otherwise it leaks and could later shadow a benign run that reuses
+            # the key.  session_key itself is left for the run teardown.
+            if _ak and _ak != session_key:
+                divergent_approval_key = _ak
+
+            if worktree_present:
+                from agent.codex_session_context import set_active_worktree
+                worktree_token = set_active_worktree(wt)
+        except Exception:
+            logger.exception(
+                "failed to re-arm deny-list/worktree on resume for %s "
+                "(floor stays armed)",
+                session_key,
+            )
+        return (autonomous_token, worktree_token, divergent_approval_key)
+
+    def _disarm_autonomous_resume_floor(self, tokens) -> None:
+        """Tear down the ContextVars armed by _arm_autonomous_resume_floor.
+
+        The two ContextVar tokens (the DISP-5 autonomous marker and the
+        worktree binding) are reset here.  The per-session deny-list
+        registration under *session_key* AND any credential-stage taint are
+        DELIBERATELY left registered: they are keyed by session_key (not bound
+        to this coroutine's context) and the resumed run's own end-of-turn
+        teardown (``clear_session`` / ``clear_session_credential_taint``) owns
+        their removal, mirroring the webhook dispatch lifecycle.  Resetting
+        *session_key* here would drop the floor mid-run while the resumed turn
+        is still executing (the drain path disarms before the run completes).
+
+        The ONE thing the run teardown will NOT reach is a deny registered
+        under a DIVERGENT approval_key (profile-namespace skew): the run
+        teardown clears only session_key.  That divergent key has no other
+        owner, so it is cleared HERE.  This is safe even on the drain path:
+        the resumed run enforces deny under its current session_key
+        (= session_key), so dropping the divergent belt-and-suspenders key
+        early loses no live enforcement, while preventing a leak that could
+        shadow a future benign run reusing the key.
+        """
+        if not tokens:
+            return
+        autonomous_token, worktree_token, divergent_approval_key = tokens
+        if divergent_approval_key:
+            try:
+                from tools.approval import register_session_deny_patterns
+                register_session_deny_patterns(divergent_approval_key, None)
+            except Exception:
+                logger.debug(
+                    "divergent approval-key deny clear on resume disarm failed",
+                    exc_info=True,
+                )
+        try:
+            if worktree_token is not None:
+                from agent.codex_session_context import reset_active_worktree
+                reset_active_worktree(worktree_token)
+        except Exception:
+            logger.debug("worktree reset on resume disarm failed", exc_info=True)
+        try:
+            if autonomous_token is not None:
+                from tools.approval import reset_autonomous_dispatch
+                reset_autonomous_dispatch(autonomous_token)
+        except Exception:
+            logger.debug("autonomous marker reset on resume disarm failed", exc_info=True)
+
     async def _run_startup_resume_event(
         self,
         adapter: BasePlatformAdapter,
@@ -4977,6 +5191,22 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         message can race the restore turn immediately after ``handle_message``
         returns.
         """
+        # finding #8: re-arm the push/PR/workflow floor + deny-list + worktree
+        # isolation BEFORE handle_message spawns the run task, so its internal
+        # create_task copies the armed ContextVars into the resumed run.
+        try:
+            _resume_floor_tokens = self._arm_autonomous_resume_floor(event, session_key)
+        except _AutonomousResumeArmError:
+            # FAIL CLOSED: the floor could not be armed for a KNOWN-autonomous
+            # resume — do NOT run the dispatch unguarded.  Release the
+            # pre-claimed runner slot and abort this turn.
+            logger.error(
+                "aborting autonomous resume for %s: DISP-5 floor could not be armed",
+                session_key,
+            )
+            if self._running_agents.get(session_key) is _AGENT_PENDING_SENTINEL:
+                self._release_running_agent_state(session_key)
+            return
         try:
             await adapter.handle_message(event)
             session_tasks = getattr(adapter, "_session_tasks", {})
@@ -4984,6 +5214,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if task is not None:
                 await asyncio.shield(task)
         finally:
+            self._disarm_autonomous_resume_floor(_resume_floor_tokens)
             # _schedule_resume_pending_sessions pre-claims the runner slot
             # before spawning this task.  If adapter.handle_message raises
             # before _handle_message takes ownership, release that pre-claim;
@@ -5029,7 +5260,35 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 setattr(event, "_hermes_startup_restore_replay", True)
             except Exception:
                 pass
-            await adapter.handle_message(event)
+            # finding #8: a queued inbound replay can re-enter an autonomous
+            # webhook/loki session interrupted by the restart — re-arm the same
+            # floor/deny-list/worktree envelope here too so the replayed turn
+            # cannot push/PR or touch the live tree.
+            _replay_session_key = None
+            try:
+                if source is not None:
+                    _replay_session_key = self._session_key_for_source(source)
+            except Exception:
+                _replay_session_key = None
+            try:
+                _replay_floor_tokens = (
+                    self._arm_autonomous_resume_floor(event, _replay_session_key)
+                    if _replay_session_key
+                    else None
+                )
+            except _AutonomousResumeArmError:
+                # FAIL CLOSED: skip the replayed turn rather than run it with
+                # the DISP-5 floor down.
+                logger.error(
+                    "skipping queued autonomous replay for %s: floor could not be armed",
+                    _replay_session_key,
+                )
+                drained += 1
+                continue
+            try:
+                await adapter.handle_message(event)
+            finally:
+                self._disarm_autonomous_resume_floor(_replay_floor_tokens)
             drained += 1
         return drained
 
@@ -8784,6 +9043,63 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         session_entry = self.session_store.get_or_create_session(source)
         session_key = session_entry.session_key
         self._cache_session_source(session_key, source)
+
+        # finding #8: persist the autonomous-dispatch security envelope the
+        # instant the run's session entry exists.  The webhook/loki dispatch
+        # armed the DISP-5 floor + per-session deny list + worktree isolation
+        # in-process (ContextVars + an in-memory dict), but the SessionEntry is
+        # created lazily here — inside the run task where those signals are
+        # live.  Snapshotting them onto the durable entry lets a gateway-restart
+        # auto-resume (generic handle_message path) re-arm them; without it the
+        # resumed run silently regains git-push / gh-pr / live-tree access.
+        try:
+            from tools.approval import (
+                _is_autonomous_dispatch,
+                get_session_deny_pattern_strings,
+            )
+            if _is_autonomous_dispatch() and not getattr(
+                session_entry, "autonomous_dispatch", False
+            ):
+                from agent.codex_session_context import get_active_worktree
+                # The dispatch registered deny patterns under the key it built
+                # with build_session_key (NO profile namespace).  That can
+                # diverge from this run's tool-exec key (session_key, which the
+                # session store namespaces by profile).  Read deny patterns
+                # under BOTH so a profile-namespaced run still snapshots the
+                # patterns the dispatch installed, and persist the dispatch key
+                # so the resume re-registers under exactly that key too.
+                _dispatch_key = None
+                try:
+                    from gateway.session import build_session_key
+                    _dispatch_key = build_session_key(
+                        source,
+                        group_sessions_per_user=getattr(
+                            self.config, "group_sessions_per_user", True
+                        ),
+                        thread_sessions_per_user=getattr(
+                            self.config, "thread_sessions_per_user", False
+                        ),
+                    )
+                except Exception:
+                    _dispatch_key = None
+                _deny = list(get_session_deny_pattern_strings(session_key))
+                if _dispatch_key and _dispatch_key != session_key:
+                    for _p in get_session_deny_pattern_strings(_dispatch_key):
+                        if _p not in _deny:
+                            _deny.append(_p)
+                self.session_store.set_autonomous_envelope(
+                    session_key,
+                    autonomous=True,
+                    worktree_path=get_active_worktree(),
+                    deny_patterns=_deny,
+                    approval_key=_dispatch_key,
+                )
+        except Exception:
+            logger.debug(
+                "failed to persist autonomous-dispatch envelope for %s",
+                session_key,
+                exc_info=True,
+            )
         if self._is_telegram_topic_lane(source):
             try:
                 binding = self._session_db.get_telegram_topic_binding(
