@@ -1784,6 +1784,19 @@ def _validate_nous_inference_url_from_network(url: Optional[str]) -> Optional[st
     return cleaned.rstrip("/")
 
 
+def _nous_inference_env_override() -> Optional[str]:
+    """Return the user-set ``NOUS_INFERENCE_BASE_URL`` override, if any.
+
+    This is the documented dev/staging escape hatch. The env source is
+    trusted (the OS user set it themselves), so it is intentionally NOT
+    gated by the network host allowlist — unlike Portal-returned URLs.
+
+    Returns a trailing-slash-stripped non-empty string, or ``None`` when
+    the env var is unset/blank.
+    """
+    return _optional_base_url(os.getenv("NOUS_INFERENCE_BASE_URL"))
+
+
 def _decode_jwt_claims(token: Any) -> Dict[str, Any]:
     if not isinstance(token, str) or token.count(".") != 2:
         return {}
@@ -5547,9 +5560,15 @@ def refresh_nous_oauth_pure(
             state["refresh_token"] = refreshed.get("refresh_token") or refresh_token_value
             state["token_type"] = refreshed.get("token_type") or state.get("token_type") or "Bearer"
             state["scope"] = refreshed.get("scope") or state.get("scope")
+            # Heal a poisoned stored value: when the Portal-returned URL is
+            # rejected by the allowlist (returns None), reset to the production
+            # default instead of leaving a previously-persisted bad host (e.g. a
+            # stale staging URL) in place. Without this reset, an auth.json that
+            # was poisoned before the allowlist existed keeps re-validating to
+            # None on every refresh and silently re-uses the dead endpoint —
+            # the "falling back to default" warning never actually takes effect.
             refreshed_url = _validate_nous_inference_url_from_network(refreshed.get("inference_base_url"))
-            if refreshed_url:
-                state["inference_base_url"] = refreshed_url
+            state["inference_base_url"] = refreshed_url or DEFAULT_NOUS_INFERENCE_URL
             state["obtained_at"] = now.isoformat()
             state["expires_in"] = access_ttl
             state["expires_at"] = datetime.fromtimestamp(
@@ -5697,11 +5716,24 @@ def resolve_nous_runtime_credentials(
             or os.getenv("NOUS_PORTAL_BASE_URL")
             or DEFAULT_NOUS_PORTAL_URL
         ).rstrip("/")
-        inference_base_url = (
-            _optional_base_url(state.get("inference_base_url"))
-            or os.getenv("NOUS_INFERENCE_BASE_URL")
+        # Persisted value: validated network-provenance only. The stored
+        # inference_base_url is re-validated on read so a poisoned/stale
+        # staging host (persisted before the allowlist existed) heals to the
+        # production default on the no-refresh read path — this is what gets
+        # written back to auth.json. The env override is deliberately NOT
+        # folded in here: it must never be persisted (it's a runtime overlay).
+        stored_inference_base_url = (
+            _validate_nous_inference_url_from_network(
+                _optional_base_url(state.get("inference_base_url"))
+            )
             or DEFAULT_NOUS_INFERENCE_URL
-        ).rstrip("/")
+        )
+        # Effective value used to build the client / returned to callers:
+        # the NOUS_INFERENCE_BASE_URL env override wins (documented dev/staging
+        # escape hatch), else the validated stored value.
+        inference_base_url = (
+            _nous_inference_env_override() or stored_inference_base_url
+        )
         client_id = str(state.get("client_id") or DEFAULT_NOUS_CLIENT_ID)
 
         def _persist_state(reason: str) -> None:
@@ -5822,9 +5854,18 @@ def resolve_nous_runtime_credentials(
                         state["refresh_token"] = refreshed.get("refresh_token") or refresh_token
                         state["token_type"] = refreshed.get("token_type") or state.get("token_type") or "Bearer"
                         state["scope"] = refreshed.get("scope") or state.get("scope")
+                        # Heal a poisoned stored value (see refresh_nous_oauth_pure):
+                        # reject → reset to production default, don't keep a stale
+                        # staging host that re-validates to None every refresh.
+                        # This (validated, network-provenance) value is what gets
+                        # persisted to auth.json below. The NOUS_INFERENCE_BASE_URL
+                        # env override is layered on for the client/return value
+                        # only (see below) — it is never persisted.
                         refreshed_url = _validate_nous_inference_url_from_network(refreshed.get("inference_base_url"))
-                        if refreshed_url:
-                            inference_base_url = refreshed_url
+                        stored_inference_base_url = refreshed_url or DEFAULT_NOUS_INFERENCE_URL
+                        inference_base_url = (
+                            _nous_inference_env_override() or stored_inference_base_url
+                        )
                         state["obtained_at"] = now.isoformat()
                         state["expires_in"] = access_ttl
                         state["expires_at"] = datetime.fromtimestamp(
@@ -5853,8 +5894,11 @@ def resolve_nous_runtime_credentials(
             )
 
             # Persist routing and TLS metadata for non-interactive refresh.
+            # Persist the validated, network-provenance URL — NEVER the env
+            # override (which is a runtime-only overlay; persisting it would
+            # leak a dev/staging host into auth.json and survive unsetting it).
             state["portal_base_url"] = portal_base_url
-            state["inference_base_url"] = inference_base_url
+            state["inference_base_url"] = stored_inference_base_url
             state["client_id"] = client_id
             state["tls"] = {
                 "insecure": verify is False,
