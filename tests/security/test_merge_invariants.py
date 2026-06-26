@@ -173,6 +173,94 @@ def test_backup_should_exclude_recurses_secrets():
         assert _should_exclude(Path(keep)) is False, f"non-secret wrongly excluded: {keep}"
 
 
+def test_restore_quick_snapshot_rejects_id_traversal(tmp_path):
+    """restore_quick_snapshot() must reject path-traversal snapshot_ids (G SEC port).
+
+    backup.py is the exact file the 0.16.0 upstream merge SILENTLY REVERTED before
+    (the .env/auth.json exclusions, PR#70). The G security port added a snapshot_id
+    traversal guard (rejects ``/``/``\\``/``.``/``..``/empty + an out-of-root
+    ``.resolve().relative_to(root)`` check) but nothing pinned it. This BEHAVIORAL
+    test does: a merge that drops the guard lets a traversal/absolute id resolve to
+    an out-of-root (attacker-controlled) snapshot and restore from it — turning this
+    RED before merge, so josep judges from a red check, not a diff.
+    """
+    import json as _json
+
+    from hermes_cli.backup import create_quick_snapshot, restore_quick_snapshot
+
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    (home / "config.yaml").write_text("model:\n  provider: openrouter\n", encoding="utf-8")
+
+    # A *valid* decoy snapshot OUTSIDE the snapshot root. If the guard is reverted,
+    # a relative-traversal id ("../decoy-snap") or the decoy's absolute path would
+    # resolve here and restore from it; the guard must keep that returning False.
+    decoy = home / "decoy-snap"
+    decoy.mkdir()
+    (decoy / "config.yaml").write_text("evil\n", encoding="utf-8")
+    with open(decoy / "manifest.json", "w", encoding="utf-8") as fh:
+        _json.dump({"id": "decoy-snap", "files": {"config.yaml": 5}}, fh)
+
+    for bad_id in ("../escape", "..", "../../x", "../decoy-snap", str(decoy), ""):
+        assert restore_quick_snapshot(bad_id, hermes_home=home) is False, \
+            f"snapshot_id traversal guard failed to reject: {bad_id!r}"
+
+
+def test_restore_quick_snapshot_skips_manifest_traversal_entry(tmp_path):
+    """restore_quick_snapshot() must SKIP a traversal manifest entry while still
+    restoring legit entries (G SEC port; PR#70 silent-revert lesson — see above).
+
+    The per-entry guard validates each manifest src/dst via
+    ``.resolve().relative_to(...)``. We build a real snapshot (schema-true via
+    create_quick_snapshot), inject a ``../escaped.txt`` entry whose dst escapes
+    HERMES_HOME, and assert: the legit config.yaml entry restores, the traversal
+    entry writes NOTHING outside home. Reverting the guard makes the escape file
+    appear -> RED before merge.
+    """
+    import json as _json
+
+    from hermes_cli.backup import (
+        _QUICK_SNAPSHOTS_DIR,
+        create_quick_snapshot,
+        restore_quick_snapshot,
+    )
+
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    original = "model:\n  provider: openrouter\n"
+    (home / "config.yaml").write_text(original, encoding="utf-8")
+
+    snap_id = create_quick_snapshot(label="invariant", hermes_home=home)
+    assert snap_id, "fixture: create_quick_snapshot produced no snapshot"
+
+    root = home / _QUICK_SNAPSHOTS_DIR
+    snap_dir = root / snap_id
+    manifest_path = snap_dir / "manifest.json"
+
+    # Inject a traversal entry. src ("../escaped.txt" under snap_dir) resolves to
+    # root/escaped.txt (readable, so a reverted guard WOULD copy it); dst
+    # (home/../escaped.txt) escapes HERMES_HOME to tmp_path/escaped.txt.
+    (root / "escaped.txt").write_text("pwned\n", encoding="utf-8")
+    with open(manifest_path, encoding="utf-8") as fh:
+        meta = _json.load(fh)
+    meta.setdefault("files", {})["../escaped.txt"] = 6
+    with open(manifest_path, "w", encoding="utf-8") as fh:
+        _json.dump(meta, fh)
+
+    escape_target = tmp_path / "escaped.txt"  # home.parent — OUTSIDE HERMES_HOME
+    assert not escape_target.exists(), "fixture precondition: escape target must not pre-exist"
+
+    # Corrupt the live file so a successful restore of the legit entry is observable.
+    (home / "config.yaml").write_text("STALE\n", encoding="utf-8")
+
+    assert restore_quick_snapshot(snap_id, hermes_home=home) is True, \
+        "legit manifest entry (config.yaml) should still restore"
+    assert (home / "config.yaml").read_text(encoding="utf-8") == original, \
+        "legit entry was not restored from the snapshot"
+    assert not escape_target.exists(), \
+        "manifest traversal guard failed: restore wrote outside HERMES_HOME"
+
+
 def test_dashboard_bundle_internally_consistent():
     """The served SPA must not be a phantom: every asset index.html references must exist.
 
