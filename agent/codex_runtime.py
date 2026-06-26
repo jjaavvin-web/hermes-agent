@@ -173,6 +173,55 @@ def _record_codex_app_server_usage(agent, turn) -> dict[str, Any]:
     }
 
 
+def _resolve_codex_permission_profile() -> "str | None":
+    """Read tools.terminal.security_mode from the active profile config.
+
+    Returns the mapped Codex permission-profile id when the key is
+    explicitly set in the profile's config.yaml, or ``None`` to let
+    ``CodexAppServerSession``'s built-in env-var fallback
+    (``HERMES_TERMINAL_SECURITY_MODE``) run unchanged.
+
+    Precedence contract (mirrors PR A2b spec):
+      1. profile config tools.terminal.security_mode  (this function)
+      2. env HERMES_TERMINAL_SECURITY_MODE            (session __init__)
+      3. "auto" / "workspace-write"                   (session __init__)
+
+    An unrecognised mode value logs a warning and returns ``None``
+    (fail-safe: never silently maps to full-access).
+    """
+    from agent.transports.codex_app_server_session import (
+        _HERMES_TO_CODEX_PERMISSION_PROFILE,
+    )
+
+    try:
+        from hermes_cli.config import load_config
+        cfg = load_config() or {}
+    except Exception:
+        return None
+
+    mode = (
+        (cfg.get("tools") or {})
+        .get("terminal") or {}
+    ).get("security_mode")
+
+    if not isinstance(mode, str) or not mode.strip():
+        return None  # Not set — let the session's env-var fallback handle it
+
+    mode = mode.strip()
+    mapped = _HERMES_TO_CODEX_PERMISSION_PROFILE.get(mode)
+    if mapped is None:
+        logger.warning(
+            "codex: unknown tools.terminal.security_mode=%r in profile config; "
+            "ignoring (falling back to HERMES_TERMINAL_SECURITY_MODE env var). "
+            "Valid values: %s",
+            mode,
+            ", ".join(sorted(_HERMES_TO_CODEX_PERMISSION_PROFILE)),
+        )
+        return None
+
+    return mapped
+
+
 def run_codex_app_server_turn(
     agent,
     *,
@@ -204,9 +253,15 @@ def run_codex_app_server_turn(
             approval_callback = _get_approval_callback()
         except Exception:
             approval_callback = None
+        # Resolve the permission profile from the active profile's config
+        # (tools.terminal.security_mode).  None means "let the session's
+        # own env-var fallback run unchanged", so all profiles that don't
+        # explicitly opt in are byte-identical to pre-change behaviour.
+        permission_profile = _resolve_codex_permission_profile()
         agent._codex_session = CodexAppServerSession(
             cwd=cwd,
             approval_callback=approval_callback,
+            permission_profile=permission_profile,
         )
 
     # NOTE: the user message is ALREADY appended to messages by the

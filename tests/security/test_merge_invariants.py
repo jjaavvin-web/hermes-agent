@@ -348,3 +348,32 @@ def test_sec1_exfil_rail_sink_tokens_and_read_targets_survive_merge():
         blocked, description = hl(command)
         assert blocked is True, f"SEC-1 exfil hardline no longer blocks: {command!r}"
         assert description and "credential exfiltration" in description
+
+
+def test_a2b_codex_per_profile_security_mode_resolution_survives_merge():
+    """A2b (2026-06-26): codex resolves its sandbox/permission mode per-profile from
+    ``tools.terminal.security_mode``, defaulting to UNCHANGED behavior when the key is
+    unset. This is the fork-local mechanism that lets CLOSED codex roles opt into a tighter
+    sandbox. Per the PR#70 lesson (the 0.16.0 merge silently reverted backup.py secret
+    exclusions), pin the resolver + mapping so a NousResearch merge that drops them — or
+    loosens an unknown mode toward full-access — fails loudly in CI instead of silently
+    reverting the codex-authority hardening.
+    """
+    runtime = _read("agent/codex_runtime.py")
+    assert "def _resolve_codex_permission_profile" in runtime, \
+        "A2b per-profile codex security-mode resolver dropped"
+    assert "permission_profile=" in runtime, \
+        "A2b no longer passes permission_profile to CodexAppServerSession (resolver orphaned)"
+
+    import sys as _sys
+
+    if str(REPO) not in _sys.path:
+        _sys.path.insert(0, str(REPO))
+    from agent.transports.codex_app_server_session import (
+        _HERMES_TO_CODEX_PERMISSION_PROFILE as _MAP,
+    )
+
+    assert _MAP.get("approval-required") == "read-only-with-approval", \
+        "codex mapping dropped the approval-required -> read-only-with-approval tightening"
+    assert _MAP.get("definitely-not-a-real-mode") is None, \
+        "unknown codex mode must never resolve (and must never default to full-access)"
