@@ -358,6 +358,19 @@ def _hermetic_environment(tmp_path, monkeypatch):
     for name in _HERMES_BEHAVIORAL_VARS:
         monkeypatch.delenv(name, raising=False)
 
+    # 2b. Hermetic browser guard: a test must NEVER open a real browser. The
+    #     OAuth loopback logins (xAI/Nous/Spotify/device-code) call
+    #     webbrowser.open(); with BROWSER pointing at a real browser shim this
+    #     pops real consent pages (e.g. the xAI "Authorize Grok Build" tab) at
+    #     the developer. Drop BROWSER and neuter webbrowser so no code path
+    #     reached under test — even the real OAuth login with open_browser=True
+    #     — can launch one.
+    monkeypatch.delenv("BROWSER", raising=False)
+    for _wb_attr in ("open", "open_new", "open_new_tab"):
+        monkeypatch.setattr(
+            f"webbrowser.{_wb_attr}", lambda *a, **k: False, raising=False
+        )
+
     # 3. Redirect HERMES_HOME to a per-test tempdir. Code that reads
     #    ``~/.hermes/*`` via ``get_hermes_home()`` now gets the tempdir.
     #
