@@ -983,6 +983,10 @@ export const api = {
     fetchJSON<import("@/components/mission/types").SpendHistory>(`/api/dashboard/spend?range=${range}`),
   getSwarmStatus: () => fetchJSON<Record<string, unknown>>("/api/dashboard/swarm"),
   getDashboardCron: () => fetchJSON<{ jobs: unknown[]; count: number }>("/api/dashboard/cron"),
+  getDashboardCronContracts: () =>
+    fetchJSON<{ contracts: CronContractRow[]; count: number; generated_at: string }>(
+      "/api/dashboard/cron-contracts",
+    ),
   getLatestDream: () => fetchJSON<{ dream: string | null; date: string | null }>("/api/dashboard/dreams/latest"),
   getQueueHistory: (range: "1d" | "7d" | "30d" = "7d") =>
     fetchJSON<import("@/components/mission/types").QueueHistory>(`/api/dashboard/queue?range=${range}`),
@@ -2011,6 +2015,19 @@ export interface CronDeliveryTarget {
   name: string;
   home_target_set: boolean;
   home_env_var: string | null;
+}
+
+/** One row of the self-reporting cron-contracts fleet board (Card 64). */
+export interface CronContractRow {
+  name: string;
+  quota: number | null;
+  achieved: number;
+  gaps: string[];
+  retries: number;
+  status: string;
+  missStreak: number;
+  hardFloor: boolean;
+  lastRun: string | null;
 }
 
 export interface AutomationBlueprintField {

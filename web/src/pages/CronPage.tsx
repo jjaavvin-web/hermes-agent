@@ -31,6 +31,7 @@ import { usePageHeader } from "@/contexts/usePageHeader";
 import { PluginSlot } from "@/plugins";
 import { Segmented } from "@nous-research/ui/ui/components/segmented";
 import { AutomationBlueprints } from "@/components/AutomationBlueprints";
+import { FleetBoard } from "@/components/system-health/FleetBoard";
 import { cn, themedBody } from "@/lib/utils";
 
 function formatTime(iso?: string | null): string {
@@ -1080,6 +1081,8 @@ export default function CronPage() {
             loading={reliabilityLoading}
             rows={reliabilityRows}
           />
+
+          <FleetBoard />
 
         {jobs.length === 0 && (
           <Card>

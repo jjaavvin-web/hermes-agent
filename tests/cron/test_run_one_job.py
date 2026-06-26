@@ -10,6 +10,10 @@ The first test characterizes the sequence as driven through `tick()` (proving
 the extraction didn't change `tick`'s behavior); the rest unit-test the
 extracted helper directly.
 """
+import json
+
+import pytest
+
 import cron.scheduler as s
 
 
@@ -117,3 +121,104 @@ def test_run_one_job_exception_marks_failure(monkeypatch):
 
     assert ok is False
     assert marks == [("j6", False)]
+
+
+# ---------------------------------------------------------------------------
+# Self-reporting contract branch (Card 64) — scheduler.run_one_job:~2081-2119
+# ---------------------------------------------------------------------------
+
+
+def _patch_pipeline_capture(monkeypatch, *, success=True, output="out",
+                            final="final response", error=None):
+    """Patch the pipeline and CAPTURE delivered content + mark calls.
+
+    Unlike ``_patch_pipeline``, ``fake_deliver`` records the exact body handed to
+    delivery so the contract trailer/gap-line behavior can be asserted directly.
+    """
+    delivered: list[str] = []
+    marks: list[tuple] = []
+
+    def fake_run_job(job):
+        return (success, output, final, error)
+
+    def fake_save(jid, out):
+        return f"/tmp/{jid}.txt"
+
+    def fake_deliver(job, content, adapters=None, loop=None):
+        delivered.append(content)
+        return None
+
+    def fake_mark(jid, ok, err=None, delivery_error=None):
+        marks.append((jid, ok))
+
+    monkeypatch.setattr(s, "run_job", fake_run_job)
+    monkeypatch.setattr(s, "save_job_output", fake_save)
+    monkeypatch.setattr(s, "_deliver_result", fake_deliver)
+    monkeypatch.setattr(s, "mark_job_run", fake_mark)
+    return delivered, marks
+
+
+@pytest.fixture()
+def contract_ledger(tmp_path, monkeypatch):
+    """Redirect the cron-contracts ledger into tmp_path via HERMES_HOME.
+
+    ``record_contract`` writes to ``cron_result.DEFAULT_LEDGER`` (computed from
+    HERMES_HOME at import), so we set the env *and* repoint the already-resolved
+    module constants — the real ~/.hermes ledger is never touched.
+    """
+    from cron import cron_result
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    ledger = tmp_path / "observability" / "cron-contracts.jsonl"
+    monkeypatch.setattr(cron_result, "HERMES_HOME", tmp_path)
+    monkeypatch.setattr(cron_result, "DEFAULT_LEDGER", ledger)
+    return ledger
+
+
+def test_run_one_job_contract_records_and_strips_trailer(contract_ledger, monkeypatch):
+    """A contract:true job with a ``CONTRACT: {json}`` trailer (a) records one
+    ledger line with the self-reported quota/achieved, (b) strips the trailer
+    from the delivered body while appending the human gap line."""
+    final = (
+        "Report body line 1.\n"
+        "Report body line 2.\n"
+        'CONTRACT: {"quota": 5, "achieved": 4, "gaps": ["one source down"]}'
+    )
+    delivered, marks = _patch_pipeline_capture(monkeypatch, final=final)
+
+    ok = s.run_one_job({"id": "jc1", "name": "weekly-scan", "contract": True})
+    assert ok is True
+
+    # (a) exactly one record landed in the redirected ledger with the trailer's data.
+    lines = contract_ledger.read_text(encoding="utf-8").splitlines()
+    assert len(lines) == 1
+    rec = json.loads(lines[0])
+    assert rec["name"] == "weekly-scan"
+    assert rec["quota"] == 5
+    assert rec["achieved"] == 4
+    assert rec["gaps"] == ["one source down"]
+
+    # (b) the trailer is stripped from delivery; the gap line is appended.
+    assert len(delivered) == 1
+    body = delivered[0]
+    assert "CONTRACT:" not in body
+    assert "Report body line 2." in body
+    assert "[contract] weekly-scan: achieved 4/5" in body
+    assert marks == [("jc1", True)]
+
+
+def test_run_one_job_contract_silent_records_but_does_not_deliver(contract_ledger, monkeypatch):
+    """A [SILENT] contract:true job still writes a ledger record but suppresses
+    delivery (the SILENT gate fires after the contract hook)."""
+    delivered, marks = _patch_pipeline_capture(monkeypatch, final="[SILENT]")
+
+    ok = s.run_one_job({"id": "jc2", "name": "silent-cron", "contract": True})
+    assert ok is True
+
+    # Records despite being silent.
+    lines = contract_ledger.read_text(encoding="utf-8").splitlines()
+    assert len(lines) == 1
+    assert json.loads(lines[0])["name"] == "silent-cron"
+
+    # But never delivers.
+    assert delivered == []

@@ -2077,6 +2077,47 @@ def run_one_job(job: dict, *, adapters=None, loop=None, verbose: bool = False) -
         # If the agent responded with [SILENT], skip delivery (but
         # output is already saved above).  Failed jobs always deliver.
         deliver_content = final_response if success else _summarize_cron_failure_for_delivery(job, error)
+
+        # Self-reporting contract hook (Card 64). OPT-IN per job via jobs.json
+        # `contract: true`; purely additive and fully guarded so every existing
+        # job is byte-for-byte unchanged. We record one line to the SEPARATE
+        # cron-contracts ledger and append a human gap line to the delivered
+        # message so the gap lands BOTH pull-side (dashboard) and in the cron's
+        # normal delivery channel. No Discord *alert* is raised here — delivery
+        # is the cron's channel, not an alert; push stays pull-side by default.
+        if job.get("contract"):
+            try:
+                from cron import cron_result
+                job_name = job.get("name") or job.get("id") or "cron"
+                trailer = cron_result.parse_contract_trailer(final_response) if success else None
+                if trailer is not None:
+                    # The cron self-reported a real domain quota; honor it and
+                    # strip the machine-readable trailer from the human delivery.
+                    quota = trailer.get("quota")
+                    achieved = int(trailer.get("achieved", 0) or 0)
+                    gaps = [str(g) for g in (trailer.get("gaps") or [])]
+                    retries = int(trailer.get("retries", 0) or 0)
+                    deliver_content = cron_result.strip_contract_trailer(deliver_content)
+                else:
+                    # Mechanical 0/1 contract: did the run produce anything?
+                    quota = 1
+                    achieved = 1 if (success and final_response.strip()) else 0
+                    gaps = [error] if error else []
+                    retries = 0
+                status = "ok" if achieved and (quota is None or achieved >= quota) else "miss"
+                contract = cron_result.record_contract(
+                    name=job_name,
+                    quota=quota,
+                    achieved=achieved,
+                    gaps=gaps,
+                    retries=retries,
+                    status=status,
+                )
+                gap = cron_result.gap_line(contract)
+                deliver_content = f"{deliver_content}\n\n{gap}" if deliver_content.strip() else gap
+            except Exception as ce:  # never let self-reporting break a live cron
+                logger.warning("Contract hook failed for job %s: %s", job.get("id"), ce)
+
         # Treat whitespace-only final responses the same as empty
         # responses: do not deliver a blank message, and let the
         # empty-response guard below mark the run as a soft failure.

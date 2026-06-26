@@ -1048,7 +1048,7 @@ def _get_next_cron() -> Optional[dict]:
 def _get_all_cron_jobs() -> list[dict]:
     try:
         jobs_path = HERMES_HOME / "cron" / "jobs.json"
-        data = json.loads(jobs_path.read_text())
+        data = json.loads(jobs_path.read_text(encoding="utf-8"))
         jobs = data.get("jobs", [])
         result = []
         for j in jobs:
@@ -1067,7 +1067,7 @@ def _get_all_cron_jobs() -> list[dict]:
         # Check for staged dream-reflect
         staged_path = HERMES_HOME / "cron.d" / "dream-reflect.cron"
         if staged_path.exists():
-            content = staged_path.read_text()
+            content = staged_path.read_text(encoding="utf-8")
             for line in content.splitlines():
                 stripped = line.strip()
                 if stripped.startswith("#") and "dream-reflect" in stripped.lower():
@@ -1091,6 +1091,75 @@ def _get_all_cron_jobs() -> list[dict]:
         return result
     except Exception:
         return []
+
+
+# Tail bound for the pull-side ledger read — only the most recent N records are
+# needed to render the fleet board (latest-per-cron + miss streak). Matches the
+# tail convention in cron.cron_result (hard_floor_breaches uses 2000).
+_CONTRACT_LEDGER_TAIL = 2000
+
+
+def _get_cron_contracts() -> dict:
+    """Aggregate the self-reporting cron-contracts ledger for the fleet board.
+
+    Reads HERMES_HOME/observability/cron-contracts.jsonl (the SEPARATE ledger the
+    scheduler appends to for jobs with ``contract: true`` — NOT slo-timeseries.jsonl)
+    and returns the latest contract per cron plus its consecutive-miss streak and
+    hard-floor flag. Read-only; pull-side only — no Discord/alerting here.
+
+    The streak + hard-floor threshold are delegated to ``cron.cron_result`` so the
+    dashboard never drifts from the scheduler/push-gate definition, and the ledger
+    is read tail-bounded (last ``_CONTRACT_LEDGER_TAIL`` records) so an unbounded
+    append-only file never blocks the endpoint. A single malformed record (e.g. a
+    non-numeric ``achieved``) is coerced to 0 rather than 500-ing the request.
+    """
+    from cron import cron_result
+
+    generated_at = datetime.now(timezone.utc).isoformat()
+    ledger = HERMES_HOME / "observability" / "cron-contracts.jsonl"
+    if not ledger.exists():
+        return {"contracts": [], "count": 0, "generated_at": generated_at}
+
+    # Tail-bounded read + corrupt-line skipping, matching cron_result's convention.
+    records = [
+        rec
+        for rec in cron_result._iter_ledger_records(ledger, tail=_CONTRACT_LEDGER_TAIL)
+        if rec.get("name")
+    ]
+
+    # The ledger is append-only and chronological, so the last record for a name
+    # is its current state.
+    latest: dict[str, dict] = {}
+    for rec in records:
+        latest[rec["name"]] = rec
+
+    contracts = []
+    for name, rec in sorted(latest.items()):
+        # Reuse the shared streak helper + threshold so the pull-side chip stays
+        # in lockstep with cron_result (no re-derived streak, no duplicated const).
+        streak = cron_result.consecutive_misses(name, ledger, tail=_CONTRACT_LEDGER_TAIL)
+        try:
+            achieved = int(rec.get("achieved", 0) or 0)
+        except (TypeError, ValueError):
+            achieved = 0
+        try:
+            retries = int(rec.get("retries", 0) or 0)
+        except (TypeError, ValueError):
+            retries = 0
+        hard_floor = achieved == 0 or streak >= cron_result.DEFAULT_FLOOR_MISSES
+        contracts.append({
+            "name": name,
+            "quota": rec.get("quota"),
+            "achieved": achieved,
+            "gaps": rec.get("gaps") or [],
+            "retries": retries,
+            "status": rec.get("status", "ok"),
+            "missStreak": streak,
+            "hardFloor": hard_floor,
+            "lastRun": rec.get("generated_at"),
+        })
+
+    return {"contracts": contracts, "count": len(contracts), "generated_at": generated_at}
 
 
 # ---------------------------------------------------------------------------
@@ -1493,6 +1562,16 @@ async def get_cron() -> dict:
     """All cron jobs with next firing times and last run status."""
     jobs = await asyncio.get_running_loop().run_in_executor(None, _get_all_cron_jobs)
     return {"jobs": jobs, "count": len(jobs)}
+
+
+@router.get("/cron-contracts", summary="Self-reporting cron contracts — quota/gap/miss-streak per cron")
+async def get_cron_contracts() -> dict:
+    """Latest self-reported contract per cron + miss-streak + hard-floor flag.
+
+    Pull-side aggregate of the cron-contracts ledger (jobs with ``contract: true``).
+    Read-only — no Discord/alerting here; push stays opt-in elsewhere.
+    """
+    return await asyncio.get_running_loop().run_in_executor(None, _get_cron_contracts)
 
 
 @router.get("/dreams/latest", summary="Last overnight reflection brief")
