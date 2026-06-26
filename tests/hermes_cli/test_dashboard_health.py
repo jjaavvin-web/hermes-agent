@@ -33,7 +33,6 @@ def isolated_dashboard_health(tmp_path, monkeypatch):
     monkeypatch.setattr(d, "RUFLO_WORK_DIR", ruflo_work)
     monkeypatch.setattr(d, "_SNAPSHOT_CACHE", None)
     monkeypatch.setattr(d, "_SPEND_CACHE", {})
-    monkeypatch.setattr(d, "_NEXUS_CACHE", None)
     monkeypatch.setattr(d, "_INFRA_CACHE", None)
     monkeypatch.setattr(d, "_HIVES_CACHE", None)
 
@@ -148,16 +147,6 @@ def _healthy_pulse() -> dict:
     }
 
 
-def _wire_nexus_inputs(monkeypatch, *, mission=None, topology=None, infra=None, hives=None, codex=None, pulse=None) -> None:
-    monkeypatch.setattr(d, "_get_snapshot", lambda: mission or _healthy_mission())
-    monkeypatch.setattr(d, "_get_gitnexus_runtime_snapshot", lambda: topology or _healthy_topology())
-    monkeypatch.setattr(d, "_get_infra_snapshot", lambda: infra or _healthy_infra())
-    monkeypatch.setattr(d, "_get_hives_snapshot", lambda: hives or _healthy_hives())
-    monkeypatch.setattr(d, "_get_codex_sessions_snapshot", lambda: codex or _healthy_codex())
-    monkeypatch.setattr(d, "_get_pulse_kpis_snapshot", lambda: pulse or _healthy_pulse())
-    monkeypatch.setattr(d, "_NEXUS_CACHE", None)
-
-
 def _make_kanban_db(path: Path, rows: list[tuple[str, int | None]] | None = None) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(path)
@@ -178,8 +167,6 @@ def test_router_registers_dashboard_health_public_routes():
 
     assert {
         "/api/dashboard/mission",
-        "/api/dashboard/nexus-health",
-        "/api/dashboard/nexus-health/node/{node_id}",
         "/api/dashboard/health/runtime/{name}",
         "/api/dashboard/spend",
         "/api/dashboard/queue",
@@ -208,13 +195,7 @@ def test_public_endpoints_delegate_to_cached_builders(monkeypatch):
 
 
 def test_public_endpoint_error_paths_return_http_exceptions(monkeypatch):
-    monkeypatch.setattr(d, "_build_node_detail", lambda node_id: None)
     monkeypatch.setattr(d, "_get_hive_log_tail", lambda hive_id, tail: None)
-
-    with pytest.raises(HTTPException) as node_exc:
-        _run(d.get_nexus_health_node("missing-node"))
-    assert node_exc.value.status_code == 404
-    assert "missing-node" in node_exc.value.detail
 
     with pytest.raises(HTTPException) as hive_exc:
         _run(d.get_hive_log("missing-hive", tail=10))
@@ -223,7 +204,6 @@ def test_public_endpoint_error_paths_return_http_exceptions(monkeypatch):
 
 
 def test_timeout_wrapped_endpoints_surface_503(monkeypatch):
-    monkeypatch.setattr(d, "_get_nexus_health", lambda: {"nodes": []})
     monkeypatch.setattr(d, "_get_hives_snapshot", lambda: {"hives": []})
 
     async def always_timeout(awaitable, timeout):
@@ -231,11 +211,6 @@ def test_timeout_wrapped_endpoints_surface_503(monkeypatch):
         raise asyncio.TimeoutError
 
     monkeypatch.setattr(d.asyncio, "wait_for", always_timeout)
-
-    with pytest.raises(HTTPException) as nexus_exc:
-        _run(d.get_nexus_health())
-    assert nexus_exc.value.status_code == 503
-    assert "timed out" in nexus_exc.value.detail
 
     with pytest.raises(HTTPException) as hives_exc:
         _run(d.get_hives_snapshot())
@@ -293,53 +268,6 @@ def test_rollup_status_precedence_for_dashboard_groups():
     assert d._rollup_status(["unknown"]) == "unknown"
     assert d._rollup_status(["ok", "auth_gated"]) == "warn"
     assert d._rollup_status(["ok", "warn", "error"]) == "error"
-
-
-def test_nexus_health_safe_caution_and_stop_postures(monkeypatch):
-    _wire_nexus_inputs(monkeypatch)
-    safe = d._build_nexus_health()
-    assert safe["posture"] == "safe"
-    assert safe["summary"] == "All observed systems are safe for read-only inspection."
-    assert safe["counts"]["error"] == 0
-    assert safe["counts"]["warn"] == 0
-    assert safe["counts"]["auth_gated"] == 0
-    assert safe["needs_joseph"] == []
-
-    caution_mission = _healthy_mission()
-    for runtime in caution_mission["runtimes"]:
-        if runtime["name"] == "codex":
-            runtime["status"] = "degraded"
-    _wire_nexus_inputs(monkeypatch, mission=caution_mission)
-    caution = d._build_nexus_health()
-    assert caution["posture"] == "caution"
-    assert "need attention" in caution["summary"]
-    assert "Codex / Claude Lanes" in caution["summary"]
-
-    gated_topology = _healthy_topology()
-    gated_topology["mcp"] = [{"id": "honcho", "name": "honcho", "status": "auth_gated"}]
-    _wire_nexus_inputs(monkeypatch, topology=gated_topology)
-    stop = d._build_nexus_health()
-    assert stop["posture"] == "stop"
-    assert any(item["id"] == "mcp-memory" for item in stop["needs_joseph"])
-    assert any(item["id"] == "mcp:honcho" for item in stop["needs_joseph"])
-    assert "need Joseph" in stop["summary"]
-
-
-def test_nexus_health_build_aggregates_nodes_edges_counts_and_sectors(monkeypatch):
-    _wire_nexus_inputs(monkeypatch)
-
-    data = d._build_nexus_health()
-    node_ids = {node["id"] for node in data["nodes"]}
-    edge_pairs = {(edge["source"], edge["target"]) for edge in data["edges"]}
-    sectors = {sector["id"]: sector for sector in data["sectors"]}
-
-    assert {"dashboard", "hermes", "gateway", "kanban", "cron-watchdogs", "agent-lanes"} <= node_ids
-    assert {"systemd-units", "ports", "containers", "mcp-memory", "source-tree", "audit-store"} <= node_ids
-    assert ("dashboard", "hermes") in edge_pairs
-    assert ("hermes", "gateway") in edge_pairs
-    assert sum(data["counts"].values()) == len(data["nodes"])
-    assert set(sectors) == {"pulse", "hives", "codex"}
-    assert sectors["pulse"]["summary"].endswith("Last completion: green-run.")
 
 
 def test_build_nexus_sectors_classifies_degraded_dashboard_sources():
@@ -586,81 +514,6 @@ def test_kanban_probe_and_queue_depth_use_only_tmp_sqlite_state():
 # ---------------------------------------------------------------------------
 
 
-def test_node_metric_cards_format_values_for_dashboard_display():
-    cards = d._node_metric_cards(
-        {
-            "metrics": {
-                "latency_ms": 12.345,
-                "online": True,
-                "platforms": ["telegram", "discord", "slack", "sms", "matrix"],
-                "missing": None,
-                "empty": [],
-            }
-        }
-    )
-
-    assert {"label": "Latency Ms", "value": "12.35"} in cards
-    assert {"label": "Online", "value": "yes"} in cards
-    assert {"label": "Platforms", "value": "telegram, discord, slack, sms"} in cards
-    assert all(card["label"] not in {"Missing", "Empty"} for card in cards)
-
-
-def test_node_recommendations_format_fix_and_optimization_commands():
-    unhealthy = d._node_recommendations(
-        {
-            "id": "svc:hermes-gateway.service",
-            "status": "error",
-            "kind": "service",
-            "label": "gateway",
-            "metrics": {"unit": "hermes-gateway.service"},
-            "needs_joseph": True,
-        }
-    )
-    assert any(rec["kind"] == "fix" and "journalctl --user -u hermes-gateway.service" in (rec["command"] or "") for rec in unhealthy)
-    assert any(rec["title"] == "Human gate is active" for rec in unhealthy)
-
-    healthy = d._node_recommendations(
-        {
-            "id": "port:9119",
-            "status": "ok",
-            "kind": "port",
-            "label": "Dashboard API",
-            "metrics": {"port": 9119, "latency_ms": 75.0},
-        }
-    )
-    assert healthy == [
-        {
-            "kind": "optimization",
-            "title": "Reachable — latency is elevated",
-            "detail": "TCP connect succeeded in 75.0 ms. Sub-50 ms localhost latency is healthy.",
-            "command": None,
-        }
-    ]
-
-
-def test_build_node_detail_attaches_metric_cards_history_recommendations_and_connections(monkeypatch):
-    health = {
-        "generated_at": "2026-06-10T00:00:00+00:00",
-        "nodes": [
-            {"id": "kanban", "label": "Kanban", "status": "ok", "kind": "kanban", "metrics": {"active_tasks": 2}},
-            {"id": "hermes", "label": "Hermes", "status": "ok", "kind": "runtime", "metrics": {}},
-        ],
-        "edges": [{"id": "hermes->kanban", "source": "hermes", "target": "kanban", "label": "queue", "status": "ok"}],
-    }
-    monkeypatch.setattr(d, "_get_nexus_health", lambda: health)
-    monkeypatch.setattr(d, "_get_queue_depth", lambda range_str: {"points": [{"date": "2026-06-10", "count": 2}], "openNow": 2})
-
-    detail = d._build_node_detail("kanban")
-
-    assert detail is not None
-    assert detail["generated_at"] == health["generated_at"]
-    assert detail["metric_cards"] == [{"label": "Active Tasks", "value": "2"}]
-    assert detail["history"][0]["kind"] == "queue"
-    assert detail["recommendations"][0]["kind"] == "optimization"
-    assert detail["connections"] == [{"id": "hermes->kanban", "label": "queue", "status": "ok", "direction": "in", "peer": "hermes"}]
-    assert d._build_node_detail("missing") is None
-
-
 def test_spend_points_ignore_bad_old_and_missing_usage_rows():
     project = d.CLAUDE_PROJECTS_DIR / "project-a"
     project.mkdir(parents=True)
@@ -817,7 +670,6 @@ def test_retired_ruflo_probe_and_hives_ignore_stale_workdir(monkeypatch):
 
     monkeypatch.setattr(d.subprocess, "run", no_ruflo_status)
     monkeypatch.setattr(d, "_HIVES_CACHE", None)
-    monkeypatch.setattr(d, "_NEXUS_CACHE", None)
 
     probe = d._probe_ruflo()
     snapshot = d._build_hives_snapshot()

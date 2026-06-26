@@ -1078,6 +1078,46 @@ def _build_os_graph(sections: list[dict]) -> dict:
 # Section 1: gateway
 # ---------------------------------------------------------------------------
 
+def _gateway_systemd_main(unit: str = "hermes-gateway.service") -> tuple[Optional[int], str]:
+    """Read the systemd unit's MainPID/ActiveState (read-only, never raises).
+
+    Returns ``(main_pid, active_state)`` where ``main_pid`` is ``None`` when the
+    unit reports MainPID=0 or the query fails, and ``active_state`` is the unit's
+    ActiveState string (e.g. ``"active"``) or ``"unknown"``.
+    """
+    main_pid: Optional[int] = None
+    active_state = "unknown"
+    try:
+        r = _run(["systemctl", "--user", "show", unit, "-p", "MainPID,ActiveState"])
+        for line in (r.stdout or "").splitlines():
+            if line.startswith("MainPID="):
+                try:
+                    parsed = int(line.split("=", 1)[1].strip())
+                    main_pid = parsed if parsed > 0 else None
+                except ValueError:
+                    main_pid = None
+            elif line.startswith("ActiveState="):
+                active_state = line.split("=", 1)[1].strip() or "unknown"
+    except Exception:
+        return None, "unknown"
+    return main_pid, active_state
+
+
+def _pid_alive(pid: Any) -> bool:
+    if not pid:
+        return False
+    # Windows-safe: never os.kill(pid, 0) here — on Windows CPython routes
+    # sig=0 through GenerateConsoleCtrlEvent (bpo-14484) and would Ctrl+C-kill
+    # the gateway this probe monitors. The psutil-backed helper returns True
+    # for any existing pid regardless of owner (subsumes the old
+    # PermissionError->alive case).
+    try:
+        from gateway.status import _pid_exists
+        return _pid_exists(int(pid))
+    except (ValueError, TypeError, OSError):
+        return False
+
+
 def _probe_gateway() -> dict:
     state_path = HERMES_HOME / "gateway_state.json"
     data = json.loads(state_path.read_text())
@@ -1104,24 +1144,30 @@ def _probe_gateway() -> dict:
     # IMPORTANT: never use os.kill(pid, 0) here — on Windows CPython routes
     # sig=0 through GenerateConsoleCtrlEvent (bpo-14484), which sends Ctrl+C
     # to the target's console group and would hard-kill the very gateway this
-    # probe is meant to monitor. Use the canonical psutil-backed helper.
-    pid_alive = False
-    if pid:
-        try:
-            from gateway.status import _pid_exists
-            pid_alive = _pid_exists(int(pid))
-        except (ValueError, TypeError, OSError):
-            pass
+    # probe is meant to monitor. _pid_alive() is the canonical psutil-backed
+    # helper (it must NOT fall back to os.kill).
+    pid_alive = _pid_alive(pid)
 
+    systemd_note = ""
     if pid_alive and gw_state == "running":
         status: Status = "green"
-    elif gw_state in ("running",):
-        status = "amber"
+    elif gw_state == "running":
+        # The recorded pid is dead but the state file still says "running".
+        # Before false-alarming amber, cross-check the systemd unit: a stale
+        # state-file pid must not flag when the real gateway (systemd MainPID)
+        # is healthy and active.
+        main_pid, active_state = _gateway_systemd_main()
+        if active_state == "active" and _pid_alive(main_pid):
+            status = "green"
+            systemd_note = f" (stale state pid; systemd MainPID={main_pid} active)"
+        else:
+            status = "amber"
+            systemd_note = f" (systemd MainPID={main_pid} ActiveState={active_state})"
     else:
         status = "red"
 
     uptime_str = f"{uptime_s // 3600}h{(uptime_s % 3600) // 60}m" if uptime_s and uptime_s >= 0 else "?"
-    detail = f"pid={pid} state={gw_state} uptime={uptime_str}"
+    detail = f"pid={pid} state={gw_state} uptime={uptime_str}{systemd_note}"
     return _item("gateway_state", status, detail, reason="gateway_state.json is not running/alive" if status != "green" else None)
 
 
@@ -1777,9 +1823,14 @@ def _section_host() -> dict:
             m = re.search(r"load average[s]?:\s*([\d.]+),?\s*([\d.]+),?\s*([\d.]+)", text)
             if m:
                 load1, load5, load15 = float(m.group(1)), float(m.group(2)), float(m.group(3))
-                s = "green" if load1 < 4.0 else ("amber" if load1 < 8.0 else "red")
+                # Core-count-aware: compare 1m load against available cores so a
+                # high-core box (e.g. 20 cores at load ~14 ≈ 70%) doesn't false-alarm.
+                cores = os.cpu_count() or 1
+                ratio = load1 / cores
+                s = "green" if ratio < 0.85 else ("amber" if ratio < 1.5 else "red")
                 items.append(_item("load_avg", s,
-                                   f"1m={load1} 5m={load5} 15m={load15}",
+                                   f"1m={load1} 5m={load5} 15m={load15} "
+                                   f"({cores} cores, {ratio * 100:.0f}% of capacity)",
                                    metric=str(load1)))
             else:
                 items.append(_item("load_avg", "unknown", f"could not parse: {text}", reason="uptime load parse failed"))

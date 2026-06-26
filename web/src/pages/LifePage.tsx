@@ -6,7 +6,7 @@
 // the clock/freshness are genuinely live. Domain metrics are user-owned values
 // persisted to localStorage and editable in-app (tap "Edit") until per-domain
 // sources — Plaid, Oura/Apple Health, a reading-plan API — are wired.
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, type ChangeEvent, type ComponentType, type CSSProperties, type ReactNode } from "react";
 import {
   BookOpen,
   CalendarClock,
@@ -41,13 +41,12 @@ import {
   DEFAULT_VALUES,
   fmtMoney,
   greeting,
-  loadValues,
   overallScore,
-  saveValues,
   verseOfTheDay,
   type DomainKey,
   type LifeValues,
 } from "@/components/life/lifeData";
+import { useLifeAgenda, useLifeData } from "@/components/life/useLifeData";
 
 type Tab = "today" | DomainKey;
 
@@ -57,12 +56,12 @@ const TABS: { key: Tab; label: string }[] = [
 ];
 
 export default function LifePage() {
-  const [values, setValues] = useState<LifeValues>(() => loadValues());
+  const { values, setValues, save: saveLifeValues, error: stateError } = useLifeData();
+  const liveAgenda = useLifeAgenda(30_000);
   const [tab, setTab] = useState<Tab>("today");
   const [editing, setEditing] = useState(false);
   const [now, setNow] = useState(() => new Date());
   const chips = useMissionStream();
-  const [syncedAt, setSyncedAt] = useState(() => Date.now());
 
   // Clock tick — drives the greeting, live time, and "synced Xs ago" freshness.
   useEffect(() => {
@@ -70,23 +69,35 @@ export default function LifePage() {
     return () => clearInterval(t);
   }, []);
 
-  // Mark a fresh sync whenever live health chips update.
-  useEffect(() => {
-    if (chips.length) setSyncedAt(Date.now());
-  }, [chips]);
+  // Mark a fresh sync whenever live health chips update. Uses React's sanctioned
+  // "adjust state while rendering" pattern (not a setState-in-effect): when the
+  // chips reference changes and is non-empty, stamp the current clock tick as the
+  // latest sync time. `now` is pure state, so no impure Date.now() in render.
+  const [prevChips, setPrevChips] = useState(chips);
+  const [syncedAt, setSyncedAt] = useState(now);
+  if (prevChips !== chips) {
+    setPrevChips(chips);
+    if (chips.length) setSyncedAt(now);
+  }
 
-  const overall = overallScore(values.scores);
+  const displayValues: LifeValues = liveAgenda
+    ? {
+        ...values,
+        agenda: liveAgenda.agenda.length ? liveAgenda.agenda : values.agenda,
+        tasksDone: liveAgenda.tasksDone,
+        tasksTotal: liveAgenda.tasksTotal,
+      }
+    : values;
+  const overall = overallScore(displayValues.scores);
   const verse = useMemo(() => verseOfTheDay(now), [now]);
   const online = chips.filter((c) => c.status === "online").length;
   const total = chips.length;
-  const syncedAgo = Math.max(0, Math.round((now.getTime() - syncedAt) / 1000));
+  const syncedAgo = Math.max(0, Math.round((now.getTime() - syncedAt.getTime()) / 1000));
 
-  const update = (patch: Partial<LifeValues>) => {
-    setValues((prev) => {
-      const next = { ...prev, ...patch };
-      saveValues(next);
-      return next;
-    });
+  const update = async (patch: Partial<LifeValues>) => {
+    const next = { ...values, ...patch };
+    setValues(next);
+    await saveLifeValues(next);
   };
 
   return (
@@ -95,7 +106,7 @@ export default function LifePage() {
       <div className="flex items-start justify-between gap-3 pt-1">
         <div className="min-w-0">
           <h1 className="truncate text-xl font-semibold text-text-primary sm:text-2xl">
-            {greeting(now)}, {values.name}
+            {greeting(now)}, {displayValues.name}
           </h1>
           <p className="mt-0.5 text-sm text-text-tertiary">
             {now.toLocaleDateString(undefined, { weekday: "long", month: "short", day: "numeric" })}
@@ -116,8 +127,14 @@ export default function LifePage() {
       </div>
 
       {/* Tabs */}
+      {stateError ? (
+        <p className="mt-2 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-200">
+          Offline cache active — server sync will retry on next save.
+        </p>
+      ) : null}
+
       <div className="sticky top-0 z-10 -mx-3 mt-3 bg-black/70 px-3 py-2 backdrop-blur-sm sm:mx-0 sm:px-0">
-        <div className="flex gap-1 overflow-x-auto rounded-xl border border-border bg-card/60 p-1">
+        <div role="tablist" aria-label="Life dashboard sections" className="flex gap-1 overflow-x-auto rounded-xl border border-border bg-card/60 p-1">
           {TABS.map((tb) => {
             const accent = tb.key === "today" ? "#e5e7eb" : DOMAIN_BY_KEY[tb.key as DomainKey].accent;
             const active = tab === tb.key;
@@ -126,6 +143,8 @@ export default function LifePage() {
                 key={tb.key}
                 type="button"
                 onClick={() => setTab(tb.key)}
+                role="tab"
+                aria-selected={active}
                 className={cn(
                   "flex-1 whitespace-nowrap rounded-lg px-3 py-1.5 text-sm font-medium transition-colors",
                   active ? "text-text-primary" : "text-text-tertiary hover:text-text-secondary",
@@ -141,12 +160,12 @@ export default function LifePage() {
 
       <div className="mt-3 space-y-3">
         {tab === "today" && (
-          <TodayView values={values} overall={overall} verse={verse} now={now} onPrayer={() => setTab("faith")} />
+          <TodayView values={displayValues} overall={overall} verse={verse} now={now} onPrayer={() => setTab("faith")} />
         )}
-        {tab === "finance" && <FinanceView v={values} />}
-        {tab === "health" && <HealthView v={values} />}
-        {tab === "faith" && <FaithView v={values} verseText={verse.text} verseRef={verse.ref} onToggleDevotional={() => update({ devotionalDone: !values.devotionalDone })} />}
-        {tab === "life" && <LifeView v={values} now={now} />}
+        {tab === "finance" && <FinanceView v={displayValues} />}
+        {tab === "health" && <HealthView v={displayValues} />}
+        {tab === "faith" && <FaithView v={displayValues} verseText={verse.text} verseRef={verse.ref} onToggleDevotional={() => void update({ devotionalDone: !values.devotionalDone })} />}
+        {tab === "life" && <LifeView v={displayValues} now={now} />}
       </div>
 
       {editing && (
@@ -154,9 +173,7 @@ export default function LifePage() {
           values={values}
           onClose={() => setEditing(false)}
           onSave={(next) => {
-            setValues(next);
-            saveValues(next);
-            setEditing(false);
+            void saveLifeValues(next).finally(() => setEditing(false));
           }}
         />
       )}
@@ -185,7 +202,7 @@ function LivePill({ online, total, syncedAgo }: { online: number; total: number;
 
 /* -------------------------------- Card kit -------------------------------- */
 
-function Tile({ children, className, accent }: { children: React.ReactNode; className?: string; accent?: string }) {
+function Tile({ children, className, accent }: { children: ReactNode; className?: string; accent?: string }) {
   return (
     <Card
       className={cn("rounded-2xl border-border bg-card p-4", className)}
@@ -196,7 +213,7 @@ function Tile({ children, className, accent }: { children: React.ReactNode; clas
   );
 }
 
-function TileLabel({ icon: Icon, children, accent }: { icon?: React.ComponentType<{ className?: string; style?: React.CSSProperties }>; children: React.ReactNode; accent?: string }) {
+function TileLabel({ icon: Icon, children, accent }: { icon?: ComponentType<{ className?: string; style?: CSSProperties }>; children: ReactNode; accent?: string }) {
   return (
     <div className="flex items-center gap-1.5 text-[0.7rem] uppercase tracking-[0.12em] text-text-tertiary">
       {Icon ? <Icon className="h-3.5 w-3.5" style={accent ? { color: accent } : undefined} /> : null}
@@ -205,7 +222,7 @@ function TileLabel({ icon: Icon, children, accent }: { icon?: React.ComponentTyp
   );
 }
 
-function SectionTitle({ children }: { children: React.ReactNode }) {
+function SectionTitle({ children }: { children: ReactNode }) {
   return <h2 className="px-1 pt-1 text-[0.7rem] uppercase tracking-[0.16em] text-text-tertiary">{children}</h2>;
 }
 
@@ -227,7 +244,7 @@ function TodayView({
   const fin = DOMAIN_BY_KEY.finance;
   const hea = DOMAIN_BY_KEY.health;
   const lif = DOMAIN_BY_KEY.life;
-  const next = nextAgenda(values, now);
+  const next = nextAgenda(values.agenda, now);
   return (
     <>
       {/* Hero */}
@@ -296,13 +313,14 @@ function TodayView({
   );
 }
 
-function nextAgenda(values: LifeValues, now: Date) {
+function nextAgenda(agenda: LifeValues["agenda"], now: Date) {
   const hm = now.getHours() * 60 + now.getMinutes();
   const parse = (t: string) => {
-    const [h, m] = t.split(":").map(Number);
+    if (t === "All day") return 0;
+    const [h = 0, m = 0] = t.split(":").map(Number);
     return h * 60 + m;
   };
-  return values.agenda.find((a) => parse(a.time) >= hm) ?? values.agenda[0] ?? null;
+  return agenda.find((a) => parse(a.time) >= hm) ?? agenda[0] ?? null;
 }
 
 /* ------------------------------- Finance ---------------------------------- */
@@ -462,33 +480,38 @@ function LifeView({ v, now }: { v: LifeValues; now: Date }) {
       </Tile>
       <SectionTitle>The day ahead</SectionTitle>
       <Tile>
-        <ul className="divide-y divide-border">
-          {v.agenda.map((it) => {
-            const past = isPast(it.time, now);
-            return (
-              <li key={it.time + it.title} className="flex items-center gap-3 py-2.5 first:pt-0 last:pb-0">
-                <span className="h-8 w-1 rounded-full" style={{ background: DOMAIN_BY_KEY[it.domain].accent, opacity: past ? 0.3 : 1 }} />
-                <span className="font-mono text-sm text-text-secondary tabular-nums">{it.time}</span>
-                <span className={cn("flex-1 text-sm", past ? "text-text-tertiary line-through" : "text-text-primary")}>{it.title}</span>
-                <span className="text-xs text-text-tertiary">{it.meta}</span>
-                <ChevronRight className="h-4 w-4 text-text-tertiary" />
-              </li>
-            );
-          })}
-        </ul>
+        {v.agenda.length ? (
+          <ul className="divide-y divide-border">
+            {v.agenda.map((it) => {
+              const past = isPast(it.time, now);
+              return (
+                <li key={it.time + it.title} className="flex items-center gap-3 py-2.5 first:pt-0 last:pb-0">
+                  <span className="h-8 w-1 rounded-full" style={{ background: DOMAIN_BY_KEY[it.domain].accent, opacity: past ? 0.3 : 1 }} />
+                  <span className="font-mono text-sm text-text-secondary tabular-nums">{it.time}</span>
+                  <span className={cn("flex-1 text-sm", past ? "text-text-tertiary line-through" : "text-text-primary")}>{it.title}</span>
+                  <span className="text-xs text-text-tertiary">{it.meta}</span>
+                  <ChevronRight className="h-4 w-4 text-text-tertiary" />
+                </li>
+              );
+            })}
+          </ul>
+        ) : (
+          <p className="text-sm text-text-tertiary">No Google Calendar events found for today.</p>
+        )}
       </Tile>
     </>
   );
 }
 
 function isPast(time: string, now: Date): boolean {
-  const [h, m] = time.split(":").map(Number);
+  if (time === "All day") return false;
+  const [h = 0, m = 0] = time.split(":").map(Number);
   return now.getHours() * 60 + now.getMinutes() > h * 60 + m;
 }
 
 /* ------------------------------- Source note ------------------------------ */
 
-function SourceNote({ children }: { children: React.ReactNode }) {
+function SourceNote({ children }: { children: ReactNode }) {
   return (
     <p className="px-1 pt-1 text-xs text-text-tertiary">
       <span className="mr-1 rounded bg-white/5 px-1.5 py-0.5 text-[0.6rem] uppercase tracking-[0.1em]">manual</span>
@@ -510,7 +533,7 @@ function EditDialog({ values, onClose, onSave }: { values: LifeValues; onClose: 
         type="number"
         step={step}
         value={String(draft[key] as number)}
-        onChange={(e) => setDraft((d) => ({ ...d, [key]: Number(e.target.value) }))}
+        onChange={(e: ChangeEvent<HTMLInputElement>) => setDraft((d: LifeValues) => ({ ...d, [key]: Number(e.target.value) }))}
       />
     </div>
   );
@@ -523,7 +546,7 @@ function EditDialog({ values, onClose, onSave }: { values: LifeValues; onClose: 
         min={0}
         max={100}
         value={String(draft.scores[k])}
-        onChange={(e) => setDraft((d) => ({ ...d, scores: { ...d.scores, [k]: Number(e.target.value) } }))}
+        onChange={(e: ChangeEvent<HTMLInputElement>) => setDraft((d: LifeValues) => ({ ...d, scores: { ...d.scores, [k]: Number(e.target.value) } }))}
       />
     </div>
   );

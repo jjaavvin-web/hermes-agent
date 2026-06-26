@@ -452,9 +452,9 @@ export default function GetSomePage() {
                 <h2 id="get-some-topology-title">① Architecture topology</h2>
                 <small>Phase 1 linkout</small>
               </div>
-              <p>System Health owns the full topology map. Phase 1 keeps this card as the fast route into that view.</p>
-              <a className="get-some-topology__link" href="/nexus-health">
-                Open System Health →
+              <p>The OS tab owns the full topology map. Phase 1 keeps this card as the fast route into that view.</p>
+              <a className="get-some-topology__link" href="/os">
+                Open OS →
               </a>
             </section>
 

@@ -977,12 +977,6 @@ export const api = {
   // Mission Control endpoints (Hive 2)
   getMissionSnapshot: () =>
     fetchJSON<import("@/components/mission/types").MissionSnapshot>("/api/dashboard/mission"),
-  getNexusHealth: () =>
-    fetchJSON<NexusHealthResponse>("/api/dashboard/nexus-health"),
-  getNexusHealthNode: (id: string) =>
-    fetchJSON<NexusHealthNodeDetail>(
-      `/api/dashboard/nexus-health/node/${encodeURIComponent(id)}`,
-    ),
   getRuntimeHealth: (name: string) =>
     fetchJSON<import("@/components/mission/types").HealthChip>(`/api/dashboard/health/runtime/${encodeURIComponent(name)}`),
   getSpendHistory: (range: "1d" | "7d" | "30d" = "7d") =>
@@ -2300,116 +2294,10 @@ export interface PluginManifestResponse {
   source: string;
 }
 
-export type NexusHealthPosture = "safe" | "caution" | "stop";
+// Shared health-status union — retained for the OS Connectome/Nexus views
+// (components/system-health/constants.ts) after the legacy System Health tab
+// was retired into /os.
 export type NexusHealthStatus = "ok" | "warn" | "error" | "unknown" | "auth_gated";
-
-export interface NexusHealthProvenance {
-  source: string;
-  detail: string;
-}
-
-export interface NexusHealthNode {
-  id: string;
-  label: string;
-  kind: string;
-  group: string;
-  status: NexusHealthStatus;
-  summary: string;
-  details: string;
-  metrics: Record<string, unknown>;
-  provenance: NexusHealthProvenance[];
-  safe_next_check: string;
-  needs_joseph: boolean;
-}
-
-export interface NexusHealthEdge {
-  id: string;
-  source: string;
-  target: string;
-  label: string;
-  status: "ok" | "warn" | "error" | "unknown";
-  summary: string;
-  provenance: NexusHealthProvenance[];
-}
-
-export interface NexusHealthGate {
-  id: string;
-  label: string;
-  reason: string;
-  gate: string;
-}
-
-export interface NexusHealthAction {
-  id: string;
-  label: string;
-  kind: "copy" | "open" | "read";
-  payload: string;
-}
-
-export interface NexusHealthSectorMetric {
-  label: string;
-  value: string;
-}
-
-export interface NexusHealthSector {
-  id: string;
-  label: string;
-  kind: "read_only_drilldown";
-  status: NexusHealthStatus;
-  summary: string;
-  href: string;
-  metrics: NexusHealthSectorMetric[];
-  guardrail: string;
-}
-
-export interface NexusHealthResponse {
-  generated_at: string;
-  posture: NexusHealthPosture;
-  summary: string;
-  counts?: Record<NexusHealthStatus, number>;
-  nodes: NexusHealthNode[];
-  edges: NexusHealthEdge[];
-  sectors: NexusHealthSector[];
-  needs_joseph: NexusHealthGate[];
-  safe_actions: NexusHealthAction[];
-  locked_actions: NexusHealthGate[];
-  evidence: NexusHealthProvenance[];
-}
-
-export interface NexusHealthMetricCard {
-  label: string;
-  value: string;
-}
-
-export interface NexusHealthRecommendation {
-  kind: "fix" | "optimization";
-  title: string;
-  detail: string;
-  command: string | null;
-}
-
-export interface NexusHealthHistory {
-  label: string;
-  kind: "queue" | "spend";
-  openNow?: number;
-  points: Array<Record<string, unknown>>;
-}
-
-export interface NexusHealthConnection {
-  id: string;
-  label: string;
-  status: NexusHealthEdge["status"];
-  direction: "in" | "out";
-  peer: string;
-}
-
-export interface NexusHealthNodeDetail extends NexusHealthNode {
-  generated_at: string;
-  metric_cards: NexusHealthMetricCard[];
-  history: NexusHealthHistory[];
-  recommendations: NexusHealthRecommendation[];
-  connections: NexusHealthConnection[];
-}
 
 // ---------------------------------------------------------------------------
 // OS — infrastructure operating-status snapshot (/api/dashboard/os)

@@ -15,7 +15,7 @@ import asyncio
 import base64
 import binascii
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import hmac
 import importlib.util
 import json
@@ -6662,7 +6662,7 @@ def _start_xai_loopback_flow(profile: Optional[str] = None) -> Dict[str, Any]:
 
 def _xai_loopback_worker(session_id: str) -> None:
     """Wait for the xAI loopback callback, exchange the code, persist tokens."""
-    from datetime import datetime, timezone
+    from datetime import datetime, timedelta, timezone
 
     from hermes_cli import auth as hauth
 
@@ -6810,7 +6810,7 @@ def _nous_poller(session_id: str) -> None:
         _poll_for_token,
         refresh_nous_oauth_from_state,
     )
-    from datetime import datetime, timezone
+    from datetime import datetime, timedelta, timezone
     import httpx
     with _oauth_sessions_lock:
         sess = _oauth_sessions.get(session_id)
@@ -6886,7 +6886,7 @@ def _minimax_poller(session_id: str) -> None:
         MINIMAX_OAUTH_GLOBAL_INFERENCE,
         MINIMAX_OAUTH_SCOPE,
     )
-    from datetime import datetime, timezone
+    from datetime import datetime, timedelta, timezone
     import httpx
     with _oauth_sessions_lock:
         sess = _oauth_sessions.get(session_id)
@@ -12954,6 +12954,268 @@ def _mount_plugin_api_routes():
             _log.info("Mounted plugin API routes: /api/plugins/%s/", plugin["name"])
         except Exception as exc:
             _log.warning("Failed to load plugin %s API routes: %s", plugin["name"], exc)
+
+
+
+
+# ---------------------------------------------------------------------------
+# Life dashboard: server-side state + live agenda
+# ---------------------------------------------------------------------------
+_LIFE_STATE_PATH = get_hermes_home() / "state" / "life-dashboard.json"
+_LIFE_DOMAIN_KEYS = {"finance", "health", "faith", "life"}
+_LIFE_DEFAULT_VALUES: dict[str, Any] = {
+    "name": "Josep",
+    "scores": {"finance": 78, "health": 82, "faith": 71, "life": 64},
+    "freeToSpend": 1240,
+    "monthBudget": 3400,
+    "netWorth": 248000,
+    "netWorthChangePct": 1.8,
+    "budgetSpentPct": 68,
+    "spendTrend": [42, 38, 51, 47, 55, 49, 58, 53, 61, 57, 66, 62],
+    "netWorthTrend": [231, 234, 233, 238, 240, 239, 243, 245, 244, 247, 246, 248],
+    "readiness": 82,
+    "sleepHours": 7.2,
+    "steps": 8400,
+    "hrv": 58,
+    "restingHr": 52,
+    "weightLb": 178,
+    "weightTrend": [182, 181, 181, 180, 180, 179, 179, 178, 178, 178],
+    "readingStreak": 12,
+    "prayerCount": 3,
+    "devotionalDone": False,
+    "readingPlan": "Psalms · Day 9 of 30",
+    "tasksDone": 3,
+    "tasksTotal": 6,
+    "habits": [
+        {"label": "Prayer", "done": True},
+        {"label": "Move", "done": True},
+        {"label": "Read", "done": True},
+        {"label": "Water", "done": False},
+        {"label": "Sleep", "done": False},
+    ],
+    "agenda": [
+        {"time": "10:30", "title": "Standup", "meta": "Work · 30m", "domain": "life"},
+        {"time": "13:00", "title": "Deep work", "meta": "Focus · 2h", "domain": "life"},
+        {"time": "17:30", "title": "Gym — push day", "meta": "Health · 1h", "domain": "health"},
+        {"time": "18:30", "title": "Evening Examen", "meta": "Faith · 10m", "domain": "faith"},
+    ],
+}
+
+
+def _merge_life_values(raw: Any) -> dict[str, Any]:
+    if not isinstance(raw, dict):
+        raise ValueError("life dashboard state must be a JSON object")
+    merged = dict(_LIFE_DEFAULT_VALUES)
+    merged.update(raw)
+    scores = raw.get("scores") if isinstance(raw.get("scores"), dict) else {}
+    merged["scores"] = {**_LIFE_DEFAULT_VALUES["scores"], **scores}
+    if set(merged["scores"].keys()) != _LIFE_DOMAIN_KEYS:
+        raise ValueError("scores must include finance, health, faith, and life")
+    if not isinstance(merged.get("habits"), list):
+        raise ValueError("habits must be a list")
+    if not isinstance(merged.get("agenda"), list):
+        raise ValueError("agenda must be a list")
+    for item in merged["agenda"]:
+        if not isinstance(item, dict):
+            raise ValueError("agenda items must be objects")
+        if item.get("domain") not in _LIFE_DOMAIN_KEYS:
+            raise ValueError("agenda item domain is invalid")
+    return merged
+
+
+def _read_life_state() -> dict[str, Any]:
+    if not _LIFE_STATE_PATH.exists():
+        return dict(_LIFE_DEFAULT_VALUES)
+    try:
+        raw = json.loads(_LIFE_STATE_PATH.read_text(encoding="utf-8"))
+        return _merge_life_values(raw)
+    except Exception as exc:
+        _log.warning("Failed to read life dashboard state from %s: %s", _LIFE_STATE_PATH, exc)
+        return dict(_LIFE_DEFAULT_VALUES)
+
+
+def _write_life_state(values: dict[str, Any]) -> dict[str, Any]:
+    merged = _merge_life_values(values)
+    _LIFE_STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_name = tempfile.mkstemp(
+        prefix="life-dashboard-",
+        suffix=".json.tmp",
+        dir=str(_LIFE_STATE_PATH.parent),
+        text=True,
+    )
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            json.dump(merged, fh, ensure_ascii=False, indent=2)
+            fh.write("\n")
+        os.replace(tmp_name, _LIFE_STATE_PATH)
+    except Exception:
+        try:
+            os.unlink(tmp_name)
+        except OSError:
+            pass
+        raise
+    return merged
+
+
+def _life_domain_for_event(title: str) -> str:
+    text = title.lower()
+    if any(word in text for word in ("gym", "workout", "doctor", "health", "run", "walk")):
+        return "health"
+    if any(word in text for word in ("church", "prayer", "bible", "devotional", "mass")):
+        return "faith"
+    if any(word in text for word in ("bill", "budget", "bank", "finance", "tax")):
+        return "finance"
+    return "life"
+
+
+def _parse_google_dt(value: str) -> datetime | None:
+    if not value:
+        return None
+    try:
+        if "T" not in value:
+            return datetime.fromisoformat(value).replace(tzinfo=timezone.utc)
+        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def _event_duration_minutes(start: datetime | None, end: datetime | None) -> int | None:
+    if start is None or end is None:
+        return None
+    minutes = int((end - start).total_seconds() // 60)
+    return minutes if minutes > 0 else None
+
+
+def _format_life_event_meta(event: dict[str, Any], start: datetime | None, end: datetime | None) -> str:
+    bits: list[str] = []
+    location = str(event.get("location") or "").strip()
+    if location:
+        bits.append(location[:40])
+    minutes = _event_duration_minutes(start, end)
+    if minutes is not None:
+        bits.append(f"{minutes // 60}h" if minutes % 60 == 0 else f"{minutes}m")
+    bits.append("Google Calendar")
+    return " · ".join(bits)
+
+
+def _read_google_calendar_agenda() -> list[dict[str, Any]]:
+    token_path = get_hermes_home() / "google_token.json"
+    if not token_path.exists():
+        _log.info("Life agenda: Google token not found at %s", token_path)
+        return []
+    try:
+        from google.auth.transport.requests import Request as GoogleAuthRequest
+        from google.oauth2.credentials import Credentials
+        from googleapiclient.discovery import build
+
+        token_data = json.loads(token_path.read_text(encoding="utf-8"))
+        scopes = token_data.get("scopes") if isinstance(token_data.get("scopes"), list) else None
+        creds = Credentials.from_authorized_user_file(str(token_path), scopes=scopes)
+        if creds.expired and creds.refresh_token:
+            creds.refresh(GoogleAuthRequest())
+            refreshed = json.loads(creds.to_json())
+            refreshed.setdefault("type", "authorized_user")
+            if token_data.get("account"):
+                refreshed["account"] = token_data["account"]
+            token_path.write_text(json.dumps(refreshed, indent=2) + "\n", encoding="utf-8")
+        if not creds.valid:
+            _log.warning("Life agenda: Google token is invalid")
+            return []
+
+        now = datetime.now().astimezone()
+        start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        end = start + timedelta(days=1)
+        service = build("calendar", "v3", credentials=creds, cache_discovery=False)
+        calendars: list[str] = ["primary"]
+        try:
+            calendar_result = service.calendarList().list(maxResults=50).execute()
+            calendars = [
+                str(item.get("id") or "")
+                for item in calendar_result.get("items", [])
+                if item.get("id") and not item.get("deleted")
+            ] or calendars
+        except Exception as exc:
+            _log.warning("Life agenda: Calendar list read failed, falling back to primary: %s", exc)
+        events: list[dict[str, Any]] = []
+        for calendar_id in calendars:
+            try:
+                result = service.events().list(
+                    calendarId=calendar_id,
+                    timeMin=start.isoformat(),
+                    timeMax=end.isoformat(),
+                    maxResults=12,
+                    singleEvents=True,
+                    orderBy="startTime",
+                ).execute()
+                events.extend(result.get("items", []))
+            except Exception as exc:
+                _log.warning("Life agenda: Calendar read failed for %s: %s", calendar_id, exc)
+    except Exception as exc:
+        _log.warning("Life agenda: Google Calendar read failed: %s", exc)
+        return []
+
+    agenda: list[dict[str, Any]] = []
+    for event in events:
+        if event.get("status") == "cancelled":
+            continue
+        start_raw = (event.get("start") or {}).get("dateTime") or (event.get("start") or {}).get("date") or ""
+        end_raw = (event.get("end") or {}).get("dateTime") or (event.get("end") or {}).get("date") or ""
+        start_dt = _parse_google_dt(start_raw)
+        end_dt = _parse_google_dt(end_raw)
+        time_label = "All day" if "T" not in start_raw else (start_dt.astimezone().strftime("%H:%M") if start_dt else "--:--")
+        title = str(event.get("summary") or "(no title)")
+        agenda.append({
+            "time": time_label,
+            "title": title,
+            "meta": _format_life_event_meta(event, start_dt, end_dt),
+            "domain": _life_domain_for_event(title),
+        })
+    return sorted(agenda, key=lambda item: item["time"] if item["time"] != "All day" else "00:00")
+
+
+def _read_life_kanban_counts() -> tuple[int, int]:
+    try:
+        from hermes_cli import kanban_db
+        db_path = kanban_db.kanban_db_path(board="hermes")
+        import sqlite3
+        conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=1.0)
+        conn.row_factory = sqlite3.Row
+        try:
+            rows = conn.execute(
+                "SELECT status, COUNT(*) AS n FROM tasks WHERE status != 'archived' GROUP BY status"
+            ).fetchall()
+        finally:
+            conn.close()
+    except Exception as exc:
+        _log.warning("Life agenda: kanban count read failed: %s", exc)
+        return 0, 0
+    by_status = {str(row["status"]): int(row["n"] or 0) for row in rows}
+    total = sum(by_status.values())
+    done = by_status.get("done", 0)
+    return done, total
+
+
+@app.get("/api/life/state")
+async def get_life_state() -> dict[str, Any]:
+    return _read_life_state()
+
+
+@app.put("/api/life/state")
+async def put_life_state(payload: dict[str, Any]) -> dict[str, Any]:
+    try:
+        return _write_life_state(payload)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@app.get("/api/life/agenda")
+async def get_life_agenda() -> dict[str, Any]:
+    tasks_done, tasks_total = _read_life_kanban_counts()
+    return {
+        "agenda": _read_google_calendar_agenda(),
+        "tasksDone": tasks_done,
+        "tasksTotal": tasks_total,
+    }
 
 
 # ---------------------------------------------------------------------------
