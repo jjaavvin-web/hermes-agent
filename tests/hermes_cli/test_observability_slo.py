@@ -91,6 +91,48 @@ def test_exporter_reads_state_db_mode_ro_and_journal_counts(tmp_path: Path):
     assert snapshot["recall"]["hit_rate"] == 0.5
 
 
+def test_firecrawl_config_noise_excluded_real_500_still_counted(tmp_path: Path):
+    # 2026-06-26: ~88% of the live 24h error numerator was repeating Firecrawl
+    # plugin-init ERROR lines + "web tools are not configured" fragments — web-tool
+    # config noise, not gateway turn failures. They must be excluded from
+    # turn_error_rate (both the top-line metric and the per-bucket series), while a
+    # genuine "500 server error" turn failure must still count.
+    db = tmp_path / "state.db"
+    make_state_db(db)  # 3 turns at ts 1000/1010/1020
+    canary = tmp_path / "recall-canary.jsonl"
+    canary.write_text('{"ts": 1015, "target_hit": 1}\n', encoding="utf-8")
+    service = tmp_path / "recall-events.jsonl"  # empty -> service_up no_data
+
+    gateway_lines = [
+        # Firecrawl/web-tools config noise (ERROR-level but NOT a turn failure) — excluded.
+        # NOTE: both lines carry a real error token (ERROR/"failed") so _ERROR_RE MATCHES
+        # them; the exclusion is therefore genuinely exercised (without the ERROR prefix on
+        # the second line, _ERROR_RE would never match and the exclusion would be vacuous).
+        "1970-01-01T00:16:50+00:00 host python[1]: ERROR plugins.web.firecrawl.provider: "
+        "Firecrawl client initialization failed: missing direct config and tool-gateway auth.",
+        "1970-01-01T00:16:51+00:00 host python[1]: ERROR Web tools are not configured. Set FIRECRAWL_API_KEY",
+        # genuine gateway turn failure — must still be counted
+        "1970-01-01T00:16:52+00:00 host python[1]: ERROR upstream returned 500 server error",
+    ]
+    snapshot = slo.build_slo_snapshot(
+        state_db=db,
+        output_dir=tmp_path,
+        now=1100.0,
+        window_seconds=500,
+        gateway_lines=gateway_lines,
+        watchdog_lines=[],
+        recall_canary_path=canary,
+        recall_service_path=service,
+    )
+
+    # 3 turns; only the real "500 server error" line counts -> 1/3, not 3/3.
+    assert snapshot["turn_count"] == 3
+    assert snapshot["metrics"]["turn_error_rate"] == 1 / 3
+    # The per-bucket series uses the same exclusion regex.
+    bucket_errors = sum(b["error_events"] for b in snapshot["series"])
+    assert bucket_errors == 1
+
+
 def test_write_snapshot_and_dashboard_panel_render(tmp_path: Path, monkeypatch):
     payload = {
         "generated_at": "2026-06-24T00:00:00+00:00",

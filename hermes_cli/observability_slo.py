@@ -102,7 +102,22 @@ _ERROR_RE = re.compile(r"\b(error|exception|traceback|failed|failure|timeout|cra
 # 2026-06-25: tool-level noise that is NOT a gateway turn error — a lane's shell tool
 # returning an error (e.g. missing module), title-generation hiccups, MCP memory-limit
 # rejections. Normal agent operation, not gateway health failures; excluded from the rate.
-_ERROR_EXCLUDE_RE = re.compile(r"returned error|tool_executor|title[_ ]generat|memory would be at", re.I)
+# 2026-06-26: web/Firecrawl plugin config noise logged at ERROR level (Firecrawl client
+# init failure + "web tools are not configured" fragments). ~88% of the live 24h numerator
+# was ONE repeating firecrawl.provider init line, inflating turn_error_rate 0.04 -> 0.32 and
+# making it un-armable for alerting. These are web-tool config gaps, not gateway turn
+# failures; excluded so the rate reflects real turn health.
+# 2026-06-26 (narrowed): the init line is matched by its message text
+# ("firecrawl client initialization failed") rather than the bare "firecrawl.provider"
+# logger namespace. A bare namespace match would also swallow GENUINE web-fetch failures
+# logged under firecrawl.provider; the repeating init line (the ~88% noise) is still
+# excluded via its message text, so noise reduction is preserved while real fetch
+# failures still count toward turn_error_rate.
+_ERROR_EXCLUDE_RE = re.compile(
+    r"returned error|tool_executor|title[_ ]generat|memory would be at"
+    r"|firecrawl client initialization failed|web tools are not configured",
+    re.I,
+)
 _FALLBACK_RE = re.compile(r"\bfallback|fallback-trigger|provider fallback|model fallback\b", re.I)
 _WATCHDOG_RE = re.compile(r"\b(started|starting|restart|failed|failure|watchdog)\b", re.I)
 _TS_PREFIX_RE = re.compile(r"^(?P<ts>\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(?P<tz>Z|[+-]\d{2}:?\d{2})?")
