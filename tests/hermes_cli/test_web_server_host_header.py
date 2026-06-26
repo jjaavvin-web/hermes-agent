@@ -215,3 +215,69 @@ class TestWebSocketHostOriginGuard:
             },
         ):
             pass
+
+
+class TestExtraAcceptedHosts:
+    """HERMES_DASHBOARD_EXTRA_HOSTS — operator-allowlisted Host values that
+    widen the GHSA-ppp5-vxwm-4cf7 DNS-rebinding Host guard.
+
+    Safety rationale (see ``_extra_accepted_hosts`` docstring): forging an
+    allowlisted Host via DNS rebinding requires the attacker to control how
+    that name resolves for the victim's browser. For a tailnet MagicDNS name
+    (``fresh.tailadb109.ts.net``) resolution is tailnet-internal and
+    WireGuard-authed, so the operator opt-in does not reopen the hole.
+    """
+
+    def test_allowlisted_host_accepted_others_rejected(self, monkeypatch):
+        import hermes_cli.web_server as ws
+
+        monkeypatch.setattr(
+            ws, "_EXTRA_ACCEPTED_HOSTS", frozenset({"fresh.tailadb109.ts.net"})
+        )
+
+        # Allowlisted name accepted even though it is neither loopback nor the
+        # bound interface (127.0.0.1).
+        assert ws._is_accepted_host("fresh.tailadb109.ts.net", "127.0.0.1") is True
+        # ...and with the dashboard port suffix stripped.
+        assert (
+            ws._is_accepted_host("fresh.tailadb109.ts.net:9119", "127.0.0.1") is True
+        )
+        # A non-allowlisted host is still rejected.
+        assert ws._is_accepted_host("evil.example", "127.0.0.1") is False
+
+    def test_allowlist_match_is_case_insensitive(self, monkeypatch):
+        import hermes_cli.web_server as ws
+
+        # Allowlist stored lowercase; an upper/mixed-case Host header (with
+        # port) must still match per RFC case-insensitivity.
+        monkeypatch.setattr(
+            ws, "_EXTRA_ACCEPTED_HOSTS", frozenset({"fresh.tailadb109.ts.net"})
+        )
+        assert (
+            ws._is_accepted_host("FRESH.TailADB109.TS.NET:9119", "127.0.0.1") is True
+        )
+
+    def test_parser_strips_lowercases_and_drops_blanks(self, monkeypatch):
+        import hermes_cli.web_server as ws
+
+        monkeypatch.setenv("HERMES_DASHBOARD_EXTRA_HOSTS", " A.test, b.TEST ,, ")
+        # Whitespace trimmed, case-folded, empty/blank entries dropped.
+        assert ws._extra_accepted_hosts() == frozenset({"a.test", "b.test"})
+
+    def test_import_frozen_global_is_a_footgun(self, monkeypatch):
+        """Regression: ``_EXTRA_ACCEPTED_HOSTS`` is evaluated ONCE at import
+        from the env var, so a runtime env change does NOT take effect until
+        the dashboard process is restarted. This intentionally documents the
+        load-bearing gotcha — the parser reads the env live, but the guard
+        reads the frozen global.
+        """
+        import hermes_cli.web_server as ws
+
+        # Set the env var but deliberately do NOT refresh the global.
+        monkeypatch.setenv("HERMES_DASHBOARD_EXTRA_HOSTS", "late.example")
+
+        # The frozen global is unaffected (the module was imported before this
+        # setenv; ambient env carries no allowlist), so the guard still rejects
+        # the would-be-allowlisted host.
+        assert ws._EXTRA_ACCEPTED_HOSTS == frozenset()
+        assert ws._is_accepted_host("late.example", "127.0.0.1") is False
