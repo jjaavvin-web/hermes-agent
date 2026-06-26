@@ -656,6 +656,15 @@ def scan_bare_claude(paths: Iterable[Path]) -> list[Lane]:
                 text = path.read_text(encoding="utf-8", errors="replace")
             except OSError:
                 continue
+            # A file that scrubs metered API creds from the subprocess env before
+            # invoking the claude CLI runs a zero-metered subscription/OAuth lane, not a
+            # bare paid-API call. Recognise that guard so the gate can scan without
+            # false-flagging legitimate subscription-only callers (audit: "gate runs blind").
+            text_lower = text.lower()
+            guarded_subscription_file = (
+                "_subscription_only_env" in text_lower
+                or "metered_env_keys" in text_lower
+            )
             lines = text.splitlines()
             for lineno, line in enumerate(lines, start=1):
                 stripped = line.strip()
@@ -665,7 +674,8 @@ def scan_bare_claude(paths: Iterable[Path]) -> list[Lane]:
                     # Ignore explicit negative/doc/help/test text that mentions the forbidden command but does not execute it.
                     context = "\n".join(lines[max(0, lineno - 8):lineno + 8]).lower()
                     if (
-                        ("run_claude_oneshot" in context and ("instead" in context or "replaces" in context or "forbidden" in context))
+                        guarded_subscription_file
+                        or ("run_claude_oneshot" in context and ("instead" in context or "replaces" in context or "forbidden" in context))
                         or "forbidden" in context
                         or "bare_claude_p" in context
                         or "max-preserving" in context
