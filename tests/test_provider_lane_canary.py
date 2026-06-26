@@ -206,7 +206,11 @@ def test_live_profile_lane_config_has_zero_forbidden_routes(tmp_path: Path) -> N
         intent_router=canary.DEFAULT_INTENT_ROUTER,
         source_root=canary.DEFAULT_SOURCE_ROOT,
         scan_root=[],
-        no_source_scan=True,
+        # 2026-06-25: source scan ENABLED (was blind). The scan now recognizes the
+        # subscription-only env-scrub guard, so legitimate claude-CLI subscription
+        # callers no longer false-flag, and the live roots scan clean. The gate now
+        # catches a newly-dropped UNGUARDED bare `claude -p` (the paid-API cardinal sin).
+        no_source_scan=False,
         output_dir=tmp_path / "live-canary-out",
     )
     lock_doc, lanes = canary.collect_lanes(args)
