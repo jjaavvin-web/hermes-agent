@@ -483,6 +483,24 @@ prompt_caching:
 #                           # reasoning controls:
 #                           # extra_body:
 #                           #   enable_thinking: false
+#
+#   # Goal/Ralph loop judge (the /goal + kanban goal_mode exit decision).
+#   goal_judge:
+#     provider: "auto"
+#     model: ""
+#     max_tokens: 4096       # judge output budget (reasoning models need headroom)
+#
+#     # Deterministic CODE-lane gate (A3) — OFF by default. When enabled, a
+#     # kanban goal_mode worker running inside a git worktree is gated on a
+#     # real pytest + ruff PLW1514 run over its diff BEFORE the LLM judge can
+#     # accept "done". The judge is demoted to a secondary semantic check.
+#     # Fail-OPEN: any gate/infra error falls through to the pure LLM-judge
+#     # path, so a buggy gate never wedges a lane.
+#     code_gate:
+#       enabled: false            # master switch (default false = no gate)
+#       wall_clock_cap_sec: 180   # hard cap on the whole gate per loop turn
+#       map_strategy: mirror      # changed src X.py -> tests/.../test_X.py
+#       require_mapped_tests: false  # true = fail when changed src has no test
 
 # =============================================================================
 # Persistent Memory

@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import sqlite3
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -298,3 +299,270 @@ def test_loop_stops_if_task_reclaimed(monkeypatch):
         first_response="x",
     )
     assert res["outcome"] == "stopped"
+
+
+# ---------------------------------------------------------------------------
+# Deterministic code gate (A3) — PRIMARY veto, LLM judge demoted to secondary
+# ---------------------------------------------------------------------------
+
+
+def _gate(passed, *, ran=True, report="REPORT", tests_red=None, ruff_violations=None):
+    """Build a GateResult-shaped stub."""
+    return SimpleNamespace(
+        passed=passed,
+        ran=ran,
+        report=report,
+        tests_red=tests_red or [],
+        ruff_violations=ruff_violations or [],
+    )
+
+
+def test_loop_code_gate_blocks_done(monkeypatch):
+    # Gate FAILS — on the RUNNING turn the loop CONTINUEs with the gate's
+    # report and never consults the LLM judge. Then the worker marks the card
+    # done while the gate is STILL red: MED2 means the self-completion is
+    # REJECTED (blocked_by_code_gate), not accepted.
+    judge_calls = []
+
+    def _fake_judge(goal, response, subgoals=None):
+        judge_calls.append(1)
+        return "done", "judge-would-say-done", False
+
+    monkeypatch.setattr(goals, "judge_goal", _fake_judge)
+
+    statuses = iter(["running", "done"])
+    turns = []
+    blocked = {}
+
+    res = goals.run_kanban_goal_loop(
+        task_id="g1",
+        goal_text="write code",
+        run_turn=lambda p: turns.append(p) or "ok",
+        task_status_fn=lambda: next(statuses),
+        block_fn=lambda r: blocked.update(reason=r),
+        max_turns=10,
+        first_response="claims done",
+        code_gate_fn=lambda: _gate(False, report="REPORT", tests_red=["t.py::a"]),
+    )
+    assert res["outcome"] == "blocked_by_code_gate"
+    # One continuation turn was fed on the RUNNING turn before the worker
+    # flipped the card to done.
+    assert len(turns) == 1
+    assert "deterministic code gate failed" in turns[0]
+    assert "REPORT" in turns[0]
+    # The judge never got a say (veto turn) nor on the rejected completion.
+    assert judge_calls == []
+    # The completion was rejected via block_fn with the gate report.
+    assert "REPORT" in blocked["reason"]
+
+
+def test_loop_code_gate_passes_lets_judge_finalize(monkeypatch):
+    # Gate PASSES (ran, passed) -> judge is the secondary check. Judge says
+    # done -> finalize nudge -> worker completes.
+    _patch_judge(monkeypatch, ["done", "done"])
+    statuses = iter(["running", "done"])
+    turns = []
+
+    res = goals.run_kanban_goal_loop(
+        task_id="g2",
+        goal_text="task",
+        run_turn=lambda p: turns.append(p) or "ok",
+        task_status_fn=lambda: next(statuses),
+        block_fn=lambda r: pytest.fail("should not block"),
+        max_turns=10,
+        first_response="looks done",
+        code_gate_fn=lambda: _gate(True),
+    )
+    assert res["outcome"] == "completed_by_worker"
+    assert len(turns) == 1
+    # Finalize template (judge path), NOT the code-gate template.
+    assert "still open" in turns[0]
+    assert "deterministic code gate" not in turns[0]
+
+
+def test_loop_code_gate_none_preserves_behavior(monkeypatch):
+    # code_gate_fn=None must behave exactly like the pre-gate loop.
+    _patch_judge(monkeypatch, ["continue", "continue"])
+    statuses = iter(["running", "running", "done"])
+    turns = []
+
+    res = goals.run_kanban_goal_loop(
+        task_id="g3",
+        goal_text="ship feature",
+        run_turn=lambda p: turns.append(p) or f"turn{len(turns)}",
+        task_status_fn=lambda: next(statuses),
+        block_fn=lambda r: pytest.fail("should not block"),
+        max_turns=10,
+        first_response="started",
+        code_gate_fn=None,
+    )
+    assert res["outcome"] == "completed_by_worker"
+    assert len(turns) == 2
+    assert all("not done yet" in p for p in turns)
+
+
+def test_loop_code_gate_failopen_when_gate_raises(monkeypatch):
+    # A gate that raises must fall through to the judge (fail-open), never
+    # wedge the loop.
+    _patch_judge(monkeypatch, ["continue"])
+    statuses = iter(["running", "done"])
+    turns = []
+
+    def _boom():
+        raise RuntimeError("gate exploded")
+
+    res = goals.run_kanban_goal_loop(
+        task_id="g4",
+        goal_text="task",
+        run_turn=lambda p: turns.append(p) or "ok",
+        task_status_fn=lambda: next(statuses),
+        block_fn=lambda r: pytest.fail("should not block"),
+        max_turns=10,
+        first_response="x",
+        code_gate_fn=_boom,
+    )
+    assert res["outcome"] == "completed_by_worker"
+    assert len(turns) == 1
+    # Judge continuation template (fail-open path), not the gate template.
+    assert "not done yet" in turns[0]
+
+
+def test_loop_code_gate_not_ran_falls_through_to_judge(monkeypatch):
+    # Gate ran=False (fail-open inside the gate) -> judge decides.
+    _patch_judge(monkeypatch, ["continue"])
+    statuses = iter(["running", "done"])
+    turns = []
+
+    res = goals.run_kanban_goal_loop(
+        task_id="g5",
+        goal_text="task",
+        run_turn=lambda p: turns.append(p) or "ok",
+        task_status_fn=lambda: next(statuses),
+        block_fn=lambda r: pytest.fail("should not block"),
+        max_turns=10,
+        first_response="x",
+        code_gate_fn=lambda: _gate(False, ran=False),
+    )
+    assert res["outcome"] == "completed_by_worker"
+    assert "not done yet" in turns[0]
+
+
+def test_loop_code_gate_veto_respects_budget(monkeypatch):
+    # Gate vetoes forever -> the loop must still block on budget exhaustion,
+    # not spin past max_turns.
+    monkeypatch.setattr(
+        goals, "judge_goal", lambda *a, **k: pytest.fail("judge must not run")
+    )
+    blocked = {}
+
+    res = goals.run_kanban_goal_loop(
+        task_id="g6",
+        goal_text="task",
+        run_turn=lambda p: "still red",
+        task_status_fn=lambda: "running",
+        block_fn=lambda r: blocked.update(reason=r),
+        max_turns=3,
+        first_response="x",
+        code_gate_fn=lambda: _gate(False),
+    )
+    assert res["outcome"] == "blocked_budget"
+    assert res["turns_used"] == 3
+    assert "turn budget" in blocked["reason"].lower()
+
+
+# ---------------------------------------------------------------------------
+# MED2 — worker self-completion must NOT bypass the deterministic code gate
+# ---------------------------------------------------------------------------
+
+
+def test_loop_code_gate_blocks_worker_self_completion(monkeypatch):
+    # (c) Worker marks the card done on its FIRST turn, but the gate vetoes:
+    # the completion is REJECTED (blocked_by_code_gate), no extra turn runs,
+    # and the judge is never consulted.
+    monkeypatch.setattr(
+        goals, "judge_goal", lambda *a, **k: pytest.fail("judge must not run")
+    )
+    blocked = {}
+    turns = []
+
+    res = goals.run_kanban_goal_loop(
+        task_id="g7",
+        goal_text="write code",
+        run_turn=lambda p: turns.append(p) or "ok",
+        task_status_fn=lambda: "done",
+        block_fn=lambda r: blocked.update(reason=r),
+        max_turns=10,
+        first_response="claims done",
+        code_gate_fn=lambda: _gate(False, report="BOOM", tests_red=["t.py::a"]),
+    )
+    assert res["outcome"] == "blocked_by_code_gate"
+    assert turns == []  # the bogus completion never bought another turn
+    assert "BOOM" in blocked["reason"]
+
+
+def test_loop_code_gate_done_passing_gate_completes(monkeypatch):
+    # (d) Worker marks the card done and the gate PASSES -> completion accepted.
+    monkeypatch.setattr(
+        goals, "judge_goal", lambda *a, **k: pytest.fail("judge must not run")
+    )
+    res = goals.run_kanban_goal_loop(
+        task_id="g8",
+        goal_text="task",
+        run_turn=lambda p: pytest.fail("should not run a turn"),
+        task_status_fn=lambda: "done",
+        block_fn=lambda r: pytest.fail("should not block"),
+        max_turns=10,
+        first_response="done",
+        code_gate_fn=lambda: _gate(True),
+    )
+    assert res["outcome"] == "completed_by_worker"
+
+
+def test_loop_code_gate_done_absent_gate_completes():
+    # (d) No gate wired -> worker completion accepted exactly as before.
+    res = goals.run_kanban_goal_loop(
+        task_id="g9",
+        goal_text="task",
+        run_turn=lambda p: pytest.fail("should not run a turn"),
+        task_status_fn=lambda: "done",
+        block_fn=lambda r: pytest.fail("should not block"),
+        max_turns=10,
+        first_response="done",
+        code_gate_fn=None,
+    )
+    assert res["outcome"] == "completed_by_worker"
+
+
+def test_loop_code_gate_done_failopen_when_not_ran():
+    # (d) Gate ran=False (fail-open inside the gate) on a completed card ->
+    # accept the completion rather than wedging it.
+    res = goals.run_kanban_goal_loop(
+        task_id="g10",
+        goal_text="task",
+        run_turn=lambda p: pytest.fail("should not run a turn"),
+        task_status_fn=lambda: "done",
+        block_fn=lambda r: pytest.fail("should not block"),
+        max_turns=10,
+        first_response="done",
+        code_gate_fn=lambda: _gate(False, ran=False),
+    )
+    assert res["outcome"] == "completed_by_worker"
+
+
+def test_loop_code_gate_done_failopen_when_gate_raises():
+    # A gate that raises on a completed card must fail open (accept), never
+    # wedge or block on infra noise.
+    def _boom():
+        raise RuntimeError("gate exploded")
+
+    res = goals.run_kanban_goal_loop(
+        task_id="g11",
+        goal_text="task",
+        run_turn=lambda p: pytest.fail("should not run a turn"),
+        task_status_fn=lambda: "done",
+        block_fn=lambda r: pytest.fail("should not block"),
+        max_turns=10,
+        first_response="done",
+        code_gate_fn=_boom,
+    )
+    assert res["outcome"] == "completed_by_worker"

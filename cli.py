@@ -14546,6 +14546,46 @@ def _run_kanban_goal_loop_q(cli: "HermesCLI", first_response: str) -> None:
             except Exception:
                 pass
 
+    # Optional deterministic code gate (A3). OFF by default; enabled via
+    # auxiliary.goal_judge.code_gate.enabled. Only wired when the worker runs
+    # inside a git worktree (so a real diff base exists). Any wiring failure
+    # leaves code_gate_fn=None — the loop reverts to pure LLM-judge behaviour.
+    code_gate_fn = None
+    try:
+        from hermes_cli.config import load_config as _load_cfg
+
+        _cg = (
+            ((_load_cfg().get("auxiliary") or {}).get("goal_judge") or {}).get(
+                "code_gate"
+            )
+            or {}
+        )
+        if _cg.get("enabled"):
+            _wt = (_os.environ.get("HERMES_KANBAN_WORKSPACE") or "").strip()
+            # A git worktree carries a .git file (gitdir pointer); a primary
+            # checkout a .git dir. .exists() covers both.
+            if _wt and (Path(_wt) / ".git").exists():
+                from hermes_cli import code_lane_gate as _clg
+
+                _base_ref = (
+                    _os.environ.get("HERMES_CODEX_BASE_BRANCH") or ""
+                ).strip() or "fork/main"
+                _cap = int(_cg.get("wall_clock_cap_sec") or _clg.DEFAULT_WALL_CLOCK_CAP_SEC)
+                _req_tests = bool(_cg.get("require_mapped_tests", False))
+                _map_strategy = str(_cg.get("map_strategy") or "mirror")
+
+                def code_gate_fn():
+                    return _clg.run(
+                        _wt,
+                        _base_ref,
+                        cap_sec=_cap,
+                        require_mapped_tests=_req_tests,
+                        map_strategy=_map_strategy,
+                    )
+    except Exception as _cg_exc:
+        logger.debug("kanban goal loop: code gate wiring skipped (%s)", _cg_exc)
+        code_gate_fn = None
+
     _run_loop(
         task_id=task_id,
         goal_text=goal_text,
@@ -14555,6 +14595,7 @@ def _run_kanban_goal_loop_q(cli: "HermesCLI", first_response: str) -> None:
         max_turns=max_turns,
         first_response=first_response or "",
         log=lambda m: logger.info("%s", m),
+        code_gate_fn=code_gate_fn,
     )
 
 
