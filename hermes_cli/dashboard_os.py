@@ -1100,13 +1100,17 @@ def _probe_gateway() -> dict:
         except Exception:
             pass
 
-    # PID alive check
+    # PID alive check.
+    # IMPORTANT: never use os.kill(pid, 0) here — on Windows CPython routes
+    # sig=0 through GenerateConsoleCtrlEvent (bpo-14484), which sends Ctrl+C
+    # to the target's console group and would hard-kill the very gateway this
+    # probe is meant to monitor. Use the canonical psutil-backed helper.
     pid_alive = False
     if pid:
         try:
-            os.kill(int(pid), 0)
-            pid_alive = True
-        except (ProcessLookupError, PermissionError, OSError):
+            from gateway.status import _pid_exists
+            pid_alive = _pid_exists(int(pid))
+        except (ValueError, TypeError, OSError):
             pass
 
     if pid_alive and gw_state == "running":

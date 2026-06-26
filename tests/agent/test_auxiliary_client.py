@@ -698,10 +698,17 @@ class TestResolveProviderClientUniversalModelFallback:
 
 
 class TestExpiredCodexFallback:
-    """Test that expired Codex tokens don't block the auto chain."""
+    """Auto fail-closes (no paid fallback) when the sanctioned Codex route is down.
 
-    def test_expired_codex_falls_through_to_next(self, tmp_path, monkeypatch):
-        """When Codex token is expired, auto chain should skip it and try next provider."""
+    Under the no-paid-fallback doctrine (burn edc7e0133), provider 'auto'
+    resolves ONLY to the sanctioned subscription provider (openai-codex). When
+    the Codex token is expired/unavailable, ``_resolve_auto`` returns
+    ``(None, None)`` and logs BLOCKED_RUNTIME — it never silently falls through
+    to a paid OpenRouter / Anthropic / custom route.
+    """
+
+    def test_expired_codex_blocks_auto_no_paid_fallback(self, tmp_path, monkeypatch):
+        """Expired Codex → auto fail-closes; never silent paid (Anthropic) fallback."""
         import base64
         import time as _time
 
@@ -723,18 +730,20 @@ class TestExpiredCodexFallback:
         }))
         monkeypatch.setenv("HERMES_HOME", str(hermes_home))
 
-        # Set up Anthropic as fallback
+        # An Anthropic token is present, but auto must NOT use it (fail-closed).
         monkeypatch.setenv("ANTHROPIC_TOKEN", "sk-ant-oat01-test-fallback")
         with patch("agent.anthropic_adapter.build_anthropic_client") as mock_build:
             mock_build.return_value = MagicMock()
             from agent.auxiliary_client import _resolve_auto
             client, model = _resolve_auto()
-            # Should NOT be Codex, should be Anthropic (or another available provider)
-            assert not isinstance(client, type(None)), "Should find a provider after expired Codex"
+            # Fail-closed: no paid Anthropic fallback even though ANTHROPIC_TOKEN is set.
+            assert client is None
+            assert model is None
+            mock_build.assert_not_called()
 
 
-    def test_expired_codex_openrouter_wins(self, tmp_path, monkeypatch):
-        """With expired Codex + OpenRouter key, OpenRouter should win (1st in chain)."""
+    def test_expired_codex_blocks_auto_even_with_openrouter_key(self, tmp_path, monkeypatch):
+        """Expired Codex + OPENROUTER_API_KEY → auto still fail-closes (no OpenRouter)."""
         import base64
         import time as _time
 
@@ -771,12 +780,14 @@ class TestExpiredCodexFallback:
             mock_openai.return_value = MagicMock()
             from agent.auxiliary_client import _resolve_auto
             client, model = _resolve_auto()
-            assert client is not None
-            # OpenRouter is 1st in chain, should win
-            mock_openai.assert_called()
+            # Fail-closed: OpenRouter is never used by 'auto', so no client is
+            # built even though OPENROUTER_API_KEY is present.
+            assert client is None
+            assert model is None
+            mock_openai.assert_not_called()
 
-    def test_expired_codex_custom_endpoint_wins(self, tmp_path, monkeypatch):
-        """With expired Codex + custom endpoint (Ollama), custom should win (3rd in chain)."""
+    def test_expired_codex_blocks_auto_even_with_custom_endpoint(self, tmp_path, monkeypatch):
+        """Expired Codex + custom runtime → auto fail-closes (no custom auto-adopt)."""
         import base64
         import time as _time
 
@@ -797,14 +808,17 @@ class TestExpiredCodexFallback:
         }))
         monkeypatch.setenv("HERMES_HOME", str(hermes_home))
 
-        # Simulate Ollama or custom endpoint
+        # Simulate Ollama or custom endpoint — auto no longer auto-adopts the
+        # detected runtime; custom endpoints must be set via explicit
+        # auxiliary.<task> config now. So auto fail-closes here.
         with patch("agent.auxiliary_client._resolve_custom_runtime",
                    return_value=("http://localhost:11434/v1", "sk-dummy")):
             with patch("agent.auxiliary_client.OpenAI") as mock_openai:
                 mock_openai.return_value = MagicMock()
                 from agent.auxiliary_client import _resolve_auto
                 client, model = _resolve_auto()
-                assert client is not None
+                assert client is None
+                assert model is None
 
 
     def test_hermes_oauth_file_sets_oauth_flag(self, monkeypatch):
@@ -958,16 +972,25 @@ class TestGetTextAuxiliaryClient:
         assert client is None
         assert model is None
 
-    def test_custom_endpoint_uses_codex_wrapper_when_runtime_requests_responses_api(self):
-        with patch("agent.auxiliary_client._resolve_custom_runtime",
-                   return_value=("https://api.openai.com/v1", "sk-test", "codex_responses")), \
-             patch("agent.auxiliary_client._read_nous_auth", return_value=None), \
-             patch("agent.auxiliary_client._resolve_nous_runtime_api", return_value=None), \
-             patch("agent.auxiliary_client._read_main_model", return_value="gpt-5.3-codex"), \
-             patch("agent.auxiliary_client.OpenAI") as mock_openai:
-            client, model = get_text_auxiliary_client()
+    def test_custom_endpoint_uses_codex_wrapper_when_api_mode_is_codex_responses(self):
+        """A custom endpoint with api_mode='codex_responses' yields a Codex wrapper.
 
-        from agent.auxiliary_client import CodexAuxiliaryClient
+        The runtime-detected 'auto' path no longer auto-adopts a custom endpoint
+        (auto fail-closes to the sanctioned provider — burn edc7e0133). The
+        codex-wrapped custom endpoint is now reached via an explicit
+        custom/codex_responses resolution, which is what per-task config
+        (auxiliary.<task>.base_url + api_mode) routes into.
+        """
+        from agent.auxiliary_client import resolve_provider_client, CodexAuxiliaryClient
+        with patch("agent.auxiliary_client.OpenAI") as mock_openai:
+            client, model = resolve_provider_client(
+                "custom",
+                model="gpt-5.3-codex",
+                explicit_base_url="https://api.openai.com/v1",
+                explicit_api_key="sk-test",
+                api_mode="codex_responses",
+            )
+
         assert isinstance(client, CodexAuxiliaryClient)
         assert model == "gpt-5.3-codex"
         assert mock_openai.call_args.kwargs["base_url"] == "https://api.openai.com/v1"
@@ -1663,31 +1686,34 @@ class TestCallLlmPaymentFallback:
                     messages=[{"role": "user", "content": "hello"}],
                 )
 
-    def test_429_rate_limit_triggers_fallback(self, monkeypatch):
-        """429 rate-limit errors should trigger fallback to next provider."""
+    def test_429_rate_limit_on_auto_fail_closes(self, monkeypatch):
+        """429 on 'auto' fail-closes (re-raises) — no paid fallback (burn edc7e0133).
+
+        The sanctioned-only doctrine means a rate-limited auto aux call has no
+        sanctioned alternative to fall back to, so the error propagates instead
+        of silently routing to a paid provider.
+        """
         monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")
 
         primary_client = MagicMock()
-        rate_err = self._make_429_rate_limit_error()
-        primary_client.chat.completions.create.side_effect = rate_err
-
-        fallback_client = MagicMock()
-        fallback_client.chat.completions.create.return_value = MagicMock(choices=[
-            MagicMock(message=MagicMock(content="fallback response"))
-        ])
+        primary_client.chat.completions.create.side_effect = self._make_429_rate_limit_error()
 
         with patch("agent.auxiliary_client._get_cached_client",
                     return_value=(primary_client, "xiaomi/mimo-v2-pro")), \
              patch("agent.auxiliary_client._resolve_task_provider_model",
                     return_value=("auto", "xiaomi/mimo-v2-pro", None, None, None)), \
-             patch("agent.auxiliary_client._try_payment_fallback",
-                    return_value=(fallback_client, "fallback-model", "openrouter")):
-            result = call_llm(
-                task="session_search",
-                messages=[{"role": "user", "content": "hello"}],
-            )
-        # Fallback client should have been used
-        assert fallback_client.chat.completions.create.called
+             patch("agent.auxiliary_client._try_configured_fallback_chain",
+                    return_value=(None, None, "")) as mock_chain, \
+             patch("agent.auxiliary_client._try_main_agent_model_fallback",
+                    return_value=(None, None, "")) as mock_main:
+            with pytest.raises(Exception, match="Rate limit exceeded"):
+                call_llm(
+                    task="session_search",
+                    messages=[{"role": "user", "content": "hello"}],
+                )
+        # Fail-closed: no paid fallback layer is consulted for 'auto'.
+        mock_chain.assert_not_called()
+        mock_main.assert_not_called()
 
 
 class TestAuxiliaryFallbackLayering:
@@ -1698,15 +1724,15 @@ class TestAuxiliaryFallbackLayering:
         exc.status_code = 402
         return exc
 
-    def test_auto_provider_uses_task_then_main_chain_before_builtin_chain(self, monkeypatch):
-        """Auto aux call failures try per-task then top-level fallback before built-ins."""
+    def test_auto_payment_error_fail_closes_no_paid_fallback(self, monkeypatch):
+        """A payment error on 'auto' fail-closes — no configured/main paid fallback.
+
+        Burn edc7e0133: literal 'auto' and the sanctioned openai-codex aux route
+        never fall through to OpenRouter/main-provider paid routes on a capacity
+        error. The fallback layers are not even consulted; the error re-raises.
+        """
         primary_client = MagicMock()
         primary_client.chat.completions.create.side_effect = self._make_payment_err()
-
-        main_chain_client = MagicMock()
-        main_chain_client.chat.completions.create.return_value = MagicMock(choices=[
-            MagicMock(message=MagicMock(content="from main fallback chain"))
-        ])
 
         with patch("agent.auxiliary_client._get_cached_client",
                    return_value=(primary_client, "qwen/qwen3.5-122b-a10b")), \
@@ -1714,20 +1740,17 @@ class TestAuxiliaryFallbackLayering:
                    return_value=("auto", None, None, None, None)), \
              patch("agent.auxiliary_client._try_configured_fallback_chain",
                    return_value=(None, None, "")) as mock_task_chain, \
-             patch("agent.auxiliary_client._try_main_fallback_chain",
-                   return_value=(main_chain_client, "inclusionai/ring-2.6-1t:free", "openrouter")) as mock_main_chain, \
-             patch("agent.auxiliary_client._try_payment_fallback") as mock_builtin_chain:
-            result = call_llm(
-                task="title_generation",
-                messages=[{"role": "user", "content": "hello"}],
-            )
+             patch("agent.auxiliary_client._try_main_agent_model_fallback",
+                   return_value=(None, None, "")) as mock_main_fallback:
+            with pytest.raises(Exception, match="Payment Required"):
+                call_llm(
+                    task="title_generation",
+                    messages=[{"role": "user", "content": "hello"}],
+                )
 
-        assert main_chain_client.chat.completions.create.called
-        mock_task_chain.assert_called_once_with(
-            "title_generation", "auto", reason="payment error")
-        mock_main_chain.assert_called_once_with(
-            "title_generation", "auto", reason="payment error")
-        mock_builtin_chain.assert_not_called()
+        # Fail-closed: neither paid fallback layer is consulted for 'auto'.
+        mock_task_chain.assert_not_called()
+        mock_main_fallback.assert_not_called()
 
     def test_explicit_provider_uses_configured_chain_first(self, monkeypatch, caplog):
         """When a user has fallback_chain configured, it's tried BEFORE the main agent model."""
@@ -2192,25 +2215,33 @@ class TestKimiTemperatureOmitted:
 # ---------------------------------------------------------------------------
 
 
-class TestStaleBaseUrlWarning:
-    """_resolve_auto() warns when OPENAI_BASE_URL conflicts with config provider (#5161)."""
+class TestResolveAutoIgnoresEnvBaseUrl:
+    """_resolve_auto() ignores OPENAI_BASE_URL / OPENROUTER_API_KEY and fail-closes.
 
-    def test_warns_when_openai_base_url_set_with_named_provider(self, monkeypatch, caplog):
-        """Warning fires when OPENAI_BASE_URL is set but provider is a named provider."""
-        import agent.auxiliary_client as mod
-        # Reset the module-level flag so the warning fires
-        monkeypatch.setattr(mod, "_stale_base_url_warned", False)
+    Supersedes the old stale-OPENAI_BASE_URL warning (#5161): the fail-closed
+    rewrite (burn edc7e0133) no longer consults the user's main provider, env
+    base URL, or OpenRouter key — 'auto' resolves only to the sanctioned
+    subscription provider. Env vars that previously triggered a stale-base-URL
+    warning now have no effect at all on the auto route.
+    """
+
+    def test_auto_fail_closes_regardless_of_openai_base_url(self, monkeypatch, caplog):
+        """OPENAI_BASE_URL + OPENROUTER_API_KEY set → auto still fail-closes (no client)."""
         monkeypatch.setenv("OPENAI_BASE_URL", "http://localhost:11434/v1")
         monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-test")
 
         with patch("agent.auxiliary_client._read_main_provider", return_value="openrouter"), \
              patch("agent.auxiliary_client._read_main_model", return_value="google/gemini-flash"), \
-             caplog.at_level(logging.WARNING, logger="agent.auxiliary_client"):
-            _resolve_auto()
+             patch("agent.auxiliary_client.OpenAI") as mock_openai, \
+             caplog.at_level(logging.ERROR, logger="agent.auxiliary_client"):
+            client, model = _resolve_auto()
 
-        assert any("OPENAI_BASE_URL is set" in rec.message for rec in caplog.records), \
-            "Expected a warning about stale OPENAI_BASE_URL"
-        assert mod._stale_base_url_warned is True
+        # Fail-closed: no client built from the stale env base URL / OpenRouter key.
+        assert client is None
+        assert model is None
+        mock_openai.assert_not_called()
+        # The block is logged loudly as BLOCKED_RUNTIME rather than a soft warning.
+        assert any("BLOCKED_RUNTIME" in rec.message for rec in caplog.records)
 
 
 class TestAuxiliaryTaskExtraBody:
@@ -3801,50 +3832,64 @@ class TestAuxUnhealthyCache:
         _mark_provider_unhealthy("codex")
         assert _is_provider_unhealthy("openai-codex") is True
 
-    def test_resolve_auto_skips_unhealthy_step2(self):
-        """_resolve_auto Step-2 chain skips unhealthy providers."""
+    def test_resolve_auto_does_not_use_step2_chain(self):
+        """_resolve_auto no longer has a step-2 paid chain (burn edc7e0133).
+
+        Even with a healthy Nous provider available and OpenRouter marked
+        unhealthy, 'auto' fail-closes to the sanctioned provider only — it never
+        consults _try_openrouter / _try_nous / _try_custom_endpoint. In the
+        hermetic env there is no sanctioned Codex token, so it returns None.
+        """
         from agent.auxiliary_client import (
             _resolve_auto,
             _mark_provider_unhealthy,
         )
         nous_client = MagicMock()
-        # Mark OpenRouter unhealthy → chain should skip it and pick nous.
         _mark_provider_unhealthy("openrouter")
         with patch("agent.auxiliary_client._read_main_provider", return_value=""), \
              patch("agent.auxiliary_client._read_main_model", return_value=""), \
              patch("agent.auxiliary_client._try_openrouter") as or_try, \
-             patch("agent.auxiliary_client._try_nous", return_value=(nous_client, "nous-model")), \
-             patch("agent.auxiliary_client._try_custom_endpoint", return_value=(None, None)), \
+             patch("agent.auxiliary_client._try_nous", return_value=(nous_client, "nous-model")) as nous_try, \
+             patch("agent.auxiliary_client._try_custom_endpoint", return_value=(None, None)) as custom_try, \
              patch("agent.auxiliary_client._resolve_api_key_provider", return_value=(None, None)):
             client, model = _resolve_auto()
-        assert client is nous_client
-        assert model == "nous-model"
-        # The skipped provider's _try_* should NOT have been called at all.
+        # Fail-closed: no step-2 fallthrough.
+        assert client is None
+        assert model is None
         or_try.assert_not_called()
+        nous_try.assert_not_called()
+        custom_try.assert_not_called()
 
-    def test_resolve_auto_skips_unhealthy_main_in_step1(self):
-        """Step-1 also consults the unhealthy cache so a depleted main
-        provider doesn't burn a 402 RTT every aux call. Falls through to
-        Step-2 chain (which also respects the cache)."""
+    def test_resolve_auto_only_tries_sanctioned_provider(self):
+        """_resolve_auto routes solely through the sanctioned provider.
+
+        Step-1/Step-2 layering is gone (burn edc7e0133): 'auto' calls
+        resolve_provider_client exactly once for openai-codex and never touches
+        the old step-2 paid chain, regardless of the unhealthy cache or the
+        user's main provider.
+        """
         from agent.auxiliary_client import (
             _resolve_auto,
             _mark_provider_unhealthy,
+            _SANCTIONED_AUTO_PROVIDER,
         )
-        nous_client = MagicMock()
         _mark_provider_unhealthy("openrouter")
         with patch("agent.auxiliary_client._read_main_provider", return_value="openrouter"), \
              patch("agent.auxiliary_client._read_main_model", return_value="anthropic/claude-sonnet-4.6"), \
-             patch("agent.auxiliary_client.resolve_provider_client") as step1, \
+             patch("agent.auxiliary_client.resolve_provider_client", return_value=(None, None)) as rpc, \
              patch("agent.auxiliary_client._try_openrouter") as or_try, \
-             patch("agent.auxiliary_client._try_nous", return_value=(nous_client, "n-model")), \
-             patch("agent.auxiliary_client._try_custom_endpoint", return_value=(None, None)), \
+             patch("agent.auxiliary_client._try_nous") as nous_try, \
+             patch("agent.auxiliary_client._try_custom_endpoint") as custom_try, \
              patch("agent.auxiliary_client._resolve_api_key_provider", return_value=(None, None)):
             client, model = _resolve_auto()
-        # Step-1 was bypassed — resolve_provider_client never invoked
-        step1.assert_not_called()
-        # Step-2 also skipped openrouter and landed on nous
+        # Exactly one resolve attempt, for the sanctioned provider.
+        rpc.assert_called_once()
+        assert rpc.call_args.args[0] == _SANCTIONED_AUTO_PROVIDER
+        # The old step-2 paid chain is never consulted.
         or_try.assert_not_called()
-        assert client is nous_client
+        nous_try.assert_not_called()
+        custom_try.assert_not_called()
+        assert client is None
 
     def test_payment_fallback_skips_unhealthy(self):
         """_try_payment_fallback also consults the unhealthy cache so a 402
@@ -3871,9 +3916,12 @@ class TestAuxUnhealthyCache:
         custom_try.assert_not_called()
 
     def test_call_llm_marks_provider_unhealthy_on_402(self, monkeypatch):
-        """A 402 from call_llm causes the provider to be marked unhealthy
-        so the next call skips it instead of re-trying the same depleted
-        endpoint."""
+        """A 402 on 'auto' marks the offending provider unhealthy, then fail-closes.
+
+        The depleted provider is recorded in the unhealthy cache (so the next aux
+        call skips it instead of re-paying a doomed RTT) BEFORE the
+        no-paid-fallback doctrine re-raises the error (burn edc7e0133).
+        """
         from agent.auxiliary_client import (
             call_llm,
             _is_provider_unhealthy,
@@ -3888,25 +3936,20 @@ class TestAuxUnhealthyCache:
         err.status_code = 402
         primary_client.chat.completions.create.side_effect = err
 
-        nous_client = MagicMock()
-        nous_resp = MagicMock()
-        nous_resp.choices = [MagicMock(message=MagicMock(content="ok"))]
-        nous_client.chat.completions.create.return_value = nous_resp
-
         with patch("agent.auxiliary_client._get_cached_client",
                     return_value=(primary_client, "google/gemini-3-flash-preview")), \
              patch("agent.auxiliary_client._resolve_task_provider_model",
                     return_value=("auto", "google/gemini-3-flash-preview", None, None, None)), \
-             patch("agent.auxiliary_client._try_payment_fallback",
-                    return_value=(nous_client, "n-model", "nous")), \
              patch("agent.auxiliary_client._build_call_kwargs",
-                    return_value={"model": "n-model", "messages": [{"role": "user", "content": "hi"}]}):
+                    return_value={"model": "google/gemini-3-flash-preview", "messages": [{"role": "user", "content": "hi"}]}):
             assert _is_provider_unhealthy("openrouter") is False
-            call_llm(
-                task="compression",
-                messages=[{"role": "user", "content": "hi"}],
-            )
-            # After the 402, OpenRouter is in the unhealthy cache.
+            # Fail-closed: the 402 re-raises (no paid fallback) ...
+            with pytest.raises(Exception, match="Payment Required"):
+                call_llm(
+                    task="compression",
+                    messages=[{"role": "user", "content": "hi"}],
+                )
+            # ... but the offending provider was marked unhealthy first.
             assert _is_provider_unhealthy("openrouter") is True
 
 
