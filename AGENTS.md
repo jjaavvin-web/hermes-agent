@@ -930,6 +930,33 @@ lives in the `hermes-agent-dev` skill at
 `references/new-skill-pr-salvage.md` — load it before polishing
 contributor skill PRs.
 
+### Skill write gate (incubation)
+
+Doctrine: agent-created skills should be staged/incubated, not
+auto-persisted. Agent-authored skill writes — foreground `skill_manage`
+AND the background self-improvement fork (`agent/background_review.py`,
+`agent/turn_finalizer.py`, origin tagged via `tools/skill_provenance.py`)
+— can be gated by `skills.write_approval` (config.yaml). When it is on,
+every skill_manage write action (create/edit/patch/write_file/delete/remove_file) stages to
+`~/.hermes/pending/skills/<id>.json` instead of persisting; review the
+queue with `/skills pending`, inspect a change with `/skills diff <id>`,
+then `/skills approve <id>|all` to persist or `/skills reject <id>|all` to
+drop it (handlers: `hermes_cli/write_approval_commands.py`; gate:
+`tools/write_approval.py` `evaluate_gate(SKILLS)` +
+`tools/skill_manager_tool.py::_apply_skill_write_gate`). A staged skill is
+NOT written to disk and is NOT injected into the per-session skills index
+(`agent/prompt_builder.py::build_skills_system_prompt`) until approved, so
+it cannot auto-load. The rationale for the maker-checker pass is blast
+radius: every skill's name + description + conditions load into every
+session and skills may carry scripts — higher exposure than a declarative
+`MEMORY.md` entry. Default is OFF; enable with
+`hermes config set skills.write_approval true`. Agent-created skill writes
+can ALSO be keyword/pattern security-scanned via
+`skills.guard_agent_created` (default off) — orthogonal to this staging
+gate. Imported/hub skills are gated separately by the hub scanner
+(`tools/skills_guard.py`, see Card 62 SkillSpector), not by this
+incubation gate.
+
 ---
 
 ## Toolsets
