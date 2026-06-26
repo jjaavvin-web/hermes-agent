@@ -367,7 +367,7 @@ markers = [
     "real_concurrent_gate: opt out of the autouse stub that disables _detect_concurrent_hermes_instances",
 ]
 # integration tests take way too long to run in the normal CI environments
-addopts = "-m 'not integration'"
+addopts = "-m 'not integration' --timeout=30 --timeout-method=thread"
 
 [tool.ty.environment]
 python-version = "3.13"

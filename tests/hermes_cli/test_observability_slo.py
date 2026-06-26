@@ -66,14 +66,20 @@ def test_exporter_reads_state_db_mode_ro_and_journal_counts(tmp_path: Path):
             "1970-01-01T00:16:50+00:00 host python[1]: ERROR provider failed",
             "1970-01-01T00:16:51+00:00 host python[1]: provider fallback triggered",
         ],
-        watchdog_lines=["1970-01-01T00:16:52+00:00 host systemd[1]: Started Hermes Gateway watchdog"],
+        watchdog_lines=[
+            # heartbeat (must NOT count — description contains the word "restart")
+            "1970-01-01T00:16:52+00:00 host systemd[1]: Starting hermes-gateway-watchdog.service (no restart)",
+            # a genuine restart action (must count)
+            "1970-01-01T00:16:53+00:00 host watchdog[1]: gateway unhealthy — restarting hermes-gateway.service",
+        ],
         recall_events_path=recall,
     )
 
     assert snapshot["turn_count"] == 3
     assert snapshot["sources"]["state_db_mode"] == "ro"
     assert snapshot["metrics"]["turn_error_rate"] == 1 / 3
-    assert snapshot["metrics"]["fallback_trigger_rate"] == 2 / 3
+    # fallbacks are journald-only now; turn retries (retry_count>0) are NOT fallbacks
+    assert snapshot["metrics"]["fallback_trigger_rate"] == 1 / 3
     assert snapshot["metrics"]["watchdog_restart_count"] == 1
     assert snapshot["metrics"]["cost_burn_rate_usd_24h"] == 0.6
     assert snapshot["recall"]["hit_rate"] == 0.5
@@ -111,4 +117,7 @@ def test_alert_synthetic_breach_renders():
     text = slo_alert_check.render_alert(snap, rows)
     assert rows
     assert "Hermes SLO breach" in text
-    assert "gateway_turn_p95_latency_ms" in text
+    # watchdog_restart_count=3 (>critical 1) is a paging breach
+    assert "watchdog_restart_count" in text
+    # p95 is page=False (informational, mixed lane/interactive turns) — never paged
+    assert "gateway_turn_p95_latency_ms" not in text

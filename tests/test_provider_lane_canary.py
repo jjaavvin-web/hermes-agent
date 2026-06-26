@@ -161,6 +161,38 @@ def test_p2_auto_auxiliary_provider_is_advisory_not_forbidden_gate(tmp_path: Pat
     assert report["summary"]["forbidden_route_flag_count"] == 0
 
 
+def test_source_scan_enabled_flags_bare_claude_and_excludes_self(tmp_path: Path) -> None:
+    # The provider-lane canary gate must run the source scan ENABLED, otherwise a
+    # newly-dropped bare `claude -p` would leak Max work to a paid API undetected.
+    hermes_home = _make_home(tmp_path, provider="claude-cli-subprocess", model="claude-via-cli")
+    src_root = tmp_path / "scan-source-root"
+    src_root.mkdir()
+    leaky = src_root / "leaky.sh"
+    leaky.write_text('#!/bin/bash\nclaude -p "do the work"\n', encoding="utf-8")
+
+    args = _args(tmp_path, hermes_home)
+    args.source_root = src_root
+    args.no_source_scan = False  # scan ENABLED
+
+    lock_doc, lanes = canary.collect_lanes(args)
+    report = canary.report_dict(args, lock_doc, lanes)
+
+    # The planted bare `claude -p` is caught as a P0 forbidden route.
+    bare_flags = [
+        (lane_id, rule_id)
+        for lane_id, rule_id in _forbidden_route_flags(report)
+        if rule_id == "bare-claude-subprocess"
+    ]
+    assert bare_flags, "scan-enabled gate must flag the planted bare claude -p leak"
+    assert any(str(leaky) in lane_id for lane_id, _ in bare_flags)
+
+    # The canary's own source carries the forbidden literal but must NOT self-flag.
+    self_lanes = canary.scan_bare_claude([Path(canary.__file__)])
+    assert not any(
+        check.status == canary.FLAG for lane in self_lanes for check in lane.checks
+    ), "canary source scan must exclude its own path"
+
+
 def test_live_profile_lane_config_has_zero_forbidden_routes(tmp_path: Path) -> None:
     hermes_home = canary.DEFAULT_HERMES_HOME
     if not (hermes_home / "config.yaml").is_file():
@@ -174,7 +206,11 @@ def test_live_profile_lane_config_has_zero_forbidden_routes(tmp_path: Path) -> N
         intent_router=canary.DEFAULT_INTENT_ROUTER,
         source_root=canary.DEFAULT_SOURCE_ROOT,
         scan_root=[],
-        no_source_scan=True,
+        # 2026-06-25: source scan ENABLED (was blind). The scan now recognizes the
+        # subscription-only env-scrub guard, so legitimate claude-CLI subscription
+        # callers no longer false-flag, and the live roots scan clean. The gate now
+        # catches a newly-dropped UNGUARDED bare `claude -p` (the paid-API cardinal sin).
+        no_source_scan=False,
         output_dir=tmp_path / "live-canary-out",
     )
     lock_doc, lanes = canary.collect_lanes(args)
