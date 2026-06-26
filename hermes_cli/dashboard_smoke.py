@@ -470,12 +470,6 @@ def collect_route_seeds(client: TestClient, headers: Mapping[str, str]) -> dict[
             return None
         return None
 
-    nexus = get_json("/api/dashboard/nexus-health")
-    if isinstance(nexus, dict):
-        node_id = _first_id(nexus.get("nodes"), keys=("id", "name"))
-        if node_id:
-            seeds["node_id"] = node_id
-
     hives = get_json("/api/dashboard/hives")
     if isinstance(hives, dict):
         hive_id = _first_id(hives.get("hives"), keys=("id", "hive_id", "name"))

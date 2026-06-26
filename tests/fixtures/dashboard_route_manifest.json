@@ -532,22 +532,6 @@
       "methods": [
         "GET"
       ],
-      "name": "get_nexus_health",
-      "path": "/api/dashboard/nexus-health",
-      "route_type": "APIRoute"
-    },
-    {
-      "methods": [
-        "GET"
-      ],
-      "name": "get_nexus_health_node",
-      "path": "/api/dashboard/nexus-health/node/{node_id}",
-      "route_type": "APIRoute"
-    },
-    {
-      "methods": [
-        "GET"
-      ],
       "name": "get_os",
       "path": "/api/dashboard/os",
       "route_type": "APIRoute"

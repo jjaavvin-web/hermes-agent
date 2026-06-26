@@ -62,7 +62,6 @@ export default function LifePage() {
   const [editing, setEditing] = useState(false);
   const [now, setNow] = useState(() => new Date());
   const chips = useMissionStream();
-  const [syncedAt, setSyncedAt] = useState(() => Date.now());
 
   // Clock tick — drives the greeting, live time, and "synced Xs ago" freshness.
   useEffect(() => {
@@ -70,16 +69,22 @@ export default function LifePage() {
     return () => clearInterval(t);
   }, []);
 
-  // Mark a fresh sync whenever live health chips update.
-  useEffect(() => {
-    if (chips.length) setSyncedAt(Date.now());
-  }, [chips]);
+  // Mark a fresh sync whenever live health chips update. Uses React's sanctioned
+  // "adjust state while rendering" pattern (not a setState-in-effect): when the
+  // chips reference changes and is non-empty, stamp the current clock tick as the
+  // latest sync time. `now` is pure state, so no impure Date.now() in render.
+  const [prevChips, setPrevChips] = useState(chips);
+  const [syncedAt, setSyncedAt] = useState(now);
+  if (prevChips !== chips) {
+    setPrevChips(chips);
+    if (chips.length) setSyncedAt(now);
+  }
 
   const overall = overallScore(values.scores);
   const verse = useMemo(() => verseOfTheDay(now), [now]);
   const online = chips.filter((c) => c.status === "online").length;
   const total = chips.length;
-  const syncedAgo = Math.max(0, Math.round((now.getTime() - syncedAt) / 1000));
+  const syncedAgo = Math.max(0, Math.round((now.getTime() - syncedAt.getTime()) / 1000));
 
   const update = (patch: Partial<LifeValues>) => {
     setValues((prev) => {
