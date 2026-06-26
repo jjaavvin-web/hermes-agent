@@ -25,6 +25,20 @@ DEFAULT_OUTPUT_DIR = HERMES_HOME / "observability"
 DEFAULT_TIMESERIES = DEFAULT_OUTPUT_DIR / "slo-timeseries.jsonl"
 DEFAULT_LATEST = DEFAULT_OUTPUT_DIR / "slo-latest.json"
 DEFAULT_RECALL_EVENTS = HERMES_HOME / "state" / "learning-index" / "recall-events.jsonl"
+# 2026-06-26: recall_hit_rate is now computed from a STANDALONE recall-quality
+# canary (recall-quality-canary.py) that probes a known in-pool lesson against the
+# production recall(query, k=10) ranker and records a real target-in-top-k hit plus
+# an off-domain discrimination gap. The old "hit = n_lessons>0" signal off
+# recall-events.jsonl was structurally 1.0 (warm-recall always injects 5 lessons)
+# and could never fire on degraded recall. recall-events.jsonl is still read, but
+# only for the informational service_up sub-field (is the warm path producing
+# injections at all), NOT for the SLO value.
+DEFAULT_RECALL_CANARY = HERMES_HOME / "state" / "learning-index" / "recall-canary.jsonl"
+# A canary record counts as a HIT only if the target was in top-k AND the
+# in-domain/off-domain cosine gap cleared this floor; a cosine collapse (gap below
+# the floor) is scored as a miss even when the target nominally appears. Kept in
+# sync with recall-quality-canary.py's DISCRIMINATION_FLOOR.
+RECALL_DISCRIMINATION_FLOOR = float(os.environ.get("HERMES_RECALL_CANARY_GAP", "0.20"))
 
 WINDOW_SECONDS = 24 * 60 * 60
 BUCKET_SECONDS = 5 * 60
@@ -66,7 +80,7 @@ SLO_DEFINITIONS: dict[str, dict[str, Any]] = {
         "warn": 0.80,
         "critical": 0.65,
         "unit": "ratio",
-        "source": "~/.hermes/state/learning-index/recall-events.jsonl injection records (hit = n_lessons>0); reports no_data when missing",
+        "source": "~/.hermes/state/learning-index/recall-canary.jsonl: fraction of recall-quality-canary runs where a known in-pool lesson appeared in production recall(query,k=10) top-k AND the in/off-domain cosine gap cleared the discrimination floor (target miss or cosine collapse -> miss). service_up sub-field tracks warm-path injection separately. reports no_data when missing",
     },
     "watchdog_restart_count": {
         "target": "<=0 per 24h",
@@ -239,11 +253,19 @@ def build_bucket_series(rows: list[dict[str, Any]], gateway_lines: Iterable[str]
     return series
 
 
-def read_recall_hit_rate(path: Path = DEFAULT_RECALL_EVENTS, *, since_epoch: float | None = None) -> dict[str, Any]:
-    expanded = path.expanduser()
-    if not expanded.exists():
-        return {"status": "no_data", "source_exists": False, "path": str(expanded), "hit_rate": None, "total": 0, "hits": 0}
-    total = hits = 0
+def _event_epoch(event: dict[str, Any]) -> float | None:
+    ts = event.get("ts") or event.get("timestamp") or event.get("created_at")
+    if isinstance(ts, (int, float)) and not isinstance(ts, bool):
+        return float(ts)
+    if isinstance(ts, str):
+        try:
+            return datetime.fromisoformat(ts.replace("Z", "+00:00")).timestamp()
+        except ValueError:
+            return None
+    return None
+
+
+def _iter_jsonl(expanded: Path, *, since_epoch: float | None) -> Iterable[dict[str, Any]]:
     for raw in expanded.read_text(encoding="utf-8", errors="replace").splitlines():
         if not raw.strip():
             continue
@@ -251,27 +273,100 @@ def read_recall_hit_rate(path: Path = DEFAULT_RECALL_EVENTS, *, since_epoch: flo
             event = json.loads(raw)
         except json.JSONDecodeError:
             continue
-        ts = event.get("ts") or event.get("timestamp") or event.get("created_at")
-        epoch = None
-        if isinstance(ts, (int, float)):
-            epoch = float(ts)
-        elif isinstance(ts, str):
-            try:
-                epoch = datetime.fromisoformat(ts.replace("Z", "+00:00")).timestamp()
-            except ValueError:
-                epoch = None
+        if not isinstance(event, dict):
+            continue
+        epoch = _event_epoch(event)
         if since_epoch is not None and epoch is not None and epoch < since_epoch:
             continue
+        yield event
+
+
+def _read_service_up(path: Path, *, since_epoch: float | None) -> dict[str, Any]:
+    """Informational sub-field: is the warm-recall path producing injections at all.
+
+    This is the OLD recall-events.jsonl signal (n_lessons>0 per dispatch). It is
+    deliberately NOT the SLO value — a service that injects 5 lessons on every
+    dispatch is structurally 'up' even if those lessons are irrelevant. We keep it
+    only to distinguish 'recall down' from 'recall up but mis-ranking'.
+    """
+    expanded = path.expanduser()
+    if not expanded.exists():
+        return {"status": "no_data", "source_exists": False, "path": str(expanded), "rate": None, "total": 0, "up": 0}
+    total = up = 0
+    for event in _iter_jsonl(expanded, since_epoch=since_epoch):
         total += 1
-        # Warm-recall injection ledger records {"n_lessons": k, ...} per dispatch
-        # (no explicit hit flag); treat any dispatch that surfaced >=1 lesson as a
-        # hit. Explicit hit/matched/recalled/success flags still honoured.
         n_lessons = event.get("n_lessons")
         if bool(
             event.get("hit") or event.get("matched") or event.get("recalled") or event.get("success")
             or (isinstance(n_lessons, (int, float)) and not isinstance(n_lessons, bool) and n_lessons > 0)
         ):
+            up += 1
+    return {
+        "status": "ok" if total else "no_events",
+        "source_exists": True,
+        "path": str(expanded),
+        "rate": (up / total) if total else None,
+        "total": total,
+        "up": up,
+    }
+
+
+def read_recall_hit_rate(
+    canary_path: Path = DEFAULT_RECALL_CANARY,
+    *,
+    since_epoch: float | None = None,
+    service_events_path: Path = DEFAULT_RECALL_EVENTS,
+    discrimination_floor: float = RECALL_DISCRIMINATION_FLOOR,
+) -> dict[str, Any]:
+    """Recall hit-rate from the recall-quality canary's target-in-top-k ledger.
+
+    A canary record is a HIT only when the known in-pool target appeared in the
+    production recall(query, k=10) top-k AND the in-domain/off-domain cosine gap
+    cleared `discrimination_floor`. A target miss OR a cosine collapse (gap below
+    the floor) is a miss, so the rate can legitimately fall under the 0.65 critical
+    threshold. Records with a null hit (the canary's never-raise setup_error path)
+    are skipped, not counted as misses. `service_up` is a separate informational
+    sub-field off the legacy recall-events.jsonl injection ledger.
+    """
+    expanded = canary_path.expanduser()
+    service_up = _read_service_up(service_events_path, since_epoch=since_epoch)
+    if not expanded.exists():
+        return {
+            "status": "no_data",
+            "source_exists": False,
+            "path": str(expanded),
+            "hit_rate": None,
+            "total": 0,
+            "hits": 0,
+            "target_misses": 0,
+            "cosine_collapses": 0,
+            "discrimination_floor": discrimination_floor,
+            "service_up": service_up,
+        }
+    total = hits = target_misses = cosine_collapses = 0
+    for event in _iter_jsonl(expanded, since_epoch=since_epoch):
+        # Prefer the explicit canary fields; fall back to a bare `hit` flag so
+        # legacy/synthetic hit-only records still score.
+        raw_hit = event.get("target_hit")
+        if raw_hit is None:
+            raw_hit = event.get("hit")
+        if raw_hit is None:
+            # null hit -> canary setup_error / not a recall measurement; skip.
+            continue
+        total += 1
+        # bool/int normalisation: 0/False -> miss, 1/True/non-zero -> candidate hit.
+        target_hit = bool(raw_hit)
+        gap = event.get("discrimination_gap")
+        if gap is None:
+            gap = event.get("gap")
+        gap_ok = gap is None or float(gap) >= discrimination_floor
+        if target_hit and gap_ok:
             hits += 1
+        else:
+            if not target_hit:
+                target_misses += 1
+            elif not gap_ok:
+                cosine_collapses += 1
     return {
         "status": "ok" if total else "no_events",
         "source_exists": True,
@@ -279,6 +374,10 @@ def read_recall_hit_rate(path: Path = DEFAULT_RECALL_EVENTS, *, since_epoch: flo
         "hit_rate": (hits / total) if total else None,
         "total": total,
         "hits": hits,
+        "target_misses": target_misses,
+        "cosine_collapses": cosine_collapses,
+        "discrimination_floor": discrimination_floor,
+        "service_up": service_up,
     }
 
 
@@ -290,7 +389,8 @@ def build_slo_snapshot(
     window_seconds: int = WINDOW_SECONDS,
     gateway_lines: list[str] | None = None,
     watchdog_lines: list[str] | None = None,
-    recall_events_path: Path = DEFAULT_RECALL_EVENTS,
+    recall_canary_path: Path = DEFAULT_RECALL_CANARY,
+    recall_service_path: Path = DEFAULT_RECALL_EVENTS,
 ) -> dict[str, Any]:
     now = time.time() if now is None else now
     since = now - window_seconds
@@ -311,7 +411,9 @@ def build_slo_snapshot(
     # 2026-06-25: provider fallbacks come from gateway journald only; ordinary turn
     # retries (retry_count>0) are NOT fallbacks and are reported separately as retry_turns.
     fallback_events = counts.fallback_events
-    recall = read_recall_hit_rate(recall_events_path, since_epoch=since)
+    recall = read_recall_hit_rate(
+        recall_canary_path, since_epoch=since, service_events_path=recall_service_path
+    )
     metrics = {
         "gateway_turn_p95_latency_ms": percentile(latencies, 0.95),
         "turn_error_rate": min(1.0, counts.error_events / turn_count) if turn_count else None,
@@ -325,7 +427,8 @@ def build_slo_snapshot(
         "state_db_mode": "ro",
         "gateway_journal_unit": "hermes-gateway.service",
         "watchdog_journal_unit": "hermes-gateway-watchdog.service",
-        "recall_events": str(recall_events_path.expanduser()),
+        "recall_canary": str(recall_canary_path.expanduser()),
+        "recall_events": str(recall_service_path.expanduser()),
         "output_dir": str(output_dir.expanduser()),
     }
     return {
