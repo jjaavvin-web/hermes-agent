@@ -72,6 +72,48 @@ def test_disp5_autonomous_floor_present_and_armed():
         "webhook dispatch no longer ARMS the DISP-5 floor (contextvar never set)"
 
 
+def test_restart_resume_rearms_disp5_floor():
+    """A gateway-restart auto-resume must RE-ARM the DISP-5 floor (finding #8).
+
+    On restart, an in-flight webhook/loki run is auto-resumed via the generic
+    handle_message path — which never re-runs the webhook dispatch's
+    mark_autonomous_dispatch / register_session_deny_patterns / set_active_worktree.
+    The rehydration in gateway/run.py closes that hole.  A merge (or refactor)
+    that drops the re-arming turns this RED before merge so josep judges from a
+    red check, not a diff.
+    """
+    run = _read("gateway/run.py")
+    # The arming helper and its three security legs must exist.
+    assert "def _arm_autonomous_resume_floor" in run, \
+        "restart-resume no longer re-arms the autonomous floor (finding #8)"
+    assert "mark_autonomous_dispatch(True)" in run, \
+        "restart-resume no longer arms the DISP-5 push/PR/workflow floor"
+    assert "register_session_deny_patterns(_k, deny)" in run, \
+        "restart-resume no longer re-registers the per-session deny list"
+    assert "set_active_worktree(wt)" in run, \
+        "restart-resume no longer re-binds worktree isolation"
+    # The floor leg must FAIL CLOSED — an arming failure on a known-autonomous
+    # resume aborts the turn rather than running unguarded.
+    assert "_AutonomousResumeArmError" in run, \
+        "restart-resume floor-arm no longer fails CLOSED on arming failure"
+    # A gone worktree must FAIL CLOSED — augment deny with git-mutation/fs-escape.
+    assert "WORKTREE_GONE_EXTRA_DENY" in run, \
+        "restart-resume no longer fails closed when the persisted worktree is gone"
+    # The startup auto-resume path must actually call the arming helper, not
+    # merely define it.
+    assert "_arm_autonomous_resume_floor(event, session_key)" in run, \
+        "_run_startup_resume_event no longer invokes the floor re-arm"
+    # The durable envelope must be persisted onto the SessionEntry so a restart
+    # can rehydrate the exact deny-list/worktree/approval-key the dispatch used.
+    session = _read("gateway/session.py")
+    assert "def set_autonomous_envelope" in session, \
+        "SessionStore.set_autonomous_envelope dropped (envelope no longer durable)"
+    assert "autonomous_dispatch" in session, \
+        "SessionEntry.autonomous_dispatch field dropped"
+    assert "approval_key" in session, \
+        "SessionEntry.approval_key dropped — resume can't re-register under the dispatch key"
+
+
 def test_webhook_deny_patterns_cover_ci_and_push():
     """Primary worker protection (DEFAULT_WEBHOOK_DENY_PATTERNS) must block push,
     PR open/merge, AND CI-workflow triggers — `gh workflow run` can push/merge/deploy.

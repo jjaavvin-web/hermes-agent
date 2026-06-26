@@ -231,6 +231,13 @@ class TestSessionEntryResumeFields:
         assert restored.resume_pending is False
         assert restored.resume_reason is None
         assert restored.last_resume_marked_at is None
+        # finding #8 envelope fields absent from an OLD persisted session must
+        # default to the fail-SAFE (non-autonomous, no floor) values so a legacy
+        # entry is never mis-treated as an autonomous dispatch on resume.
+        assert restored.autonomous_dispatch is False
+        assert restored.deny_patterns is None
+        assert restored.approval_key is None
+        assert restored.worktree_path is None
 
     def test_malformed_timestamp_is_tolerated(self):
         now = datetime.now()

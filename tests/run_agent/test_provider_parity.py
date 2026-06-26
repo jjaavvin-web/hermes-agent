@@ -598,11 +598,40 @@ class TestChatMessagesToResponsesInput:
     def test_tool_results_become_function_call_output(self, monkeypatch):
         agent = _make_agent(monkeypatch, "openai-codex", api_mode="codex_responses",
                             base_url="https://chatgpt.com/backend-api/codex")
-        messages = [{"role": "tool", "tool_call_id": "call_abc", "content": "result here"}]
+        # A tool result is only emitted when its call_id matches a preceding
+        # assistant function_call. Orphan tool outputs are dropped because the
+        # Responses API 400s on a function_call_output with no prior call
+        # (07833d60d "pin codex responses adapter edge cases").
+        messages = [
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [{
+                    "id": "call_abc",
+                    "call_id": "call_abc",
+                    "function": {"name": "web_search", "arguments": "{}"},
+                }],
+            },
+            {"role": "tool", "tool_call_id": "call_abc", "content": "result here"},
+        ]
         items = _chat_messages_to_responses_input(messages)
-        assert items[0]["type"] == "function_call_output"
-        assert items[0]["call_id"] == "call_abc"
-        assert items[0]["output"] == "result here"
+        outputs = [i for i in items if i.get("type") == "function_call_output"]
+        assert len(outputs) == 1
+        assert outputs[0]["call_id"] == "call_abc"
+        assert outputs[0]["output"] == "result here"
+
+    def test_orphan_tool_result_dropped(self, monkeypatch):
+        """A tool result with no preceding function_call is dropped, not emitted.
+
+        The Responses API rejects a function_call_output whose call_id has no
+        matching prior function_call, so the adapter omits orphans rather than
+        producing a request that 400s.
+        """
+        agent = _make_agent(monkeypatch, "openai-codex", api_mode="codex_responses",
+                            base_url="https://chatgpt.com/backend-api/codex")
+        messages = [{"role": "tool", "tool_call_id": "call_orphan", "content": "result here"}]
+        items = _chat_messages_to_responses_input(messages)
+        assert [i for i in items if i.get("type") == "function_call_output"] == []
 
     def test_encrypted_reasoning_replayed(self, monkeypatch):
         """Encrypted reasoning items from previous turns must be included in input."""
@@ -1009,17 +1038,26 @@ class TestBuildAssistantMessage:
 # ── Auxiliary client provider resolution ─────────────────────────────────────
 
 class TestAuxiliaryClientProviderPriority:
-    """Verify auxiliary client resolution doesn't break for any provider."""
+    """Auxiliary 'auto' fail-closes to the sanctioned subscription provider.
 
-    def test_openrouter_always_wins(self, monkeypatch):
+    Burn edc7e0133 (no-paid-fallback doctrine): provider 'auto' resolves ONLY
+    to openai-codex (gpt-5.5). It never silently routes auxiliary work to
+    OpenRouter, Nous, or a detected custom runtime. When the sanctioned route is
+    unavailable, resolution returns (None, None) / BLOCKED_RUNTIME.
+    """
+
+    def test_openrouter_not_used_by_auto(self, monkeypatch):
+        """'auto' never routes to OpenRouter — it fail-closes even with a key set."""
         monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")
         from agent.auxiliary_client import get_text_auxiliary_client
         with patch("agent.auxiliary_client.OpenAI") as mock:
             client, model = get_text_auxiliary_client()
-        assert model == "google/gemini-3-flash-preview"
-        assert "openrouter" in str(mock.call_args.kwargs["base_url"]).lower()
+        assert client is None
+        assert model is None
+        mock.assert_not_called()
 
-    def test_nous_when_no_openrouter(self, monkeypatch):
+    def test_nous_not_used_by_auto(self, monkeypatch):
+        """'auto' never routes to Nous either — sanctioned provider only."""
         monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
         from agent.auxiliary_client import get_text_auxiliary_client
         nous_auth = {
@@ -1030,14 +1068,16 @@ class TestAuxiliaryClientProviderPriority:
              patch("agent.auxiliary_client.OpenAI") as mock, \
              patch("hermes_cli.models.get_nous_recommended_aux_model", return_value=None):
             client, model = get_text_auxiliary_client()
-        assert model == "google/gemini-3-flash-preview"
+        assert client is None
+        assert model is None
+        mock.assert_not_called()
 
-    def test_custom_endpoint_when_no_nous(self, monkeypatch):
-        """Custom endpoint is used when no OpenRouter/Nous keys are available.
+    def test_custom_runtime_not_auto_adopted(self, monkeypatch):
+        """A detected custom runtime is NOT auto-adopted by 'auto' anymore.
 
-        Since the March 2026 config refactor, OPENAI_BASE_URL env var is no
-        longer consulted — base_url comes from config.yaml via
-        resolve_runtime_provider.  Mock _resolve_custom_runtime directly.
+        Custom endpoints must be configured explicitly via auxiliary.<task>
+        (base_url/api_key); the auto route fail-closes to the sanctioned
+        provider rather than silently adopting the user's main runtime.
         """
         monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
         monkeypatch.setenv("OPENAI_API_KEY", "local-key")
@@ -1047,27 +1087,28 @@ class TestAuxiliaryClientProviderPriority:
                    return_value=("http://localhost:1234/v1", "local-key")), \
              patch("agent.auxiliary_client.OpenAI") as mock:
             client, model = get_text_auxiliary_client()
-        assert mock.call_args.kwargs["base_url"] == "http://localhost:1234/v1"
+        assert client is None
+        assert model is None
+        mock.assert_not_called()
 
-    def test_codex_not_in_auto_fallback(self, monkeypatch):
-        """Codex is deliberately NOT part of the auto fallback chain.
+    def test_codex_is_the_sanctioned_auto_provider(self, monkeypatch):
+        """'auto' fail-closes TO openai-codex — the sole sanctioned provider.
 
-        ChatGPT-account Codex gates which models it accepts via an
-        undocumented, shifting allow-list, so falling through to Codex with
-        a hardcoded default model breaks silently whenever OpenAI rotates
-        the list.  When nothing else is available, ``get_text_auxiliary_client``
-        now returns (None, None) rather than guessing a Codex model.
+        Inverts the old "codex is not in the auto fallback" rule: under the
+        no-paid-fallback doctrine, Codex is the ONLY route 'auto' may take. When
+        a Codex token is present, auto resolves to a Codex-wrapped client
+        (gpt-5.5) rather than None or a paid fallback.
         """
         monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
         monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
-        from agent.auxiliary_client import get_text_auxiliary_client
+        from agent.auxiliary_client import get_text_auxiliary_client, CodexAuxiliaryClient
         with patch("agent.auxiliary_client._read_nous_auth", return_value=None), \
              patch("agent.auxiliary_client._read_codex_access_token", return_value="codex-tok"), \
              patch("agent.auxiliary_client.OpenAI"):
             client, model = get_text_auxiliary_client()
-        assert client is None
-        assert model is None
+        assert isinstance(client, CodexAuxiliaryClient)
+        assert model == "gpt-5.5"
 
 
 # ── Provider routing tests ───────────────────────────────────────────────────

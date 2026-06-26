@@ -999,7 +999,7 @@ class _AnthropicCompletionsAdapter:
         self._is_oauth = is_oauth
 
     def create(self, **kwargs) -> Any:
-        from agent.anthropic_adapter import build_anthropic_kwargs
+        from agent.anthropic_adapter import build_anthropic_kwargs, create_anthropic_message
         from agent.transports import get_transport
 
         messages = kwargs.get("messages", [])
@@ -1043,7 +1043,15 @@ class _AnthropicCompletionsAdapter:
             if not _forbids_sampling_params(model):
                 anthropic_kwargs["temperature"] = temperature
 
-        response = self._client.messages.create(**anthropic_kwargs)
+        # Aggregate via streaming when the endpoint supports it. Some
+        # Anthropic-compatible gateways are SSE-only and return raw
+        # text/event-stream for messages.create(), which then crashes in
+        # normalize_response on `.content`. create_anthropic_message() prefers
+        # messages.stream().get_final_message() and falls back to create()
+        # only when streaming is unavailable. Restores fork fix 46f9d5346
+        # (silently reverted by an upstream merge). See
+        # tests/agent/test_auxiliary_client.py::test_anthropic_auxiliary_client_aggregates_stream_response.
+        response = create_anthropic_message(self._client, anthropic_kwargs)
         _transport = get_transport("anthropic_messages")
         _nr = _transport.normalize_response(
             response, strip_tool_prefix=self._is_oauth

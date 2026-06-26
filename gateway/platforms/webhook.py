@@ -825,9 +825,15 @@ class WebhookAdapter(BasePlatformAdapter):
                     await self.handle_message(event)
             finally:
                 try:
-                    from tools.approval import clear_session
+                    from tools.approval import (
+                        clear_session,
+                        clear_session_credential_taint,
+                    )
                     if _approval_key:
                         clear_session(_approval_key)
+                        # Drop any two-step credential-stage taint accrued during
+                        # this dispatch so it cannot bleed into a reused key.
+                        clear_session_credential_taint(_approval_key)
                 except Exception:
                     logger.debug(
                         "[webhook] failed to clear deny_terminal_patterns for route=%s",

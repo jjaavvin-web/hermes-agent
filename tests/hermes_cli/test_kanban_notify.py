@@ -22,6 +22,16 @@ def kanban_home(tmp_path, monkeypatch):
     # test silently drops files because ``tmp_path`` isn't inside the
     # default ``MEDIA_DELIVERY_SAFE_ROOTS`` cache dirs.
     monkeypatch.setenv("HERMES_MEDIA_ALLOW_DIRS", str(tmp_path))
+    # The in-gateway kanban notifier/dispatcher watchers are gated behind
+    # ``kanban.dispatch_in_gateway`` which fail-closes to ``False`` (DISP-1,
+    # audit Wave 0 — commit a7564fcbc). Without enabling it the watcher
+    # returns immediately ("disabled via config") and never delivers, so
+    # every notifier test would see ``send`` called 0 times. ``load_config``
+    # deep-merges this onto the full defaults, so writing a minimal file is
+    # safe. This mirrors the production opt-in that real deployments set.
+    (home / "config.yaml").write_text(
+        "kanban:\n  dispatch_in_gateway: true\n", encoding="utf-8"
+    )
     kb.init_db()
     return home
 

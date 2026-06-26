@@ -163,18 +163,23 @@ def test_public_result_and_alias_types_have_expected_defaults():
 @pytest.mark.parametrize(
     ("raw", "expected"),
     [
-        ("sonnet", ("sonnet", "", False, False)),
-        ("sonnet --global", ("sonnet", "", True, False)),
-        ("sonnet --provider anthropic", ("sonnet", "anthropic", False, False)),
-        ("--provider my-ollama", ("", "my-ollama", False, False)),
-        ("--refresh", ("", "", False, True)),
+        ("sonnet", ("sonnet", "", False, False, False)),
+        ("sonnet --global", ("sonnet", "", True, False, False)),
+        ("sonnet --session", ("sonnet", "", False, False, True)),
+        (
+            "sonnet --provider anthropic --session",
+            ("sonnet", "anthropic", False, False, True),
+        ),
+        ("sonnet --provider anthropic", ("sonnet", "anthropic", False, False, False)),
+        ("--provider my-ollama", ("", "my-ollama", False, False, False)),
+        ("--refresh", ("", "", False, True, False)),
         (
             "sonnet --provider anthropic --global --refresh",
-            ("sonnet", "anthropic", True, True),
+            ("sonnet", "anthropic", True, True, False),
         ),
         (
             "sonnet \u2014provider anthropic \u2013global \u2015refresh",
-            ("sonnet", "anthropic", True, True),
+            ("sonnet", "anthropic", True, True, False),
         ),
     ],
 )
