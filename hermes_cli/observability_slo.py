@@ -115,7 +115,16 @@ _ERROR_RE = re.compile(r"\b(error|exception|traceback|failed|failure|timeout|cra
 # failures still count toward turn_error_rate.
 _ERROR_EXCLUDE_RE = re.compile(
     r"returned error|tool_executor|title[_ ]generat|memory would be at"
-    r"|firecrawl client initialization failed|web tools are not configured",
+    r"|Traceback \(most recent call last\):",
+    re.I,
+)
+_TOOL_CONFIG_ERROR_RE = re.compile(
+    r"firecrawl client initialization failed|web tools are not config",
+    re.I,
+)
+_TOOL_BACKEND_ERROR_RE = re.compile(
+    r"x_search failed: 429 Client Error: Too Many Requests"
+    r"|requests\.exceptions\.HTTPError: 429 Client Error: Too Many Requests for url: https://api\.x\.ai/",
     re.I,
 )
 _FALLBACK_RE = re.compile(r"\bfallback|fallback-trigger|provider fallback|model fallback\b", re.I)
@@ -128,6 +137,8 @@ class JournalCounts:
     error_events: int = 0
     fallback_events: int = 0
     watchdog_restart_events: int = 0
+    tool_config_error_events: int = 0
+    tool_backend_error_events: int = 0
 
 
 def utc_iso(ts: float | None = None) -> str:
@@ -182,10 +193,24 @@ def journalctl_lines(unit: str, since_epoch: float, *, limit: int = 2000) -> lis
     return [line for line in proc.stdout.splitlines() if line.strip()]
 
 
+def _is_counted_gateway_error(line: str) -> bool:
+    """True for gateway/process health failures that should page turn_error_rate."""
+    return bool(
+        _ERROR_RE.search(line)
+        and not _ERROR_EXCLUDE_RE.search(line)
+        and not _TOOL_CONFIG_ERROR_RE.search(line)
+        and not _TOOL_BACKEND_ERROR_RE.search(line)
+    )
+
+
 def parse_journal_counts(gateway_lines: Iterable[str], watchdog_lines: Iterable[str] = ()) -> JournalCounts:
-    errors = fallbacks = watchdogs = 0
+    errors = fallbacks = watchdogs = tool_config_errors = tool_backend_errors = 0
     for line in gateway_lines:
-        if _ERROR_RE.search(line) and not _ERROR_EXCLUDE_RE.search(line):
+        if _TOOL_CONFIG_ERROR_RE.search(line):
+            tool_config_errors += 1
+        if _TOOL_BACKEND_ERROR_RE.search(line):
+            tool_backend_errors += 1
+        if _is_counted_gateway_error(line):
             errors += 1
         if _FALLBACK_RE.search(line):
             fallbacks += 1
@@ -200,7 +225,7 @@ def parse_journal_counts(gateway_lines: Iterable[str], watchdog_lines: Iterable[
             continue
         if "restarted" in text or "restarting" in text or "scheduled restart" in text:
             watchdogs += 1
-    return JournalCounts(errors, fallbacks, watchdogs)
+    return JournalCounts(errors, fallbacks, watchdogs, tool_config_errors, tool_backend_errors)
 
 
 def _line_epoch(line: str) -> float | None:
@@ -230,6 +255,8 @@ def build_bucket_series(rows: list[dict[str, Any]], gateway_lines: Iterable[str]
         "cost_usd": 0.0,
         "error_events": 0,
         "fallback_events": 0,
+        "tool_config_error_events": 0,
+        "tool_backend_error_events": 0,
     })
     for row in rows:
         bucket = _bucket_start(float(row["ts"]), bucket_seconds)
@@ -245,7 +272,11 @@ def build_bucket_series(rows: list[dict[str, Any]], gateway_lines: Iterable[str]
         if epoch is None:
             continue
         bucket = _bucket_start(epoch, bucket_seconds)
-        if _ERROR_RE.search(line) and not _ERROR_EXCLUDE_RE.search(line):
+        if _TOOL_CONFIG_ERROR_RE.search(line):
+            buckets[bucket]["tool_config_error_events"] += 1
+        if _TOOL_BACKEND_ERROR_RE.search(line):
+            buckets[bucket]["tool_backend_error_events"] += 1
+        if _is_counted_gateway_error(line):
             buckets[bucket]["error_events"] += 1
         if _FALLBACK_RE.search(line):
             buckets[bucket]["fallback_events"] += 1
@@ -264,6 +295,8 @@ def build_bucket_series(rows: list[dict[str, Any]], gateway_lines: Iterable[str]
             "cost_burn_rate_usd_bucket": round(item["cost_usd"], 6),
             "error_events": item["error_events"],
             "fallback_events": fallback_events,
+            "tool_config_error_events": item["tool_config_error_events"],
+            "tool_backend_error_events": item["tool_backend_error_events"],
         })
     return series
 

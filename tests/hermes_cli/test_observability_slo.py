@@ -110,7 +110,12 @@ def test_firecrawl_config_noise_excluded_real_500_still_counted(tmp_path: Path):
         # the second line, _ERROR_RE would never match and the exclusion would be vacuous).
         "1970-01-01T00:16:50+00:00 host python[1]: ERROR plugins.web.firecrawl.provider: "
         "Firecrawl client initialization failed: missing direct config and tool-gateway auth.",
+        # Firecrawl/web-tools config noise and provider quota/tool-backend failures
+        # are diagnostic only; they should not page as gateway turn errors.
         "1970-01-01T00:16:51+00:00 host python[1]: ERROR Web tools are not configured. Set FIRECRAWL_API_KEY",
+        "1970-01-01T00:16:51+00:00 host python[1]: Traceback (most recent call last):",
+        "1970-01-01T00:16:51+00:00 host python[1]: ERROR tools.x_search_tool: x_search failed: 429 Client Error: Too Many Requests for url: https://api.x.ai/v1/responses",
+        "1970-01-01T00:16:51+00:00 host python[1]: requests.exceptions.HTTPError: 429 Client Error: Too Many Requests for url: https://api.x.ai/v1/responses",
         # genuine gateway turn failure — must still be counted
         "1970-01-01T00:16:52+00:00 host python[1]: ERROR upstream returned 500 server error",
     ]
@@ -128,9 +133,15 @@ def test_firecrawl_config_noise_excluded_real_500_still_counted(tmp_path: Path):
     # 3 turns; only the real "500 server error" line counts -> 1/3, not 3/3.
     assert snapshot["turn_count"] == 3
     assert snapshot["metrics"]["turn_error_rate"] == 1 / 3
-    # The per-bucket series uses the same exclusion regex.
+    assert snapshot["journal_counts"]["tool_config_error_events"] == 2
+    assert snapshot["journal_counts"]["tool_backend_error_events"] == 2
+    # The per-bucket series uses the same classifier helpers.
     bucket_errors = sum(b["error_events"] for b in snapshot["series"])
+    bucket_config = sum(b["tool_config_error_events"] for b in snapshot["series"])
+    bucket_backend = sum(b["tool_backend_error_events"] for b in snapshot["series"])
     assert bucket_errors == 1
+    assert bucket_config == 2
+    assert bucket_backend == 2
 
 
 def test_write_snapshot_and_dashboard_panel_render(tmp_path: Path, monkeypatch):
