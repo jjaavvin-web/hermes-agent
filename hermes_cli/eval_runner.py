@@ -216,9 +216,25 @@ def evaluate_assertions(
 # --------------------------------------------------------------------------- #
 # lane: recall_at_k
 # --------------------------------------------------------------------------- #
-async def _run_recall_lane(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+async def _run_recall_lane(
+    rows: list[dict[str, Any]],
+    *,
+    recall_fn: Callable[[str, int], Awaitable[list[dict[str, Any]]]] | None = None,
+    fetch_fn: Callable[[list[str]], Awaitable[dict[str, str]]] | None = None,
+) -> list[dict[str, Any]]:
     """Score each row with the production ranker. Per-row result carries enough
-    to aggregate + gate. Stale (unresolved) targets are flagged, not failed."""
+    to aggregate + gate. Stale (unresolved) targets are flagged, not failed.
+
+    The champion/challenger gate (E3, hermes_cli.champion_challenger) injects an
+    alternate ranker via ``recall_fn`` (same ``(query, k) -> [{'content': ...}]``
+    contract as the module-level ``_recall``) so a variant can be scored without
+    duplicating any of this lane's resolution/assertion/aggregation logic.
+    ``fetch_fn`` overrides ground-truth content resolution and exists ONLY so the
+    gate's own hermetic tests stay off the live DB. Both default to the production
+    seams, so this lane's standalone behavior is byte-identical when nothing is
+    injected (the E1 runner + tests call ``executor(rows)`` with no kwargs)."""
+    recall = recall_fn or _recall
+    fetch = fetch_fn or _fetch_contents
     per: list[dict[str, Any]] = []
     for row in rows:
         qid = row.get("qid")
@@ -227,9 +243,9 @@ async def _run_recall_lane(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
         target = row["target_id"]
         distractors = list(row.get("distractor_ids", []))
         try:
-            results = await _recall(query, k)
+            results = await recall(query, k)
             ranked = [_norm(r.get("content", "")) for r in results]
-            wanted = await _fetch_contents([target, *distractors])
+            wanted = await fetch([target, *distractors])
             tgt = wanted.get(target)
             # Treat empty/whitespace-only resolved content as UNRESOLVED: a
             # content-less observation carries no checkable signal, so exclude it

@@ -98,6 +98,101 @@ counts — see below.
 Current corpus: 48 rows (9 holdout / 39 train), migrated from the 30-row
 `holdout.jsonl` + 18-row `holdout_wave2.jsonl`.
 
+## E3 — champion/challenger promotion gate (`hermes_cli/champion_challenger.py`)
+
+The structural antidote to fake-green: **never ship a new ranker/prompt config
+unless it provably beats the incumbent on the protected holdout split.** The gate
+**recommends + records** a decision; it does **not** auto-mutate any live config
+(promotion stays an explicit operator action).
+
+### The variant abstraction (reuses the runner — no duplicated scoring)
+
+A **variant** is a named scorer the corpus is run through. It reuses
+`eval_runner._run_recall_lane` via a thin seam — the lane grew two optional,
+keyword-only, default-`None` params (`recall_fn`, `fetch_fn`); with nothing
+injected the runner's standalone behavior (E1) is byte-identical:
+
+- `Variant(name, rank_fn=None)` — `rank_fn=None` is the **`production`** incumbent
+  (eval_runner's own production ranker seam).
+- A challenger injects `rank_fn(query, k) -> [content, …]` (an async ranker
+  returning ordered content strings). The gate adapts it to the lane's
+  `recall()`-shaped seam, so resolution, the must-pass assertions, and the
+  recall@k/MRR/nDCG aggregation are the **same** code the nightly gate runs.
+- `fetch_fn` (ground-truth id→content resolution) is the **same for both
+  variants** and exists only so the gate's hermetic tests stay off the live DB.
+  Because resolution is shared, the resolved-row set is identical across
+  champion/challenger and the per-row regression check is well defined.
+
+### The promotion rule (the heart of the deliverable)
+
+Both variants are scored **ONLY on `--split holdout`** (train is the challenger's
+tuning set — never gate on it). Then:
+
+```
+promote == challenger passes ALL its must-pass assertions on holdout
+        AND (challenger.recall_at_k - champion.recall_at_k) >= margin
+        AND challenger regresses NO must-pass assertion the champion passed
+```
+
+- **must-pass is a HARD gate.** A challenger with *higher* recall@k but *any*
+  must-pass failure on a resolved holdout row is **REJECTED** — aggregate recall
+  never outweighs a must-pass miss.
+- **No regression.** If the challenger fails a must-pass on a row the champion
+  passed, REJECT (reported with the offending qids), even if recall improved.
+- **Margin.** Ties and below-margin gains REJECT (`>=`, so `delta == margin`
+  promotes).
+- **Abstain on no signal.** If *either* side has zero resolved holdout rows
+  (total stale-out, e.g. a DB rebuild), the gate **ABSTAINs** — it can never
+  promote on no signal (mirrors the runner's total-stale-out → AMBER).
+
+### Decision record + ledger
+
+`compare(...)` returns a `PromotionDecision` — `{promote, status (promote |
+reject | abstain), reason, margin, champion_metrics, challenger_metrics, deltas,
+must_pass_champion, must_pass_challenger, regressed_qids, generated_at,
+provenance}` — and `append_decision(...)` appends it as one JSONL line
+(`encoding='utf-8'`, additive, never overwrites) to the decisions ledger:
+
+```
+$HERMES_HOME/state/learning-index/champion-challenger-decisions.jsonl
+```
+
+A **verifier lane** records decisions by invoking the CLI (below) on a schedule
+or on each candidate; the appended ledger row is the durable, auditable record of
+every promote/reject/abstain (dashboards key off `promote`/`status`/`deltas`).
+
+### CLI + exit codes
+
+```
+venv/bin/python -m hermes_cli.champion_challenger \
+  --corpus eval/recall_at_k.jsonl --champion production \
+  --challenger <name> --margin 0.02 [--json] [--no-ledger]
+```
+
+`--split` is **holdout-only** by construction. **Exit `0` == a decision was
+made** (read `promote`/`status` for the verdict — `0` does *not* mean "promote");
+non-zero (`1`) is an **infrastructure error only** (corpus missing, ranker import,
+DB). Named challengers register in `VARIANT_REGISTRY` (or are injected directly in
+tests); an unknown name is an infra error, never a silent pass.
+
+### Conservatism smoke (champion vs champion)
+
+Running `--champion production --challenger production` on holdout scores the
+incumbent against itself: `delta == 0 < margin` ⇒ the gate outputs **REJECT** (it
+cannot promote a no-op). On the live box this resolves 9/9 holdout rows at
+recall@10 = 1.0 on both sides → `delta +0.0000 < 0.0200` → REJECT, exit 0 —
+proof the gate is conservative.
+
+### Local checks (no live DB)
+
+```
+venv/bin/pytest tests/hermes_cli/test_champion_challenger.py -p no:cacheprovider -q
+venv/bin/ruff check hermes_cli/champion_challenger.py
+```
+
+The tests inject synthetic rankers + a synthetic `fetch_fn`, so they never touch
+the DB, the network, or a browser.
+
 ## Gate thresholds — `recall_at_k.meta.json`
 
 ```json
