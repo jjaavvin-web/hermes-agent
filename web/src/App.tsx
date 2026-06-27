@@ -93,6 +93,7 @@ import ProfileBuilderPage from "@/pages/ProfileBuilderPage";
 import SkillsPage from "@/pages/SkillsPage";
 import PluginsPage from "@/pages/PluginsPage";
 import OSPage from "@/pages/OSPage";
+import HtmlGalleryPage from "@/pages/HtmlGalleryPage";
 import LearningPage from "@/pages/LearningPage";
 import ExplorerPage from "@/pages/ExplorerPage";
 import WelcomePage from "@/pages/WelcomePage";
@@ -168,6 +169,7 @@ const BUILTIN_ROUTES_CORE: Record<string, ComponentType> = {
   "/plugins": PluginsPage,
   "/explorer": ExplorerPage,
   "/os": OSPage,
+  "/html": HtmlGalleryPage,
   "/learning": LearningPage,
   "/mcp": McpPage,
   "/pairing": PairingPage,
@@ -217,6 +219,7 @@ const BUILTIN_NAV_REST: NavItem[] = [
   { path: "/skills", labelKey: "skills", label: "Skills", icon: Package },
   { path: "/explorer", labelKey: "explorer", label: "Explorer", icon: Network },
   { path: "/os", labelKey: "os", label: "OS", icon: Server },
+  { path: "/html", label: "HTML", icon: Code },
   { path: "/learning", label: "Learning", icon: Sparkles },
   { path: "/plugins", labelKey: "plugins", label: "Plugins", icon: Puzzle },
   { path: "/mcp", label: "MCP", icon: Plug },

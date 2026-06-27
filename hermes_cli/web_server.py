@@ -294,6 +294,7 @@ from hermes_cli.dashboard_auth.public_paths import (
 _QUERY_TOKEN_PATHS: frozenset = frozenset({
     "/api/pulse/stream",
     "/api/dashboard/stream",
+    "/api/dashboard/artifacts/raw",
 })
 
 
@@ -13328,6 +13329,12 @@ try:
     _log.info("Mounted Command Center dashboard API route at /api/dashboard/command-center")
 except Exception as _exc:
     _log.warning("Failed to load dashboard_command_center routes: %s", _exc)
+try:
+    from hermes_cli.dashboard_artifacts import router as _artifacts_router
+    app.include_router(_artifacts_router)
+    _log.info("Mounted Artifacts dashboard API routes at /api/dashboard/artifacts")
+except Exception as _exc:
+    _log.warning("Failed to load dashboard_artifacts routes: %s", _exc)
 # ---------------------------------------------------------------------------
 # GitNexus Explorer — serve the production web UI under /_gitnexus-app/.
 # Mounted at a non-React path so the dashboard React route `/explorer`
