@@ -575,6 +575,13 @@ max_concurrent_sessions: 3
 gateway:
   max_concurrent_agent_runs: 4
 
+  # Off-loop lane pool: route heavy lane agent runs to a dedicated bounded
+  # ThreadPoolExecutor so they cannot starve asyncio event-loop helpers
+  # (heartbeat ticks, semaphore callbacks). Default OFF — set true + restart
+  # to enable. Override: HERMES_OFFLOOP_LANE_POOL=1.
+  offloop_lane_pool: false
+  # lane_pool_workers: 10  # Default: max_concurrent_agent_runs
+
 # When true, group/channel chats use one session per participant when the platform
 # provides a user ID. This is the secure default and prevents users in the same
 # room from sharing context, interrupts, and token costs. Set false only if you

@@ -144,6 +144,27 @@ def resolve_max_concurrent_agent_runs(config: Any) -> int:
         raw = getattr(config, "max_concurrent_agent_runs", None)
     return coerce_max_concurrent_agent_runs(raw, key=key)
 
+def resolve_lane_pool_workers(config: Any, *, default: int) -> int:
+    """Resolve gateway.lane_pool_workers, falling back to ``default``.
+
+    Used by the webhook adapter to size the off-loop lane executor pool when
+    ``offloop_lane_pool`` is enabled.  ``default`` should be the resolved
+    ``max_concurrent_agent_runs`` so the pool matches the admission semaphore
+    cap when no explicit override is configured.
+    """
+    raw: Any = None
+    key = "gateway.lane_pool_workers"
+    if isinstance(config, dict):
+        gateway_cfg = config.get("gateway")
+        if isinstance(gateway_cfg, dict):
+            raw = gateway_cfg.get("lane_pool_workers")
+        elif "lane_pool_workers" in config:
+            raw = config.get("lane_pool_workers")
+            key = "lane_pool_workers"
+    else:
+        raw = getattr(config, "lane_pool_workers", None)
+    return coerce_max_concurrent_agent_runs(raw, key=key, default=default)
+
 
 def active_session_limit_message(active_count: int, max_sessions: int) -> str:
     return (

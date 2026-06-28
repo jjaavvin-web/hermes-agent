@@ -55,7 +55,11 @@ from gateway.platforms.base import (
     MessageType,
     SendResult,
 )
-from hermes_cli.active_sessions import resolve_max_concurrent_agent_runs
+from hermes_cli.active_sessions import (
+    resolve_max_concurrent_agent_runs,
+    resolve_lane_pool_workers,
+)
+from gateway.lane_executor import lane_pool_enabled, get_lane_pool
 from tools.approval import CREDENTIAL_EXFIL_DENY_PATTERNS
 
 logger = logging.getLogger(__name__)
@@ -180,6 +184,23 @@ class WebhookAdapter(BasePlatformAdapter):
             {"gateway": {"max_concurrent_agent_runs": config.extra.get("max_concurrent_agent_runs")}}
         )
         self._agent_run_semaphore = _get_agent_run_semaphore(self._max_concurrent_agent_runs)
+
+        # Off-loop lane pool: when enabled, heavy lane runs go to a dedicated
+        # bounded ThreadPoolExecutor instead of the shared asyncio default pool.
+        # Gated OFF by default; unchanged behavior when disabled.
+        self._lane_pool_enabled: bool = lane_pool_enabled(config.extra)
+        if self._lane_pool_enabled:
+            _lane_pool_workers: int = resolve_lane_pool_workers(
+                {"gateway": {"lane_pool_workers": config.extra.get("lane_pool_workers")}},
+                default=self._max_concurrent_agent_runs,
+            )
+            self._lane_pool = get_lane_pool(_lane_pool_workers)
+            logger.info(
+                "[webhook] off-loop lane pool ENABLED workers=%d",
+                _lane_pool_workers,
+            )
+        else:
+            self._lane_pool = None
 
         # Body size limit (auth-before-body pattern)
         self._max_body_bytes: int = int(
@@ -349,7 +370,10 @@ class WebhookAdapter(BasePlatformAdapter):
 
     async def _handle_health(self, request: "web.Request") -> "web.Response":
         """GET /health — simple health check."""
-        return web.json_response({"status": "ok", "platform": "webhook"})
+        payload: dict = {"status": "ok", "platform": "webhook"}
+        if self._lane_pool_enabled and self._lane_pool is not None:
+            payload["lane_pool"] = self._lane_pool.stats()
+        return web.json_response(payload)
 
     def _reload_dynamic_routes(self) -> None:
         """Reload agent-created subscriptions from disk if the file changed."""
@@ -786,29 +810,65 @@ class WebhookAdapter(BasePlatformAdapter):
         # semaphore means the gateway is already at its configured in-flight
         # agent-run ceiling, so reject with Retry-After instead of creating an
         # unbounded task that can starve the async event loop.
-        if self._agent_run_semaphore.locked():
-            retry_after = "30"
-            logger.warning(
-                "[webhook] rejecting run: max_concurrent_agent_runs reached (%d) route=%s delivery=%s",
-                self._max_concurrent_agent_runs,
-                route_name,
-                delivery_id,
-            )
-            self._seen_deliveries.pop(delivery_id, None)
-            return web.json_response(
-                {
-                    "status": "rate_limited",
-                    "error": "max_concurrent_agent_runs_exhausted",
-                    "retry_after": int(retry_after),
-                    "delivery_id": delivery_id,
-                },
-                status=429,
-                headers={"Retry-After": retry_after},
-            )
-        await self._agent_run_semaphore.acquire()
+        if self._lane_pool_enabled:
+            # Off-loop admission: BoundedSemaphore.acquire(blocking=False) is
+            # synchronous and never suspends the event loop.
+            if not self._lane_pool.try_admit():
+                retry_after = "30"
+                logger.warning(
+                    "[webhook] lane pool full, rejecting run: capacity=%d route=%s delivery=%s",
+                    self._lane_pool.stats()["capacity"],
+                    route_name,
+                    delivery_id,
+                )
+                self._seen_deliveries.pop(delivery_id, None)
+                return web.json_response(
+                    {
+                        "status": "rate_limited",
+                        "error": "max_concurrent_agent_runs_exhausted",
+                        "retry_after": int(retry_after),
+                        "delivery_id": delivery_id,
+                    },
+                    status=429,
+                    headers={"Retry-After": retry_after},
+                )
+            # Admitted via lane pool; semaphore is bypassed on this path.
+        else:
+            if self._agent_run_semaphore.locked():
+                retry_after = "30"
+                logger.warning(
+                    "[webhook] rejecting run: max_concurrent_agent_runs reached (%d) route=%s delivery=%s",
+                    self._max_concurrent_agent_runs,
+                    route_name,
+                    delivery_id,
+                )
+                self._seen_deliveries.pop(delivery_id, None)
+                return web.json_response(
+                    {
+                        "status": "rate_limited",
+                        "error": "max_concurrent_agent_runs_exhausted",
+                        "retry_after": int(retry_after),
+                        "delivery_id": delivery_id,
+                    },
+                    status=429,
+                    headers={"Retry-After": retry_after},
+                )
+            await self._agent_run_semaphore.acquire()
 
         async def _run_with_backpressure() -> None:
+            # _lane_tok is set inside the try so that any BaseException between
+            # set_lane_executor() and the try-body is still covered by the finally.
+            # _lane_reset_fn is stored before calling set_lane_executor so it is
+            # available in the finally even if set_lane_executor itself raises.
+            _lane_tok = None
+            _lane_reset_fn = None
             try:
+                if self._lane_pool_enabled:
+                    from agent.codex_session_context import (
+                        set_lane_executor, reset_lane_executor,
+                    )
+                    _lane_reset_fn = reset_lane_executor
+                    _lane_tok = set_lane_executor(self._lane_pool.executor)
                 # Phase 3: when HERMES_WEBHOOK_WORKTREE is on, bind the run to the relay
                 # git worktree so it works on a branch, not the live tree. If a worktree
                 # can't be guaranteed, REFUSE (503) — NEVER fall through to the live cwd.
@@ -840,7 +900,12 @@ class WebhookAdapter(BasePlatformAdapter):
                         route_name,
                         exc_info=True,
                     )
-                self._agent_run_semaphore.release()
+                if self._lane_pool_enabled:
+                    if _lane_tok is not None and _lane_reset_fn is not None:
+                        _lane_reset_fn(_lane_tok)
+                    self._lane_pool.release()
+                else:
+                    self._agent_run_semaphore.release()
 
         # Phase 3 worktree preflight must happen after capacity acquisition but
         # before task creation; release the slot if setup refuses the run.
@@ -848,7 +913,10 @@ class WebhookAdapter(BasePlatformAdapter):
         if self._wt_enabled:
             _wt_for_run = await asyncio.to_thread(self._ensure_relay_worktree)
             if _wt_for_run is None:
-                self._agent_run_semaphore.release()
+                if self._lane_pool_enabled:
+                    self._lane_pool.release()
+                else:
+                    self._agent_run_semaphore.release()
                 self._seen_deliveries.pop(delivery_id, None)
                 logger.error(
                     "[webhook] relay worktree unavailable; refusing run route=%s delivery=%s",
