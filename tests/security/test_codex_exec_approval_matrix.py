@@ -112,7 +112,6 @@ def test_apply_patch_approval_declines_without_auto_approve_when_callback_missin
     assert session._decide_apply_patch_approval({"reason": "edit requested"}) == "decline"
 
 
-@pytest.mark.xfail(strict=True, reason=KEYSTONE_XFAIL_REASON)
 def test_codex_exec_auto_accept_must_route_through_check_all_command_guards(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -129,7 +128,6 @@ def test_codex_exec_auto_accept_must_route_through_check_all_command_guards(
     assert observed == [(HARDLINE_COMMAND, "local")]
 
 
-@pytest.mark.xfail(strict=True, reason=KEYSTONE_XFAIL_REASON)
 def test_codex_exec_callback_accept_must_route_through_detect_hardline_before_accept(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -148,7 +146,6 @@ def test_codex_exec_callback_accept_must_route_through_detect_hardline_before_ac
     assert recorder.calls == []
 
 
-@pytest.mark.xfail(strict=True, reason=KEYSTONE_XFAIL_REASON)
 def test_codex_apply_patch_auto_accept_must_route_through_check_all_command_guards(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -165,7 +162,6 @@ def test_codex_apply_patch_auto_accept_must_route_through_check_all_command_guar
     assert observed == ["apply_patch"]
 
 
-@pytest.mark.xfail(strict=True, reason=KEYSTONE_XFAIL_REASON)
 def test_codex_apply_patch_callback_accept_must_route_through_check_all_command_guards(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

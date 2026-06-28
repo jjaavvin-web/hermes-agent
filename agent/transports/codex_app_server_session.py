@@ -38,6 +38,7 @@ from agent.transports.codex_app_server import (
     CodexAppServerError,
 )
 from agent.transports.codex_event_projector import CodexEventProjector
+from tools import approval
 
 logger = logging.getLogger(__name__)
 
@@ -695,9 +696,21 @@ class CodexAppServerSession:
             )
 
     def _decide_exec_approval(self, params: dict) -> str:
-        if self._routing.auto_approve_exec:
-            return "accept"
         command = params.get("command") or ""
+        # KEYSTONE (#1b): codex-native exec must clear the SAME guard floor as
+        # the terminal tool — codex's own approval surface otherwise bypasses
+        # the deny/hardline/exfil spine entirely. Under auto-approve (every
+        # loki/cron lane, where there is no human) run the full command-guard
+        # chain and fail closed on any block.
+        if self._routing.auto_approve_exec:
+            guard = approval.check_all_command_guards(command, "local")
+            if not guard.get("approved", False):
+                logger.warning(
+                    "codex exec auto-approve refused by command guard: %s",
+                    guard.get("message"),
+                )
+                return "decline"
+            return "accept"
         # Codex's CommandExecutionRequestApprovalParams has cwd as Optional —
         # fall back to the session's cwd when codex doesn't include it so the
         # approval prompt is never empty (quirk #10 fix).
@@ -707,6 +720,15 @@ class CodexAppServerSession:
         if reason:
             description += f" — {reason}"
         if self._approval_callback is not None:
+            # KEYSTONE (#1b): never even prompt for a hardline command — the
+            # unconditional blocklist applies before the human/callback sees it.
+            blocked, hardline_desc = approval.detect_hardline_command(command)
+            if blocked:
+                logger.warning(
+                    "codex exec refused by hardline floor before callback: %s",
+                    hardline_desc,
+                )
+                return "decline"
             try:
                 choice = self._approval_callback(
                     command, description, allow_permanent=False
@@ -718,7 +740,17 @@ class CodexAppServerSession:
         return "decline"  # fail-closed when no callback wired
 
     def _decide_apply_patch_approval(self, params: dict) -> str:
+        # KEYSTONE (#1b): apply_patch is a write to the filesystem and must
+        # clear the same command-guard floor as exec/terminal so codex's
+        # auto-accept can't bypass the deny spine.
         if self._routing.auto_approve_apply_patch:
+            guard = approval.check_all_command_guards("apply_patch", "local")
+            if not guard.get("approved", False):
+                logger.warning(
+                    "codex apply_patch auto-approve refused by command guard: %s",
+                    guard.get("message"),
+                )
+                return "decline"
             return "accept"
         if self._approval_callback is not None:
             # FileChangeRequestApprovalParams gives us reason + grantRoot.
@@ -746,6 +778,14 @@ class CodexAppServerSession:
                 else f"apply_patch: {reason}" if reason
                 else "apply_patch"
             )
+            # KEYSTONE (#1b): clear the guard floor before the callback sees it.
+            guard = approval.check_all_command_guards(command_label, "local")
+            if not guard.get("approved", False):
+                logger.warning(
+                    "codex apply_patch refused by command guard before callback: %s",
+                    guard.get("message"),
+                )
+                return "decline"
             try:
                 choice = self._approval_callback(
                     command_label,
