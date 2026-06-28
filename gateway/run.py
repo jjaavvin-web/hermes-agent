@@ -13194,10 +13194,18 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         clear_session_vars(tokens)
 
     async def _run_in_executor_with_context(self, func, *args):
-        """Run blocking work in the thread pool while preserving session contextvars."""
+        """Run blocking work in the thread pool while preserving session contextvars.
+
+        When a lane-dedicated executor has been installed in the current
+        task's context (via ``agent.codex_session_context.set_lane_executor``),
+        the blocking call is routed to that isolated pool instead of asyncio's
+        default ``ThreadPoolExecutor``.  Passing ``None`` as the executor
+        preserves byte-for-byte identical behaviour for all non-lane callers.
+        """
+        from agent.codex_session_context import get_lane_executor
         loop = asyncio.get_running_loop()
         ctx = copy_context()
-        return await loop.run_in_executor(None, ctx.run, func, *args)
+        return await loop.run_in_executor(get_lane_executor(), ctx.run, func, *args)
 
     def _decide_image_input_mode(self) -> str:
         """Resolve the image-input routing for the currently active model.

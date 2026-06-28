@@ -547,6 +547,14 @@ class GatewayConfig:
     max_concurrent_sessions: Optional[int] = None  # Positive int caps simultaneous active chat sessions
     max_concurrent_agent_runs: int = 4  # Positive int caps simultaneous gateway/webhook agent runs
 
+    # Off-loop lane-pool: when True, heavy webhook/lane agent runs are routed to
+    # a dedicated bounded ThreadPoolExecutor instead of the shared asyncio default
+    # pool. This prevents lane threads from starving event-loop helpers (heartbeat
+    # ticks, semaphore callbacks) under high concurrency.  Default OFF; opt in via
+    # config or HERMES_OFFLOOP_LANE_POOL=1.
+    offloop_lane_pool: bool = False
+    lane_pool_workers: Optional[int] = None  # None → falls back to max_concurrent_agent_runs
+
     # Multi-profile multiplexing (opt-in; default off preserves one-gateway-per-profile).
     # When True, the default profile's gateway serves inbound messages for every
     # profile on the host: profiles are stamped into session keys and (in later
@@ -660,6 +668,8 @@ class GatewayConfig:
             "thread_sessions_per_user": self.thread_sessions_per_user,
             "max_concurrent_sessions": self.max_concurrent_sessions,
             "max_concurrent_agent_runs": self.max_concurrent_agent_runs,
+            "offloop_lane_pool": self.offloop_lane_pool,
+            "lane_pool_workers": self.lane_pool_workers,
             "multiplex_profiles": self.multiplex_profiles,
             "unauthorized_dm_behavior": self.unauthorized_dm_behavior,
             "streaming": self.streaming.to_dict(),
@@ -723,6 +733,14 @@ class GatewayConfig:
             max_concurrent_key,
         )
         max_concurrent_agent_runs = resolve_max_concurrent_agent_runs(data)
+        offloop_lane_pool = _coerce_bool(
+            data.get("offloop_lane_pool") or nested_gateway.get("offloop_lane_pool"),
+            False,
+        )
+        lane_pool_workers = _coerce_optional_positive_int(
+            data.get("lane_pool_workers") or nested_gateway.get("lane_pool_workers"),
+            "gateway.lane_pool_workers",
+        )
         unauthorized_dm_behavior = _normalize_unauthorized_dm_behavior(
             data.get("unauthorized_dm_behavior"),
             "pair",
@@ -752,6 +770,8 @@ class GatewayConfig:
             multiplex_profiles=_coerce_bool(multiplex_profiles, False),
             max_concurrent_sessions=max_concurrent_sessions,
             max_concurrent_agent_runs=max_concurrent_agent_runs,
+            offloop_lane_pool=offloop_lane_pool,
+            lane_pool_workers=lane_pool_workers,
             unauthorized_dm_behavior=unauthorized_dm_behavior,
             streaming=StreamingConfig.from_dict(data.get("streaming", {})),
             session_store_max_age_days=session_store_max_age_days,
