@@ -22,7 +22,6 @@ from agent.transports.codex_app_server_session import (
 )
 from tools import approval as approval_guards
 
-KEYSTONE_XFAIL_REASON = "pending KEYSTONE wiring (#1b), Claude-hands-on"
 HARDLINE_COMMAND = "rm -rf /"
 
 
@@ -176,5 +175,17 @@ def test_codex_apply_patch_callback_accept_must_route_through_check_all_command_
     session = make_session(approval_callback=recorder)
 
     assert session._decide_apply_patch_approval({"reason": "apply test patch"}) == "decline"
-    assert observed == ["apply_patch: apply test patch"]
+    assert observed == ["apply_patch"]
     assert recorder.calls == []
+
+
+def test_exec_auto_approve_accepts_benign_command_via_real_guard() -> None:
+    """Positive regression (#1b review): a benign command on the auto-approve
+    path must still be ACCEPTED against the REAL command-guard (no monkeypatch),
+    proving the new guard floor does not over-decline normal lane work."""
+    session = make_session(auto_approve_exec=True)
+
+    assert (
+        session._decide_exec_approval({"command": "echo hello", "cwd": "/tmp"})
+        == "accept"
+    )

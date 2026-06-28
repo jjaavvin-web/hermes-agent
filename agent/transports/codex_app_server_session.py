@@ -695,20 +695,54 @@ class CodexAppServerSession:
                 rid, code=-32601, message=f"Unsupported method: {method}"
             )
 
+    def _command_guard_blocks(self, command_label: str, ctx: str) -> bool:
+        """Run the full command-guard floor; True = BLOCK (caller declines).
+
+        Wrapped so an unexpected guard error fails CLOSED rather than crashing
+        the turn (#1b review). A missing/None "approved" key also fails closed."""
+        try:
+            guard = approval.check_all_command_guards(command_label, "local")
+        except Exception:
+            logger.exception(
+                "command guard raised for codex %s; failing closed", ctx
+            )
+            return True
+        if not guard.get("approved", False):
+            logger.warning(
+                "codex %s refused by command guard: %s", ctx, guard.get("message")
+            )
+            return True
+        return False
+
+    def _hardline_blocks(self, command: str) -> bool:
+        """True if command is on the unconditional hardline blocklist.
+
+        Wrapped to fail CLOSED on any unexpected detection error (#1b review)."""
+        try:
+            blocked, hardline_desc = approval.detect_hardline_command(command)
+        except Exception:
+            logger.exception("hardline detection raised; failing closed")
+            return True
+        if blocked:
+            logger.warning(
+                "codex exec refused by hardline floor before callback: %s",
+                hardline_desc,
+            )
+            return True
+        return False
+
     def _decide_exec_approval(self, params: dict) -> str:
         command = params.get("command") or ""
-        # KEYSTONE (#1b): codex-native exec must clear the SAME guard floor as
-        # the terminal tool — codex's own approval surface otherwise bypasses
-        # the deny/hardline/exfil spine entirely. Under auto-approve (every
-        # loki/cron lane, where there is no human) run the full command-guard
-        # chain and fail closed on any block.
+        # KEYSTONE (#1b): route codex-native exec through the SAME guard floor as
+        # the terminal tool so codex's approval surface can't bypass the
+        # deny/hardline/exfil spine. The LIVE exposure this closes is the
+        # CALLBACK path below (a prompt-injected hardline command must never be
+        # surfaced to a human approver). The auto-approve branch is
+        # forward-looking defense-in-depth — no production call site sets
+        # auto_approve_exec=True today (codex_runtime.py defaults it False); if
+        # one ever does, the floor is already enforced.
         if self._routing.auto_approve_exec:
-            guard = approval.check_all_command_guards(command, "local")
-            if not guard.get("approved", False):
-                logger.warning(
-                    "codex exec auto-approve refused by command guard: %s",
-                    guard.get("message"),
-                )
+            if self._command_guard_blocks(command, "exec auto-approve"):
                 return "decline"
             return "accept"
         # Codex's CommandExecutionRequestApprovalParams has cwd as Optional —
@@ -722,12 +756,7 @@ class CodexAppServerSession:
         if self._approval_callback is not None:
             # KEYSTONE (#1b): never even prompt for a hardline command — the
             # unconditional blocklist applies before the human/callback sees it.
-            blocked, hardline_desc = approval.detect_hardline_command(command)
-            if blocked:
-                logger.warning(
-                    "codex exec refused by hardline floor before callback: %s",
-                    hardline_desc,
-                )
+            if self._hardline_blocks(command):
                 return "decline"
             try:
                 choice = self._approval_callback(
@@ -740,16 +769,13 @@ class CodexAppServerSession:
         return "decline"  # fail-closed when no callback wired
 
     def _decide_apply_patch_approval(self, params: dict) -> str:
-        # KEYSTONE (#1b): apply_patch is a write to the filesystem and must
-        # clear the same command-guard floor as exec/terminal so codex's
-        # auto-accept can't bypass the deny spine.
+        # KEYSTONE (#1b): apply_patch is a filesystem write; route it through the
+        # command-guard floor too. apply_patch is NOT a shell command, so the
+        # guard is a coarse floor (it does not inspect patch CONTENT) — we pass
+        # the FIXED label "apply_patch", never the attacker-controllable reason
+        # string, so a crafted reason can't trip a deny pattern (#1b review).
         if self._routing.auto_approve_apply_patch:
-            guard = approval.check_all_command_guards("apply_patch", "local")
-            if not guard.get("approved", False):
-                logger.warning(
-                    "codex apply_patch auto-approve refused by command guard: %s",
-                    guard.get("message"),
-                )
+            if self._command_guard_blocks("apply_patch", "apply_patch auto-approve"):
                 return "decline"
             return "accept"
         if self._approval_callback is not None:
@@ -779,12 +805,10 @@ class CodexAppServerSession:
                 else "apply_patch"
             )
             # KEYSTONE (#1b): clear the guard floor before the callback sees it.
-            guard = approval.check_all_command_guards(command_label, "local")
-            if not guard.get("approved", False):
-                logger.warning(
-                    "codex apply_patch refused by command guard before callback: %s",
-                    guard.get("message"),
-                )
+            # Guard on the FIXED "apply_patch" label (not the reason-laden
+            # command_label) to avoid a reason-injection DoS; command_label is
+            # still shown to the human callback below for context.
+            if self._command_guard_blocks("apply_patch", "apply_patch"):
                 return "decline"
             try:
                 choice = self._approval_callback(
