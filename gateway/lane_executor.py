@@ -67,9 +67,13 @@ class LaneExecutorPool:
         ``True`` (and increments *inflight*) on success; ``False`` (and
         increments *rejected*) when the pool is at capacity.  Never blocks
         the calling thread or coroutine.
+
+        The semaphore acquire and counter update are performed together inside
+        ``_lock`` so that ``stats()`` never observes a transient mismatch
+        between the semaphore value and ``_inflight``.
         """
-        acquired = self._gate.acquire(blocking=False)
         with self._lock:
+            acquired = self._gate.acquire(blocking=False)
             if acquired:
                 self._inflight += 1
             else:
@@ -77,11 +81,25 @@ class LaneExecutorPool:
         return acquired
 
     def release(self) -> None:
-        """Release one admission slot after a lane run finishes."""
+        """Release one admission slot after a lane run finishes.
+
+        The counter decrement and semaphore release are paired inside ``_lock``
+        to prevent an over-release (``BoundedSemaphore`` raises ``ValueError``
+        if its internal counter would exceed the initial value).  A spurious
+        ``release()`` call with ``inflight == 0`` is logged and silently
+        dropped instead of propagating a ``ValueError`` through the caller's
+        ``finally`` block and killing the background task.
+        """
         with self._lock:
             if self._inflight > 0:
                 self._inflight -= 1
-        self._gate.release()
+                self._gate.release()
+            else:
+                import logging as _logging
+                _logging.getLogger(__name__).warning(
+                    "[lane_executor] release() called with inflight=0 "
+                    "(over-release guard fired — possible double-release bug)"
+                )
 
     # ------------------------------------------------------------------
     # Executor access

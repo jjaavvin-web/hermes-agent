@@ -1,32 +1,29 @@
-"""Loop-liveness canary tests for the off-loop codex-lane executor pool.
+"""Loop-liveness canary + starvation-contrast tests for the off-loop lane pool.
 
-These tests verify that routing heavy blocking work through a DEDICATED
-``ThreadPoolExecutor`` does NOT starve asyncio's event loop.
+MINOR-5 fix: the original ``test_loop_stays_live_under_n_heavy_lanes`` was
+tautological — ``loop.run_in_executor`` is non-blocking regardless of which
+pool is passed, so the loop trivially stayed live.  This file replaces it with
+``test_dedicated_pool_prevents_default_pool_starvation`` which *actually
+distinguishes* the on-pool vs off-pool paths via a measurable contrast:
 
-Design contract under test
---------------------------
-- ``LaneExecutorPool.try_admit()`` is synchronous (never awaits).
-- With N=10 heavy lanes (sleep 0.3-0.5s) active simultaneously, the event
-  loop still makes measurable progress: liveness-gate tick fires, and the
-  measured loop-lag stays below 0.5 s.
-- With the pool saturated, ``try_admit()`` returns False immediately
-  (no yield point, no scheduling cost to the caller).
+  (A) Route N heavy blocking sleeps to the DEFAULT pool (small, 2 workers)
+      → the loop-helper (another run_in_executor on DEFAULT) is starved ≈1 s.
+  (B) Route the same heavy sleeps to the DEDICATED lane pool (N workers)
+      → the loop-helper on DEFAULT runs almost immediately (<50 ms).
 
-The tests use a real ``_LoopLivenessGate`` at a short tick interval so
-they finish well within the 30 s per-test timeout.
+Assertion: starved_A > 3 × time_B.  The test FAILS if heavy lane work is
+accidentally routed to the default pool.
 """
 
 from __future__ import annotations
 
 import asyncio
 import concurrent.futures
-import random
 import time
 
 import pytest
 
 from gateway.lane_executor import LaneExecutorPool, reset_lane_pool
-from hermes_cli.gateway import _LoopLivenessGate
 
 
 @pytest.fixture(autouse=True)
@@ -37,74 +34,90 @@ def _reset_lane_pool_singleton():
 
 
 @pytest.mark.asyncio
-async def test_loop_stays_live_under_n_heavy_lanes():
-    """Start 10 heavy lane tasks; the event loop keeps making progress.
+async def test_dedicated_pool_prevents_default_pool_starvation():
+    """Starvation-contrast: heavy work on DEFAULT pool starves loop helpers;
+    on DEDICATED pool it does not.
 
-    Contract:
-    - _LoopLivenessGate.loop_is_live() stays True throughout the run
-    - Maximum observed loop lag < 0.5 s
-    - All 10 tasks complete before the test exits
+    Implementation
+    --------------
+    A constrained default executor (max_workers=2) is installed for the
+    duration of the test.  N=10 heavy tasks (sleep 0.25 s each) are submitted
+    to EITHER the default pool (Part A) or the lane pool (Part B).
+    A lightweight no-op is then submitted to the DEFAULT pool and timed.
+
+    Part A expected: no-op must wait for ~(N/2 - 1) * 0.25 s ≈ 1.0 s while
+    the default pool is saturated.
+    Part B expected: no-op completes almost immediately (<50 ms) because the
+    default pool is free.
+
+    Ratio assertion: starved_A > 3 * time_B ensures the test would FAIL if
+    heavy work were routed to the default pool instead of the lane pool.
     """
     N = 10
-    pool = LaneExecutorPool(max_workers=N)
-    gate = _LoopLivenessGate(wedge_budget_sec=2.0, tick_interval_sec=0.05)
-    gate.start()
+    SMALL_CAP = 2          # constrained default pool
+    SLEEP_DUR = 0.25       # each heavy task blocks this long (seconds)
 
-    max_lag = 0.0
-    lag_samples: list = []
-    stop_sampling = asyncio.Event()
-
-    async def _lag_probe():
-        """Sample event-loop lag every 50 ms."""
-        nonlocal max_lag
-        while not stop_sampling.is_set():
-            t0 = time.monotonic()
-            await asyncio.sleep(0.05)
-            gap = time.monotonic() - t0 - 0.05
-            lag_samples.append(max(0.0, gap))
-            if lag_samples:
-                max_lag = max(lag_samples)
-
-    probe_task = asyncio.create_task(_lag_probe())
-
-    def _heavy_work():
-        """Simulate a blocking lane run (0.3-0.5 s)."""
-        time.sleep(random.uniform(0.3, 0.5))
+    def _heavy():
+        time.sleep(SLEEP_DUR)
 
     loop = asyncio.get_running_loop()
-    futures = []
-    for _ in range(N):
-        admitted = pool.try_admit()
-        assert admitted, "Pool should admit all N initial requests"
-        fut = loop.run_in_executor(pool.executor, _heavy_work)
-        futures.append(fut)
-
-    # Wait for all heavy work to finish
-    await asyncio.gather(*futures)
-
-    # Release slots (would normally happen in _run_with_backpressure finally)
-    for _ in range(N):
-        pool.release()
-
-    stop_sampling.set()
-    await probe_task
-
-    await gate.stop()
-
-    # Assertions
-    assert gate.loop_is_live(), (
-        "Loop liveness gate reports stale tick; last age: {:.3f}s".format(gate.age())
+    small_pool = concurrent.futures.ThreadPoolExecutor(
+        max_workers=SMALL_CAP, thread_name_prefix="test-default"
     )
-    assert max_lag < 0.5, (
-        "Max event-loop lag {:.3f}s exceeds 0.5 s threshold — "
-        "lane pool may be blocking the event loop".format(max_lag)
-    )
-    # All slots released
-    stats = pool.stats()
-    assert stats["inflight"] == 0
-    assert stats["rejected"] == 0
+    lane_pool = LaneExecutorPool(max_workers=N)
 
-    pool.shutdown(wait=False)
+    # Replace the default executor for this test's event loop only.
+    # pytest-asyncio strict mode gives each test a fresh loop, so this
+    # modification does not leak to other tests.
+    loop.set_default_executor(small_pool)
+
+    try:
+        # ---- Part A: saturate the DEFAULT (small) pool ----
+        # Submit N heavy tasks; they queue up 2-at-a-time.
+        futs_A = [loop.run_in_executor(None, _heavy) for _ in range(N)]
+
+        t0 = time.monotonic()
+        # This no-op also uses the default pool → queued behind the N heavy tasks.
+        await loop.run_in_executor(None, lambda: None)
+        starved_A = time.monotonic() - t0
+
+        # Drain Part A (most tasks have already finished by now).
+        await asyncio.gather(*futs_A, return_exceptions=True)
+
+        # ---- Part B: route heavy work to the DEDICATED lane pool ----
+        # Default pool is now free; heavy tasks go to lane_pool.
+        futs_B = [loop.run_in_executor(lane_pool.executor, _heavy) for _ in range(N)]
+
+        t0 = time.monotonic()
+        # Same no-op on the DEFAULT pool, which is uncontested now.
+        await loop.run_in_executor(None, lambda: None)
+        time_B = time.monotonic() - t0
+
+        await asyncio.gather(*futs_B, return_exceptions=True)
+
+    finally:
+        # No need to restore the default executor: pytest-asyncio strict mode
+        # creates a fresh event loop for each test, so small_pool is isolated
+        # to this test's loop and is safely discarded after shutdown.
+        small_pool.shutdown(wait=False)
+        lane_pool.shutdown(wait=False)
+
+    # ---- Assertions ----
+    # Expected: starved_A ≈ (N/SMALL_CAP - 1) * SLEEP_DUR ≈ 1.0 s
+    #           time_B    ≈ 0 ms (default pool free)
+    # Guard: use max(time_B, 0.005) to prevent divide-by-zero in the error msg.
+    assert starved_A > 3 * max(time_B, 0.005), (
+        "Starvation contrast too low: A={:.3f}s B={:.3f}s ratio={:.1f}x. "
+        "If this fails, lane work is routing to the default pool and starving "
+        "loop helpers.".format(
+            starved_A, time_B, starved_A / max(time_B, 0.001)
+        )
+    )
+    # Sanity: Part B baseline must be fast (less than one heavy-task duration).
+    assert time_B < SLEEP_DUR, (
+        "Baseline time_B={:.3f}s should be <{:.3f}s when default pool is "
+        "free.".format(time_B, SLEEP_DUR)
+    )
 
 
 def test_admission_is_offloop():

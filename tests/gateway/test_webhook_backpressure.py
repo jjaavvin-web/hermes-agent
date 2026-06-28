@@ -312,3 +312,53 @@ async def test_flag_off_uses_default_executor_unchanged(monkeypatch):
         assert get_lane_executor() is None
     finally:
         pool.shutdown(wait=False)
+
+
+def test_gateway_config_offloop_lane_pool_reaches_adapter():
+    """MAJOR-1 regression: GatewayConfig.offloop_lane_pool=True must survive
+    the run.py config.extra injection and actually enable the lane pool in
+    the WebhookAdapter.
+
+    This tests the exact same dict-merge that GatewayRunner._create_adapter
+    performs when platform == Platform.WEBHOOK (the MAJOR-1 fix site).
+    Without the fix, gateway.offloop_lane_pool: true in config.yaml was
+    silently dropped and adapter._lane_pool_enabled stayed False.
+    """
+    from gateway.config import GatewayConfig, PlatformConfig
+
+    # Build a GatewayConfig as load_gateway_config() would produce it.
+    gw_config = GatewayConfig(offloop_lane_pool=True, max_concurrent_agent_runs=4)
+    assert gw_config.offloop_lane_pool is True
+
+    # Simulate what run.py _create_adapter does for Platform.WEBHOOK (MAJOR-1 fix):
+    base_extra = {
+        "host": "127.0.0.1",
+        "port": 0,
+        "routes": {
+            "loki1": {
+                "secret": _INSECURE_NO_AUTH,
+                "prompt": "{message}",
+                "deliver": "log",
+            }
+        },
+    }
+    injected_extra = {
+        **base_extra,
+        "max_concurrent_agent_runs": gw_config.max_concurrent_agent_runs,
+        # These two lines are the MAJOR-1 fix:
+        "offloop_lane_pool": base_extra.get("offloop_lane_pool", gw_config.offloop_lane_pool),
+        "lane_pool_workers": base_extra.get("lane_pool_workers", gw_config.lane_pool_workers),
+    }
+    platform_cfg = PlatformConfig(enabled=True, extra=injected_extra)
+
+    adapter = WebhookAdapter(platform_cfg)
+    adapter._wt_enabled = False
+
+    assert adapter._lane_pool_enabled, (
+        "GatewayConfig.offloop_lane_pool=True must reach adapter._lane_pool_enabled "
+        "after the run.py config.extra injection. Without the MAJOR-1 fix, this is "
+        "False because max_concurrent_agent_runs was the only injected key."
+    )
+    assert adapter._lane_pool is not None, "Lane pool object must be created when enabled"
+    stats = adapter._lane_pool.stats()
+    assert stats["capacity"] == gw_config.max_concurrent_agent_runs

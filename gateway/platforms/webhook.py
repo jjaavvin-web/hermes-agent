@@ -856,17 +856,19 @@ class WebhookAdapter(BasePlatformAdapter):
             await self._agent_run_semaphore.acquire()
 
         async def _run_with_backpressure() -> None:
-            # When the off-loop lane pool is enabled, bind the dedicated
-            # executor to this task's context so that
-            # _run_in_executor_with_context routes the blocking agent work
-            # onto the isolated pool rather than asyncio's shared default.
+            # _lane_tok is set inside the try so that any BaseException between
+            # set_lane_executor() and the try-body is still covered by the finally.
+            # _lane_reset_fn is stored before calling set_lane_executor so it is
+            # available in the finally even if set_lane_executor itself raises.
             _lane_tok = None
-            if self._lane_pool_enabled:
-                from agent.codex_session_context import (
-                    set_lane_executor, reset_lane_executor,
-                )
-                _lane_tok = set_lane_executor(self._lane_pool.executor)
+            _lane_reset_fn = None
             try:
+                if self._lane_pool_enabled:
+                    from agent.codex_session_context import (
+                        set_lane_executor, reset_lane_executor,
+                    )
+                    _lane_reset_fn = reset_lane_executor
+                    _lane_tok = set_lane_executor(self._lane_pool.executor)
                 # Phase 3: when HERMES_WEBHOOK_WORKTREE is on, bind the run to the relay
                 # git worktree so it works on a branch, not the live tree. If a worktree
                 # can't be guaranteed, REFUSE (503) — NEVER fall through to the live cwd.
@@ -899,7 +901,8 @@ class WebhookAdapter(BasePlatformAdapter):
                         exc_info=True,
                     )
                 if self._lane_pool_enabled:
-                    reset_lane_executor(_lane_tok)
+                    if _lane_tok is not None and _lane_reset_fn is not None:
+                        _lane_reset_fn(_lane_tok)
                     self._lane_pool.release()
                 else:
                     self._agent_run_semaphore.release()

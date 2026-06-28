@@ -7399,6 +7399,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             config.extra = {
                 **config.extra,
                 "max_concurrent_agent_runs": self.config.max_concurrent_agent_runs,
+                # Inject off-loop lane pool config so gateway.offloop_lane_pool in
+                # config.yaml reaches the WebhookAdapter (platforms.webhook.extra
+                # keys take precedence because they're spread first via **config.extra).
+                "offloop_lane_pool": config.extra.get(
+                    "offloop_lane_pool", self.config.offloop_lane_pool
+                ),
+                "lane_pool_workers": config.extra.get(
+                    "lane_pool_workers", self.config.lane_pool_workers
+                ),
             }
             adapter = WebhookAdapter(config)
             adapter.gateway_runner = self  # For cross-platform delivery

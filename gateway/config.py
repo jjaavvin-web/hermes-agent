@@ -733,12 +733,15 @@ class GatewayConfig:
             max_concurrent_key,
         )
         max_concurrent_agent_runs = resolve_max_concurrent_agent_runs(data)
-        offloop_lane_pool = _coerce_bool(
-            data.get("offloop_lane_pool") or nested_gateway.get("offloop_lane_pool"),
-            False,
-        )
+        _olp_raw = data.get("offloop_lane_pool")
+        if _olp_raw is None:
+            _olp_raw = nested_gateway.get("offloop_lane_pool")
+        offloop_lane_pool = _coerce_bool(_olp_raw, False)
+        _lpw_raw = data.get("lane_pool_workers")
+        if _lpw_raw is None:
+            _lpw_raw = nested_gateway.get("lane_pool_workers")
         lane_pool_workers = _coerce_optional_positive_int(
-            data.get("lane_pool_workers") or nested_gateway.get("lane_pool_workers"),
+            _lpw_raw,
             "gateway.lane_pool_workers",
         )
         unauthorized_dm_behavior = _normalize_unauthorized_dm_behavior(
