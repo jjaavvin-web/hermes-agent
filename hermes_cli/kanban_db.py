@@ -4963,6 +4963,12 @@ class DispatchResult:
     subsequent tick when the assignee has capacity. Separate bucket so
     telemetry / dashboards can show "this profile is busy" vs
     "task is genuinely stuck"."""
+    skipped_ready_spec: list[tuple[str, str]] = field(default_factory=list)
+    """Tasks NOT claimed this tick because they failed the READY_SPEC trust-compiler
+    gate under ``HERMES_KANBAN_ENFORCE_READY_SPEC=enforce``. Each entry is
+    ``(task_id, comma_joined_error_codes)``. The card is left in ``ready`` (no status
+    mutation); a deduped ``ready_spec.skipped`` event carries the detail. Empty unless
+    enforcement is on — default OFF means byte-for-byte unchanged dispatch."""
     crashed: list[str] = field(default_factory=list)
     """Task ids reclaimed because their worker PID disappeared."""
     auto_blocked: list[str] = field(default_factory=list)
@@ -6320,6 +6326,115 @@ def has_spawnable_review(conn: sqlite3.Connection) -> bool:
     return False
 
 
+# ── READY_SPEC trust-compiler dispatch gate (additive; OFF by default) ──────
+# Makes a card's ``ready`` status mean *provably safe to dispatch*: before claiming
+# an otherwise-dispatchable card we validate its fenced ``ready-spec`` block. Gated by
+# HERMES_KANBAN_ENFORCE_READY_SPEC (unset/off => skipped entirely, dispatch unchanged).
+# The pure validator lives in hermes_cli/ready_spec.py; this is the I/O-bound glue.
+_READY_SPEC_ENV = "HERMES_KANBAN_ENFORCE_READY_SPEC"
+_READY_SPEC_FLIP_EPOCH_ENV = "HERMES_KANBAN_READY_SPEC_FLIP_EPOCH"
+_ready_spec_emitted: dict[str, str] = {}  # task_id -> last dedup key (process-local)
+_READY_SPEC_EMIT_CAP = 2000  # bound the dedup map; best-effort dedup, clear-on-overflow
+
+
+def _ready_spec_mode() -> str:
+    """``off`` (default) | ``warn`` | ``enforce`` from the env flag."""
+    raw = os.environ.get(_READY_SPEC_ENV, "").strip().lower()
+    return raw if raw in ("warn", "enforce") else "off"
+
+
+def _ready_spec_descriptor(task) -> str:
+    """The card's workspace descriptor — what dispatch resolves FROM, read-only:
+    ``scratch``/``sandbox`` slug, else the absolute workspace_path for dir/worktree.
+
+    NOTE: a ``dir``/``worktree`` card with NO workspace_path yields the bare kind name,
+    which the validator treats as an unsafe (unresolved) workspace and BLOCKS under
+    enforce — conservative/fail-closed by design (such a card has no concrete, checkable
+    sandbox path). Give those cards an explicit absolute scratch/sandbox path to pass."""
+    kind = getattr(task, "workspace_kind", None) or "scratch"
+    path = getattr(task, "workspace_path", None)
+    if kind == "scratch" and not path:
+        return "scratch"
+    return path or kind
+
+
+def _ready_spec_board_policy(board: Optional[str]) -> dict:
+    """Validation context: REAL profile resolution (no fake green), canonical audits
+    prefix, live repo root."""
+    policy: dict = {
+        "audits_prefix": os.path.expanduser("~/.hermes/audits"),
+        "repo_root": os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+        "default_verifier": "h2reviewer",
+    }
+    try:
+        from hermes_cli.profiles import profile_exists as _pe
+        policy["verifier_resolver"] = _pe
+    except Exception:
+        # profiles unavailable -> do NOT silently skip the check (that is a fail-open).
+        # Degrade to a conservative known set so unknown verifiers still fail closed.
+        _log.warning(
+            "ready_spec: profiles import failed; verifier resolution degraded to fallback set"
+        )
+        policy["known_profiles"] = {
+            "h2reviewer", "h2librarian", "h2coder", "h2patcher", "h2governor",
+        }
+    return policy
+
+
+def _ready_spec_flip_epoch() -> int:
+    try:
+        return int(os.environ.get(_READY_SPEC_FLIP_EPOCH_ENV, "").strip())
+    except (TypeError, ValueError):
+        return 0
+
+
+def ready_spec_evaluate(conn, task_id, board, mode):
+    """Pure-ish evaluation for one card: returns (decision, event) where decision is
+    ``proceed`` | ``skip`` and event is a dict to emit (or None). ``skip`` only under
+    enforce on a non-grandfathered failing card. Reused by dispatch AND ``lint-ready``."""
+    from hermes_cli.ready_spec import validate_ready_spec
+    task = get_task(conn, task_id)
+    if task is None:
+        return "proceed", None
+    descriptor = _ready_spec_descriptor(task)
+    res = validate_ready_spec(
+        {"id": task.id, "board": board or "", "body": task.body, "workspace": descriptor},
+        resolved_workspace=descriptor, board_policy=_ready_spec_board_policy(board),
+    )
+    if res.ok:
+        return "proceed", None
+    eff_mode, grandfathered = mode, False
+    if mode == "enforce":
+        epoch = _ready_spec_flip_epoch()
+        if epoch and int(getattr(task, "created_at", 0) or 0) < epoch:
+            eff_mode, grandfathered = "warn", True
+    kind = "ready_spec.warn" if eff_mode != "enforce" else "ready_spec.skipped"
+    decision = "skip" if eff_mode == "enforce" else "proceed"
+    event = {"kind": kind, "codes": res.codes,
+             "payload": {"codes": res.codes, "errors": res.errors,
+                         "mode": eff_mode, "grandfathered": grandfathered}}
+    return decision, event
+
+
+def _ready_spec_emit(conn, task_id, event) -> None:
+    """Emit the ready_spec event, deduped by (task_id, kind, codes) so a stuck card
+    does not spam one event per dispatcher tick."""
+    import hashlib
+    key = hashlib.sha256(
+        ("|".join([task_id, event["kind"], ",".join(sorted(event["codes"]))])).encode()
+    ).hexdigest()[:16]
+    if _ready_spec_emitted.get(task_id) == key:
+        return
+    if len(_ready_spec_emitted) > _READY_SPEC_EMIT_CAP:
+        _ready_spec_emitted.clear()  # bound growth; dedup is best-effort (one re-emit max)
+    _ready_spec_emitted[task_id] = key
+    try:
+        with write_txn(conn):
+            _append_event(conn, task_id, event["kind"], event["payload"])
+    except Exception:
+        _log.debug("ready_spec: event emit failed for %s", task_id, exc_info=True)
+
+
 def dispatch_once(
     conn: sqlite3.Connection,
     *,
@@ -6462,6 +6577,9 @@ def dispatch_once(
             # bucket it as nonspawnable if the profile genuinely isn't
             # there, with the existing diagnostic.
             _default_assignee_resolved = True
+    # READY_SPEC enforcement mode is fixed for the whole tick — read ONCE here, not
+    # per-card, so a mid-tick env change can't evaluate cards under different modes.
+    _rs_mode = _ready_spec_mode()
     for row in ready_rows:
         if max_spawn is not None and running_count + spawned >= max_spawn:
             break
@@ -6586,6 +6704,43 @@ def dispatch_once(
                         {"reason": guard_reason},
                     )
             continue
+        # ── READY_SPEC trust-compiler gate (additive; OFF => no behavior change) ──
+        # Validate the card's ready-spec BEFORE claim_task. claim_task stays the sole
+        # status-mutation point, so a gated card simply never reaches it.
+        #   off     -> gate skipped entirely (dispatch byte-for-byte unchanged)
+        #   warn    -> validate, emit telemetry, STILL claim (audit blast radius first)
+        #   enforce -> on validation failure OR a gate error, SKIP and FAIL CLOSED: a
+        #              validator/infra crash must NEVER become a silent claim bypass.
+        if _rs_mode != "off":
+            try:
+                _rs_decision, _rs_event = ready_spec_evaluate(
+                    conn, row["id"], board, _rs_mode
+                )
+            except Exception:
+                # The gate itself errored (DB/import/etc). FAIL CLOSED under enforce
+                # (no confident "claimable" => not claimable); warn just proceeds.
+                _log.debug("ready_spec gate error on %s", row["id"], exc_info=True)
+                if _rs_mode == "enforce":
+                    if not dry_run:
+                        _ready_spec_emit(conn, row["id"], {
+                            "kind": "ready_spec.skipped",
+                            "codes": ["ready_spec_gate_error"],
+                            "payload": {
+                                "codes": ["ready_spec_gate_error"], "mode": "enforce",
+                                "errors": [{"code": "ready_spec_gate_error",
+                                            "message": "gate raised; failing closed"}],
+                            },
+                        })
+                    result.skipped_ready_spec.append((row["id"], "ready_spec_gate_error"))
+                    continue
+                _rs_decision, _rs_event = "proceed", None
+            if _rs_event is not None and not dry_run:
+                _ready_spec_emit(conn, row["id"], _rs_event)
+            if _rs_decision == "skip":
+                result.skipped_ready_spec.append(
+                    (row["id"], ",".join(_rs_event["codes"]) if _rs_event else "")
+                )
+                continue
         if dry_run:
             result.spawned.append((row["id"], row_assignee, ""))
             # Increment per-profile counter even in dry_run so the cap
