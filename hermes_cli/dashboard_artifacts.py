@@ -29,6 +29,21 @@ router = APIRouter(prefix="/api/dashboard", tags=["dashboard-artifacts"])
 
 HERMES_HOME = Path.home() / ".hermes"
 
+# card t_40c6ee26: hide chat-session rewind pages from the gallery by default.
+# Flip to True to restore the previous behaviour (includes ~4 000+ replay pages).
+INCLUDE_REPLAYS = False
+
+# Path fragments used for featured-first report ordering — reports whose
+# relative path contains any of these substrings are surfaced before the rest.
+# No report is ever dropped; this is a pure reordering within kind='report'.
+_FEATURED_FRAGMENTS: tuple[str, ...] = (
+    "os-tab-levelup",
+    "connectome",
+    "life-dashboard",
+    "ai-infra",
+    "infrastructure-map",
+)
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -191,13 +206,31 @@ def list_artifacts() -> dict[str, Any]:
     """
     try:
         reports = _collect_reports()
-        replays, replay_total = _collect_replays()
 
-        # Sort each group newest-first independently, then merge.
+        # Sort reports newest-first, then float curated entries to the top.
+        # No report is dropped — featured/rest is a pure partition + concat.
         reports.sort(key=lambda x: x["mtime"], reverse=True)
-        # replays already sorted newest-first from _collect_replays.
 
-        items = reports + replays
+        def _is_featured(item: dict[str, Any]) -> bool:
+            try:
+                rel = _decode_id(item["id"])
+            except Exception:
+                return False
+            return any(frag in rel for frag in _FEATURED_FRAGMENTS)
+
+        featured = [r for r in reports if _is_featured(r)]
+        rest = [r for r in reports if not _is_featured(r)]
+        reports_ordered = featured + rest
+
+        # card t_40c6ee26: session-replay pages excluded by default (INCLUDE_REPLAYS=False).
+        # Flip the module-level constant to restore them.
+        if INCLUDE_REPLAYS:
+            replays, replay_total = _collect_replays()
+            # replays already sorted newest-first from _collect_replays.
+        else:
+            replays, replay_total = [], 0
+
+        items = reports_ordered + replays
         replays_truncated = max(0, replay_total - len(replays))
 
         counts = {
