@@ -274,6 +274,12 @@ def check_for_updates() -> Optional[int]:
     if behind but the count is unknown, ``0`` if up-to-date, or ``None`` if
     the check failed or doesn't apply. Cached for 6 hours.
     """
+    # Fork checkout opt-out: this repo tracks NousResearch as `origin` but is maintained
+    # as a FORK — updates are deliberate MERGE projects, NEVER `hermes update` (which would
+    # wipe local patches). When HERMES_NO_UPDATE_CHECK is set, suppress the upstream-
+    # distance nag entirely so the banner/TUI stop advising a destructive command.
+    if os.environ.get("HERMES_NO_UPDATE_CHECK", "").strip().lower() in ("1", "true", "yes"):
+        return None
     hermes_home = get_hermes_home()
     cache_file = hermes_home / ".update_check"
     embedded_rev = os.environ.get("HERMES_REVISION") or None
