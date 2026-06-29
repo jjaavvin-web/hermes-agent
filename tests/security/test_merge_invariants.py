@@ -377,3 +377,33 @@ def test_a2b_codex_per_profile_security_mode_resolution_survives_merge():
         "codex mapping dropped the approval-required -> read-only-with-approval tightening"
     assert _MAP.get("definitely-not-a-real-mode") is None, \
         "unknown codex mode must never resolve (and must never default to full-access)"
+
+
+def test_ready_spec_trust_compiler_gate_survives_merge():
+    """The READY_SPEC dispatch gate must survive an upstream kanban_db.py merge.
+
+    READY_SPEC makes a card's ``ready`` status mean *provably safe to dispatch*: the
+    validator + the dispatch_once seam (before claim_task) are fork-local. An upstream
+    merge that reorganized or dropped dispatch_once could silently delete the gate while
+    leaving default dispatch otherwise unchanged — invisible without this pin (the PR#70
+    backup.py regression class). Turn RED before merge, not after.
+    """
+    # 1. The pure validator module + its public entrypoints survive.
+    rs = _read("hermes_cli/ready_spec.py")
+    assert "def validate_ready_spec" in rs, "ready_spec.py lost validate_ready_spec"
+    assert "def parse_ready_spec" in rs, "ready_spec.py lost parse_ready_spec"
+    assert "validator_internal_error" in rs, "ready_spec lost its fail-closed top-level guard"
+
+    # 2. The dispatch seam (the env flag, the skip bucket, the gate guard) survives.
+    kdb = _read("hermes_cli/kanban_db.py")
+    assert "HERMES_KANBAN_ENFORCE_READY_SPEC" in kdb, "dispatch lost the READY_SPEC env flag"
+    assert "skipped_ready_spec" in kdb, "DispatchResult lost the skipped_ready_spec field"
+    assert "ready_spec_evaluate" in kdb, "dispatch lost the READY_SPEC gate call"
+    # The gate must sit BEFORE the claim_task call inside dispatch_once (fail-closed seam).
+    gate_at = kdb.find("ready_spec_evaluate(")
+    claim_at = kdb.find("claimed = claim_task(conn, row[")
+    assert gate_at != -1 and claim_at != -1 and gate_at < claim_at, \
+        "READY_SPEC gate must run BEFORE claim_task in dispatch_once (fail-closed ordering)"
+
+    # 3. The read-only lint surface survives.
+    assert "lint-ready" in _read("hermes_cli/kanban.py"), "kanban CLI lost the lint-ready surface"
