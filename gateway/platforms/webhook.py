@@ -83,6 +83,7 @@ _DYNAMIC_ROUTES_FILENAME = "webhook_subscriptions.json"
 DEFAULT_WEBHOOK_DENY_PATTERNS = [
     *CREDENTIAL_EXFIL_DENY_PATTERNS,
     r"\bgit\s+(?:-\S+\s+\S*\s*)*push\b",       # git push, git -C <dir> push, git push --force
+    r"\bgit\s+(?:-\S+\s+\S*\s*)*(?:checkout|switch|branch|reset|restore)\b",  # ref-mutation: webhook lanes must NOT flap the operator HEAD / main checkout (t_0113eacc)
     r"\bgh\s+pr\s+(?:create|merge|ready)\b",   # open / merge / mark-ready a PR
     r"\bgh\s+workflow\s+run\b",                # trigger a CI workflow (can push/merge/deploy)
     r"\bgh\s+run\s+(?:rerun|cancel|delete)\b", # re-run / cancel / delete a CI run (list/view/watch stay allowed)
