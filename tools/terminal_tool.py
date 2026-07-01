@@ -292,6 +292,71 @@ def _validate_workdir(workdir: str) -> str | None:
     return None
 
 
+class _WorktreeConfinementError(ValueError):
+    """Raised when a lane command attempts to run inside a protected code tree."""
+
+
+def _active_terminal_worktree() -> str | None:
+    """Return the active bound worktree if the current turn has one."""
+    try:
+        from agent.codex_session_context import get_active_worktree  # noqa: PLC0415
+
+        wt = get_active_worktree()
+        if wt and os.path.isdir(wt):
+            return os.path.realpath(os.path.expanduser(wt))
+    except (ImportError, OSError, ValueError):
+        return None
+    return None
+
+
+def _worktree_confinement_error(path: str, wt_real: str) -> str | None:
+    """Return a WORKTREE_CONFINEMENT error if *path* is inside a protected root."""
+    try:
+        from tools.file_tools import _codex_protected_code_roots  # noqa: PLC0415
+    except ImportError:
+        return None
+
+    try:
+        target_real = os.path.realpath(os.path.abspath(os.path.expanduser(path)))
+    except (OSError, ValueError):
+        return None
+
+    if target_real == wt_real or target_real.startswith(wt_real + os.sep):
+        return None
+
+    for root in _codex_protected_code_roots(wt_real):
+        try:
+            root_real = os.path.realpath(os.path.abspath(os.path.expanduser(root)))
+        except (OSError, ValueError):
+            continue
+        if target_real == root_real or target_real.startswith(root_real + os.sep):
+            return (
+                f"WORKTREE_CONFINEMENT: command cwd/cd target {target_real!r} is "
+                f"inside protected code root {root_real!r}; active bound worktree is "
+                f"{wt_real!r}. Run lane commands from the bound worktree or an "
+                "unprotected non-code path."
+            )
+    return None
+
+
+_ABS_CD_GUARD_RE = re.compile(
+    r"(?:^|[;&|()]|\s)(?:cd|pushd)\s+(?P<quote>['\"]?)(?P<path>/[^\s;&|()'\"]+)(?P=quote)"
+)
+
+
+def _check_worktree_cd_guard(command: str) -> str | None:
+    """Best-effort string guard for absolute cd/pushd into protected roots."""
+    wt_real = _active_terminal_worktree()
+    if not wt_real:
+        return None
+    for match in _ABS_CD_GUARD_RE.finditer(command or ""):
+        target = match.group("path")
+        error = _worktree_confinement_error(target, wt_real)
+        if error:
+            return error
+    return None
+
+
 def _handle_sudo_failure(output: str, env_type: str) -> str:
     """
     Check for sudo failure and add helpful message for messaging contexts.
@@ -1133,14 +1198,16 @@ def _get_env_config() -> Dict[str, Any]:
     # Read TERMINAL_CWD but sanity-check it for container backends.
     # If Docker cwd passthrough is explicitly enabled, remap the host path to
     # /workspace and track the original host path separately. Otherwise keep the
-    # normal sandbox behavior and discard host paths.
-    cwd = os.getenv("TERMINAL_CWD", default_cwd)
+    # normal sandbox behavior and discard host paths. A bound worktree wins at
+    # construction time so lane shells start inside their isolated checkout.
+    bound_worktree = _active_terminal_worktree()
+    cwd = bound_worktree or os.getenv("TERMINAL_CWD", default_cwd)
     if cwd:
         cwd = os.path.expanduser(cwd)
     host_cwd = None
     host_prefixes = ("/Users/", "/home/", "C:\\", "C:/")
     if env_type == "docker" and mount_docker_cwd:
-        docker_cwd_source = os.getenv("TERMINAL_CWD") or _safe_getcwd()
+        docker_cwd_source = bound_worktree or os.getenv("TERMINAL_CWD") or _safe_getcwd()
         candidate = os.path.abspath(os.path.expanduser(docker_cwd_source))
         if (
             any(candidate.startswith(p) for p in host_prefixes)
@@ -1830,6 +1897,22 @@ def _resolve_command_cwd(
     the old cwd back through ``env.execute(..., cwd=...)``. Explicit
     ``workdir=`` must still override everything.
     """
+    wt_real = _active_terminal_worktree()
+    if wt_real:
+        if workdir:
+            expanded = os.path.expanduser(workdir)
+            candidate = (
+                expanded
+                if os.path.isabs(expanded)
+                else os.path.join(wt_real, expanded)
+            )
+            candidate_real = os.path.realpath(os.path.abspath(candidate))
+            error = _worktree_confinement_error(candidate_real, wt_real)
+            if error:
+                raise _WorktreeConfinementError(error)
+            return candidate_real
+        return wt_real
+
     if workdir:
         return workdir
 
@@ -2132,6 +2215,18 @@ def terminal_tool(
                     "status": "blocked"
                 }, ensure_ascii=False)
 
+        # Best-effort string layer for `cd`/`pushd /absolute/path` into protected
+        # code roots. The floor remains cwd resolution (above/below) plus the
+        # file_tools sandbox, because shell parsing cannot be perfect here.
+        cd_guard_error = _check_worktree_cd_guard(command)
+        if cd_guard_error:
+            return json.dumps({
+                "output": "",
+                "exit_code": -1,
+                "error": cd_guard_error,
+                "status": "blocked",
+            }, ensure_ascii=False)
+
         # Prepare command for execution
         pty_disabled_reason = None
         effective_pty = pty
@@ -2357,6 +2452,13 @@ def terminal_tool(
                     result_data["watch_patterns"] = proc_session.watch_patterns
 
                 return json.dumps(result_data, ensure_ascii=False)
+            except _WorktreeConfinementError as e:
+                return json.dumps({
+                    "output": "",
+                    "exit_code": -1,
+                    "error": str(e),
+                    "status": "blocked",
+                }, ensure_ascii=False)
             except Exception as e:
                 return json.dumps({
                     "output": "",
@@ -2380,6 +2482,13 @@ def terminal_tool(
                         ),
                     }
                     result = env.execute(command, **execute_kwargs)
+                except _WorktreeConfinementError as e:
+                    return json.dumps({
+                        "output": "",
+                        "exit_code": -1,
+                        "error": str(e),
+                        "status": "blocked",
+                    }, ensure_ascii=False)
                 except Exception as e:
                     error_str = str(e).lower()
                     if "timeout" in error_str:
