@@ -253,18 +253,33 @@ def _resolve_path_for_task(filepath: str, task_id: str = "default") -> Path:
     p = Path(filepath).expanduser()
     if not p.is_absolute():
         codex_wt: str | None = None
+        confinement_required = False
         try:
-            from agent.codex_session_context import get_active_worktree
+            from agent.codex_session_context import (
+                get_active_worktree,
+                is_worktree_confinement_required,
+            )
+            confinement_required = is_worktree_confinement_required()
             _candidate = get_active_worktree()
             if _candidate and os.path.isdir(_candidate):
                 codex_wt = _candidate
         except ImportError:
             pass
-        base = (
-            codex_wt
-            or _get_live_tracking_cwd(task_id)
-            or os.environ.get("TERMINAL_CWD", os.getcwd())
-        )
+        if confinement_required:
+            if not codex_wt:
+                raise PermissionError(
+                    "WORKTREE_CONFINEMENT: relative path denied — this turn "
+                    "requires an active valid worktree, but the active "
+                    "worktree is missing or invalid. Refusing to fall back to "
+                    "live terminal cwd, TERMINAL_CWD, or process cwd."
+                )
+            base = codex_wt
+        else:
+            base = (
+                codex_wt
+                or _get_live_tracking_cwd(task_id)
+                or os.environ.get("TERMINAL_CWD", os.getcwd())
+            )
         p = Path(base) / p
     return p.resolve()
 
@@ -512,17 +527,40 @@ def _enforce_codex_sandbox(resolved_abs_path: str, op_name: str) -> str | None:
     so a symlinked worktree (e.g. ``~/work -> ~/.hermes/codex-wt/sid``)
     still compares correctly.
     """
+    confinement_required = False
     try:
-        from agent.codex_session_context import get_active_worktree  # noqa: PLC0415
+        from agent.codex_session_context import (  # noqa: PLC0415
+            get_active_worktree,
+            is_worktree_confinement_required,
+        )
         wt = get_active_worktree()
+        confinement_required = is_worktree_confinement_required()
     except ImportError:
         return None
     if not wt:
+        if confinement_required:
+            return (
+                f"WORKTREE_CONFINEMENT: {op_name} denied — this turn requires "
+                "an active worktree, but the active worktree is missing. "
+                f"Refusing write target {resolved_abs_path!r}."
+            )
         return None  # No active codex session — normal Discord chat
     try:
         if not os.path.isdir(wt):
-            return None  # Stale contextvar pointing at deleted dir
+            if confinement_required:
+                return (
+                    f"WORKTREE_CONFINEMENT: {op_name} denied — active "
+                    f"worktree {wt!r} is missing or invalid. Refusing write "
+                    f"target {resolved_abs_path!r}."
+                )
+            return None  # Stale legacy contextvar pointing at deleted dir
     except OSError:
+        if confinement_required:
+            return (
+                f"WORKTREE_CONFINEMENT: {op_name} denied — active worktree "
+                f"{wt!r} could not be validated. Refusing write target "
+                f"{resolved_abs_path!r}."
+            )
         return None
     try:
         wt_real = os.path.realpath(wt)
@@ -1352,6 +1390,8 @@ def write_file_tool(path: str, content: str, task_id: str = "default",
         # check below still runs.
         try:
             _resolved = str(_resolve_path_for_task(path, task_id))
+        except PermissionError as e:
+            return tool_error(str(e))
         except Exception:
             _resolved = None
 
@@ -1463,6 +1503,8 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
         for _p in _paths_to_check:
             try:
                 _r = str(_resolve_path_for_task(_p, task_id))
+            except PermissionError as e:
+                return tool_error(str(e))
             except Exception:
                 _r = None
             if _r and _r not in _seen:
@@ -1495,6 +1537,8 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
             for _p in _paths_to_check:
                 try:
                     _r = str(_resolve_path_for_task(_p, task_id))
+                except PermissionError as e:
+                    return tool_error(str(e))
                 except Exception:
                     _r = None
                 _path_to_resolved[_p] = _r
