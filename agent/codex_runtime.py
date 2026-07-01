@@ -24,6 +24,11 @@ from typing import Any, Dict, List
 
 logger = logging.getLogger(__name__)
 
+# Lazily populated at the app-server call site.  Keeping the symbol in this
+# module lets tests monkeypatch the constructor seam without importing the
+# transport at module import time.
+CodexAppServerSession = None
+
 
 def _coerce_usage_int(value: Any) -> int:
     if isinstance(value, bool):
@@ -222,6 +227,74 @@ def _resolve_codex_permission_profile() -> "str | None":
     return mapped
 
 
+class CodexCwdConfinementError(RuntimeError):
+    """Bound lane cwd confinement violation, card t_0113eacc."""
+
+
+def _realpath(path: str) -> str:
+    return os.path.realpath(os.path.abspath(os.path.expanduser(path)))
+
+
+def _is_within_path(path: str, root: str) -> bool:
+    return path == root or path.startswith(root + os.sep)
+
+
+def _resolve_codex_thread_cwd(agent) -> tuple[str, str]:
+    """Resolve the cwd for a codex-native app-server thread.
+
+    Returns ``(cwd, source)`` where source is exactly one of:
+    ``session_cwd`` | ``bound_worktree`` | ``legacy_process_cwd``.
+
+    Confinement-aware fail-closed precedence (Hermes review 2026-07-01):
+      1. ``session_cwd`` set + active worktree bound: resolve both paths
+         (expanduser + abspath + realpath). Return ``(session_cwd_real,
+         "session_cwd")`` only when it is the bound worktree or a descendant;
+         otherwise raise ``CodexCwdConfinementError`` naming both paths.
+      2. ``session_cwd`` set + unbound: return ``(session_cwd,
+         "session_cwd")`` unchanged for legacy interactive compatibility.
+      3. no ``session_cwd`` + active worktree bound: return
+         ``(bound_worktree_realpath, "bound_worktree")`` only when it is an
+         existing directory. If the bound path is missing/invalid, raise
+         ``CodexCwdConfinementError`` fail-closed.
+      4. fully unbound: return ``(os.getcwd(), "legacy_process_cwd")`` for
+         legacy behavior.
+
+    Why: webhook/loki lanes bind a per-thread worktree through a ContextVar;
+    V1/V2 escape vectors let a bound lane silently run in the gateway/process
+    cwd or an explicit cwd outside its worktree. Fallback to another cwd while
+    bound would recreate the escape (card t_0113eacc).
+    """
+    session_cwd = getattr(agent, "session_cwd", None)
+
+    try:
+        from agent.codex_session_context import get_active_worktree
+        active_worktree = get_active_worktree()
+    except Exception:
+        active_worktree = None
+
+    if active_worktree:
+        wt_real = _realpath(str(active_worktree))
+        if session_cwd:
+            session_cwd_real = _realpath(str(session_cwd))
+            if _is_within_path(session_cwd_real, wt_real):
+                return session_cwd_real, "session_cwd"
+            raise CodexCwdConfinementError(
+                "Codex cwd outside bound worktree blocked: "
+                f"session_cwd={session_cwd_real!r}, active_worktree={wt_real!r}"
+            )
+        if os.path.isdir(wt_real):
+            return wt_real, "bound_worktree"
+        raise CodexCwdConfinementError(
+            "Codex bound worktree missing or invalid; refusing process-cwd fallback: "
+            f"active_worktree={wt_real!r}"
+        )
+
+    if session_cwd:
+        return session_cwd, "session_cwd"
+
+    return os.getcwd(), "legacy_process_cwd"
+
+
 def run_codex_app_server_turn(
     agent,
     *,
@@ -238,13 +311,18 @@ def run_codex_app_server_turn(
     Called from run_conversation() when agent.api_mode == "codex_app_server".
     Returns the same dict shape as the chat_completions path.
     """
-    from agent.transports.codex_app_server_session import CodexAppServerSession
+    session_cls = CodexAppServerSession
+    if session_cls is None:
+        from agent.transports.codex_app_server_session import (
+            CodexAppServerSession as session_cls,
+        )
 
     # Lazy session: one CodexAppServerSession per AIAgent instance.
     # Spawned on first turn, reused across turns, closed at AIAgent
     # shutdown (see _cleanup hook).
     if not hasattr(agent, "_codex_session") or agent._codex_session is None:
-        cwd = getattr(agent, "session_cwd", None) or os.getcwd()
+        cwd, cwd_source = _resolve_codex_thread_cwd(agent)
+        logger.info("codex thread cwd resolved: %s (source=%s)", cwd, cwd_source)
         # Approval callback: defer to Hermes' standard prompt flow if a
         # CLI thread has installed one. Gateway / cron contexts get the
         # codex-side fail-closed default.
@@ -258,7 +336,7 @@ def run_codex_app_server_turn(
         # own env-var fallback run unchanged", so all profiles that don't
         # explicitly opt in are byte-identical to pre-change behaviour.
         permission_profile = _resolve_codex_permission_profile()
-        agent._codex_session = CodexAppServerSession(
+        agent._codex_session = session_cls(
             cwd=cwd,
             approval_callback=approval_callback,
             permission_profile=permission_profile,
