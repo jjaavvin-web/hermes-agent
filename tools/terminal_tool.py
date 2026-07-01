@@ -309,6 +309,16 @@ def _active_terminal_worktree() -> str | None:
     return None
 
 
+def _terminal_confinement_required() -> bool:
+    """Return whether this terminal turn must fail closed to a worktree."""
+    try:
+        from agent.codex_session_context import is_worktree_confinement_required  # noqa: PLC0415
+
+        return is_worktree_confinement_required()
+    except (ImportError, OSError, ValueError):
+        return False
+
+
 def _worktree_confinement_error(path: str, wt_real: str) -> str | None:
     """Return a WORKTREE_CONFINEMENT error if *path* is inside a protected root."""
     try:
@@ -1898,6 +1908,12 @@ def _resolve_command_cwd(
     ``workdir=`` must still override everything.
     """
     wt_real = _active_terminal_worktree()
+    if not wt_real and _terminal_confinement_required():
+        raise _WorktreeConfinementError(
+            "WORKTREE_CONFINEMENT: command cwd denied — this turn requires an "
+            "active worktree but none is bound (isolation lost on resume); "
+            "refusing to run against the live tree (foreground + background + PTY)."
+        )
     if wt_real:
         if workdir:
             expanded = os.path.expanduser(workdir)
@@ -2247,11 +2263,19 @@ def terminal_tool(
             from tools.process_registry import process_registry
 
             session_key = get_current_session_key(default="")
-            effective_cwd = _resolve_command_cwd(
-                workdir=workdir,
-                env=env,
-                default_cwd=cwd,
-            )
+            try:
+                effective_cwd = _resolve_command_cwd(
+                    workdir=workdir,
+                    env=env,
+                    default_cwd=cwd,
+                )
+            except _WorktreeConfinementError as e:
+                return json.dumps({
+                    "output": "",
+                    "exit_code": -1,
+                    "error": str(e),
+                    "status": "blocked",
+                }, ensure_ascii=False)
             try:
                 if env_type == "local":
                     proc_session = process_registry.spawn_local(

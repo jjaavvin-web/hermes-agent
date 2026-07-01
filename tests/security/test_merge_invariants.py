@@ -106,6 +106,19 @@ def test_restart_resume_rearms_disp5_floor():
     ctx = _read("agent/codex_session_context.py")
     assert "def require_confinement_without_worktree" in ctx, \
         "require_confinement_without_worktree() dropped from codex_session_context (t_0113eacc F5)"
+    # Rail-C fail-closed checks (F5b/F5c): a terminal/base/codex merge that
+    # drops any of these silently reopens the gone-resume live-tree write path.
+    terminal = _read("tools/terminal_tool.py")
+    assert "def _terminal_confinement_required" in terminal, \
+        "terminal_tool dropped the confinement helper (t_0113eacc F5c)"
+    assert "refusing to run against the live tree" in terminal, \
+        "_resolve_command_cwd no longer fails closed on confinement-required-no-worktree (t_0113eacc F5c)"
+    base = _read("tools/environments/base.py")
+    assert "confinement_required and not codex_wt" in base, \
+        "base.py execute() no longer fails closed on confinement-required-no-worktree (t_0113eacc F5b)"
+    codex = _read("agent/codex_runtime.py")
+    assert "confinement required but no worktree bound" in codex, \
+        "codex_runtime no longer fails closed on confinement-required unbound cwd (t_0113eacc F5b)"
     # The startup auto-resume path must actually call the arming helper, not
     # merely define it.
     assert "_arm_autonomous_resume_floor(event, session_key)" in run, \

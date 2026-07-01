@@ -13,6 +13,7 @@ import pytest
 import agent.codex_runtime as codex_runtime
 from agent.codex_runtime import _resolve_codex_thread_cwd
 from agent.codex_session_context import (
+    require_confinement_without_worktree,
     reset_active_worktree,
     set_active_worktree,
 )
@@ -69,6 +70,22 @@ def test_no_session_cwd_or_worktree_falls_back_to_process_cwd(tmp_path, monkeypa
     agent = SimpleNamespace(session_cwd=None)
 
     assert _resolve_codex_thread_cwd(agent) == (os.getcwd(), "legacy_process_cwd")
+
+
+def test_unbound_confinement_required_raises(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    agent = SimpleNamespace(session_cwd=None)
+
+    token = require_confinement_without_worktree()
+    try:
+        with pytest.raises(codex_runtime.CodexCwdConfinementError) as excinfo:
+            _resolve_codex_thread_cwd(agent)
+    finally:
+        reset_active_worktree(token)
+
+    message = str(excinfo.value)
+    assert "confinement required but no worktree bound" in message
+    assert "refusing process-cwd fallback" in message
 
 
 def test_resolver_reports_source_for_each_precedence_tier(tmp_path, monkeypatch):
@@ -293,3 +310,19 @@ def test_run_codex_app_server_turn_constructs_session_with_bound_worktree_cwd(
     )
     assert "codex thread cwd resolved:" in caplog.text
     assert "source=bound_worktree" in caplog.text
+
+
+def test_unbound_session_cwd_still_fails_closed_when_confinement_required(tmp_path):
+    """session_cwd set + unbound + confinement required must FAIL CLOSED.
+
+    agent.session_cwd is unset in production today, but the fail-closed
+    invariant must not depend on that — a future refactor wiring session_cwd
+    could otherwise silently reopen the gone-resume escape (t_0113eacc F5b).
+    """
+    token = require_confinement_without_worktree()
+    try:
+        agent = SimpleNamespace(session_cwd=str(tmp_path))
+        with pytest.raises(codex_runtime.CodexCwdConfinementError):
+            _resolve_codex_thread_cwd(agent)
+    finally:
+        reset_active_worktree(token)

@@ -1,13 +1,19 @@
 """Regression tests for terminal tool worktree confinement."""
 
 import json
+import time
 from types import SimpleNamespace
 
 import pytest
 
-from agent.codex_session_context import reset_active_worktree, set_active_worktree
+from agent.codex_session_context import (
+    require_confinement_without_worktree,
+    reset_active_worktree,
+    set_active_worktree,
+)
 import tools.file_tools as file_tools
 import tools.terminal_tool as terminal_tool
+from tools.environments.local import LocalEnvironment
 
 
 @pytest.fixture(autouse=True)
@@ -142,6 +148,104 @@ def test_no_bound_worktree_preserves_legacy_cwd_resolution():
         env=SimpleNamespace(cwd=""),
         default_cwd="/legacy/default",
     ) == "/legacy/default"
+
+
+def test_confinement_required_no_worktree_blocks_command(tmp_path):
+    configured = tmp_path / "configured"
+    configured.mkdir()
+    env = LocalEnvironment(cwd=str(configured), timeout=10)
+
+    token = require_confinement_without_worktree()
+    try:
+        with pytest.raises(PermissionError) as excinfo:
+            env.execute("echo hi", timeout=5)
+    finally:
+        reset_active_worktree(token)
+        env.cleanup()
+
+    message = str(excinfo.value)
+    assert message.startswith("WORKTREE_CONFINEMENT:")
+    assert "requires an active worktree but none is bound" in message
+    assert "refusing to run against the process cwd" in message
+
+
+def test_foreground_command_still_blocked_when_confinement_required():
+    token = require_confinement_without_worktree()
+    try:
+        result = json.loads(terminal_tool.terminal_tool(command="echo hi", timeout=5))
+    finally:
+        reset_active_worktree(token)
+
+    assert result["status"] == "blocked"
+    assert result["error"].startswith("WORKTREE_CONFINEMENT:")
+    assert "requires an active worktree but none is bound" in result["error"]
+
+
+def test_background_command_blocked_when_confinement_required_no_worktree(tmp_path):
+    live_tree = tmp_path / "live-tree"
+    live_tree.mkdir()
+    canary = live_tree / "bg-canary.txt"
+
+    token = require_confinement_without_worktree()
+    try:
+        result = json.loads(
+            terminal_tool.terminal_tool(
+                command=f"echo pwned > {canary}",
+                background=True,
+                timeout=10,
+            )
+        )
+        time.sleep(0.1)
+    finally:
+        reset_active_worktree(token)
+
+    assert result["status"] == "blocked"
+    assert result["error"].startswith("WORKTREE_CONFINEMENT:")
+    assert "requires an active worktree but none is bound" in result["error"]
+    assert not canary.exists()
+
+
+def test_unbound_no_confinement_still_runs(tmp_path):
+    configured = tmp_path / "configured"
+    configured.mkdir()
+    env = LocalEnvironment(cwd=str(configured), timeout=10)
+    try:
+        result = env.execute("echo hi", timeout=5)
+    finally:
+        env.cleanup()
+
+    assert result["returncode"] == 0
+    assert result["output"].strip() == "hi"
+
+
+def test_background_command_runs_normally_when_unbound_no_confinement(monkeypatch, tmp_path):
+    import tools.process_registry as process_registry_module
+
+    calls = []
+
+    def fake_spawn_local(**kwargs):
+        calls.append(kwargs)
+        return SimpleNamespace(id="bg-test-session", pid=12345)
+
+    monkeypatch.setattr(
+        process_registry_module.process_registry,
+        "spawn_local",
+        fake_spawn_local,
+    )
+
+    result = json.loads(
+        terminal_tool.terminal_tool(
+            command="echo legacy",
+            background=True,
+            workdir=str(tmp_path),
+            timeout=10,
+        )
+    )
+
+    assert result.get("status") != "blocked"
+    assert result["exit_code"] == 0
+    assert result["session_id"] == "bg-test-session"
+    assert calls and calls[0]["cwd"] == str(tmp_path)
 
 
 def test_bound_worktree_relative_workdir_resolves_under_bound_worktree(tmp_path):

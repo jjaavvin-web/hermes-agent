@@ -256,8 +256,9 @@ def _resolve_codex_thread_cwd(agent) -> tuple[str, str]:
          ``(bound_worktree_realpath, "bound_worktree")`` only when it is an
          existing directory. If the bound path is missing/invalid, raise
          ``CodexCwdConfinementError`` fail-closed.
-      4. fully unbound: return ``(os.getcwd(), "legacy_process_cwd")`` for
-         legacy behavior.
+      4. fully unbound: fail closed if confinement is required without a
+         bound worktree; otherwise return ``(os.getcwd(), "legacy_process_cwd")``
+         for legacy behavior.
 
     Why: webhook/loki lanes bind a per-thread worktree through a ContextVar;
     V1/V2 escape vectors let a bound lane silently run in the gateway/process
@@ -267,10 +268,14 @@ def _resolve_codex_thread_cwd(agent) -> tuple[str, str]:
     session_cwd = getattr(agent, "session_cwd", None)
 
     try:
-        from agent.codex_session_context import get_active_worktree
+        from agent.codex_session_context import (
+            get_active_worktree,
+            is_worktree_confinement_required,
+        )
         active_worktree = get_active_worktree()
     except Exception:
         active_worktree = None
+        is_worktree_confinement_required = lambda: False
 
     if active_worktree:
         wt_real = _realpath(str(active_worktree))
@@ -287,6 +292,16 @@ def _resolve_codex_thread_cwd(agent) -> tuple[str, str]:
         raise CodexCwdConfinementError(
             "Codex bound worktree missing or invalid; refusing process-cwd fallback: "
             f"active_worktree={wt_real!r}"
+        )
+
+    # Unbound: confinement wins over ANY unbound resolution — including a
+    # session_cwd (which no production code sets today, but a future refactor
+    # could). Checking it before the session_cwd branch keeps the fail-closed
+    # invariant consistent so that path can't silently reopen the escape.
+    if is_worktree_confinement_required():
+        raise CodexCwdConfinementError(
+            "Codex thread cwd denied — confinement required but no worktree bound "
+            "(isolation lost on resume); refusing process-cwd fallback."
         )
 
     if session_cwd:

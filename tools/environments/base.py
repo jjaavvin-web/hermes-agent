@@ -856,13 +856,25 @@ class BaseEnvironment(ABC):
         # directory). Lazy import so this module imports cleanly without
         # the codex dispatcher installed.
         codex_wt = None
+        confinement_required = False
         try:
-            from agent.codex_session_context import get_active_worktree
+            from agent.codex_session_context import (
+                get_active_worktree,
+                is_worktree_confinement_required,
+            )
+            confinement_required = is_worktree_confinement_required()
             _candidate = get_active_worktree()
             if _candidate and os.path.isdir(_candidate):
                 codex_wt = _candidate
         except ImportError:
             pass
+        # t_0113eacc F5b: gone-resume lanes must fail closed, not process-cwd fallback.
+        if confinement_required and not codex_wt:
+            raise PermissionError(
+                "WORKTREE_CONFINEMENT: command execution denied — this turn requires "
+                "an active worktree but none is bound (isolation lost on resume); "
+                "refusing to run against the process cwd."
+            )
         effective_cwd = cwd or codex_wt or self.cwd
 
         # Merge sudo stdin with caller stdin
