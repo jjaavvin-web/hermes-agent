@@ -58,8 +58,10 @@ def test_webhook_deny_patterns_keep_git_and_pr_blockers(command: str) -> None:
 def test_default_webhook_deny_pattern_count_pinned() -> None:
     # shrinking this set = a reverted webhook deny floor; bump deliberately.
     # 4 credential-exfil rails (hardline / Class-B broad / Class-A env-dump /
-    # named sensitive $VAR-reference) + 7 git/PR/CI blockers.
-    assert len(DEFAULT_WEBHOOK_DENY_PATTERNS) == 11
+    # named sensitive $VAR-reference) + 8 git/PR/CI blockers (the 8th =
+    # git ref-mutation checkout/switch/branch/reset/restore, added by the
+    # t_0113eacc deny-guard commit 3f2e2e557).
+    assert len(DEFAULT_WEBHOOK_DENY_PATTERNS) == 12
 
 
 @pytest.mark.parametrize(
