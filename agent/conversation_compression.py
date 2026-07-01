@@ -433,18 +433,30 @@ def compress_context(
             except Exception as _rel_err:
                 logger.debug("compression lock release failed: %s", _rel_err)
 
-    # Notify external memory provider before compression discards context
+    # Notify external memory provider before compression discards context.
+    # Providers may return high-priority facts that must survive the discarded
+    # middle window; preserve the historical fail-open behavior if the hook fails.
+    preservation_context: str | None = None
     if agent._memory_manager:
         try:
-            agent._memory_manager.on_pre_compress(messages)
+            _preservation_context = agent._memory_manager.on_pre_compress(messages)
+            if _preservation_context and str(_preservation_context).strip():
+                preservation_context = str(_preservation_context)
         except Exception:
             pass
 
     try:
-        compressed = agent.context_compressor.compress(messages, current_tokens=approx_tokens, focus_topic=focus_topic, force=force)
+        compressed = agent.context_compressor.compress(
+            messages,
+            current_tokens=approx_tokens,
+            focus_topic=focus_topic,
+            force=force,
+            preservation_context=preservation_context,
+        )
     except TypeError:
         # Plugin context engine with strict signature that doesn't accept
-        # focus_topic / force — fall back to calling without them.
+        # focus_topic / force / preservation_context — fall back to calling
+        # without them.
         compressed = agent.context_compressor.compress(messages, current_tokens=approx_tokens)
     except BaseException:
         # ANY exception during compress() must release the lock so the

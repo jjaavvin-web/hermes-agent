@@ -38,6 +38,10 @@ HISTORICAL_TASK_HEADING = "## Historical Task Snapshot"
 HISTORICAL_IN_PROGRESS_HEADING = "## Historical In-Progress State"
 HISTORICAL_PENDING_ASKS_HEADING = "## Historical Pending User Asks"
 HISTORICAL_REMAINING_WORK_HEADING = "## Historical Remaining Work"
+PRESERVATION_CONTEXT_LABEL = (
+    "CRITICAL PRESERVATION CONTEXT — preserve these facts exactly unless "
+    "contradicted by later protected tail messages:"
+)
 
 
 SUMMARY_PREFIX = (
@@ -1306,6 +1310,7 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
         self,
         turns_to_summarize: List[Dict[str, Any]],
         focus_topic: Optional[str] = None,
+        preservation_context: str | None = None,
     ) -> Optional[str]:
         """Generate a structured summary of conversation turns.
 
@@ -1319,6 +1324,11 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
                 provided, the summariser prioritises preserving information
                 related to this topic and is more aggressive about compressing
                 everything else.  Inspired by Claude Code's ``/compact``.
+            preservation_context: Optional high-priority text supplied by
+                memory providers immediately before compaction.  When present,
+                it is injected verbatim into the summarizer prompt so provider
+                facts survive the discarded middle context unless contradicted
+                by protected tail messages.
 
         Returns None if all attempts fail — the caller should drop
         the middle turns without a summary rather than inject a useless
@@ -1486,6 +1496,17 @@ TURNS TO SUMMARIZE:
 Use this exact structure:
 
 {_template_sections}"""
+
+        # Inject high-priority memory-provider preservation context before
+        # focus-topic guidance.  This text is intentionally verbatim so
+        # provider-captured facts are not normalized away before the summarizer
+        # sees them; the label tells the summarizer later protected tail messages
+        # still win if there is a contradiction.
+        if preservation_context and preservation_context.strip():
+            prompt += f"""
+
+{PRESERVATION_CONTEXT_LABEL}
+{preservation_context}"""
 
         # Inject focus topic guidance when the user provides one via /compress <focus>.
         # This goes at the end of the prompt so it takes precedence.
@@ -2148,7 +2169,14 @@ This compaction should PRIORITISE preserving all information related to the focu
     # Main compression entry point
     # ------------------------------------------------------------------
 
-    def compress(self, messages: List[Dict[str, Any]], current_tokens: int = None, focus_topic: str = None, force: bool = False) -> List[Dict[str, Any]]:
+    def compress(
+        self,
+        messages: List[Dict[str, Any]],
+        current_tokens: int = None,
+        focus_topic: str = None,
+        force: bool = False,
+        preservation_context: str | None = None,
+    ) -> List[Dict[str, Any]]:
         """Compress conversation messages by summarizing middle turns.
 
         Algorithm:
@@ -2169,6 +2197,8 @@ This compaction should PRIORITISE preserving all information related to the focu
             force: If True, clear any active summary-failure cooldown before
                 running so a manual ``/compress`` can retry immediately after
                 an auto-compression abort.  Auto-compress callers pass False.
+            preservation_context: Optional high-priority text from memory
+                providers to preserve in the generated compression summary.
         """
         # Reset per-call summary failure state — callers inspect these fields
         # after compress() returns to decide whether to surface a warning.
@@ -2280,7 +2310,10 @@ This compaction should PRIORITISE preserving all information related to the focu
 
         # Phase 3: Generate structured summary
         summary_focus_topic = focus_topic or self._derive_auto_focus_topic(messages)
-        summary = self._generate_summary(turns_to_summarize, focus_topic=summary_focus_topic)
+        _summary_kwargs: dict[str, Any] = {"focus_topic": summary_focus_topic}
+        if preservation_context is not None:
+            _summary_kwargs["preservation_context"] = preservation_context
+        summary = self._generate_summary(turns_to_summarize, **_summary_kwargs)
 
         # If summary generation failed, behavior splits on
         # ``abort_on_summary_failure`` (config: compression.abort_on_summary_failure):
