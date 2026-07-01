@@ -25,7 +25,12 @@ from datetime import datetime
 
 import pytest
 
-from agent.codex_session_context import get_active_worktree
+from agent.codex_session_context import (
+    get_active_worktree,
+    is_worktree_confinement_required,
+    require_confinement_without_worktree,
+    reset_active_worktree,
+)
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import MessageEvent, MessageType
 from gateway.platforms.webhook import WebhookAdapter
@@ -233,6 +238,17 @@ async def test_restart_resume_skips_non_autonomous_session(tmp_path):
     assert captured.get("worktree") is None
 
 
+def test_require_confinement_without_worktree():
+    token = require_confinement_without_worktree()
+    try:
+        assert is_worktree_confinement_required() is True
+        assert get_active_worktree() is None
+    finally:
+        reset_active_worktree(token)
+    assert is_worktree_confinement_required() is False
+    assert get_active_worktree() is None
+
+
 # --- finding #8 follow-up: review-flagged resume-floor gaps -----------------
 
 
@@ -274,6 +290,13 @@ async def test_worktree_gone_fails_closed(tmp_path):
 
     async def asserting_handle_message(event):
         captured["worktree"] = get_active_worktree()
+        captured["confinement_required"] = is_worktree_confinement_required()
+        import tools.file_tools as ft
+        try:
+            ft._resolve_path_for_task("evil.py", task_id="default")
+            captured["file_write_denied"] = False
+        except PermissionError:
+            captured["file_write_denied"] = True
         captured["commit"] = check_session_deny_patterns(
             "git commit -am wip", session_key=session_key
         )[0]
@@ -315,6 +338,8 @@ async def test_worktree_gone_fails_closed(tmp_path):
         assert captured.get("worktree") is None, (
             "a gone worktree was somehow bound — isolation illusion"
         )
+        assert captured.get("confinement_required") is True
+        assert captured.get("file_write_denied") is True
         # FAIL CLOSED: local mutation against the live tree is blocked.
         assert captured.get("commit") is True, (
             "git commit allowed against the LIVE tree on worktree-gone resume"
@@ -334,6 +359,50 @@ async def test_worktree_gone_fails_closed(tmp_path):
             "non-destructive single-file rm spuriously denied — regex over-broad"
         )
         assert captured.get("push") is True, "DISP-5 push floor down on worktree-gone resume"
+    finally:
+        register_session_deny_patterns(session_key, [])
+
+
+@pytest.mark.asyncio
+async def test_worktree_present_arms_confinement(tmp_path):
+    runner, _ = make_restart_runner()
+    adapter = _webhook_adapter()
+    runner.adapters = {Platform.WEBHOOK: adapter}
+
+    source = _webhook_source()
+    session_key = "agent:main:webhook:dm:loki-route-1"
+    entry = SessionEntry(
+        session_key=session_key,
+        session_id="sid",
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+        origin=source,
+        platform=Platform.WEBHOOK,
+        chat_type="dm",
+        resume_pending=True,
+        resume_reason="restart_interrupted",
+        last_resume_marked_at=datetime.now(),
+        autonomous_dispatch=True,
+        worktree_path=str(tmp_path),
+        deny_patterns=None,
+    )
+    runner.session_store._entries = {session_key: entry}
+
+    captured: dict = {}
+
+    async def asserting_handle_message(event):
+        captured["worktree"] = get_active_worktree()
+        captured["confinement_required"] = is_worktree_confinement_required()
+
+    adapter.handle_message = asserting_handle_message
+    event = MessageEvent(
+        text="", message_type=MessageType.TEXT, source=source, internal=True
+    )
+
+    try:
+        await runner._run_startup_resume_event(adapter, event, session_key)
+        assert captured.get("worktree") == str(tmp_path)
+        assert captured.get("confinement_required") is True
     finally:
         register_session_deny_patterns(session_key, [])
 

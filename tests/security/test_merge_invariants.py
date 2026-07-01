@@ -99,6 +99,13 @@ def test_restart_resume_rearms_disp5_floor():
     # A gone worktree must FAIL CLOSED — augment deny with git-mutation/fs-escape.
     assert "WORKTREE_GONE_EXTRA_DENY" in run, \
         "restart-resume no longer fails closed when the persisted worktree is gone"
+    # A gone worktree must ALSO arm file-write confinement (F5) so
+    # write_file/patch/relative-resolve fail closed, not just command strings.
+    assert "require_confinement_without_worktree" in run, \
+        "restart-resume no longer arms file-write confinement on a gone worktree (t_0113eacc F5)"
+    ctx = _read("agent/codex_session_context.py")
+    assert "def require_confinement_without_worktree" in ctx, \
+        "require_confinement_without_worktree() dropped from codex_session_context (t_0113eacc F5)"
     # The startup auto-resume path must actually call the arming helper, not
     # merely define it.
     assert "_arm_autonomous_resume_floor(event, session_key)" in run, \

@@ -82,6 +82,13 @@ def reset_active_worktree(token) -> None:
         _active_worktree_var.reset(token)
 
 
+def require_confinement_without_worktree():
+    """Arm fail-closed worktree confinement WITHOUT a valid worktree — for an autonomous resume whose persisted worktree is GONE (isolation lost). is_worktree_confinement_required() -> True while get_active_worktree() -> None, so file_tools denies write_file/patch/relative-resolve (fail closed). Reset with reset_active_worktree(token). (t_0113eacc F5, escape vector V4)."""
+    active_token = _active_worktree_var.set(None)
+    confinement_token = _confinement_required_var.set(True)
+    return _WorktreeContextToken(active_token, confinement_token)
+
+
 def set_lane_executor(executor: Optional[concurrent.futures.Executor]):
     """Set the lane-dedicated executor for the current async task.
 

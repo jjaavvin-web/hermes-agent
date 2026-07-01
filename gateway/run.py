@@ -5113,6 +5113,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 for _p in WORKTREE_GONE_EXTRA_DENY:
                     if _p not in deny:
                         deny.append(_p)
+                # F5: deny-list covers commands; arm file-write confinement so write_file/patch fail closed too (isolation lost).
+                from agent.codex_session_context import require_confinement_without_worktree
+                worktree_token = require_confinement_without_worktree()
 
             # (b) re-register under EVERY key tool-exec might query: the resume
             # run's own key (session_key) AND the approval key the original
