@@ -14,7 +14,12 @@ from gateway.platforms.webhook import (
     _INSECURE_NO_AUTH,
 )
 from tools import approval as approval_module
-from tools.approval import check_session_deny_patterns, get_session_deny_pattern_strings
+from tools.approval import (
+    check_session_deny_patterns,
+    get_session_deny_pattern_strings,
+    is_session_credential_tainted,
+    mark_session_credential_tainted,
+)
 
 
 async def _post(cli: TestClient, delivery_id: str):
@@ -66,6 +71,18 @@ def _create_app(adapter: WebhookAdapter) -> web.Application:
     app = web.Application()
     app.router.add_post("/webhooks/{route_name}", adapter._handle_webhook)
     return app
+
+
+def _session_key_for_delivery(adapter: WebhookAdapter, delivery_id: str) -> str:
+    """Return the exact approval/session key webhook finalization clears."""
+    source = adapter.build_source(
+        chat_id=f"webhook:loki1:{delivery_id}",
+        chat_name="webhook/loki1",
+        chat_type="webhook",
+        user_id="webhook:loki1",
+        user_name="loki1",
+    )
+    return adapter._build_session_key(source)
 
 
 async def _start_slow_real_run(adapter: WebhookAdapter, cli: TestClient, delivery_id: str):
@@ -208,3 +225,69 @@ async def test_worktree_refusal_releases_slot_once_and_registers_no_finalizer():
     # A second cleanup would have inflated a plain asyncio.Semaphore; refusal
     # paths must not register a finalizer or over-release the acquired slot.
     assert adapter._agent_run_semaphore._value <= adapter._max_concurrent_agent_runs
+
+@pytest.mark.asyncio
+async def test_saturated_refusal_registers_no_deny_patterns_or_taint():
+    adapter = _make_adapter(cap=1)
+
+    async with TestClient(TestServer(_create_app(adapter))) as cli:
+        _observed, release, finished = await _start_slow_real_run(adapter, cli, "held")
+        refused_key = _session_key_for_delivery(adapter, "refused-429")
+
+        refused = await _post(cli, "refused-429")
+        refused_body = await refused.json()
+        assert refused.status == 429, refused_body
+        assert refused_body["error"] == "max_concurrent_agent_runs_exhausted"
+
+        assert get_session_deny_pattern_strings(refused_key) == []
+        assert is_session_credential_tainted(refused_key) is False
+        assert "refused-429" not in adapter._seen_deliveries
+
+        release.set()
+        await asyncio.wait_for(finished.wait(), timeout=2.0)
+        if adapter._background_tasks:
+            await asyncio.gather(*adapter._background_tasks, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_worktree_refusal_registers_no_deny_patterns_or_taint():
+    adapter = _make_adapter(cap=1)
+    adapter._wt_enabled = True
+    adapter._ensure_relay_worktree = lambda: None
+    refused_key = _session_key_for_delivery(adapter, "refused-503")
+
+    async with TestClient(TestServer(_create_app(adapter))) as cli:
+        response = await _post(cli, "refused-503")
+        body = await response.json()
+
+    assert response.status == 503, body
+    assert body["error"] == "worktree_unavailable"
+    assert get_session_deny_pattern_strings(refused_key) == []
+    assert is_session_credential_tainted(refused_key) is False
+    assert adapter._run_finalizers == {}
+    assert "refused-503" not in adapter._seen_deliveries
+
+
+@pytest.mark.asyncio
+async def test_credential_taint_persists_after_202_and_clears_only_at_finalization():
+    adapter = _make_adapter(cap=1)
+
+    async with TestClient(TestServer(_create_app(adapter))) as cli:
+        observed, release, finished = await _start_slow_real_run(adapter, cli, "taint-lifecycle")
+        session_key = observed["session_key"]
+
+        # The HTTP 202/spawn boundary has already passed. Taint added during the
+        # still-running dispatch must persist until on_processing_complete finalizes.
+        mark_session_credential_tainted(session_key)
+        await asyncio.sleep(0.05)
+        assert is_session_credential_tainted(session_key) is True
+        assert get_session_deny_pattern_strings(session_key) != []
+
+        release.set()
+        await asyncio.wait_for(finished.wait(), timeout=2.0)
+        if adapter._background_tasks:
+            await asyncio.gather(*adapter._background_tasks, return_exceptions=True)
+        await asyncio.sleep(0.05)
+
+        assert is_session_credential_tainted(session_key) is False
+        assert get_session_deny_pattern_strings(session_key) == []
