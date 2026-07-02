@@ -320,6 +320,73 @@ def test_lease_ledger_uses_immutable_40_char_base_sha_and_clean_compare_receives
 
 
 
+
+
+@pytest.mark.asyncio
+async def test_ledger_write_failure_after_allocate_is_fail_open_and_does_not_leak_slot(tmp_path, caplog):
+    adapter = _make_adapter(cap=1)
+    broker = _make_broker(tmp_path, cap=1)
+    adapter._wt_broker = broker
+    ledger_dir = Path(os.environ["HERMES_HOME"]) / "state" / "loki" / "ledger-as-directory"
+    ledger_dir.mkdir(parents=True)
+    adapter._lease_ledger_path = lambda: ledger_dir  # type: ignore[method-assign]
+    handled: list[str] = []
+
+    async def handler(event) -> None:
+        handled.append(event.message_id)
+
+    adapter.handle_message = handler  # type: ignore[method-assign]
+
+    with caplog.at_level("ERROR"):
+        async with TestClient(TestServer(_create_app(adapter))) as cli:
+            first = await _post(cli, "ledger-fails-one")
+            assert first.status == 202, await first.json()
+            await asyncio.gather(*adapter._background_tasks, return_exceptions=True)
+            second = await _post(cli, "ledger-fails-two")
+            assert second.status == 202, await second.json()
+            await asyncio.gather(*adapter._background_tasks, return_exceptions=True)
+
+    assert handled == ["ledger-fails-one", "ledger-fails-two"]
+    assert broker._registry == {}
+    assert adapter._agent_run_semaphore._value == 1
+    assert "lease ledger append failed" in caplog.text
+
+
+def test_post_allocate_runtime_failure_releases_broker_slot(tmp_path):
+    adapter = _make_adapter(cap=1)
+    broker = _make_broker(tmp_path, cap=1)
+    adapter._wt_broker = broker
+
+    def crash_ledger(_event: str, _lease: dict) -> None:
+        raise RuntimeError("ledger serializer exploded")
+
+    adapter._append_lease_ledger = crash_ledger  # type: ignore[method-assign]
+
+    with pytest.raises(RuntimeError, match="ledger serializer exploded"):
+        adapter._allocate_per_delivery_worktree("loki1", "post-allocate-crash")
+
+    assert broker._registry == {}
+    assert adapter._wt_broker is broker
+    adapter._append_lease_ledger = lambda _event, _lease: None  # type: ignore[method-assign]
+    assert adapter._allocate_per_delivery_worktree("loki1", "next-delivery")["sid"].startswith("wh-loki1-")
+
+
+def test_completion_ledger_failure_completes_lease_first_and_logs_loudly(tmp_path, caplog):
+    adapter = _make_adapter(cap=1)
+    broker = _make_broker(tmp_path, cap=1)
+    adapter._wt_broker = broker
+    lease = adapter._allocate_per_delivery_worktree("loki1", "completion-ledger-fails")
+    ledger_dir = Path(os.environ["HERMES_HOME"]) / "state" / "loki" / "complete-ledger-dir"
+    ledger_dir.mkdir(parents=True)
+    adapter._lease_ledger_path = lambda: ledger_dir  # type: ignore[method-assign]
+
+    with caplog.at_level("ERROR"):
+        adapter._complete_worktree_lease(lease)
+
+    assert broker._registry == {}
+    assert "lease ledger append failed" in caplog.text
+
+
 def test_switch_off_zero_side_effect_pin(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_WEBHOOK_WORKTREE", "1")
     monkeypatch.delenv("HERMES_WEBHOOK_PER_DELIVERY_WT", raising=False)

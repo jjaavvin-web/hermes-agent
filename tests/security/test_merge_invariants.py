@@ -577,3 +577,34 @@ def test_ready_spec_trust_compiler_gate_survives_merge():
 
     # 3. The read-only lint surface survives.
     assert "lint-ready" in _read("hermes_cli/kanban.py"), "kanban CLI lost the lint-ready surface"
+
+
+def test_per_delivery_worktree_switch_stays_nested_under_master_worktree_gate():
+    """F4 merge invariant: per-delivery worktrees are never armed unless the master worktree gate is on."""
+    src = _read("gateway/platforms/webhook.py")
+    assert "self._per_delivery_wt_enabled: bool" in src, "per-delivery gate symbol dropped"
+    assert 'self._wt_enabled and _env_truthy("HERMES_WEBHOOK_PER_DELIVERY_WT")' in src, \
+        "per-delivery worktree gate must stay nested under HERMES_WEBHOOK_WORKTREE"
+
+
+def test_webhook_per_delivery_broker_instantiation_keeps_ports_disabled():
+    """F4 merge invariant: webhook broker must not touch codex-ports.json."""
+    src = _read("gateway/platforms/webhook.py")
+    start = src.find("self._wt_broker = WorktreeBroker(")
+    assert start != -1, "webhook broker instantiation dropped"
+    end = src.find(")\n        return self._wt_broker", start)
+    assert end != -1, "webhook broker instantiation block changed unexpectedly"
+    block = src[start:end]
+    assert "ports_enabled=False" in block, "webhook broker must pass ports_enabled=False"
+
+
+def test_hydrate_per_delivery_sessions_keeps_wh_and_loki_double_filter():
+    """F4 merge invariant: restart hydration adopts only wh-* paths with loki/* branches."""
+    src = _read("gateway/platforms/webhook.py")
+    start = src.find("def _hydrate_per_delivery_sessions")
+    assert start != -1, "per-delivery hydration helper dropped"
+    end = src.find("def _allocate_per_delivery_worktree", start)
+    assert end != -1, "hydration helper boundary changed unexpectedly"
+    block = src[start:end]
+    assert 'child.name.startswith("wh-")' in block, "hydration lost wh-* path filter"
+    assert 'branch.startswith("loki/")' in block, "hydration lost loki/* branch filter"

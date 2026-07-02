@@ -238,12 +238,16 @@ class WorktreeBroker:
         isa_slug = slugify_ref(isa_slug)
         branch = branch_name or f"{self.branch_prefix}/{session_id}/{isa_slug}"
         wt_path = self._wt_root / session_id
-        if wt_path.is_dir():
+        if wt_path.is_dir() and identity is None:
+            raise BranchCollisionError(
+                f"Worktree path {wt_path} already exists. Operator intervention required."
+            )
+        if wt_path.is_dir() and identity is not None:
             stored_identity = self._read_identity(session_id=session_id)
-            if identity is not None and stored_identity != identity:
+            if stored_identity != identity or not self._is_registered_worktree_path(wt_path):
                 raise BranchCollisionError(
-                    f"Worktree {wt_path} already exists for a different or unknown identity. "
-                    "Refusing to share a worktree."
+                    f"Worktree {wt_path} already exists but is not a registered broker-owned "
+                    "worktree for the requested identity. Refusing to share a worktree."
                 )
             wt = Worktree(
                 session_id=session_id,
@@ -253,7 +257,7 @@ class WorktreeBroker:
                 created_at=datetime.now(timezone.utc),
                 lock_type=self._detect_lock_type(wt_path),
                 base_sha=base_sha,
-                identity=stored_identity if stored_identity is not None else identity,
+                identity=stored_identity,
             )
             self._registry[session_id] = wt
             return wt
@@ -263,9 +267,9 @@ class WorktreeBroker:
         )
         if result.returncode != 0:
             stderr = result.stderr or ""
-            if "already exists" in stderr:
+            if "already exists" in stderr or "not a git repository" in stderr:
                 raise BranchCollisionError(
-                    f"Branch {branch} already exists. "
+                    f"Worktree path or branch already exists for {branch}. "
                     "Operator intervention required."
                 )
             if "modified files" in stderr or "untracked files" in stderr:
@@ -558,6 +562,26 @@ class WorktreeBroker:
     def _identity_path(self, *, session_id: str) -> Path:
         safe_sid = _IDENTITY_PATH_INVALID_RE.sub("_", session_id).strip("._") or "session"
         return self.hermes_home / "state" / "worktree-broker-identities" / f"{safe_sid}.json"
+
+    def _is_registered_worktree_path(self, wt_path: Path) -> bool:
+        result = self._git("worktree", "list", "--porcelain")
+        if result.returncode != 0:
+            return False
+        try:
+            target = wt_path.resolve()
+        except OSError:
+            target = wt_path.absolute()
+        for line in result.stdout.splitlines():
+            if not line.startswith("worktree "):
+                continue
+            candidate = Path(line.removeprefix("worktree "))
+            try:
+                candidate = candidate.resolve()
+            except OSError:
+                candidate = candidate.absolute()
+            if candidate == target:
+                return True
+        return False
 
     def _read_identity(self, *, session_id: str) -> str | None:
         path = self._identity_path(session_id=session_id)

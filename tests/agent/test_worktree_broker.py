@@ -535,6 +535,52 @@ class TestBrokerParametrization:
             "worktree", "add", str(wt.path), "-b", wt.branch, "abc123"
         )
 
+
+
+    def test_plain_existing_dir_without_identity_fails_loudly_with_real_git(self, tmp_path):
+        repo = tmp_path / "repo"
+        hermes_home = tmp_path / "hermes_home"
+        repo.mkdir()
+        subprocess.run(["git", "init"], cwd=repo, check=True, capture_output=True, text=True)
+        subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=repo, check=True)
+        subprocess.run(["git", "config", "user.name", "Test User"], cwd=repo, check=True)
+        (repo / "README.md").write_text("root\n", encoding="utf-8")
+        subprocess.run(["git", "add", "README.md"], cwd=repo, check=True)
+        subprocess.run(["git", "commit", "-m", "init"], cwd=repo, check=True, capture_output=True, text=True)
+
+        broker = WorktreeBroker(
+            repo_root=repo,
+            hermes_home=hermes_home,
+            ports_enabled=False,
+        )
+        broker._disk_free_bytes = lambda: 10 * 1024**3  # type: ignore[method-assign]
+        sid = "plain-existing-dir"
+        (hermes_home / "codex-wt" / sid).mkdir(parents=True)
+
+        with pytest.raises(BranchCollisionError):
+            broker.allocate(sid, isa_slug="codex-default", base_branch="HEAD", identity=None)
+
+        assert sid not in broker._registry
+
+    def test_plain_existing_dir_with_identity_fails_loudly_not_boolean_adopt(self, tmp_path):
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        broker = WorktreeBroker(
+            repo_root=repo,
+            hermes_home=tmp_path / "hermes_home",
+            ports_enabled=False,
+        )
+        broker._disk_free_bytes = lambda: 10 * 1024**3  # type: ignore[method-assign]
+        sid = "plain-with-identity"
+        (broker.hermes_home / "codex-wt" / sid).mkdir(parents=True)
+        broker._write_identity(session_id=sid, identity="delivery-1")
+        broker._git = MagicMock(return_value=_ok_git_result())  # type: ignore[method-assign]
+
+        with pytest.raises(BranchCollisionError, match="not a registered broker-owned"):
+            broker.allocate(sid, isa_slug="loki", identity="delivery-1")
+
+        assert sid not in broker._registry
+
     def test_max_active_leases_refuses_new_non_idempotent_allocations(self, tmp_path):
         broker = WorktreeBroker(
             repo_root=tmp_path / "repo",
