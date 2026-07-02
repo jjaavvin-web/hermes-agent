@@ -572,10 +572,19 @@ class WebhookAdapter(BasePlatformAdapter):
         }
         if lease_info.get("base_ref"):
             record["base_ref"] = lease_info.get("base_ref")
-        path = self._lease_ledger_path()
-        path.parent.mkdir(parents=True, exist_ok=True)
-        with open(path, "a", encoding="utf-8") as fd:
-            fd.write(json.dumps(record, sort_keys=True) + "\n")
+        try:
+            path = self._lease_ledger_path()
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with open(path, "a", encoding="utf-8") as fd:
+                fd.write(json.dumps(record, sort_keys=True) + "\n")
+        except (OSError, IOError):
+            logger.error(
+                "[webhook] lease ledger append failed event=%s sid=%s delivery=%s",
+                event,
+                lease_info.get("sid"),
+                lease_info.get("delivery_id"),
+                exc_info=True,
+            )
 
     def _resolve_worktree_base_sha(self) -> str:
         repo_root = os.environ.get(
@@ -660,6 +669,8 @@ class WebhookAdapter(BasePlatformAdapter):
         branch = f"loki/{route_component}/{short_delivery}"
         base_sha = self._resolve_worktree_base_sha()
         broker = self._get_per_delivery_broker()
+        preexisting_lease = sid in getattr(broker, "_registry", {})
+        release_on_failure = False
         try:
             wt = broker.allocate(
                 sid,
@@ -669,21 +680,48 @@ class WebhookAdapter(BasePlatformAdapter):
                 base_sha=base_sha,
                 identity=delivery_id,
             )
+            release_on_failure = not preexisting_lease
+            lease = {
+                "sid": sid,
+                "delivery_id": delivery_id,
+                "route": route_name,
+                "path": str(wt.path),
+                "branch": wt.branch,
+                "base": base_sha,
+                "base_ref": self._wt_base_branch_ref,
+            }
+            try:
+                self._append_lease_ledger("leased", lease)
+            except (OSError, IOError):
+                logger.error(
+                    "[webhook] lease ledger append failed event=leased sid=%s delivery=%s",
+                    sid,
+                    delivery_id,
+                    exc_info=True,
+                )
+            return lease
         except (DiskPressureError, RepoStateError, BranchCollisionError, LeaseCapacityError):
             raise
         except RuntimeError:
+            if release_on_failure:
+                try:
+                    broker.release(sid)
+                except Exception:
+                    logger.exception(
+                        "[webhook] failed to release per-delivery worktree after post-allocate failure sid=%s",
+                        sid,
+                    )
             raise
-        lease = {
-            "sid": sid,
-            "delivery_id": delivery_id,
-            "route": route_name,
-            "path": str(wt.path),
-            "branch": wt.branch,
-            "base": base_sha,
-            "base_ref": self._wt_base_branch_ref,
-        }
-        self._append_lease_ledger("leased", lease)
-        return lease
+        except Exception:
+            if release_on_failure:
+                try:
+                    broker.release(sid)
+                except Exception:
+                    logger.exception(
+                        "[webhook] failed to release per-delivery worktree after post-allocate failure sid=%s",
+                        sid,
+                    )
+            raise
 
     def _complete_worktree_lease(self, lease_info: dict) -> None:
         broker = self._wt_broker
@@ -692,9 +730,17 @@ class WebhookAdapter(BasePlatformAdapter):
         sid = str(lease_info.get("sid") or "")
         if not sid:
             return
-        self._append_lease_ledger("completed", lease_info)
         result = broker.complete_lease(sid, base_sha=lease_info.get("base"))
-        self._append_lease_ledger(result, lease_info)
+        try:
+            self._append_lease_ledger("completed", lease_info)
+            self._append_lease_ledger(result, lease_info)
+        except (OSError, IOError):
+            logger.error(
+                "[webhook] lease ledger append failed during completion sid=%s delivery=%s",
+                sid,
+                lease_info.get("delivery_id"),
+                exc_info=True,
+            )
 
     async def _handle_webhook(self, request: "web.Request") -> "web.Response":
         """POST /webhooks/{route_name} — receive and process a webhook event."""
