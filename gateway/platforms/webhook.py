@@ -118,6 +118,15 @@ def _get_agent_run_semaphore(max_concurrent_agent_runs: int) -> asyncio.Semaphor
     return _AGENT_RUN_SEMAPHORE
 
 
+
+
+def _env_truthy(name: str) -> bool:
+    return os.environ.get(name, "").strip().lower() in ("1", "true", "yes")
+
+def _safe_ref_component(value: str, *, fallback: str = "delivery") -> str:
+    cleaned = re.sub(r"[^A-Za-z0-9._-]+", "-", str(value or "")).strip("-./")
+    return cleaned or fallback
+
 def _is_loopback_host(host: str) -> bool:
     """True when `host` binds only to the local machine.
 
@@ -191,15 +200,21 @@ class WebhookAdapter(BasePlatformAdapter):
         # Phase 3: bind relayed (Platform.WEBHOOK) agent runs to a dedicated git
         # worktree so an orchestrator's "hands" work on a branch, not the live
         # tree. Gated OFF by default; rollback = unset HERMES_WEBHOOK_WORKTREE.
-        self._wt_enabled: bool = os.environ.get(
-            "HERMES_WEBHOOK_WORKTREE", ""
-        ).strip().lower() in ("1", "true", "yes")
-        self._wt_base_branch: str = (
+        self._wt_enabled: bool = _env_truthy("HERMES_WEBHOOK_WORKTREE")
+        # F4 per-delivery broker sits under the existing master gate and is OFF
+        # by default; switch-off must preserve today's singleton path exactly.
+        self._per_delivery_wt_enabled: bool = (
+            self._wt_enabled and _env_truthy("HERMES_WEBHOOK_PER_DELIVERY_WT")
+        )
+        self._wt_base_branch_ref: str = (
             os.environ.get("HERMES_WEBHOOK_BASE_BRANCH", "").strip() or "fork/main"
         )
+        self._wt_base_branch: str = self._wt_base_branch_ref
         self._wt_branch: str = "relay/work"
         self._wt_path: Optional[str] = None   # set lazily by _ensure_relay_worktree()
         self._wt_init_failed: bool = False    # latched so we refuse, not retry-spam
+        self._wt_broker = None
+        self._lease_by_finalizer: Dict[str, dict] = {}
 
     def _build_session_key(self, source) -> str:
         """Return the webhook run/session correlation key for a source."""
@@ -216,7 +231,7 @@ class WebhookAdapter(BasePlatformAdapter):
         """Return the key used to register and complete a webhook agent run."""
         return self._build_session_key(event.source)
 
-    def _register_run_finalizer(self, event: MessageEvent, approval_key: Optional[str]) -> str:
+    def _register_run_finalizer(self, event: MessageEvent, approval_key: Optional[str], lease_info: Optional[dict] = None) -> str:
         """Register once-only run cleanup keyed by the event's session key."""
         key = self._run_finalizer_key(event)
 
@@ -247,14 +262,21 @@ class WebhookAdapter(BasePlatformAdapter):
                     )
 
         self._run_finalizers[key] = _finalizer
+        if lease_info:
+            self._lease_by_finalizer[key] = lease_info
         return key
 
     def _finalize_run(self, key: str) -> None:
         """Run and remove a registered webhook finalizer exactly once."""
         finalizer = self._run_finalizers.pop(key, None)
+        lease_info = self._lease_by_finalizer.pop(key, None)
         if finalizer is None:
             return
-        finalizer()
+        try:
+            if lease_info:
+                self._complete_worktree_lease(lease_info)
+        finally:
+            finalizer()
 
     async def on_processing_complete(self, event: MessageEvent, outcome: Any) -> None:
         """Release webhook run backpressure after the spawned agent task ends."""
@@ -302,6 +324,12 @@ class WebhookAdapter(BasePlatformAdapter):
                         f"deliver is '{deliver}'. Direct delivery requires a "
                         f"real target (telegram, discord, slack, github_comment, etc.)."
                     )
+
+        if self._per_delivery_wt_enabled:
+            try:
+                await asyncio.to_thread(self._get_per_delivery_broker)
+            except Exception:
+                logger.exception("[webhook] failed to hydrate per-delivery worktree broker")
 
         app = web.Application()
         app.router.add_get("/health", self._handle_health)
@@ -526,6 +554,145 @@ class WebhookAdapter(BasePlatformAdapter):
             )
             self._wt_init_failed = True
             return None
+
+    def _lease_ledger_path(self) -> Path:
+        from hermes_constants import get_hermes_home
+        return Path(get_hermes_home()) / "state" / "loki" / "worktree-leases.jsonl"
+
+    def _append_lease_ledger(self, event: str, lease_info: dict) -> None:
+        record = {
+            "ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "event": event,
+            "sid": lease_info.get("sid"),
+            "delivery_id": lease_info.get("delivery_id"),
+            "route": lease_info.get("route"),
+            "path": lease_info.get("path"),
+            "branch": lease_info.get("branch"),
+            "base": lease_info.get("base"),
+        }
+        if lease_info.get("base_ref"):
+            record["base_ref"] = lease_info.get("base_ref")
+        path = self._lease_ledger_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with open(path, "a", encoding="utf-8") as fd:
+            fd.write(json.dumps(record, sort_keys=True) + "\n")
+
+    def _resolve_worktree_base_sha(self) -> str:
+        repo_root = os.environ.get(
+            "HERMES_REPO_ROOT", str(Path(__file__).resolve().parents[2])
+        )
+        res = subprocess.run(
+            ["git", "-C", repo_root, "rev-parse", self._wt_base_branch_ref],
+            capture_output=True, text=True, timeout=25,
+        )
+        if res.returncode != 0:
+            raise RuntimeError((res.stderr or "git rev-parse failed").strip())
+        return res.stdout.strip()
+
+    def _get_per_delivery_broker(self):
+        if self._wt_broker is not None:
+            return self._wt_broker
+        from agent.worktree_broker import WorktreeBroker
+        from hermes_constants import get_hermes_home
+        hermes_home = Path(get_hermes_home())
+        repo_root = Path(os.environ.get(
+            "HERMES_REPO_ROOT", str(Path(__file__).resolve().parents[2])
+        ))
+        existing = self._hydrate_per_delivery_sessions(hermes_home=hermes_home, repo_root=repo_root)
+        self._wt_broker = WorktreeBroker(
+            repo_root=repo_root,
+            hermes_home=hermes_home,
+            existing_sessions=existing,
+            wt_dir_name="relay-wt/deliveries",
+            branch_prefix="loki",
+            ports_enabled=False,
+            max_active_leases=self._max_concurrent_agent_runs,
+        )
+        return self._wt_broker
+
+    def _hydrate_per_delivery_sessions(self, *, hermes_home: Path, repo_root: Path) -> dict[str, dict]:
+        """Conservatively adopt only wh-* loki/* worktrees under relay-wt/deliveries."""
+        root = hermes_home / "relay-wt" / "deliveries"
+        if not root.is_dir():
+            return {}
+        res = subprocess.run(
+            ["git", "-C", str(repo_root), "worktree", "list", "--porcelain"],
+            capture_output=True, text=True, timeout=25,
+        )
+        if res.returncode != 0:
+            logger.warning("[webhook] per-delivery worktree hydration failed: %s", (res.stderr or "").strip())
+            return {}
+        entries: dict[str, dict[str, str]] = {}
+        current: dict[str, str] = {}
+        for line in res.stdout.splitlines() + [""]:
+            if not line.strip():
+                if current.get("worktree"):
+                    entries[current["worktree"]] = dict(current)
+                current = {}
+                continue
+            if line.startswith("worktree "):
+                current["worktree"] = line.removeprefix("worktree ")
+            elif line.startswith("branch "):
+                current["branch"] = line.removeprefix("branch ").removeprefix("refs/heads/")
+            elif line.startswith("HEAD "):
+                current["base_sha"] = line.removeprefix("HEAD ")
+        adopted: dict[str, dict] = {}
+        for child in root.iterdir():
+            if not child.is_dir() or not child.name.startswith("wh-"):
+                continue
+            meta = entries.get(str(child.resolve())) or entries.get(str(child))
+            branch = (meta or {}).get("branch", "")
+            if not branch.startswith("loki/"):
+                continue
+            adopted[child.name] = {
+                "path": str(child),
+                "branch": branch,
+                "base_sha": (meta or {}).get("base_sha"),
+            }
+        return adopted
+
+    def _allocate_per_delivery_worktree(self, route_name: str, delivery_id: str) -> dict:
+        from agent.worktree_broker import BranchCollisionError, DiskPressureError, LeaseCapacityError, RepoStateError
+        short_delivery = _safe_ref_component(delivery_id[:8], fallback="delivery")
+        route_component = _safe_ref_component(route_name, fallback="route")
+        sid = f"wh-{route_component}-{short_delivery}"
+        branch = f"loki/{route_component}/{short_delivery}"
+        base_sha = self._resolve_worktree_base_sha()
+        broker = self._get_per_delivery_broker()
+        try:
+            wt = broker.allocate(
+                sid,
+                isa_slug=short_delivery,
+                base_branch=base_sha,
+                branch_name=branch,
+                base_sha=base_sha,
+            )
+        except (DiskPressureError, RepoStateError, BranchCollisionError, LeaseCapacityError):
+            raise
+        except RuntimeError:
+            raise
+        lease = {
+            "sid": sid,
+            "delivery_id": delivery_id,
+            "route": route_name,
+            "path": str(wt.path),
+            "branch": wt.branch,
+            "base": base_sha,
+            "base_ref": self._wt_base_branch_ref,
+        }
+        self._append_lease_ledger("leased", lease)
+        return lease
+
+    def _complete_worktree_lease(self, lease_info: dict) -> None:
+        broker = self._wt_broker
+        if broker is None:
+            return
+        sid = str(lease_info.get("sid") or "")
+        if not sid:
+            return
+        self._append_lease_ledger("completed", lease_info)
+        result = broker.complete_lease(sid, base_sha=lease_info.get("base"))
+        self._append_lease_ledger(result, lease_info)
 
     async def _handle_webhook(self, request: "web.Request") -> "web.Response":
         """POST /webhooks/{route_name} — receive and process a webhook event."""
@@ -865,29 +1032,62 @@ class WebhookAdapter(BasePlatformAdapter):
             )
         await self._agent_run_semaphore.acquire()
 
-        # Phase 3 worktree preflight must happen after capacity acquisition but
+        # Phase 3/F4 worktree preflight must happen after capacity acquisition but
         # before task creation; release the slot if setup refuses the run.
         _wt_for_run: Optional[str] = None
+        _lease_info: Optional[dict] = None
         if self._wt_enabled:
-            _wt_for_run = await asyncio.to_thread(self._ensure_relay_worktree)
-            if _wt_for_run is None:
-                self._agent_run_semaphore.release()
-                self._seen_deliveries.pop(delivery_id, None)
-                logger.error(
-                    "[webhook] relay worktree unavailable; refusing run route=%s delivery=%s",
-                    route_name, delivery_id,
-                )
-                return web.json_response(
-                    {"status": "error", "error": "worktree_unavailable",
-                     "delivery_id": delivery_id},
-                    status=503,
-                )
+            if self._per_delivery_wt_enabled:
+                try:
+                    _lease_info = await asyncio.to_thread(
+                        self._allocate_per_delivery_worktree, route_name, delivery_id
+                    )
+                    _wt_for_run = _lease_info["path"]
+                except Exception as exc:
+                    self._agent_run_semaphore.release()
+                    self._seen_deliveries.pop(delivery_id, None)
+                    from agent.worktree_broker import LeaseCapacityError
+                    if isinstance(exc, LeaseCapacityError):
+                        retry_after = "30"
+                        return web.json_response(
+                            {
+                                "status": "rate_limited",
+                                "error": "worktree_lease_capacity_exhausted",
+                                "retry_after": int(retry_after),
+                                "delivery_id": delivery_id,
+                            },
+                            status=429,
+                            headers={"Retry-After": retry_after},
+                        )
+                    logger.error(
+                        "[webhook] per-delivery worktree unavailable; refusing run route=%s delivery=%s: %s",
+                        route_name, delivery_id, exc,
+                    )
+                    return web.json_response(
+                        {"status": "error", "error": "worktree_unavailable",
+                         "delivery_id": delivery_id},
+                        status=503,
+                    )
+            else:
+                _wt_for_run = await asyncio.to_thread(self._ensure_relay_worktree)
+                if _wt_for_run is None:
+                    self._agent_run_semaphore.release()
+                    self._seen_deliveries.pop(delivery_id, None)
+                    logger.error(
+                        "[webhook] relay worktree unavailable; refusing run route=%s delivery=%s",
+                        route_name, delivery_id,
+                    )
+                    return web.json_response(
+                        {"status": "error", "error": "worktree_unavailable",
+                         "delivery_id": delivery_id},
+                        status=503,
+                    )
 
         async def _run_with_backpressure() -> None:
             # All pre-spawn refusal gates have passed; only now bind approval
             # rails to this accepted run, using the same key finalization clears.
             _approval_key = _register_approval_rails()
-            _finalizer_key = self._register_run_finalizer(event, _approval_key)
+            _finalizer_key = self._register_run_finalizer(event, _approval_key, _lease_info)
             try:
                 # Phase 3: when HERMES_WEBHOOK_WORKTREE is on, bind the run to the relay
                 # git worktree so it works on a branch, not the live tree. If a worktree

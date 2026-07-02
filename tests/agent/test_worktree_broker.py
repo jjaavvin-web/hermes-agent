@@ -18,6 +18,7 @@ import pytest
 from agent.worktree_broker import (
     BranchCollisionError,
     DiskPressureError,
+    LeaseCapacityError,
     RepoStateError,
     Worktree,
     WorktreeBroker,
@@ -489,3 +490,98 @@ class TestExistingSessionsHydration:
 
         assert wt.session_id == sid
         mock_git.assert_not_called()  # idempotency — no git call
+
+
+class TestBrokerParametrization:
+    def test_defaults_preserve_codex_path_branch_and_ports(self, tmp_path):
+        broker = _make_broker(tmp_path)
+        sid = "aaaaaaaa-0000-4000-8000-000000000201"
+        with (
+            patch.object(broker, "_disk_free_bytes", return_value=10 * 1024**3),
+            patch.object(broker, "_git", return_value=_ok_git_result()),
+        ):
+            wt = broker.allocate(sid, isa_slug="default-check", base_branch="origin/main")
+
+        assert wt.path == broker.hermes_home / "codex-wt" / sid
+        assert wt.branch == f"codex/{sid}/default-check"
+        assert wt.port is not None
+        assert broker._ports_path().exists()
+
+    def test_ports_disabled_uses_custom_root_branch_and_never_touches_codex_ports(self, tmp_path):
+        repo_root = tmp_path / "repo"
+        repo_root.mkdir()
+        hermes_home = tmp_path / "hermes_home"
+        hermes_home.mkdir()
+        broker = WorktreeBroker(
+            repo_root=repo_root,
+            hermes_home=hermes_home,
+            wt_dir_name="relay-wt/deliveries",
+            branch_prefix="loki",
+            ports_enabled=False,
+        )
+        sid = "wh-loki1-12345678"
+        with (
+            patch.object(broker, "_disk_free_bytes", return_value=10 * 1024**3),
+            patch.object(broker, "_git", return_value=_ok_git_result()) as mock_git,
+        ):
+            wt = broker.allocate(sid, isa_slug="12345678", base_branch="abc123", base_sha="abc123")
+
+        assert wt.path == hermes_home / "relay-wt" / "deliveries" / sid
+        assert wt.branch == "loki/wh-loki1-12345678/12345678"
+        assert wt.port is None
+        assert wt.base_sha == "abc123"
+        assert not (hermes_home / "codex-ports.json").exists()
+        assert mock_git.call_args[0] == (
+            "worktree", "add", str(wt.path), "-b", wt.branch, "abc123"
+        )
+
+    def test_max_active_leases_refuses_new_non_idempotent_allocations(self, tmp_path):
+        broker = WorktreeBroker(
+            repo_root=tmp_path / "repo",
+            hermes_home=tmp_path / "hermes_home",
+            ports_enabled=False,
+            max_active_leases=1,
+        )
+        (tmp_path / "repo").mkdir(exist_ok=True)
+        with (
+            patch.object(broker, "_disk_free_bytes", return_value=10 * 1024**3),
+            patch.object(broker, "_git", return_value=_ok_git_result()),
+        ):
+            first = broker.allocate("sid-one", isa_slug="one")
+            assert broker.allocate("sid-one", isa_slug="one") is first
+            with pytest.raises(LeaseCapacityError):
+                broker.allocate("sid-two", isa_slug="two")
+
+    def test_complete_lease_removes_clean_tree_but_retains_dirty_tree(self, tmp_path):
+        broker = WorktreeBroker(
+            repo_root=tmp_path / "repo",
+            hermes_home=tmp_path / "hermes_home",
+            ports_enabled=False,
+        )
+        (tmp_path / "repo").mkdir(exist_ok=True)
+        clean = broker.hermes_home / "codex-wt" / "clean"
+        dirty = broker.hermes_home / "codex-wt" / "dirty"
+        clean.mkdir(parents=True)
+        dirty.mkdir(parents=True)
+        broker._registry["clean"] = Worktree(
+            session_id="clean", path=clean, branch="codex/clean/x", port=None,
+            created_at=datetime.now(timezone.utc), base_sha="a" * 40,
+        )
+        broker._registry["dirty"] = Worktree(
+            session_id="dirty", path=dirty, branch="codex/dirty/x", port=None,
+            created_at=datetime.now(timezone.utc), base_sha="a" * 40,
+        )
+
+        def fake_clean(path, base_sha):
+            return path == clean
+
+        with (
+            patch.object(broker, "_worktree_is_clean_for_removal", side_effect=fake_clean),
+            patch.object(broker, "_git", return_value=_ok_git_result()) as mock_git,
+        ):
+            assert broker.complete_lease("clean", base_sha="a" * 40) == "removed"
+            assert broker.complete_lease("dirty", base_sha="a" * 40) == "awaiting-harvest"
+
+        assert "clean" not in broker._registry
+        assert "dirty" not in broker._registry
+        mock_git.assert_called_once_with("worktree", "remove", str(clean))
