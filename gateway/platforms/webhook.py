@@ -653,7 +653,8 @@ class WebhookAdapter(BasePlatformAdapter):
 
     def _allocate_per_delivery_worktree(self, route_name: str, delivery_id: str) -> dict:
         from agent.worktree_broker import BranchCollisionError, DiskPressureError, LeaseCapacityError, RepoStateError
-        short_delivery = _safe_ref_component(delivery_id[:8], fallback="delivery")
+        delivery_hash = hashlib.sha256(delivery_id.encode("utf-8")).hexdigest()[:12]
+        short_delivery = _safe_ref_component(delivery_hash, fallback="delivery")
         route_component = _safe_ref_component(route_name, fallback="route")
         sid = f"wh-{route_component}-{short_delivery}"
         branch = f"loki/{route_component}/{short_delivery}"
@@ -666,6 +667,7 @@ class WebhookAdapter(BasePlatformAdapter):
                 base_branch=base_sha,
                 branch_name=branch,
                 base_sha=base_sha,
+                identity=delivery_id,
             )
         except (DiskPressureError, RepoStateError, BranchCollisionError, LeaseCapacityError):
             raise
