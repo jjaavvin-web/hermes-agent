@@ -8,8 +8,12 @@ pause/resume/run/remove, status, and tick.
 import json
 import re
 import sys
+from collections.abc import Iterable
 from pathlib import Path
-from typing import Iterable, List, Optional
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from argparse import Namespace
 
 PROJECT_ROOT = Path(__file__).parent.parent.resolve()
 sys.path.insert(0, str(PROJECT_ROOT))
@@ -25,7 +29,7 @@ _GATEWAY_LIFECYCLE_PATTERNS = re.compile(
     r"(?i)"
     r"(hermes\s+gateway\s+(restart|stop|start))"
     r"|(launchctl\s+(kickstart|unload|load|stop|restart)\s+.*hermes)"
-    r"|(systemctl\s+(restart|stop|start)\s+.*hermes)"
+    r"|(systemctl\s+(-\S+\s+)*(restart|stop|start)\s+.*hermes)"
     r"|(p?kill\s+.*hermes.*gateway)"
 )
 
@@ -35,7 +39,10 @@ def _contains_gateway_lifecycle_command(text: str) -> bool:
     return bool(_GATEWAY_LIFECYCLE_PATTERNS.search(text))
 
 
-def _normalize_skills(single_skill=None, skills: Optional[Iterable[str]] = None) -> Optional[List[str]]:
+def _normalize_skills(
+    single_skill: object | None = None,
+    skills: Iterable[object] | None = None,
+) -> list[str] | None:
     if skills is None:
         if single_skill is None:
             return None
@@ -43,7 +50,7 @@ def _normalize_skills(single_skill=None, skills: Optional[Iterable[str]] = None)
     else:
         raw_items = list(skills)
 
-    normalized: List[str] = []
+    normalized: list[str] = []
     for item in raw_items:
         text = str(item or "").strip()
         if text and text not in normalized:
@@ -51,13 +58,13 @@ def _normalize_skills(single_skill=None, skills: Optional[Iterable[str]] = None)
     return normalized
 
 
-def _cron_api(**kwargs):
+def _cron_api(**kwargs: Any) -> dict[str, Any]:
     from tools.cronjob_tools import cronjob as cronjob_tool
 
     return json.loads(cronjob_tool(**kwargs))
 
 
-def cron_list(show_all: bool = False):
+def cron_list(show_all: bool = False) -> None:
     """List all scheduled jobs."""
     from cron.jobs import list_jobs
 
@@ -120,9 +127,6 @@ def cron_list(show_all: bool = False):
         workdir = job.get("workdir")
         if workdir:
             print(f"    Workdir:   {workdir}")
-        profile = job.get("profile")
-        if profile:
-            print(f"    Profile:   {profile}")
 
         # Execution history
         last_status = job.get("last_status")
@@ -148,13 +152,13 @@ def cron_list(show_all: bool = False):
         print()
 
 
-def cron_tick():
+def cron_tick() -> None:
     """Run due jobs once and exit."""
     from cron.scheduler import tick
     tick(verbose=True)
 
 
-def cron_status():
+def cron_status() -> None:
     """Show cron execution status."""
     from cron.jobs import list_jobs
     from hermes_cli.gateway import find_gateway_pids
@@ -187,7 +191,7 @@ def cron_status():
     print()
 
 
-def cron_create(args):
+def cron_create(args: "Namespace") -> int:
     # Defense: reject cron jobs that contain gateway lifecycle commands.
     # Prevents agents from scheduling their own restart/stop, which creates
     # SIGTERM-respawn loops under launchd/systemd KeepAlive (#30719).
@@ -221,7 +225,6 @@ def cron_create(args):
         skills=_normalize_skills(getattr(args, "skill", None), getattr(args, "skills", None)),
         script=getattr(args, "script", None),
         workdir=getattr(args, "workdir", None),
-        profile=getattr(args, "profile", None),
         no_agent=getattr(args, "no_agent", False) or None,
     )
     if not result.get("success"):
@@ -239,13 +242,11 @@ def cron_create(args):
         print("  Mode: no-agent (script stdout delivered directly)")
     if job_data.get("workdir"):
         print(f"  Workdir: {job_data['workdir']}")
-    if job_data.get("profile"):
-        print(f"  Profile: {job_data['profile']}")
     print(f"  Next run: {result['next_run_at']}")
     return 0
 
 
-def cron_edit(args):
+def cron_edit(args: "Namespace") -> int:
     from cron.jobs import AmbiguousJobReference, resolve_job_ref
 
     try:
@@ -286,7 +287,6 @@ def cron_edit(args):
         skills=final_skills,
         script=getattr(args, "script", None),
         workdir=getattr(args, "workdir", None),
-        profile=getattr(args, "profile", None),
         no_agent=getattr(args, "no_agent", None),
     )
     if not result.get("success"):
@@ -307,8 +307,6 @@ def cron_edit(args):
         print("  Mode: no-agent (script stdout delivered directly)")
     if updated.get("workdir"):
         print(f"  Workdir: {updated['workdir']}")
-    if updated.get("profile"):
-        print(f"  Profile: {updated['profile']}")
     return 0
 
 
@@ -326,7 +324,7 @@ def _job_action(action: str, job_id: str, success_verb: str) -> int:
     return 0
 
 
-def cron_command(args):
+def cron_command(args: "Namespace") -> int:
     """Handle cron subcommands."""
     subcmd = getattr(args, 'cron_command', None)
 

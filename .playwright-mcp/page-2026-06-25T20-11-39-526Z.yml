@@ -1,0 +1,93 @@
+- application "Life Dashboard — Today" [ref=e2]:
+  - generic [ref=e3]:
+    - generic [ref=e4]: 9:41
+    - generic [ref=e5]:
+      - img [ref=e6]
+      - img [ref=e11]
+      - img [ref=e16]
+  - generic [ref=e20]:
+    - generic [ref=e21]:
+      - generic [ref=e22]:
+        - generic [ref=e23]: Good morning, Josep
+        - generic [ref=e24]: Tue, Jun 25
+      - generic [ref=e25]:
+        - img [ref=e27]
+        - generic [ref=e32]: updated 2m ago
+    - generic [ref=e33]:
+      - generic [ref=e34]:
+        - text: On pace to spend·
+        - text: Recovery 82·
+        - text: Evening Examen pending·
+        - text: 3 of 6 tasks
+      - generic [ref=e39]: Today at a glance
+      - generic [ref=e40]:
+        - generic [ref=e41]:
+          - generic [ref=e43]:
+            - img [ref=e45]
+            - generic [ref=e47]: Free to spend
+          - generic [ref=e48]: $1,240
+          - generic [ref=e49]: of $3,400 · on pace
+          - img [ref=e51]
+        - generic [ref=e54]:
+          - generic [ref=e56]:
+            - img [ref=e58]
+            - generic [ref=e60]: Readiness
+          - generic [ref=e61]:
+            - img [ref=e62]
+            - generic [ref=e65]: "82"
+          - generic [ref=e66]: HRV 58 · RHR 52
+        - generic [ref=e67]:
+          - generic [ref=e68]:
+            - img [ref=e70]
+            - generic [ref=e73]: Rhythm
+          - generic [ref=e74]:
+            - generic [ref=e75]: Morning ✓
+            - generic [ref=e76]: Midday
+            - generic [ref=e77]: Evening
+          - generic [ref=e78]:
+            - generic [ref=e79]: 1 of 3 done
+            - img [ref=e80]
+        - generic [ref=e86]:
+          - generic [ref=e87]:
+            - img [ref=e89]
+            - generic [ref=e92]: Today
+          - generic [ref=e93]: 3/6 tasks
+          - generic [ref=e101]: Next · Standup 10:30
+      - generic [ref=e102]:
+        - generic [ref=e103]:
+          - generic [ref=e104]: Evening Examen — 5 min
+          - generic [ref=e105]: Most pressing item across your day
+        - button "Begin" [ref=e106] [cursor=pointer]
+      - generic [ref=e107]:
+        - generic [ref=e108]: Verse of the day
+        - generic [ref=e109]: "\"Teach us to number our days, that we may gain a heart of wisdom.\""
+        - generic [ref=e110]:
+          - generic [ref=e111]: Psalm 90:12
+          - img [ref=e113]
+      - generic [ref=e118]: Today's focus
+      - generic [ref=e119]:
+        - generic [ref=e120]:
+          - generic [ref=e121]: 10:30
+          - generic [ref=e122]: Standup (30m)
+        - generic [ref=e123]:
+          - generic [ref=e124]: 13:00
+          - generic [ref=e125]: Deep work — Life dashboard (2h)
+        - generic [ref=e126]:
+          - generic [ref=e127]: 18:30
+          - generic [ref=e128]: Examen + shutdown
+  - navigation [ref=e130]:
+    - generic [ref=e131] [cursor=pointer]:
+      - img [ref=e132]
+      - generic [ref=e135]: Today
+    - generic [ref=e136] [cursor=pointer]:
+      - img [ref=e137]
+      - generic: Finance
+    - generic [ref=e139] [cursor=pointer]:
+      - img [ref=e140]
+      - generic: Health
+    - generic [ref=e142] [cursor=pointer]:
+      - img [ref=e143]
+      - generic: Faith
+    - generic [ref=e146] [cursor=pointer]:
+      - img [ref=e147]
+      - generic: Life

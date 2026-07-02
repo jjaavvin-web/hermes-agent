@@ -41,11 +41,59 @@ function setSessionHeader(headers: Headers, token: string): void {
   }
 }
 
+// ── Global management-profile scope ──────────────────────────────────
+// The dashboard is a machine-level management surface: one header switcher
+// (ProfileProvider in App.tsx) decides which profile the management pages
+// read/write, and fetchJSON transparently appends ?profile=<name> to the
+// profile-scoped endpoint families below. "" = the dashboard process's own
+// profile (legacy behavior). Calls that already carry an explicit profile
+// (e.g. ProfileBuilder writes) are left untouched — explicit beats global.
+let _managementProfile = "";
+
+export function setManagementProfile(name: string): void {
+  _managementProfile = (name || "").trim();
+}
+
+export function getManagementProfile(): string {
+  return _managementProfile;
+}
+
+// Endpoint families that honor ?profile= on the backend (web_server.py
+// _profile_scope or explicit per-profile DB opens). Anything else — ops,
+// pairing, cron (which has its own per-job profile params), profiles
+// themselves — is machine-global or self-scoped and must NOT be rewritten.
+const PROFILE_SCOPED_PREFIXES = [
+  "/api/status",
+  "/api/gateway",
+  "/api/analytics",
+  "/api/skills",
+  "/api/tools/toolsets",
+  "/api/config",
+  "/api/env",
+  "/api/mcp",
+  "/api/messaging/platforms",
+  "/api/messaging/telegram/onboarding",
+  "/api/model/info",
+  "/api/model/set",
+  "/api/model/auxiliary",
+  "/api/model/options",
+];
+
+function withManagementProfile(url: string): string {
+  if (!_managementProfile) return url;
+  if (url.includes("profile=")) return url; // explicit param wins
+  const path = url.split("?")[0];
+  if (!PROFILE_SCOPED_PREFIXES.some((p) => path.startsWith(p))) return url;
+  const sep = url.includes("?") ? "&" : "?";
+  return `${url}${sep}profile=${encodeURIComponent(_managementProfile)}`;
+}
+
 export async function fetchJSON<T>(
   url: string,
   init?: RequestInit,
   options?: FetchJSONOptions,
 ): Promise<T> {
+  url = withManagementProfile(url);
   // Inject the session token into all /api/ requests.
   const headers = new Headers(init?.headers);
   const token = window.__HERMES_SESSION_TOKEN__;
@@ -244,8 +292,76 @@ export async function buildWsUrl(
   return `${proto}//${window.location.host}${BASE}${path}?${qs}`;
 }
 
+/** Build a ``?profile=<name>`` query suffix, or "" when unset.
+ *
+ * Used by the skills/toolsets endpoints so the dashboard can manage a
+ * profile other than the one the server process runs under. */
+function profileQuery(profile?: string): string {
+  return profile ? `?profile=${encodeURIComponent(profile)}` : "";
+}
+
+function appendProfileParam(url: string, profile?: string): string {
+  if (!profile || url.includes("profile=")) return url;
+  return `${url}${url.includes("?") ? "&" : "?"}profile=${encodeURIComponent(profile)}`;
+}
+
+export interface CostGroup {
+  provider: string;
+  model: string;
+  promptVersion: string;
+  turns: number;
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  cacheWriteTokens: number;
+  reasoningTokens: number;
+  totalTokens: number;
+  costUsd: number;
+}
+export interface CostRollup {
+  totalCostUsd: number;
+  totalTokens: number;
+  totalTurns: number;
+  groups: CostGroup[];
+}
+export interface CostLeak {
+  turnId: string;
+  sessionId: string;
+  ts: number;
+  provider: string;
+  model: string;
+  promptVersion: string;
+  totalTokens: number;
+  costUsd: number;
+  costStatus: string;
+  costSource: string;
+}
+export interface CostDailyPoint {
+  date: string;
+  costUsd: number;
+  totalTokens: number;
+  turns: number;
+}
+export interface CostCacheLatency {
+  cacheHitRatio: number;
+  avgLatencyMs: number;
+  p95LatencyMs: number;
+}
+export interface CostSnapshot {
+  generatedAt: number;
+  dbPath: string;
+  today: CostRollup;
+  last7d: CostRollup;
+  meteredLeak: CostLeak[];
+  meteredLeakCount: number;
+  meteredLeakCostUsd: number;
+  dailySeries?: CostDailyPoint[];
+  cacheLatency7d?: CostCacheLatency;
+}
+
 export const api = {
   getStatus: () => fetchJSON<StatusResponse>("/api/status"),
+  getCost: () => fetchJSON<CostSnapshot>("/api/dashboard/cost"),
   /**
    * Identity probe for the dashboard auth gate (Phase 7).
    *
@@ -278,47 +394,107 @@ export const api = {
       window.location.assign("/login");
       return r;
     }),
-  getSessions: (limit = 20, offset = 0) =>
-    fetchJSON<PaginatedSessions>(`/api/sessions?limit=${limit}&offset=${offset}`),
-  getSessionMessages: (id: string) =>
-    fetchJSON<SessionMessagesResponse>(`/api/sessions/${encodeURIComponent(id)}/messages`),
+  getSessions: (
+    limit = 20,
+    offset = 0,
+    profile = getManagementProfile(),
+    order: "created" | "recent" = "created",
+  ) =>
+    fetchJSON<PaginatedSessions>(
+      appendProfileParam(
+        `/api/sessions?limit=${limit}&offset=${offset}&order=${order}`,
+        profile,
+      ),
+    ),
+  getSessionMessages: (id: string, profile = getManagementProfile()) =>
+    fetchJSON<SessionMessagesResponse>(
+      appendProfileParam(`/api/sessions/${encodeURIComponent(id)}/messages`, profile),
+    ),
   getSessionLatestDescendant: (id: string) =>
     fetchJSON<SessionLatestDescendantResponse>(
       `/api/sessions/${encodeURIComponent(id)}/latest-descendant`,
     ),
-  deleteSession: (id: string) =>
-    fetchJSON<{ ok: boolean }>(`/api/sessions/${encodeURIComponent(id)}`, {
-      method: "DELETE",
-    }),
-  getEmptySessionsCount: () =>
-    fetchJSON<{ count: number }>("/api/sessions/empty/count"),
-  deleteEmptySessions: () =>
-    fetchJSON<{ ok: boolean; deleted: number }>("/api/sessions/empty", {
-      method: "DELETE",
-    }),
-  bulkDeleteSessions: (ids: string[]) =>
+  deleteSession: (id: string, profile = getManagementProfile()) =>
+    fetchJSON<{ ok: boolean }>(
+      appendProfileParam(`/api/sessions/${encodeURIComponent(id)}`, profile),
+      {
+        method: "DELETE",
+      },
+    ),
+  getEmptySessionsCount: (profile = getManagementProfile()) =>
+    fetchJSON<{ count: number }>(
+      appendProfileParam("/api/sessions/empty/count", profile),
+    ),
+  deleteEmptySessions: (profile = getManagementProfile()) =>
+    fetchJSON<{ ok: boolean; deleted: number }>(
+      appendProfileParam("/api/sessions/empty", profile),
+      {
+        method: "DELETE",
+      },
+    ),
+  bulkDeleteSessions: (ids: string[], profile = getManagementProfile()) =>
     fetchJSON<{ ok: boolean; deleted: number }>("/api/sessions/bulk-delete", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ ids }),
+      body: JSON.stringify({ ids, profile: profile || undefined }),
     }),
-  renameSession: (id: string, title: string) =>
+  renameSession: (id: string, title: string, profile = getManagementProfile()) =>
     fetchJSON<{ ok: boolean; title: string }>(
       `/api/sessions/${encodeURIComponent(id)}`,
       {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ title }),
+        body: JSON.stringify({ title, profile: profile || undefined }),
       },
     ),
-  getSessionStats: () => fetchJSON<SessionStoreStats>("/api/sessions/stats"),
-  exportSessionUrl: (id: string) =>
-    `/api/sessions/${encodeURIComponent(id)}/export`,
-  pruneSessions: (older_than_days: number, source?: string) =>
+  getSessionStats: (profile = getManagementProfile()) =>
+    fetchJSON<SessionStoreStats>(appendProfileParam("/api/sessions/stats", profile)),
+  exportSessionUrl: (id: string, profile = getManagementProfile()) =>
+    appendProfileParam(`/api/sessions/${encodeURIComponent(id)}/export`, profile),
+  pruneSessions: (
+    older_than_days: number,
+    source?: string,
+    profile = getManagementProfile(),
+  ) =>
     fetchJSON<{ ok: boolean; removed: number }>("/api/sessions/prune", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ older_than_days, source }),
+      body: JSON.stringify({ older_than_days, source, profile: profile || undefined }),
+    }),
+  listFiles: (path?: string) => {
+    const query = path ? `?path=${encodeURIComponent(path)}` : "";
+    return fetchJSON<ManagedFilesResponse>(`/api/files${query}`);
+  },
+  readFile: (path: string) =>
+    fetchJSON<ManagedFileReadResponse>(
+      `/api/files/read?path=${encodeURIComponent(path)}`,
+    ),
+  uploadFile: (path: string, file: File, overwrite = true) => {
+    // Stream the raw bytes as multipart/form-data. Do NOT set Content-Type —
+    // the browser adds the multipart boundary automatically. Sending the file
+    // as base64 JSON (the old path) inflated the body ~33%, buffered the whole
+    // file in memory, and 502'd on large backup archives behind the proxy
+    // (NS-501).
+    const form = new FormData();
+    form.append("path", path);
+    form.append("overwrite", String(overwrite));
+    form.append("file", file, file.name);
+    return fetchJSON<ManagedFileWriteResponse>("/api/files/upload-stream", {
+      method: "POST",
+      body: form,
+    });
+  },
+  createDirectory: (path: string) =>
+    fetchJSON<ManagedFileWriteResponse>("/api/files/mkdir", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ path }),
+    }),
+  deleteFile: (path: string, recursive = false) =>
+    fetchJSON<{ ok: boolean; path: string }>("/api/files", {
+      method: "DELETE",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ path, recursive }),
     }),
   getLogs: (params: { file?: string; lines?: number; level?: string; component?: string }) => {
     const qs = new URLSearchParams();
@@ -328,10 +504,14 @@ export const api = {
     if (params.component && params.component !== "all") qs.set("component", params.component);
     return fetchJSON<LogsResponse>(`/api/logs?${qs.toString()}`);
   },
-  getAnalytics: (days: number) =>
-    fetchJSON<AnalyticsResponse>(`/api/analytics/usage?days=${days}`),
-  getModelsAnalytics: (days: number) =>
-    fetchJSON<ModelsAnalyticsResponse>(`/api/analytics/models?days=${days}`),
+  getAnalytics: (days: number, profile = getManagementProfile()) =>
+    fetchJSON<AnalyticsResponse>(
+      appendProfileParam(`/api/analytics/usage?days=${days}`, profile),
+    ),
+  getModelsAnalytics: (days: number, profile = getManagementProfile()) =>
+    fetchJSON<ModelsAnalyticsResponse>(
+      appendProfileParam(`/api/analytics/models?days=${days}`, profile),
+    ),
   getConfig: () => fetchJSON<Record<string, unknown>>("/api/config"),
   getDefaults: () => fetchJSON<Record<string, unknown>>("/api/config/defaults"),
   getSchema: () => fetchJSON<{ fields: Record<string, unknown>; category_order: string[] }>("/api/config/schema"),
@@ -350,7 +530,7 @@ export const api = {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ config }),
     }),
-  getConfigRaw: () => fetchJSON<{ yaml: string }>("/api/config/raw"),
+  getConfigRaw: () => fetchJSON<{ yaml: string; path?: string }>("/api/config/raw"),
   saveConfigRaw: (yaml_text: string) =>
     fetchJSON<{ ok: boolean }>("/api/config/raw", {
       method: "PUT",
@@ -387,7 +567,7 @@ export const api = {
     fetchJSON<CronJob[]>(`/api/cron/jobs?profile=${encodeURIComponent(profile)}`),
   getCronDeliveryTargets: () =>
     fetchJSON<{ targets: CronDeliveryTarget[] }>("/api/cron/delivery-targets"),
-  createCronJob: (job: { prompt: string; schedule: string; name?: string; deliver?: string }, profile = "default") =>
+  createCronJob: (job: { prompt: string; schedule: string; name?: string; deliver?: string; skills?: string[] }, profile = "default") =>
     fetchJSON<CronJob>(`/api/cron/jobs?profile=${encodeURIComponent(profile)}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -397,7 +577,7 @@ export const api = {
     fetchJSON<CronJob>(`/api/cron/jobs/${encodeURIComponent(id)}/pause?profile=${encodeURIComponent(profile)}`, { method: "POST" }),
   updateCronJob: (
     id: string,
-    updates: { prompt?: string; schedule?: string; name?: string; deliver?: string },
+    updates: { prompt?: string; schedule?: string; name?: string; deliver?: string; skills?: string[] },
     profile = "default",
   ) =>
     fetchJSON<CronJob>(
@@ -415,6 +595,19 @@ export const api = {
   deleteCronJob: (id: string, profile = "default") =>
     fetchJSON<{ ok: boolean }>(`/api/cron/jobs/${encodeURIComponent(id)}?profile=${encodeURIComponent(profile)}`, { method: "DELETE" }),
 
+  // Automation Blueprints — parameterized automation blueprints
+  getAutomationBlueprints: () =>
+    fetchJSON<{ blueprints: AutomationBlueprint[] }>("/api/cron/blueprints"),
+  instantiateAutomationBlueprint: (
+    body: { blueprint: string; values: Record<string, string> },
+    profile = "default",
+  ) =>
+    fetchJSON<CronJob>(`/api/cron/blueprints/instantiate?profile=${encodeURIComponent(profile)}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }),
+
   // Profiles
   getProfiles: () =>
     fetchJSON<{ profiles: ProfileInfo[] }>("/api/profiles"),
@@ -428,14 +621,26 @@ export const api = {
     }),
   createProfile: (body: {
     name: string;
-    clone_from_default: boolean;
+    clone_from?: string | null;
+    clone_from_default?: boolean;
     clone_all?: boolean;
     no_skills?: boolean;
     description?: string;
     provider?: string;
     model?: string;
+    mcp_servers?: McpServerCreate[];
+    keep_skills?: string[];
+    hub_skills?: string[];
   }) =>
-    fetchJSON<{ ok: boolean; name: string; path: string; model_set?: boolean }>("/api/profiles", {
+    fetchJSON<{
+      ok: boolean;
+      name: string;
+      path: string;
+      model_set?: boolean;
+      mcp_written?: number;
+      skills_disabled?: number;
+      hub_installs?: Array<{ identifier: string; pid: number | null }>;
+    }>("/api/profiles", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
@@ -500,58 +705,82 @@ export const api = {
     ),
 
   // Skills & Toolsets
-  getSkills: () => fetchJSON<SkillInfo[]>("/api/skills"),
-  toggleSkill: (name: string, enabled: boolean) =>
+  //
+  // All calls accept an optional ``profile`` so the Skills page can manage
+  // any profile's skills/toolsets — not just the one the dashboard process
+  // runs under. Omitted/empty profile = the dashboard's own profile.
+  getSkills: (profile?: string) =>
+    fetchJSON<SkillInfo[]>(`/api/skills${profileQuery(profile)}`),
+  toggleSkill: (name: string, enabled: boolean, profile?: string) =>
     fetchJSON<{ ok: boolean }>("/api/skills/toggle", {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ name, enabled }),
+      body: JSON.stringify({ name, enabled, profile: profile || undefined }),
     }),
-  getToolsets: () => fetchJSON<ToolsetInfo[]>("/api/tools/toolsets"),
-  toggleToolset: (name: string, enabled: boolean) =>
+  getSkillContent: (name: string, profile?: string) =>
+    fetchJSON<SkillContent>(
+      `/api/skills/content?name=${encodeURIComponent(name)}${profile ? `&profile=${encodeURIComponent(profile)}` : ""}`,
+    ),
+  createSkill: (skill: { name: string; content: string; category?: string }, profile?: string) =>
+    fetchJSON<SkillWriteResult>("/api/skills", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ...skill, profile: profile || undefined }),
+    }),
+  updateSkillContent: (name: string, content: string, profile?: string) =>
+    fetchJSON<SkillWriteResult>("/api/skills/content", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name, content, profile: profile || undefined }),
+    }),
+  getToolsets: (profile?: string) =>
+    fetchJSON<ToolsetInfo[]>(`/api/tools/toolsets${profileQuery(profile)}`),
+  toggleToolset: (name: string, enabled: boolean, profile?: string) =>
     fetchJSON<{ ok: boolean; name: string; enabled: boolean }>(
       `/api/tools/toolsets/${encodeURIComponent(name)}`,
       {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ enabled }),
+        body: JSON.stringify({ enabled, profile: profile || undefined }),
       },
     ),
-  getToolsetConfig: (name: string) =>
+  getToolsetConfig: (name: string, profile?: string) =>
     fetchJSON<ToolsetConfig>(
-      `/api/tools/toolsets/${encodeURIComponent(name)}/config`,
+      `/api/tools/toolsets/${encodeURIComponent(name)}/config${profileQuery(profile)}`,
     ),
-  selectToolsetProvider: (name: string, provider: string) =>
+  selectToolsetProvider: (name: string, provider: string, profile?: string) =>
     fetchJSON<{ ok: boolean; name: string; provider: string }>(
       `/api/tools/toolsets/${encodeURIComponent(name)}/provider`,
       {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ provider }),
+        body: JSON.stringify({ provider, profile: profile || undefined }),
       },
     ),
-  saveToolsetEnv: (name: string, env: Record<string, string>) =>
+  saveToolsetEnv: (name: string, env: Record<string, string>, profile?: string) =>
     fetchJSON<ToolsetEnvResult>(
       `/api/tools/toolsets/${encodeURIComponent(name)}/env`,
       {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ env }),
+        body: JSON.stringify({ env, profile: profile || undefined }),
       },
     ),
-  runToolsetPostSetup: (name: string, key: string) =>
+  runToolsetPostSetup: (name: string, key: string, profile?: string) =>
     fetchJSON<ActionResponse & { key: string }>(
       `/api/tools/toolsets/${encodeURIComponent(name)}/post-setup`,
       {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ key }),
+        body: JSON.stringify({ key, profile: profile || undefined }),
       },
     ),
 
   // Session search (FTS5)
-  searchSessions: (q: string) =>
-    fetchJSON<SessionSearchResponse>(`/api/sessions/search?q=${encodeURIComponent(q)}`),
+  searchSessions: (q: string, profile = getManagementProfile()) =>
+    fetchJSON<SessionSearchResponse>(
+      appendProfileParam(`/api/sessions/search?q=${encodeURIComponent(q)}`, profile),
+    ),
 
   // OAuth provider management
   getOAuthProviders: () =>
@@ -611,7 +840,7 @@ export const api = {
 
   // Messaging platforms (gateway channels)
   getMessagingPlatforms: () =>
-    fetchJSON<{ platforms: MessagingPlatform[] }>("/api/messaging/platforms"),
+    fetchJSON<MessagingPlatformsResponse>("/api/messaging/platforms"),
   updateMessagingPlatform: (id: string, body: MessagingPlatformUpdate) =>
     fetchJSON<{ ok: boolean; platform: string }>(
       `/api/messaging/platforms/${encodeURIComponent(id)}`,
@@ -641,7 +870,7 @@ export const api = {
     ),
   applyTelegramOnboarding: (
     pairingId: string,
-    body: { allowed_user_ids: string[] },
+    body: { allowed_user_ids: string[]; profile?: string },
   ) =>
     fetchJSON<TelegramOnboardingApplyResponse>(
       `/api/messaging/telegram/onboarding/${encodeURIComponent(pairingId)}/apply`,
@@ -736,29 +965,49 @@ export const api = {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ name }),
     }),
+  getFontPref: () =>
+    fetchJSON<DashboardFontResponse>("/api/dashboard/font"),
+  setFontPref: (font: string) =>
+    fetchJSON<{ ok: boolean; font: string }>("/api/dashboard/font", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ font }),
+    }),
 
   // Mission Control endpoints (Hive 2)
   getMissionSnapshot: () =>
     fetchJSON<import("@/components/mission/types").MissionSnapshot>("/api/dashboard/mission"),
-  getNexusHealth: () =>
-    fetchJSON<NexusHealthResponse>("/api/dashboard/nexus-health"),
-  getNexusHealthNode: (id: string) =>
-    fetchJSON<NexusHealthNodeDetail>(
-      `/api/dashboard/nexus-health/node/${encodeURIComponent(id)}`,
-    ),
   getRuntimeHealth: (name: string) =>
     fetchJSON<import("@/components/mission/types").HealthChip>(`/api/dashboard/health/runtime/${encodeURIComponent(name)}`),
   getSpendHistory: (range: "1d" | "7d" | "30d" = "7d") =>
     fetchJSON<import("@/components/mission/types").SpendHistory>(`/api/dashboard/spend?range=${range}`),
   getSwarmStatus: () => fetchJSON<Record<string, unknown>>("/api/dashboard/swarm"),
   getDashboardCron: () => fetchJSON<{ jobs: unknown[]; count: number }>("/api/dashboard/cron"),
+  getDashboardCronContracts: () =>
+    fetchJSON<{ contracts: CronContractRow[]; count: number; generated_at: string }>(
+      "/api/dashboard/cron-contracts",
+    ),
   getLatestDream: () => fetchJSON<{ dream: string | null; date: string | null }>("/api/dashboard/dreams/latest"),
   getQueueHistory: (range: "1d" | "7d" | "30d" = "7d") =>
     fetchJSON<import("@/components/mission/types").QueueHistory>(`/api/dashboard/queue?range=${range}`),
-  getHivesSnapshot: () =>
-    fetchJSON<HivesSnapshot>("/api/dashboard/hives"),
-  getHiveLog: (id: string, tail = 200) =>
-    fetchJSON<HiveLogResponse>(`/api/dashboard/hives/${encodeURIComponent(id)}/log?tail=${tail}`),
+  getOSSnapshot: () =>
+    fetchJSON<OSSnapshot>("/api/dashboard/os"),
+  getConnectome: () =>
+    fetchJSON<ConnectomeSnapshot>("/api/dashboard/connectome"),
+  getConnectomeCluster: (clusterId: string, params: { cursor?: string | null; limit?: number; repo?: string | null } = {}) => {
+    const qs = new URLSearchParams();
+    if (params.cursor) qs.set("cursor", params.cursor);
+    if (params.limit) qs.set("limit", String(params.limit));
+    if (params.repo) qs.set("repo", params.repo);
+    const query = qs.toString();
+    return fetchJSON<ConnectomeClusterPage>(
+      `/api/dashboard/connectome/cluster/${encodeURIComponent(clusterId)}${query ? `?${query}` : ""}`,
+    );
+  },
+  getProjectsSnapshot: () =>
+    fetchJSON<ProjectsSnapshot>("/api/dashboard/projects"),
+  getLearning: () =>
+    fetchJSON<LearningResponse>("/api/dashboard/learning"),
   // Personas (Hive B — Pantheon)
   getPersonas: () => fetchJSON<Persona[]>("/api/personas"),
   createPersona: (body: PersonaCreate) =>
@@ -849,6 +1098,8 @@ export const api = {
 
   // ── Admin: Webhooks ─────────────────────────────────────────────────
   getWebhooks: () => fetchJSON<WebhooksResponse>("/api/webhooks"),
+  enableWebhooks: () =>
+    fetchJSON<WebhookEnableResponse>("/api/webhooks/enable", { method: "POST" }),
   createWebhook: (body: WebhookCreate) =>
     fetchJSON<WebhookRoute & { secret: string }>("/api/webhooks", {
       method: "POST",
@@ -923,11 +1174,11 @@ export const api = {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ output }),
     }),
-  runImport: (archive: string) =>
+  runImport: (archive: string, force = false) =>
     fetchJSON<ActionResponse>("/api/ops/import", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ archive }),
+      body: JSON.stringify({ archive, force }),
     }),
   getHooks: () => fetchJSON<HooksResponse>("/api/ops/hooks"),
   createHook: (body: HookCreate) =>
@@ -983,26 +1234,34 @@ export const api = {
     fetchJSON<ActionResponse>("/api/ops/checkpoints/prune", { method: "POST" }),
 
   // ── Admin: Skills hub ───────────────────────────────────────────────
-  installSkillFromHub: (identifier: string) =>
+  // ``profile`` scopes install/uninstall/update and the installed-state
+  // annotations to that profile (omitted = the dashboard's own profile).
+  installSkillFromHub: (identifier: string, profile?: string) =>
     fetchJSON<ActionResponse>("/api/skills/hub/install", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ identifier }),
+      body: JSON.stringify({ identifier, profile: profile || undefined }),
     }),
-  uninstallSkillFromHub: (name: string) =>
+  uninstallSkillFromHub: (name: string, profile?: string) =>
     fetchJSON<ActionResponse>("/api/skills/hub/uninstall", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ name }),
+      body: JSON.stringify({ name, profile: profile || undefined }),
     }),
-  updateSkillsFromHub: () =>
-    fetchJSON<ActionResponse>("/api/skills/hub/update", { method: "POST" }),
-  searchSkillsHub: (q: string, source = "all", limit = 20) =>
+  updateSkillsFromHub: (profile?: string) =>
+    fetchJSON<ActionResponse>("/api/skills/hub/update", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ profile: profile || undefined }),
+    }),
+  searchSkillsHub: (q: string, source = "all", limit = 20, profile?: string) =>
     fetchJSON<SkillHubSearchResponse>(
-      `/api/skills/hub/search?q=${encodeURIComponent(q)}&source=${encodeURIComponent(source)}&limit=${limit}`,
+      `/api/skills/hub/search?q=${encodeURIComponent(q)}&source=${encodeURIComponent(source)}&limit=${limit}${profile ? `&profile=${encodeURIComponent(profile)}` : ""}`,
     ),
-  getSkillHubSources: () =>
-    fetchJSON<SkillHubSourcesResponse>("/api/skills/hub/sources"),
+  getSkillHubSources: (profile?: string) =>
+    fetchJSON<SkillHubSourcesResponse>(
+      `/api/skills/hub/sources${profileQuery(profile)}`,
+    ),
   previewSkillFromHub: (identifier: string) =>
     fetchJSON<SkillHubPreview>(
       `/api/skills/hub/preview?identifier=${encodeURIComponent(identifier)}`,
@@ -1159,6 +1418,17 @@ export interface McpCatalogEntry {
   transport: "http" | "stdio";
   auth_type: "api_key" | "oauth" | "none";
   required_env: Array<{ name: string; prompt: string; required: boolean }>;
+  // Transport details — what actually connects (http) or runs (stdio).
+  command: string | null;
+  args: string[];
+  url: string | null;
+  // Git bootstrap (only set for entries that clone + build locally).
+  install_url: string | null;
+  install_ref: string | null;
+  bootstrap: string[];
+  // Default tool pre-selection (null = all tools pre-checked) + guidance text.
+  default_enabled: string[] | null;
+  post_install: string;
   needs_install: boolean;
   installed: boolean;
   enabled: boolean;
@@ -1193,6 +1463,7 @@ export interface MessagingPlatformEnvVar {
   redacted_value: string | null;
   description: string;
   prompt: string;
+  help: string;
   url: string | null;
   is_password: boolean;
   advanced: boolean;
@@ -1208,7 +1479,7 @@ export interface MessagingPlatform {
   gateway_running: boolean;
   /**
    * "connected" | "disabled" | "not_configured" | "pending_restart" |
-   * "gateway_stopped" | "disconnected" | "fatal" | string
+   * "gateway_stopped" | "startup_failed" | "disconnected" | "fatal" | string
    */
   state: string;
   error_code: string | null;
@@ -1216,6 +1487,12 @@ export interface MessagingPlatform {
   updated_at: string | null;
   home_channel: { platform: string; chat_id: string; name: string; thread_id?: string } | null;
   env_vars: MessagingPlatformEnvVar[];
+}
+
+export interface MessagingPlatformsResponse {
+  env_path: string;
+  gateway_start_command: string;
+  platforms: MessagingPlatform[];
 }
 
 export interface MessagingPlatformUpdate {
@@ -1261,6 +1538,17 @@ export interface WebhooksResponse {
   enabled: boolean;
   base_url: string;
   subscriptions: WebhookRoute[];
+}
+
+export interface WebhookEnableResponse {
+  ok: boolean;
+  platform: "webhook";
+  enabled: true;
+  needs_restart: boolean;
+  restart_started?: boolean;
+  restart_action?: string;
+  restart_pid?: number | null;
+  restart_error?: string;
 }
 
 export interface WebhookCreate {
@@ -1428,6 +1716,9 @@ export interface StatusResponse {
    * Empty in loopback mode; empty + ``auth_required=true`` is a
    * fail-closed state (the dashboard will refuse to bind). */
   auth_providers?: string[];
+  /** False when the dashboard is running in a hosted/managed layout where
+   * updates are handled by the outer launcher instead of ``hermes update``. */
+  can_update_hermes?: boolean;
   config_path: string;
   config_version: number;
   env_path: string;
@@ -1509,7 +1800,11 @@ export interface TelegramOnboardingApplyResponse {
   ok: boolean;
   platform: "telegram";
   bot_username?: string;
-  needs_restart: true;
+  needs_restart: boolean;
+  restart_started?: boolean;
+  restart_action?: string;
+  restart_pid?: number | null;
+  restart_error?: string;
 }
 
 export interface SessionMessage {
@@ -1532,6 +1827,44 @@ export interface SessionMessagesResponse {
 export interface LogsResponse {
   file: string;
   lines: string[];
+}
+
+export interface ManagedFileEntry {
+  name: string;
+  path: string;
+  is_directory: boolean;
+  size: number | null;
+  mtime: number;
+  mime_type: string | null;
+}
+
+export interface ManagedFilesResponse {
+  root: string | null;
+  path: string;
+  parent: string | null;
+  locked_root: string | null;
+  can_change_path: boolean;
+  entries: ManagedFileEntry[];
+}
+
+export interface ManagedFileReadResponse {
+  name: string;
+  path: string;
+  size: number;
+  mime_type: string;
+  data_url: string;
+  root: string | null;
+  locked_root: string | null;
+  can_change_path: boolean;
+}
+
+export interface ManagedFileWriteResponse {
+  ok: boolean;
+  path: string;
+  entry: ManagedFileEntry;
+  root: string | null;
+  locked_root: string | null;
+  can_change_path: boolean;
 }
 
 export interface AnalyticsDailyEntry {
@@ -1666,6 +1999,7 @@ export interface CronJob {
   name?: string | null;
   prompt?: string | null;
   script?: string | null;
+  skills?: string[] | null;
   schedule?: { kind?: string; expr?: string; display?: string };
   schedule_display?: string | null;
   enabled: boolean;
@@ -1683,11 +2017,60 @@ export interface CronDeliveryTarget {
   home_env_var: string | null;
 }
 
+/** One row of the self-reporting cron-contracts fleet board (Card 64). */
+export interface CronContractRow {
+  name: string;
+  quota: number | null;
+  achieved: number;
+  gaps: string[];
+  retries: number;
+  status: string;
+  missStreak: number;
+  hardFloor: boolean;
+  lastRun: string | null;
+}
+
+export interface AutomationBlueprintField {
+  name: string;
+  type: "time" | "enum" | "text" | "weekdays";
+  label: string;
+  default: string | null;
+  options: string[];
+  optional: boolean;
+  /** When false, options are suggestions — any value is accepted. */
+  strict?: boolean;
+  help: string;
+}
+
+export interface AutomationBlueprint {
+  key: string;
+  title: string;
+  description: string;
+  category: string;
+  tags: string[];
+  fields: AutomationBlueprintField[];
+  command: string;
+  appUrl: string;
+}
+
 export interface SkillInfo {
   name: string;
   description: string;
   category: string;
   enabled: boolean;
+}
+
+export interface SkillContent {
+  name: string;
+  content: string;
+  path: string;
+}
+
+export interface SkillWriteResult {
+  success: boolean;
+  message?: string;
+  path?: string;
+  error?: string;
 }
 
 export interface ToolsetInfo {
@@ -1795,9 +2178,12 @@ export interface AuxiliaryModelsResponse {
 }
 
 export interface ModelAssignmentRequest {
+  confirm_expensive_model?: boolean;
   scope: "main" | "auxiliary";
   provider: string;
   model: string;
+  /** Optional OpenAI-compatible endpoint URL for custom/local main providers. */
+  base_url?: string;
   /** For auxiliary: task slot name, "" for all, "__reset__" to reset all. */
   task?: string;
 }
@@ -1811,6 +2197,8 @@ export interface StaleAuxAssignment {
 }
 
 export interface ModelAssignmentResponse {
+  confirm_message?: string;
+  confirm_required?: boolean;
   ok: boolean;
   scope?: string;
   provider?: string;
@@ -1897,6 +2285,11 @@ export interface DashboardThemesResponse {
   themes: DashboardThemeSummary[];
 }
 
+export interface DashboardFontResponse {
+  /** Active font-override id, or "theme" when no override is set. */
+  font: string;
+}
+
 // ── Dashboard plugin types ─────────────────────────────────────────────
 
 export interface PluginManifestResponse {
@@ -1918,156 +2311,501 @@ export interface PluginManifestResponse {
   source: string;
 }
 
-export type NexusHealthPosture = "safe" | "caution" | "stop";
+// Shared health-status union — retained for the OS Connectome/Nexus views
+// (components/system-health/constants.ts) after the legacy System Health tab
+// was retired into /os.
 export type NexusHealthStatus = "ok" | "warn" | "error" | "unknown" | "auth_gated";
 
-export interface NexusHealthProvenance {
-  source: string;
+// ---------------------------------------------------------------------------
+// OS — infrastructure operating-status snapshot (/api/dashboard/os)
+// ---------------------------------------------------------------------------
+
+export type OSStatus = "green" | "amber" | "red" | "unknown" | "info";
+
+export interface OSItem {
+  name: string;
+  status: OSStatus;
+  reason?: string;
   detail: string;
+  metric?: string;
 }
 
-export interface NexusHealthNode {
+export interface OSSection {
+  id: string;
+  label: string;
+  status: OSStatus;
+  reason?: string;
+  items: OSItem[];
+}
+
+export interface OSDiagnostic {
+  severity: "red" | "amber" | "info";
+  source: string;
+  message: string;
+  hint?: string;
+  reason?: string;
+}
+
+export type OSGraphGroup =
+  | "surfaces"
+  | "control"
+  | "providers"
+  | "memory"
+  | "protection"
+  | "host";
+
+export type OSEdgeState = "live" | "disabled" | "broken" | "gated";
+
+export interface OSGraphNode {
   id: string;
   label: string;
   kind: string;
-  group: string;
-  status: NexusHealthStatus;
-  summary: string;
-  details: string;
-  metrics: Record<string, unknown>;
-  provenance: NexusHealthProvenance[];
-  safe_next_check: string;
-  needs_joseph: boolean;
+  group: OSGraphGroup;
+  status: OSStatus;
+  reason?: string;
+  detail?: string;
+  /** Section id (snapshot.sections) backing this node, for click-inspect. */
+  section_ref?: string;
 }
 
-export interface NexusHealthEdge {
+export interface OSGraphEdge {
   id: string;
   source: string;
   target: string;
+  label?: string;
+  state: OSEdgeState;
+}
+
+export interface OSAttentionChip {
+  source: string;
+  status: OSStatus;
+  reason?: string;
   label: string;
-  status: "ok" | "warn" | "error" | "unknown";
-  summary: string;
-  provenance: NexusHealthProvenance[];
-}
-
-export interface NexusHealthGate {
-  id: string;
-  label: string;
-  reason: string;
-  gate: string;
-}
-
-export interface NexusHealthAction {
-  id: string;
-  label: string;
-  kind: "copy" | "open" | "read";
-  payload: string;
-}
-
-export interface NexusHealthSectorMetric {
-  label: string;
-  value: string;
-}
-
-export interface NexusHealthSector {
-  id: string;
-  label: string;
-  kind: "read_only_drilldown";
-  status: NexusHealthStatus;
-  summary: string;
-  href: string;
-  metrics: NexusHealthSectorMetric[];
-  guardrail: string;
-}
-
-export interface NexusHealthResponse {
-  generated_at: string;
-  posture: NexusHealthPosture;
-  summary: string;
-  counts?: Record<NexusHealthStatus, number>;
-  nodes: NexusHealthNode[];
-  edges: NexusHealthEdge[];
-  sectors: NexusHealthSector[];
-  needs_joseph: NexusHealthGate[];
-  safe_actions: NexusHealthAction[];
-  locked_actions: NexusHealthGate[];
-  evidence: NexusHealthProvenance[];
-}
-
-export interface NexusHealthMetricCard {
-  label: string;
-  value: string;
-}
-
-export interface NexusHealthRecommendation {
-  kind: "fix" | "optimization";
-  title: string;
   detail: string;
-  command: string | null;
+  section_id: string;
 }
 
-export interface NexusHealthHistory {
+export interface OSRepoSnapshot {
+  scanned_at?: string;
+  readiness_pct: number;
+  summary: {
+    total?: number;
+    ready?: number;
+    actionable?: number;
+    total_uncommitted?: number;
+    total_files_changed?: number;
+    by_severity?: Record<string, number>;
+  };
+  best_move?: { text?: string; severity?: string; slug?: string | null; thread_id?: string | null };
+  counts?: Record<string, number>;
+  rows?: Array<Record<string, unknown>>;
+  lanes?: Array<Record<string, unknown>>;
+}
+
+export interface OSProjectSummary {
+  slug: string;
+  name: string;
+  icon: string;
+  color?: string;
+  archived?: boolean;
+  total: number;
+  completion_pct: number;
+  active?: number;
+  blocked: number;
+  remaining_count: number;
+  remaining?: Array<{ id?: string; status: string; title: string }>;
+  remaining_by_status?: Record<string, number>;
+}
+
+export interface OSDecisionItem {
+  title: string;
+  source: string;
+  reason: string;
+  link_or_id?: string | null;
+}
+
+export interface OSStalledItem {
+  title: string;
+  project: string;
+  status: string;
+  idle_for: string;
+  why: string;
+}
+
+export interface OSWorkSnapshot {
+  projects: OSProjectSummary[];
+  live: { runtimes?: Array<{ name?: string; label?: string; status?: string; detail?: string }> };
+  decisions: OSDecisionItem[];
+  stalled: OSStalledItem[];
+  projects_completion_pct: number;
+  live_runtimes: number;
+  counts: { projects: number; decisions: number; live_runtimes: number; stalled: number };
+}
+
+export interface OSActivitySnapshot {
+  queue_7d: { range: string; points: Array<{ date?: string; count?: number }>; openNow?: number };
+  queue?: { cards?: Array<{ id?: string; board?: string; title?: string; status?: string }> };
+  kpis?: Record<string, unknown>;
+  created_7d: number;
+  open_now: number;
+  cards: Array<{ id?: string; board?: string; title?: string; status?: string }>;
+}
+
+export interface OSDRRow {
+  store: string;
+  label?: string;
+  status: OSStatus;
+  verdict: string;
+  rto_obs?: string;
+  rto_target?: string;
+  rpo_obs?: string;
+  rpo_target?: string;
+  offbox?: string;
+}
+
+export interface OSEvalSetRow {
+  holdout: string;
+  status: OSStatus;
+  recall_at_k: number;
   label: string;
-  kind: "queue" | "spend";
-  openNow?: number;
-  points: Array<Record<string, unknown>>;
+  k: number;
+  n: number;
+  ts?: string;
+  age_hours?: number | null;
+  fresh: boolean;
 }
 
-export interface NexusHealthConnection {
-  id: string;
+export interface OSInfraMetric {
+  status: OSStatus;
   label: string;
-  status: NexusHealthEdge["status"];
-  direction: "in" | "out";
-  peer: string;
+  detail: string;
+  source?: string;
+  age_hours?: number;
+  today_usd?: number | null;
+  turns?: number;
+  recall_at_k?: number;
+  worst_holdout?: string;
+  k?: number;
+  n?: number;
+  ts?: string;
+  returncode?: number;
+  rows?: OSDRRow[];
+  sets?: OSEvalSetRow[];
+  breach_count?: number;
+  passed?: number;
+  total?: number;
+  failing?: string[];
 }
 
-export interface NexusHealthNodeDetail extends NexusHealthNode {
+export interface OSInfraSnapshot {
+  cost?: OSInfraMetric;
+  config_drift?: OSInfraMetric;
+  dr?: OSInfraMetric;
+  evals?: OSInfraMetric;
+  security?: OSInfraMetric;
+}
+
+export interface OSSnapshot {
   generated_at: string;
-  metric_cards: NexusHealthMetricCard[];
-  history: NexusHealthHistory[];
-  recommendations: NexusHealthRecommendation[];
-  connections: NexusHealthConnection[];
+  overall: OSStatus;
+  reason?: string;
+  sections: OSSection[];
+  /** Every non-green item, pre-sorted red→amber by the backend. */
+  diagnostics: OSDiagnostic[];
+  /** Informational diagnostics, never counted toward posture. */
+  info?: OSDiagnostic[];
+  attention?: { posture: OSStatus; chips: OSAttentionChip[] };
+  repo?: OSRepoSnapshot;
+  work?: OSWorkSnapshot;
+  activity?: OSActivitySnapshot;
+  infra?: OSInfraSnapshot;
+  /** Static architecture topology with live health bound onto the nodes. */
+  graph: { nodes: OSGraphNode[]; edges: OSGraphEdge[] };
 }
 
 // ---------------------------------------------------------------------------
-// Hives — Ruflo hive run observability types
+// Neural Connectome — live graph summary + lazy cluster leaves
 // ---------------------------------------------------------------------------
 
-export type HiveStatus = "running" | "completed" | "blocked" | "stale";
+export interface ConnectomeProvenance {
+  source?: string;
+  query?: string;
+  field?: string;
+  value?: string;
+  lastSeen?: string;
+}
 
-export interface HiveRun {
+export interface ConnectomeNode {
   id: string;
-  workdir: string;
-  session: string | null;
-  status: HiveStatus;
-  tracking_card: string | null;
-  started_at: string | null;
-  updated_at: string | null;
-  elapsed_seconds: number;
-  final_report_status: "COMPLETE" | "BLOCKED" | null;
-  final_report_path: string | null;
-  log_path: string | null;
-  log_size_bytes: number;
-  log_mtime: string | null;
-  tmux_alive: boolean;
-  track_title: string | null;
-  objective_summary: string | null;
+  label: string;
+  cluster: string;
+  kind: string;
+  status?: string;
+  real?: boolean;
+  count?: number;
+  detail?: string;
+  metric?: number | Record<string, unknown>;
+  provenance?: ConnectomeProvenance;
+  provSource?: string;
+  provQuery?: string;
+  provField?: string;
+  provValue?: string;
+  lastSeen?: string;
+  [key: string]: unknown;
 }
 
-export interface HivesSnapshot {
-  hives: HiveRun[];
-  scanned_at: string;
-  active_count: number;
-  completed_count: number;
-  stale_count: number;
+export interface ConnectomeEdge {
+  id: string;
+  source: string;
+  target: string;
+  kind: string;
+  label?: string;
+  mechanism?: string;
+  verified?: boolean;
+  provenance?: ConnectomeProvenance;
+  provSource?: string;
+  provQuery?: string;
+  provField?: string;
+  provValue?: string;
+  lastSeen?: string;
 }
 
-export interface HiveLogResponse {
-  lines: string[];
-  path: string | null;
-  mtime: string | null;
-  truncated_to: number;
+export interface ConnectomeSnapshot {
+  nodes: ConnectomeNode[];
+  edges: ConnectomeEdge[];
+  meta?: Record<string, unknown>;
+}
+
+export interface ConnectomeClusterPage {
+  cluster_id: string;
+  hub?: ConnectomeNode;
+  leaves: ConnectomeNode[];
+  next_cursor?: string | null;
+  generated_at?: string;
+  status?: string;
   error?: string;
+}
+
+export interface ProjectRemainingWorkItem {
+  id: string;
+  status: string;
+  title: string;
+}
+
+export interface ProjectSnapshot {
+  slug: string;
+  name: string;
+  icon: string;
+  color: string;
+  archived: boolean;
+  total: number;
+  completion_pct: number;
+  by_status: Record<string, number>;
+  active: number;
+  blocked: number;
+  last_activity: number | null;
+  remaining: ProjectRemainingWorkItem[];
+  remaining_count: number;
+  remaining_by_status: Record<string, number>;
+  remaining_more: number;
+}
+
+export interface ProjectsSnapshot {
+  scanned_at: string | null;
+  projects: ProjectSnapshot[];
+}
+
+// ---------------------------------------------------------------------------
+// Learning — MVMS learning-loop metric + canary (/api/dashboard/learning)
+// ---------------------------------------------------------------------------
+
+export type LearningStatus = "green" | "amber" | "red" | "unknown";
+
+export interface LearningEmbedCoverageItem {
+  embedded?: number;
+  ratio?: number;
+  total?: number;
+}
+
+export type LearningEmbedCoverage = Record<string, LearningEmbedCoverageItem>;
+
+export interface RecallFilter {
+  include_quarantine?: boolean;
+  exclude_auto_bridged?: boolean;
+  effective?: string;
+}
+
+export interface DistillerStatus {
+  pending?: number;
+  approved?: number;
+  rejected?: number;
+  oldest_pending_ts?: string | null;
+  last_promotion_ts?: string | null;
+  stale_count?: number;
+  frozen_since?: string | null;
+}
+
+export interface LoopCriticStatus {
+  checks?: Record<string, boolean>;
+  quarantine_last_7d?: number;
+  next_run_countdown_seconds?: number;
+}
+
+export interface LearningSnapshotLatest {
+  SIGNAL_SCORE?: number | null;
+  trusted_count?: number | null;
+  trusted_ratio?: number | null;
+  lessons_total?: number | null;
+  dup_rows?: number | null;
+  dup_ratio?: number | null;
+  auto_bridged_count?: number | null;
+  quarantine_count?: number | null;
+  near_dup_clusters?: number | null;
+  importance_hist?: Record<string, number | undefined> | null;
+  lessons_last_7d?: number | null;
+  ACTIONABLE_SIGNAL_SCORE?: number | null;
+  actionable_lessons_total?: number | null;
+  trusted_actionable_ratio?: number | null;
+  lessons_authored_by_agent?: number | null;
+  embed_coverage?: LearningEmbedCoverage | null;
+}
+
+export interface LearningResultLatest {
+  pass?: boolean | null;
+  rank?: number | null;
+  planted_uuid?: string | null;
+}
+
+export interface LearningHistoryPoint {
+  SIGNAL_SCORE?: number | null;
+  trusted_count?: number | null;
+  dup_ratio?: number | null;
+  generated_at?: string | null;
+}
+
+export interface LearningSourceBlock {
+  status?: "measured" | "unmeasured" | string;
+  source?: string | null;
+  provenance?: string | null;
+}
+
+export interface LearningSystemdUnit {
+  name?: string;
+  enabled?: string;
+  active?: string;
+  enabled_rc?: number;
+  active_rc?: number;
+  error?: string;
+}
+
+export interface LearningRecallEval extends LearningSourceBlock {
+  label?: string;
+  k?: number | null;
+  n?: number | null;
+  n_target_resolved?: number | null;
+  recall_at_k?: number | null;
+  mrr?: number | null;
+  ndcg_at_k?: number | null;
+  holdout_file?: string | null;
+  ts?: string | null;
+  self_seeded_latest?: {
+    recall_at_k?: number | null;
+    holdout_file?: string | null;
+    ts?: string | null;
+    classification?: string | null;
+  } | null;
+}
+
+export interface LearningRecallActivity extends LearningSourceBlock {
+  total_events?: number;
+  recent_1h?: number;
+  recent_24h?: number;
+  recent_7d?: number;
+  latest_ts?: number | null;
+  latest_at?: string | null;
+  latest_age_seconds?: number | null;
+  sources?: string[];
+}
+
+export interface LearningPromotion extends LearningSourceBlock {
+  jsonl_source?: string;
+  log_source?: string;
+  timer?: LearningSystemdUnit;
+  service?: LearningSystemdUnit;
+  latest?: Record<string, string | number | boolean | null | undefined>;
+}
+
+export interface LearningVerify extends LearningSourceBlock {
+  timer?: LearningSystemdUnit;
+  service?: LearningSystemdUnit;
+  critic_status?: string | null;
+  hard_failures?: number | null;
+  default_recall_at_k?: number | null;
+  default_recall_k?: number | null;
+  default_mrr?: number | null;
+  default_ndcg?: number | null;
+  log_tail?: string | null;
+}
+
+export interface LearningMvmsLessons extends LearningSourceBlock {
+  generated_at?: string | null;
+  lessons_total?: number | null;
+  trusted_count?: number | null;
+  trusted_ratio?: number | null;
+  actionable_lessons_total?: number | null;
+  trusted_actionable_ratio?: number | null;
+  auto_bridged_count?: number | null;
+  quarantine_count?: number | null;
+  dup_ratio?: number | null;
+  importance_hist?: Record<string, number | undefined> | null;
+  embed_coverage?: LearningEmbedCoverage | null;
+  scope?: Record<string, unknown> | null;
+}
+
+export interface LearningCanary extends LearningSourceBlock {
+  pass?: boolean | null;
+  rank?: number | null;
+  recalled?: boolean | null;
+  avoided_mistake?: boolean | null;
+  probe_ranker?: string | null;
+  probe_mode_used?: string | null;
+  embedding_path?: string | null;
+  ts?: string | null;
+}
+
+export interface LearningResponse {
+  status: LearningStatus;
+  reason?: string;
+  files?: Record<string, string>;
+  mvms_lessons?: LearningMvmsLessons | null;
+  recall_eval?: LearningRecallEval | null;
+  recall_activity?: LearningRecallActivity | null;
+  promotion?: LearningPromotion | null;
+  verify?: LearningVerify | null;
+  canary?: LearningCanary | null;
+  snapshot_latest?: LearningSnapshotLatest | null;
+  result_latest?: LearningResultLatest | LearningCanary | null;
+  recall_filters?: RecallFilter | null;
+  weekly_hygiene_latest?: {
+    lesson_completion_ratio?: number;
+    embedding_coverage_summary?: string;
+    stuck_ready?: number;
+    ts?: string;
+  } | null;
+  distiller?: DistillerStatus | null;
+  behavioral?: {
+    present: boolean;
+    demonstrated: boolean;
+    recalled?: boolean | null;
+    rank?: number | null;
+    ts?: string | null;
+    card?: string | null;
+    severity?: string;
+    note?: string;
+  };
+  loop_critic?: LoopCriticStatus | null;
+  history_tail?: LearningHistoryPoint[];
+  errors?: string[];
 }
 
 export interface HubAgentPluginRow {
@@ -2126,6 +2864,34 @@ export interface AgentPluginUpdateResponse {
 export interface PluginProvidersPutRequest {
   memory_provider?: string;
   context_engine?: string;
+}
+
+// Git Topology — placeholders for OS Wave C view
+
+export interface GitTopologyLane {
+  id: string;
+  name: string;
+  branch: string;
+  ahead?: number;
+  behind?: number;
+  uncommitted_by_type?: Record<string, number>;
+  status?: OSStatus;
+  reason?: string;
+}
+
+export interface GitTopologyNode {
+  id: string;
+  label: string;
+  kind: string;
+  status?: OSStatus;
+  reason?: string;
+}
+
+export interface GitTopologyEdge {
+  id: string;
+  source: string;
+  target: string;
+  label?: string;
 }
 
 // ── Persona types (Hive B — Pantheon) ────────────────────────────────────

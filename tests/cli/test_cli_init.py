@@ -483,6 +483,23 @@ class TestHistoryDisplay:
         called_with = mock_handler.call_args.args[0]
         assert called_with.lower().startswith("/sessions")
 
+    def test_learn_command_is_dispatched_and_queues_prompt(self, capsys):
+        """/learn must hit the learning handler and queue an agent turn."""
+        import queue
+
+        cli = _make_cli()
+        cli._pending_input = queue.Queue()
+
+        cli.process_command("/learn the release checklist")
+        output = capsys.readouterr().out
+
+        assert "Unknown command" not in output
+        assert "Learning a skill from what you described" in output
+        queued = cli._pending_input.get_nowait()
+        assert "[/learn]" in queued
+        assert "WHAT TO LEARN FROM:\nthe release checklist" in queued
+        assert "skill_manage" in queued
+
 
 class TestRootLevelProviderOverride:
     """Root-level provider/base_url in config.yaml must NOT override model.provider."""

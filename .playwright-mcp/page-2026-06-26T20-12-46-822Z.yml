@@ -1,0 +1,227 @@
+- generic [ref=e3]:
+  - link "Skip to main content" [ref=e4] [cursor=pointer]:
+    - /url: "#main"
+  - banner [ref=e5]:
+    - button "Open navigation" [ref=e6] [cursor=pointer]:
+      - img [ref=e7]
+    - generic [ref=e8]: Hermes Agent
+  - generic [ref=e10]:
+    - complementary "Navigation" [ref=e11]:
+      - generic [ref=e12]:
+        - generic [ref=e14]:
+          - text: Hermes
+          - text: Agent
+        - button "Close navigation" [ref=e15] [cursor=pointer]:
+          - img [ref=e16]
+      - navigation "Navigation" [ref=e19]:
+        - list [ref=e20]:
+          - listitem [ref=e21]:
+            - link "Chat" [ref=e22] [cursor=pointer]:
+              - /url: /chat
+              - img [ref=e23]
+              - generic [ref=e25]: Chat
+          - listitem [ref=e26]:
+            - link "Life" [ref=e27] [cursor=pointer]:
+              - /url: /life
+              - img [ref=e28]
+              - generic [ref=e33]: Life
+          - listitem [ref=e35]:
+            - link "Sessions" [ref=e36] [cursor=pointer]:
+              - /url: /sessions
+              - img [ref=e37]
+              - generic [ref=e39]: Sessions
+          - listitem [ref=e40]:
+            - link "Files" [ref=e41] [cursor=pointer]:
+              - /url: /files
+              - img [ref=e42]
+              - generic [ref=e44]: Files
+          - listitem [ref=e45]:
+            - link "Cost" [ref=e46] [cursor=pointer]:
+              - /url: /cost
+              - img [ref=e47]
+              - generic [ref=e49]: Cost
+          - listitem [ref=e50]:
+            - link "Models" [ref=e51] [cursor=pointer]:
+              - /url: /models
+              - img [ref=e52]
+              - generic [ref=e55]: Models
+          - listitem [ref=e56]:
+            - link "Logs" [ref=e57] [cursor=pointer]:
+              - /url: /logs
+              - img [ref=e58]
+              - generic [ref=e61]: Logs
+          - listitem [ref=e62]:
+            - link "Cron" [ref=e63] [cursor=pointer]:
+              - /url: /cron
+              - img [ref=e64]
+              - generic [ref=e67]: Cron
+          - listitem [ref=e68]:
+            - link "Skills" [ref=e69] [cursor=pointer]:
+              - /url: /skills
+              - img [ref=e70]
+              - generic [ref=e74]: Skills
+          - listitem [ref=e75]:
+            - link "Explorer" [ref=e76] [cursor=pointer]:
+              - /url: /explorer
+              - img [ref=e77]
+              - generic [ref=e82]: Explorer
+          - listitem [ref=e83]:
+            - link "OS" [ref=e84] [cursor=pointer]:
+              - /url: /os
+              - img [ref=e85]
+              - generic [ref=e88]: OS
+          - listitem [ref=e89]:
+            - link "Learning" [ref=e90] [cursor=pointer]:
+              - /url: /learning
+              - img [ref=e91]
+              - generic [ref=e94]: Learning
+          - listitem [ref=e95]:
+            - link "Plugins" [ref=e96] [cursor=pointer]:
+              - /url: /plugins
+              - img [ref=e97]
+              - generic [ref=e99]: Plugins
+          - listitem [ref=e100]:
+            - link "MCP" [ref=e101] [cursor=pointer]:
+              - /url: /mcp
+              - img [ref=e102]
+              - generic [ref=e104]: MCP
+          - listitem [ref=e105]:
+            - link "Channels" [ref=e106] [cursor=pointer]:
+              - /url: /channels
+              - img [ref=e107]
+              - generic [ref=e113]: Channels
+          - listitem [ref=e114]:
+            - link "Webhooks" [ref=e115] [cursor=pointer]:
+              - /url: /webhooks
+              - img [ref=e116]
+              - generic [ref=e120]: Webhooks
+          - listitem [ref=e121]:
+            - link "Pairing" [ref=e122] [cursor=pointer]:
+              - /url: /pairing
+              - img [ref=e123]
+              - generic [ref=e126]: Pairing
+          - listitem [ref=e127]:
+            - link "Profiles" [ref=e128] [cursor=pointer]:
+              - /url: /profiles
+              - img [ref=e129]
+              - generic [ref=e134]: Profiles
+          - listitem [ref=e135]:
+            - link "Config" [ref=e136] [cursor=pointer]:
+              - /url: /config
+              - img [ref=e137]
+              - generic [ref=e140]: Config
+          - listitem [ref=e141]:
+            - link "Keys" [ref=e142] [cursor=pointer]:
+              - /url: /env
+              - img [ref=e143]
+              - generic [ref=e146]: Keys
+          - listitem [ref=e147]:
+            - link "System" [ref=e148] [cursor=pointer]:
+              - /url: /system
+              - img [ref=e149]
+              - generic [ref=e151]: System
+          - listitem [ref=e152]:
+            - link "Documentation" [ref=e153] [cursor=pointer]:
+              - /url: /docs
+              - img [ref=e154]
+              - generic [ref=e156]: Documentation
+      - generic [ref=e157]:
+        - generic [ref=e158]: System
+        - list [ref=e162]:
+          - listitem [ref=e163]:
+            - button "Restart Gateway" [ref=e164] [cursor=pointer]:
+              - img [ref=e165]
+              - generic [ref=e168]: Restart Gateway
+      - generic [ref=e170]:
+        - button "Switch theme" [ref=e173] [cursor=pointer]:
+          - generic [ref=e174]:
+            - img [ref=e175]
+            - generic [ref=e181]: Mono
+        - button "Switch language" [ref=e184] [cursor=pointer]:
+          - generic [ref=e186]: EN
+      - generic [ref=e187]:
+        - generic [ref=e188]: …
+        - generic [ref=e189]:
+          - generic [ref=e190]: —
+          - link "Nous Research" [ref=e191] [cursor=pointer]:
+            - /url: https://nousresearch.com
+    - generic [ref=e192]:
+      - banner [ref=e193]:
+        - heading "Life" [level=1] [ref=e196]
+      - main [ref=e197]:
+        - main [ref=e198]:
+          - generic [ref=e201]:
+            - generic [ref=e202]:
+              - generic [ref=e203]:
+                - heading "Good afternoon, Josep" [level=1] [ref=e204]
+                - paragraph [ref=e205]: Friday, Jun 26
+              - generic [ref=e206]:
+                - generic [ref=e211]: synced 0s ago
+                - button "Edit values" [ref=e212] [cursor=pointer]:
+                  - img [ref=e213]
+            - tablist "Life dashboard sections" [ref=e217]:
+              - tab "Today" [selected] [ref=e218]
+              - tab "Finance" [ref=e219]
+              - tab "Health" [ref=e220]
+              - tab "Faith" [ref=e221]
+              - tab "Life" [ref=e222]
+            - generic [ref=e223]:
+              - generic [ref=e224]:
+                - generic [ref=e225]:
+                  - img [ref=e226]
+                  - generic [ref=e239]:
+                    - generic [ref=e240]: "74"
+                    - generic [ref=e241]: On track
+                - generic [ref=e242]:
+                  - generic [ref=e243]:
+                    - text: Finance
+                    - generic [ref=e245]: "78"
+                  - generic [ref=e246]:
+                    - text: Health
+                    - generic [ref=e248]: "82"
+                  - generic [ref=e249]:
+                    - text: Faith
+                    - generic [ref=e251]: "71"
+                  - generic [ref=e252]:
+                    - text: Life
+                    - generic [ref=e254]: "64"
+              - heading "Today at a glance" [level=2] [ref=e255]
+              - generic [ref=e256]:
+                - generic [ref=e257]:
+                  - generic [ref=e258]:
+                    - img [ref=e259]
+                    - text: Free to spend
+                  - generic [ref=e262]: $1.2K
+                  - generic [ref=e263]: of $3.4K · on pace
+                  - img [ref=e265]
+                - generic [ref=e269]:
+                  - generic [ref=e270]:
+                    - img [ref=e271]
+                    - text: Readiness
+                  - generic [ref=e274]:
+                    - generic [ref=e275]:
+                      - generic [ref=e276]: "82"
+                      - generic [ref=e277]: HRV 58 · RHR 52
+                    - generic [ref=e278]:
+                      - img [ref=e279]
+                      - generic [ref=e283]: "82"
+              - generic [ref=e284]:
+                - generic [ref=e285]:
+                  - img [ref=e286]
+                  - text: Verse of the day
+                - paragraph [ref=e288]: “Whatever you do, work at it with all your heart, as working for the Lord.”
+                - generic [ref=e289]:
+                  - generic [ref=e290]: Colossians 3:23
+                  - button "Begin prayer" [ref=e291] [cursor=pointer]: Begin prayer
+              - heading "Today’s focus" [level=2] [ref=e292]
+              - generic [ref=e293]:
+                - generic [ref=e294]:
+                  - generic [ref=e295]:
+                    - img [ref=e296]
+                    - text: Tasks
+                  - generic [ref=e298]: 3/6
+                - generic [ref=e301]:
+                  - img [ref=e302]
+                  - generic [ref=e306]: 17:30
+                  - generic [ref=e307]: Gym — push day
+                  - generic [ref=e308]: · Health · 1h

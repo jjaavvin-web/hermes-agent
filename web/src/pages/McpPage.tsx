@@ -14,17 +14,21 @@ import type {
   McpTestResult,
 } from "@/lib/api";
 import { DeleteConfirmDialog } from "@/components/DeleteConfirmDialog";
-import { useToast } from "@nous-research/ui/hooks/use-toast";
-import { useConfirmDelete } from "@nous-research/ui/hooks/use-confirm-delete";
+import { useToast } from "@/components/ui-shims";
+import { useConfirmDelete } from "@/components/ui-shims";
 import { useModalBehavior } from "@/hooks/useModalBehavior";
-import { Toast } from "@nous-research/ui/ui/components/toast";
-import { Card, CardContent } from "@nous-research/ui/ui/components/card";
-import { Input } from "@nous-research/ui/ui/components/input";
-import { Label } from "@nous-research/ui/ui/components/label";
+import { Toast } from "@/components/ui-shims";
+import { Card, CardContent } from "@/components/ui-shims";
+import { Input } from "@/components/ui-shims";
+import { Label } from "@/components/ui-shims";
 import { usePageHeader } from "@/contexts/usePageHeader";
 import { cn, themedBody } from "@/lib/utils";
 
 type Transport = "http" | "stdio";
+
+function isHttpUrl(value: string): boolean {
+  return /^https?:\/\//i.test(value.trim());
+}
 
 function truncateText(value: string, maxLength: number): string {
   return value.length > maxLength ? value.slice(0, maxLength) + "..." : value;
@@ -707,9 +711,21 @@ export default function McpPage() {
                     >
                       {entry.transport}
                     </Badge>
-                    <Badge tone="outline">
-                      {entry.source === "official" ? "official" : entry.source}
-                    </Badge>
+                    <Badge tone="outline">auth: {entry.auth_type}</Badge>
+                    {isHttpUrl(entry.source) ? (
+                      <a
+                        href={entry.source}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-xs text-primary underline underline-offset-2 hover:opacity-80"
+                      >
+                        source ↗
+                      </a>
+                    ) : (
+                      entry.source && (
+                        <Badge tone="outline">{entry.source}</Badge>
+                      )
+                    )}
                     {entry.installed && (
                       <Badge tone="success">Installed</Badge>
                     )}
@@ -721,6 +737,67 @@ export default function McpPage() {
                     <p className="text-xs text-muted-foreground">
                       {entry.description}
                     </p>
+                  )}
+                  {/* Connection detail: what the agent actually talks to. */}
+                  {entry.transport === "http" && entry.url && (
+                    <p className="mt-1 text-xs text-muted-foreground">
+                      <span className="font-medium">Endpoint:</span>{" "}
+                      <code className="font-mono">{entry.url}</code>
+                    </p>
+                  )}
+                  {entry.transport === "stdio" && entry.command && (
+                    <p className="mt-1 text-xs text-muted-foreground break-all">
+                      <span className="font-medium">Runs:</span>{" "}
+                      <code className="font-mono">
+                        {[entry.command, ...entry.args].join(" ")}
+                      </code>
+                    </p>
+                  )}
+                  {/* Git bootstrap — surfaced so users see what gets cloned/run
+                      before they install (matches the docs trust model). */}
+                  {entry.install_url && (
+                    <p className="mt-1 text-xs text-muted-foreground break-all">
+                      <span className="font-medium">Installs from:</span>{" "}
+                      {isHttpUrl(entry.install_url) ? (
+                        <a
+                          href={entry.install_url}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="text-primary underline underline-offset-2 hover:opacity-80"
+                        >
+                          {entry.install_url}
+                        </a>
+                      ) : (
+                        <code className="font-mono">{entry.install_url}</code>
+                      )}
+                      {entry.install_ref && (
+                        <span> @ {entry.install_ref}</span>
+                      )}
+                    </p>
+                  )}
+                  {entry.bootstrap.length > 0 && (
+                    <details className="mt-1 text-xs text-muted-foreground">
+                      <summary className="cursor-pointer select-none">
+                        Bootstrap commands ({entry.bootstrap.length})
+                      </summary>
+                      <ul className="mt-1 ml-3 list-disc space-y-0.5">
+                        {entry.bootstrap.map((cmd, i) => (
+                          <li key={`${entry.name}-bs-${i}`} className="break-all">
+                            <code className="font-mono">{cmd}</code>
+                          </li>
+                        ))}
+                      </ul>
+                    </details>
+                  )}
+                  {entry.post_install && (
+                    <details className="mt-1 text-xs text-muted-foreground">
+                      <summary className="cursor-pointer select-none">
+                        Setup notes
+                      </summary>
+                      <p className="mt-1 whitespace-pre-wrap">
+                        {entry.post_install.trim()}
+                      </p>
+                    </details>
                   )}
                   {entryDiags.map((d, i) => (
                     <p

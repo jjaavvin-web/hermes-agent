@@ -162,6 +162,7 @@ export const hu: Translations = {
     selectedSessionsDeleted: "{count} munkamenet törölve",
     failedToDeleteSelected: "Nem sikerült törölni a kijelölt munkameneteket",
     resumeInChat: "Folytatás a csevegésben",
+    newChat: "Új csevegés",
     previousPage: "Előző oldal",
     nextPage: "Következő oldal",
     roles: {
@@ -290,8 +291,8 @@ export const hu: Translations = {
     nameRequired: "A név kötelező",
     nameRule:
       "Csak kisbetűk, számjegyek, _ és - karakterek; betűvel vagy számjeggyel kell kezdődnie; legfeljebb 64 karakter.",
-    invalidName: "Érvénytelen profilnév",
-    cloneFromDefault: "Konfiguráció klónozása az alapértelmezett profilból",
+    invalidName: "Érvénytelen profilnév",    cloneFrom: "Konfiguráció klónozása ebből a profilból",
+    cloneFromNone: "Nincs (üres)",
     allProfiles: "Profilok",
     noProfiles: "Nem található profil.",
     defaultBadge: "alapértelmezett",

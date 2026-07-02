@@ -32,10 +32,18 @@ import logging
 import subprocess
 import threading
 import time
+from inspect import signature
 from pathlib import Path
 from typing import Any, Optional
 
 from fastapi import APIRouter, Body, HTTPException
+
+from agent.peer_review import (
+    _DEFAULT_DAILY_CAP,
+    _DEFAULT_ITERATION_CAP,
+    _DEFAULT_POOL_SIZE,
+)
+from agent.worktree_broker import WorktreeBroker
 
 log = logging.getLogger(__name__)
 
@@ -64,6 +72,9 @@ _KILL_TOKEN = "KILL_CODEX_SESSION"
 _FORCE_MERGE_TOKEN = "FORCE_MERGE_CODEX_SESSION"
 _LOG_TAIL_DEFAULT = 200
 _DIFF_MAX_BYTES = 200 * 1024
+# Codex port allocator default source: agent.worktree_broker.WorktreeBroker.
+_CODEX_PORT_RANGE = signature(WorktreeBroker.__init__).parameters["port_range"].default
+_CODEX_PORT_POOL_SIZE = _CODEX_PORT_RANGE[1] - _CODEX_PORT_RANGE[0]
 
 
 # ── helpers ────────────────────────────────────────────────────────────
@@ -144,12 +155,14 @@ def _build_snapshot() -> dict:
             "total": len(sessions),
             "by_state": state_counts,
             "ports_claimed": claimed_ports,
-            "ports_free": 8 - claimed_ports,
+            "ports_free": _CODEX_PORT_POOL_SIZE - claimed_ports,
         },
+        # Documented peer-review defaults from agent.peer_review; runtime broker
+        # overrides in codex-review-state.json can be surfaced in a future slice.
         "review_pool": {
-            "size": 2,                # P2 default
-            "daily_cap_per_sid": 10,  # P2 default
-            "iteration_cap": 3,       # P2 default
+            "size": _DEFAULT_POOL_SIZE,
+            "daily_cap_per_sid": _DEFAULT_DAILY_CAP,
+            "iteration_cap": _DEFAULT_ITERATION_CAP,
         },
     }
 

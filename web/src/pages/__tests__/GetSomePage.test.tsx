@@ -146,8 +146,8 @@ describe("GetSomePage", () => {
       expect(container.textContent).toContain("Continue dashboard polish");
     });
 
-    const topologyLink = container.querySelector<HTMLAnchorElement>("a[href='/nexus-health']");
-    expect(topologyLink?.textContent).toContain("Open System Health");
+    const topologyLink = container.querySelector<HTMLAnchorElement>("a[href='/os']");
+    expect(topologyLink?.textContent).toContain("Open OS");
     expect(container.querySelector("[data-testid='mock-work-nexus']")).not.toBeNull();
   });
 

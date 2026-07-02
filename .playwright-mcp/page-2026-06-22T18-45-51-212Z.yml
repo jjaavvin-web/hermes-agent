@@ -1,0 +1,486 @@
+- generic [ref=e3]:
+  - link "Skip to main content" [ref=e4] [cursor=pointer]:
+    - /url: "#main"
+  - banner [ref=e5]:
+    - button "Open navigation" [ref=e6] [cursor=pointer]:
+      - img [ref=e7]
+    - generic [ref=e8]: Hermes Agent
+  - generic [ref=e10]:
+    - complementary "Navigation" [ref=e11]:
+      - generic [ref=e12]:
+        - generic [ref=e13]:
+          - img [ref=e200]
+          - generic [ref=e14]:
+            - text: Hermes
+            - text: Agent
+        - button "Close navigation" [ref=e15] [cursor=pointer]:
+          - img [ref=e16]
+      - generic "Managing profile" [ref=e204]:
+        - img [ref=e205]
+        - combobox "Managing profile" [ref=e210]:
+          - option "this dashboard (default)" [selected]
+          - option "brain"
+          - option "cheapgrunt"
+          - option "claude-code-bridge"
+          - option "gptgrunt"
+          - option "h2architect"
+          - option "h2auditor"
+          - option "h2coder"
+          - option "h2dispatch"
+          - option "h2governor"
+          - option "h2librarian"
+          - option "h2patcher"
+          - option "h2research"
+          - option "h2reviewer"
+          - option "h2simple"
+          - option "hermes-opus-workflow"
+      - navigation "Navigation" [ref=e19]:
+        - list [ref=e20]:
+          - listitem [ref=e21]:
+            - link "Chat" [ref=e22] [cursor=pointer]:
+              - /url: /chat
+              - img [ref=e23]
+              - generic [ref=e25]: Chat
+          - listitem [ref=e26]:
+            - link "Sessions" [ref=e27] [cursor=pointer]:
+              - /url: /sessions
+              - img [ref=e28]
+              - generic [ref=e30]: Sessions
+          - listitem [ref=e31]:
+            - link "Files" [ref=e32] [cursor=pointer]:
+              - /url: /files
+              - img [ref=e33]
+              - generic [ref=e35]: Files
+          - listitem [ref=e36]:
+            - link "Cost" [ref=e37] [cursor=pointer]:
+              - /url: /cost
+              - img [ref=e38]
+              - generic [ref=e40]: Cost
+          - listitem [ref=e41]:
+            - link "Models" [ref=e42] [cursor=pointer]:
+              - /url: /models
+              - img [ref=e43]
+              - generic [ref=e46]: Models
+          - listitem [ref=e47]:
+            - link "Logs" [ref=e48] [cursor=pointer]:
+              - /url: /logs
+              - img [ref=e49]
+              - generic [ref=e52]: Logs
+          - listitem [ref=e53]:
+            - link "Cron" [ref=e54] [cursor=pointer]:
+              - /url: /cron
+              - img [ref=e55]
+              - generic [ref=e58]: Cron
+          - listitem [ref=e59]:
+            - link "Skills" [ref=e60] [cursor=pointer]:
+              - /url: /skills
+              - img [ref=e61]
+              - generic [ref=e65]: Skills
+          - listitem [ref=e66]:
+            - link "Explorer" [ref=e67] [cursor=pointer]:
+              - /url: /explorer
+              - img [ref=e68]
+              - generic [ref=e73]: Explorer
+          - listitem [ref=e74]:
+            - link "OS" [ref=e75] [cursor=pointer]:
+              - /url: /os
+              - img [ref=e76]
+              - generic [ref=e79]: OS
+          - listitem [ref=e81]:
+            - link "Learning" [ref=e82] [cursor=pointer]:
+              - /url: /learning
+              - img [ref=e83]
+              - generic [ref=e86]: Learning
+          - listitem [ref=e87]:
+            - link "Plugins" [ref=e88] [cursor=pointer]:
+              - /url: /plugins
+              - img [ref=e89]
+              - generic [ref=e91]: Plugins
+          - listitem [ref=e92]:
+            - link "MCP" [ref=e93] [cursor=pointer]:
+              - /url: /mcp
+              - img [ref=e94]
+              - generic [ref=e96]: MCP
+          - listitem [ref=e97]:
+            - link "Channels" [ref=e98] [cursor=pointer]:
+              - /url: /channels
+              - img [ref=e99]
+              - generic [ref=e105]: Channels
+          - listitem [ref=e106]:
+            - link "Webhooks" [ref=e107] [cursor=pointer]:
+              - /url: /webhooks
+              - img [ref=e108]
+              - generic [ref=e112]: Webhooks
+          - listitem [ref=e113]:
+            - link "Pairing" [ref=e114] [cursor=pointer]:
+              - /url: /pairing
+              - img [ref=e115]
+              - generic [ref=e118]: Pairing
+          - listitem [ref=e119]:
+            - link "Profiles" [ref=e120] [cursor=pointer]:
+              - /url: /profiles
+              - img [ref=e121]
+              - generic [ref=e126]: Profiles
+          - listitem [ref=e127]:
+            - link "Config" [ref=e128] [cursor=pointer]:
+              - /url: /config
+              - img [ref=e129]
+              - generic [ref=e132]: Config
+          - listitem [ref=e133]:
+            - link "Keys" [ref=e134] [cursor=pointer]:
+              - /url: /env
+              - img [ref=e135]
+              - generic [ref=e138]: Keys
+          - listitem [ref=e139]:
+            - link "System" [ref=e140] [cursor=pointer]:
+              - /url: /system
+              - img [ref=e141]
+              - generic [ref=e143]: System
+          - listitem [ref=e144]:
+            - link "Documentation" [ref=e145] [cursor=pointer]:
+              - /url: /docs
+              - img [ref=e146]
+              - generic [ref=e148]: Documentation
+        - group "Plugins" [ref=e211]:
+          - generic [ref=e212]: Plugins
+          - list [ref=e213]:
+            - listitem [ref=e214]:
+              - link "Kanban" [ref=e215] [cursor=pointer]:
+                - /url: /kanban
+                - img [ref=e216]
+                - generic [ref=e220]: Kanban
+            - listitem [ref=e221]:
+              - link "TRT Tracker" [ref=e222] [cursor=pointer]:
+                - /url: /trt-cypionate
+                - img [ref=e223]
+                - generic [ref=e225]: TRT Tracker
+            - listitem [ref=e226]:
+              - link "Achievements" [ref=e227] [cursor=pointer]:
+                - /url: /achievements
+                - img [ref=e228]
+                - generic [ref=e230]: Achievements
+      - generic [ref=e149]:
+        - generic [ref=e150]: System
+        - 'link "Gateway Status: Running Active Sessions: 0" [ref=e231] [cursor=pointer]':
+          - /url: /sessions
+          - generic [ref=e232]:
+            - paragraph [ref=e233]: "Gateway Status: Running"
+            - paragraph [ref=e234]: "Active Sessions: 0"
+        - list [ref=e154]:
+          - listitem [ref=e155]:
+            - button "Restart Gateway" [ref=e156] [cursor=pointer]:
+              - img [ref=e157]
+              - generic [ref=e160]: Restart Gateway
+          - listitem [ref=e235]:
+            - button "Update Hermes" [ref=e236] [cursor=pointer]:
+              - img [ref=e237]
+              - generic [ref=e240]: Update Hermes
+      - generic [ref=e162]:
+        - button "Switch theme" [ref=e165] [cursor=pointer]:
+          - generic [ref=e166]:
+            - img [ref=e167]
+            - generic [ref=e173]: Mono
+        - button "Switch language" [ref=e176] [cursor=pointer]:
+          - generic [ref=e178]: EN
+      - generic [ref=e181]:
+        - generic [ref=e182]: v0.17.0
+        - link "Nous Research" [ref=e183] [cursor=pointer]:
+          - /url: https://nousresearch.com
+    - generic [ref=e184]:
+      - banner [ref=e185]:
+        - heading "OS" [level=1] [ref=e188]
+      - main [ref=e189]:
+        - main [ref=e190]:
+          - generic [ref=e193]:
+            - generic [ref=e241]:
+              - img [ref=e242]
+              - generic [ref=e245]: Infrastructure Operating Status
+              - group "OS view" [ref=e246]:
+                - button "Nexus" [ref=e247]:
+                  - img [ref=e248]
+                  - text: Nexus
+                - button "Connectome" [ref=e252]:
+                  - img [ref=e253]
+                  - text: Connectome
+                - button "Grid" [pressed] [ref=e258]:
+                  - img [ref=e259]
+                  - text: Grid
+                - button "Git" [ref=e264]:
+                  - img [ref=e265]
+                  - text: Git
+                - button "Projects" [ref=e269]:
+                  - img [ref=e270]
+                  - text: Projects
+            - region "Overall status" [ref=e272]:
+              - generic [ref=e273]:
+                - img [ref=e275]
+                - generic [ref=e277]:
+                  - heading "4 findings — 2 red · 2 amber" [level=2] [ref=e278]
+                  - paragraph [ref=e279]: 11 cards · updated Jun 22, 11:45:39 AM
+                - generic [ref=e280]:
+                  - generic "Critical" [ref=e281]
+                  - text: Critical
+                - button "Refresh OS snapshot" [ref=e282]:
+                  - img [ref=e283]
+              - generic "OS primary hero chips" [ref=e288]:
+                - button "Critical posture Critical" [ref=e289]:
+                  - generic "Critical" [ref=e290]
+                  - generic [ref=e291]: posture
+                  - generic [ref=e292]: Critical
+                - button "Nominal git readiness 0%" [ref=e293]:
+                  - generic "Nominal" [ref=e294]
+                  - generic [ref=e295]: git readiness
+                  - generic [ref=e296]: 0%
+                - button "Degraded projects 97%" [ref=e297]:
+                  - generic "Degraded" [ref=e298]
+                  - generic [ref=e299]: projects
+                  - generic [ref=e300]: 97%
+                - button "Nominal live 4" [ref=e301]:
+                  - generic "Nominal" [ref=e302]
+                  - generic [ref=e303]: live
+                  - generic [ref=e304]: "4"
+                - button "Nominal 7d tasks 50" [ref=e305]:
+                  - generic "Nominal" [ref=e306]
+                  - generic [ref=e307]: 7d tasks
+                  - generic [ref=e308]: "50"
+                - button "Nominal cost $0.09" [ref=e309]:
+                  - generic "Nominal" [ref=e310]
+                  - generic [ref=e311]: cost
+                  - generic [ref=e312]: $0.09
+                - button "Nominal DR GREEN" [ref=e313]:
+                  - generic "Nominal" [ref=e314]
+                  - generic [ref=e315]: DR
+                  - generic [ref=e316]: GREEN
+                - button "Critical evals 67%" [ref=e317]:
+                  - generic "Critical" [ref=e318]
+                  - generic [ref=e319]: evals
+                  - generic [ref=e320]: 67%
+                - button "Nominal security 0.7h" [ref=e321]:
+                  - generic "Nominal" [ref=e322]
+                  - generic [ref=e323]: security
+                  - generic [ref=e324]: 0.7h
+                - button "More" [ref=e325]:
+                  - text: More
+                  - img [ref=e326]
+              - 'button "Nominal Best move health: 3 uncommitted file(s) — the worker must commit before /review focus repo →" [ref=e328]':
+                - generic "Nominal" [ref=e329]
+                - generic [ref=e330]: Best move
+                - generic [ref=e331]: "health: 3 uncommitted file(s) — the worker must commit before /review"
+                - generic [ref=e332]: focus repo →
+              - list "Diagnostics preview" [ref=e333]:
+                - listitem [ref=e334]:
+                  - generic "Critical" [ref=e335]
+                  - generic [ref=e336]: providers
+                  - generic [ref=e337]: "codex_live_sessions: 42 sessions: EXECUTING=2, ORPHANED=39, CLAIMED=1; blocked_count=0"
+                - listitem [ref=e338]:
+                  - generic "Critical" [ref=e339]
+                  - generic [ref=e340]: systemd
+                  - generic [ref=e341]: "failed_units: 1 failed: ●"
+                - listitem [ref=e342]:
+                  - generic "Degraded" [ref=e343]
+                  - generic [ref=e344]: backups
+                  - generic [ref=e345]: "mvms-backup-gap-offbox: no off-box replication marker found"
+                - listitem [ref=e346]:
+                  - generic "Degraded" [ref=e347]
+                  - generic [ref=e348]: work
+                  - generic [ref=e349]: "pending_decisions: 4 decision items"
+              - button "Show all (9) diagnostics · info muted/excluded from counts" [ref=e350]
+            - generic [ref=e351]:
+              - generic [ref=e352]:
+                - button "Nominal Repo" [ref=e353]:
+                  - generic "Nominal" [ref=e354]
+                  - generic [ref=e355]: Repo
+                  - img [ref=e356]
+                - generic [ref=e358]:
+                  - generic [ref=e359]:
+                    - generic [ref=e360]: readiness
+                    - generic [ref=e361]: 0%
+                  - generic [ref=e362]:
+                    - generic [ref=e363]: uncommitted
+                    - generic [ref=e364]: "4"
+                  - generic [ref=e365]:
+                    - generic [ref=e366]: ahead_total
+                    - generic [ref=e367]: "6416"
+                  - paragraph [ref=e368]: +2 more…
+              - generic [ref=e369]:
+                - button "Degraded Work Degraded Degraded" [ref=e370]:
+                  - generic "Degraded" [ref=e371]
+                  - generic [ref=e372]: Work
+                  - generic [ref=e373]:
+                    - generic "Degraded" [ref=e374]
+                    - text: Degraded
+                  - img [ref=e375]
+                - generic [ref=e377]:
+                  - generic [ref=e378]:
+                    - generic [ref=e379]:
+                      - generic "Degraded" [ref=e380]
+                      - text: pending_decisions
+                    - generic [ref=e381]: "4"
+                  - generic [ref=e382]:
+                    - generic [ref=e383]: projects_completion
+                    - generic [ref=e384]: 97%
+                  - generic [ref=e385]:
+                    - generic [ref=e386]: live_runtimes
+                    - generic [ref=e387]: "4"
+                  - paragraph [ref=e388]: +1 more…
+              - generic [ref=e389]:
+                - button "Nominal Activity" [ref=e390]:
+                  - generic "Nominal" [ref=e391]
+                  - generic [ref=e392]: Activity
+                  - img [ref=e393]
+                - generic [ref=e395]:
+                  - generic [ref=e396]:
+                    - generic [ref=e397]: created_7d
+                    - generic [ref=e398]: "50"
+                  - generic [ref=e399]:
+                    - generic [ref=e400]: open_now
+                    - generic [ref=e401]: "12"
+                  - generic [ref=e402]:
+                    - generic [ref=e403]: pending_cards
+                    - generic [ref=e404]: "7"
+                  - paragraph [ref=e405]: +1 more…
+              - generic [ref=e406]:
+                - button "Nominal Gateway" [ref=e407]:
+                  - generic "Nominal" [ref=e408]
+                  - generic [ref=e409]: Gateway
+                  - img [ref=e410]
+                - generic [ref=e412]:
+                  - generic [ref=e413]:
+                    - generic [ref=e414]: gateway_state
+                    - generic [ref=e415]: Nominal
+                  - generic [ref=e416]:
+                    - generic [ref=e417]: systemd_unit
+                    - generic [ref=e418]: Nominal
+                  - generic [ref=e419]:
+                    - generic [ref=e420]: watchdog_events
+                    - generic [ref=e421]: Nominal
+              - generic [ref=e422]:
+                - button "Critical Providers Critical Critical" [ref=e423]:
+                  - generic "Critical" [ref=e424]
+                  - generic [ref=e425]: Providers
+                  - generic [ref=e426]:
+                    - generic "Critical" [ref=e427]
+                    - text: Critical
+                  - img [ref=e428]
+                - generic [ref=e430]:
+                  - generic [ref=e431]:
+                    - generic [ref=e432]:
+                      - generic "Critical" [ref=e433]
+                      - text: codex_live_sessions
+                    - generic [ref=e434]: "42"
+                  - generic [ref=e435]:
+                    - generic [ref=e436]:
+                      - generic "Info" [ref=e437]
+                      - text: codex_pipeline_load
+                    - generic [ref=e438]: "42"
+                  - generic [ref=e439]:
+                    - generic [ref=e440]: claude_cli
+                    - generic [ref=e441]: Nominal
+                  - paragraph [ref=e442]: +1 more…
+              - generic [ref=e443]:
+                - button "Nominal Containers" [ref=e444]:
+                  - generic "Nominal" [ref=e445]
+                  - generic [ref=e446]: Containers
+                  - img [ref=e447]
+                - generic [ref=e449]:
+                  - generic [ref=e450]:
+                    - generic [ref=e451]: extras
+                    - generic [ref=e452]: "14"
+                  - generic [ref=e453]:
+                    - generic [ref=e454]: honcho-api-1
+                    - generic [ref=e455]: Nominal
+                  - generic [ref=e456]:
+                    - generic [ref=e457]: honcho-database-1
+                    - generic [ref=e458]: Nominal
+                  - paragraph [ref=e459]: +4 more…
+              - generic [ref=e460]:
+                - button "Critical Systemd Critical Critical" [ref=e461]:
+                  - generic "Critical" [ref=e462]
+                  - generic [ref=e463]: Systemd
+                  - generic [ref=e464]:
+                    - generic "Critical" [ref=e465]
+                    - text: Critical
+                  - img [ref=e466]
+                - generic [ref=e468]:
+                  - generic [ref=e469]:
+                    - generic [ref=e470]:
+                      - generic "Critical" [ref=e471]
+                      - text: failed_units
+                    - generic [ref=e472]: "1"
+                  - generic [ref=e473]:
+                    - generic [ref=e474]: timers_keep
+                    - generic [ref=e475]: "19"
+                  - generic [ref=e476]:
+                    - generic [ref=e477]:
+                      - generic "Info" [ref=e478]
+                      - text: timers_disabled_by_design
+                    - generic [ref=e479]: "2"
+              - generic [ref=e480]:
+                - button "Degraded Backups Degraded Degraded" [ref=e481]:
+                  - generic "Degraded" [ref=e482]
+                  - generic [ref=e483]: Backups
+                  - generic [ref=e484]:
+                    - generic "Degraded" [ref=e485]
+                    - text: Degraded
+                  - img [ref=e486]
+                - generic [ref=e488]:
+                  - generic [ref=e489]:
+                    - generic [ref=e490]:
+                      - generic "Degraded" [ref=e491]
+                      - text: mvms-backup-gap-offbox
+                    - generic [ref=e492]: Degraded
+                  - generic [ref=e493]:
+                    - generic [ref=e494]:
+                      - generic "Info" [ref=e495]
+                      - text: mvms-canonical-*.sql.gz
+                    - generic [ref=e496]: 9.2h
+                  - generic [ref=e497]:
+                    - generic [ref=e498]:
+                      - generic "Info" [ref=e499]
+                      - text: honcho-live-store-*.sql.gz
+                    - generic [ref=e500]: 9.2h
+                  - paragraph [ref=e501]: +2 more…
+              - generic [ref=e502]:
+                - button "Nominal Memory Stores" [ref=e503]:
+                  - generic "Nominal" [ref=e504]
+                  - generic [ref=e505]: Memory Stores
+                  - img [ref=e506]
+                - generic [ref=e508]:
+                  - generic [ref=e509]:
+                    - generic [ref=e510]: state_db
+                    - generic [ref=e511]: 3356852KB
+                  - generic [ref=e512]:
+                    - generic [ref=e513]: kanban_db
+                    - generic [ref=e514]: "12"
+                  - generic [ref=e515]:
+                    - generic [ref=e516]: memory_md
+                    - generic [ref=e517]: 25988B
+                  - paragraph [ref=e518]: +2 more…
+              - generic [ref=e519]:
+                - button "Nominal Cron" [ref=e520]:
+                  - generic "Nominal" [ref=e521]
+                  - generic [ref=e522]: Cron
+                  - img [ref=e523]
+                - generic [ref=e525]:
+                  - generic [ref=e526]:
+                    - generic [ref=e527]: cron_enabled
+                    - generic [ref=e528]: "12"
+                  - generic [ref=e529]:
+                    - generic [ref=e530]: cron_last_status
+                    - generic [ref=e531]: Nominal
+              - generic [ref=e532]:
+                - button "Nominal Host" [ref=e533]:
+                  - generic "Nominal" [ref=e534]
+                  - generic [ref=e535]: Host
+                  - img [ref=e536]
+                - generic [ref=e538]:
+                  - generic [ref=e539]:
+                    - generic [ref=e540]: disk_free
+                    - generic [ref=e541]: 56G
+                  - generic [ref=e542]:
+                    - generic [ref=e543]: mem_available
+                    - generic [ref=e544]: 26614MB
+                  - generic [ref=e545]:
+                    - generic [ref=e546]: load_avg
+                    - generic [ref=e547]: "0.54"
+                  - paragraph [ref=e548]: +1 more…

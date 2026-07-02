@@ -104,6 +104,7 @@ _PREFIX_PATTERNS = [
     r"mem0_[A-Za-z0-9]{10,}",           # Mem0 Platform API key
     r"brv_[A-Za-z0-9]{10,}",            # ByteRover API key
     r"xai-[A-Za-z0-9]{30,}",            # xAI (Grok) API key
+    r"ntn_[A-Za-z0-9]{10,}",            # Notion internal integration token
 ]
 
 # ENV assignment patterns: KEY=value where KEY contains a secret-like name
@@ -119,9 +120,11 @@ _JSON_FIELD_RE = re.compile(
     re.IGNORECASE,
 )
 
-# Authorization headers
+# Authorization headers — covers the common HTTP auth schemes a flagged
+# command can carry a credential under: "Bearer <tok>" and "token <tok>"
+# (GitHub/GitLab-style). re.IGNORECASE folds the scheme keyword too.
 _AUTH_HEADER_RE = re.compile(
-    r"(Authorization:\s*Bearer\s+)(\S+)",
+    r"(Authorization:\s*(?:Bearer|token)\s+)(\S+)",
     re.IGNORECASE,
 )
 

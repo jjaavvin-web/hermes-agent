@@ -5,14 +5,13 @@ session search, web extraction, vision analysis, browser vision) picks up
 the best available backend without duplicating fallback logic.
 
 Resolution order for text tasks (auto mode):
-  1. User's main provider + main model (used regardless of provider type —
-     aggregators, direct API-key providers, native Anthropic, Codex, etc.)
-  2. OpenRouter  (OPENROUTER_API_KEY)
-  3. Nous Portal (~/.hermes/auth.json active provider)
-  4. Custom endpoint (config.yaml model.base_url + OPENAI_API_KEY)
-  5. Native Anthropic
-  6. Direct API-key providers (z.ai/GLM, Kimi/Moonshot, MiniMax, MiniMax-CN)
-  7. None
+  1. Fail-closed to the sanctioned subscription provider
+     (openai-codex / gpt-5.5).
+  2. None / BLOCKED_RUNTIME.
+
+``provider: auto`` is intentionally not an aggregator discovery chain. It must
+never silently route auxiliary work to OpenRouter or any other paid API-key
+fallback.
 
 Resolution order for vision/multimodal tasks (auto mode):
   1. Selected main provider, if it is one of the supported vision backends below
@@ -31,13 +30,13 @@ a model (auxiliary.<task>.provider + auxiliary.<task>.model).
 
 Per-task overrides are configured in config.yaml under the ``auxiliary:`` section
 (e.g. ``auxiliary.vision.provider``, ``auxiliary.compression.model``).
-Default "auto" follows the chains above.
+Default "auto" follows the fail-closed subscription route above.
 
 Payment / credit exhaustion fallback:
-  When a resolved provider returns HTTP 402 or a credit-related error,
-  call_llm() automatically retries with the next available provider in the
-  auto-detection chain.  This handles the common case where a user depletes
-  their OpenRouter balance but has Codex OAuth or another provider available.
+  A literal ``provider: auto`` never falls through to OpenRouter or any paid
+  API-key route. If the sanctioned subscription provider is unavailable or
+  returns a capacity/billing error, the auxiliary call raises/returns
+  BLOCKED_RUNTIME and logs the blocked fallback loudly.
 """
 
 import json
@@ -102,7 +101,7 @@ OpenAI = _OpenAIProxy()  # module-level name, resolves lazily on call/isinstance
 from agent.credential_pool import load_pool
 from hermes_cli.config import get_hermes_home
 from hermes_constants import OPENROUTER_BASE_URL
-from utils import base_url_host_matches, base_url_hostname, normalize_proxy_env_vars
+from utils import base_url_host_matches, base_url_hostname, model_forces_max_completion_tokens, normalize_proxy_env_vars
 
 logger = logging.getLogger(__name__)
 
@@ -202,6 +201,35 @@ def _is_arcee_trinity_thinking(model: Optional[str]) -> bool:
     return bare == "trinity-large-thinking"
 
 
+# Context window enforced by ChatGPT's Codex OAuth backend for gpt-5.5.
+# The raw OpenAI API and OpenRouter expose 1.05M for the same slug, but the
+# Codex backend hard-caps at 272K (verified live: a ~330K-token request to
+# chatgpt.com/backend-api/codex/responses is rejected with
+# ``context_length_exceeded`` while ~250K succeeds). With a 272K ceiling the
+# default 50% compaction trigger fires at ~136K — wasteful, since the model
+# can hold far more raw context before summarization actually buys anything.
+# We raise the trigger to 85% (~231K) on this exact route so Codex gpt-5.5
+# sessions use the window they actually have.
+_CODEX_GPT55_COMPACTION_THRESHOLD = 0.85
+
+
+def _is_codex_gpt55(model: Optional[str], provider: Optional[str] = None) -> bool:
+    """True for gpt-5.5 accessed through the ChatGPT Codex OAuth backend.
+
+    Matches only the Codex OAuth route (provider ``openai-codex``), not the
+    direct OpenAI API, OpenRouter, or GitHub Copilot paths — those expose a
+    larger context window for the same slug and must keep the user's default
+    compaction threshold. ``gpt-5.5-pro`` and dated snapshots
+    (``gpt-5.5-2026-04-23``) are matched via prefix so the override tracks the
+    family without re-listing every variant.
+    """
+    prov = (provider or "").strip().lower()
+    if prov != "openai-codex":
+        return False
+    bare = (model or "").strip().lower().rsplit("/", 1)[-1]
+    return bare == "gpt-5.5" or bare.startswith("gpt-5.5-") or bare.startswith("gpt-5.5.")
+
+
 def _fixed_temperature_for_model(
     model: Optional[str],
     base_url: Optional[str] = None,
@@ -224,18 +252,32 @@ def _fixed_temperature_for_model(
     return None
 
 
-def _compression_threshold_for_model(model: Optional[str]) -> Optional[float]:
+def _compression_threshold_for_model(
+    model: Optional[str],
+    provider: Optional[str] = None,
+    *,
+    allow_codex_gpt55_autoraise: bool = True,
+) -> Optional[float]:
     """Return a context-compression threshold override for specific models.
 
     The threshold is the fraction of the model's context window that must be
     consumed before Hermes triggers summarization.  Higher values delay
     compression and preserve more raw context.
 
+    Per-model/route overrides:
+      - Arcee Trinity Large Thinking → 0.75 (preserve reasoning context).
+      - gpt-5.5 on the Codex OAuth route → 0.85, because Codex caps the window
+        at 272K and the default 50% trigger would compact at ~136K. Gated by
+        ``allow_codex_gpt55_autoraise`` so the user can opt back down to the
+        global default (the caller passes the config flag through here).
+
     Returns a float in (0, 1] to override the global ``compression.threshold``
     config value, or ``None`` to leave the user's config value unchanged.
     """
     if _is_arcee_trinity_thinking(model):
         return 0.75
+    if allow_codex_gpt55_autoraise and _is_codex_gpt55(model, provider):
+        return _CODEX_GPT55_COMPACTION_THRESHOLD
     return None
 
 # Default auxiliary models for direct API-key providers (cheap/fast for side tasks)
@@ -312,6 +354,35 @@ _OR_HEADERS_BASE = {
 
 # Truthy values for boolean env-var parsing.
 _TRUTHY_ENV_VALUES = frozenset({"1", "true", "yes", "on"})
+
+
+def _apply_user_default_headers(headers: dict | None) -> dict | None:
+    """Merge user-configured ``model.default_headers`` onto resolved headers.
+
+    User values take precedence over provider/SDK defaults, mirroring the main
+    agent client (``AIAgent._apply_user_default_headers``). This lets a
+    ``custom`` OpenAI-compatible endpoint behind a gateway/WAF that rejects the
+    OpenAI SDK's identifying headers (``User-Agent: OpenAI/Python ...``,
+    ``X-Stainless-*``) override them for auxiliary calls too — otherwise the
+    main turn would succeed but title/compression/vision calls to the same
+    endpoint would still fail. (#40033)
+
+    Returns the merged dict, or the original ``headers`` (possibly ``None``)
+    when nothing is configured. No allocation when there are no overrides.
+    """
+    try:
+        from hermes_cli.config import cfg_get, load_config
+        user_headers = cfg_get(load_config(), "model", "default_headers")
+    except Exception:
+        return headers
+    if not isinstance(user_headers, dict) or not user_headers:
+        return headers
+    merged = dict(headers or {})
+    for key, value in user_headers.items():
+        if value is None:
+            continue
+        merged[str(key)] = str(value)
+    return merged or headers
 
 
 def build_or_headers(or_config: dict | None = None) -> dict:
@@ -426,6 +497,9 @@ _AUTH_JSON_PATH = get_hermes_home() / "auth.json"
 # they want explicitly (from config.yaml model.model, auxiliary.<task>.model,
 # or the user's active Codex model selection).
 _CODEX_AUX_BASE_URL = "https://chatgpt.com/backend-api/codex"
+_SANCTIONED_AUTO_PROVIDER = "openai-codex"
+_SANCTIONED_AUTO_MODEL = "gpt-5.5"
+_BLOCKED_RUNTIME = "BLOCKED_RUNTIME"
 
 
 def _codex_cloudflare_headers(access_token: str) -> Dict[str, str]:
@@ -565,54 +639,6 @@ def _pool_runtime_base_url(entry: Any, fallback: str = "") -> str:
 # calls to the Codex Responses API so callers don't need any changes.
 
 
-def _convert_content_for_responses(content: Any) -> Any:
-    """Convert chat.completions content to Responses API format.
-
-    chat.completions uses:
-      {"type": "text", "text": "..."}
-      {"type": "image_url", "image_url": {"url": "data:image/png;base64,..."}}
-
-    Responses API uses:
-      {"type": "input_text", "text": "..."}
-      {"type": "input_image", "image_url": "data:image/png;base64,..."}
-
-    If content is a plain string, it's returned as-is (the Responses API
-    accepts strings directly for text-only messages).
-    """
-    if isinstance(content, str):
-        return content
-    if not isinstance(content, list):
-        return str(content) if content else ""
-
-    converted: List[Dict[str, Any]] = []
-    for part in content:
-        if not isinstance(part, dict):
-            continue
-        ptype = part.get("type", "")
-        if ptype == "text":
-            converted.append({"type": "input_text", "text": part.get("text", "")})
-        elif ptype == "image_url":
-            # chat.completions nests the URL: {"image_url": {"url": "..."}}
-            image_data = part.get("image_url", {})
-            url = image_data.get("url", "") if isinstance(image_data, dict) else str(image_data)
-            entry: Dict[str, Any] = {"type": "input_image", "image_url": url}
-            # Preserve detail if specified
-            detail = image_data.get("detail") if isinstance(image_data, dict) else None
-            if detail:
-                entry["detail"] = detail
-            converted.append(entry)
-        elif ptype in {"input_text", "input_image"}:
-            # Already in Responses format — pass through
-            converted.append(part)
-        else:
-            # Unknown content type — try to preserve as text
-            text = part.get("text", "")
-            if text:
-                converted.append({"type": "input_text", "text": text})
-
-    return converted or ""
-
-
 class _CodexCompletionsAdapter:
     """Drop-in shim that accepts chat.completions.create() kwargs and
     routes them through the Codex Responses streaming API."""
@@ -625,26 +651,37 @@ class _CodexCompletionsAdapter:
         messages = kwargs.get("messages", [])
         model = kwargs.get("model", self._model)
 
-        # Separate system/instructions from conversation messages.
-        # Convert chat.completions multimodal content blocks to Responses
-        # API format (input_text / input_image instead of text / image_url).
+        # Separate system/instructions from replayable conversation messages,
+        # then route the rest through the SINGLE shared chat->Responses
+        # converter used by the main agent transport
+        # (agent/transports/codex.py). Maintaining a private conversion loop
+        # here let chat-style messages with role="tool" leak straight into
+        # Responses input[] — which the Responses API rejects with
+        # "Invalid value: 'tool'. Supported values are: 'assistant', 'system',
+        # 'developer', and 'user'." (issue #5709, hit hard by flush_memories()
+        # / compression replaying real session history that includes assistant
+        # tool_calls + role="tool" results). The shared converter encodes
+        # assistant tool calls as `function_call` items and tool results as
+        # `function_call_output` items with a valid call_id, so every
+        # Responses path normalizes tool history identically and cannot drift.
+        from agent.codex_responses_adapter import _chat_messages_to_responses_input
+
         instructions = "You are a helpful assistant."
-        input_msgs: List[Dict[str, Any]] = []
+        replay_messages: List[Dict[str, Any]] = []
         for msg in messages:
             role = msg.get("role", "user")
             content = msg.get("content") or ""
             if role == "system":
                 instructions = content if isinstance(content, str) else str(content)
             else:
-                input_msgs.append({
-                    "role": role,
-                    "content": _convert_content_for_responses(content),
-                })
+                replay_messages.append(msg)
+
+        input_items = _chat_messages_to_responses_input(replay_messages)
 
         resp_kwargs: Dict[str, Any] = {
             "model": model,
             "instructions": instructions,
-            "input": input_msgs or [{"role": "user", "content": ""}],
+            "input": input_items or [{"role": "user", "content": ""}],
             "store": False,
         }
 
@@ -962,7 +999,7 @@ class _AnthropicCompletionsAdapter:
         self._is_oauth = is_oauth
 
     def create(self, **kwargs) -> Any:
-        from agent.anthropic_adapter import build_anthropic_kwargs
+        from agent.anthropic_adapter import build_anthropic_kwargs, create_anthropic_message
         from agent.transports import get_transport
 
         messages = kwargs.get("messages", [])
@@ -1006,7 +1043,15 @@ class _AnthropicCompletionsAdapter:
             if not _forbids_sampling_params(model):
                 anthropic_kwargs["temperature"] = temperature
 
-        response = self._client.messages.create(**anthropic_kwargs)
+        # Aggregate via streaming when the endpoint supports it. Some
+        # Anthropic-compatible gateways are SSE-only and return raw
+        # text/event-stream for messages.create(), which then crashes in
+        # normalize_response on `.content`. create_anthropic_message() prefers
+        # messages.stream().get_final_message() and falls back to create()
+        # only when streaming is unavailable. Restores fork fix 46f9d5346
+        # (silently reverted by an upstream merge). See
+        # tests/agent/test_auxiliary_client.py::test_anthropic_auxiliary_client_aggregates_stream_response.
+        response = create_anthropic_message(self._client, anthropic_kwargs)
         _transport = get_transport("anthropic_messages")
         _nr = _transport.normalize_response(
             response, strip_tool_prefix=self._is_oauth
@@ -1452,6 +1497,9 @@ def _resolve_api_key_provider() -> Tuple[Optional[OpenAI], Optional[str]]:
                         extra["default_headers"] = dict(_ph_aux.default_headers)
                 except Exception:
                     pass
+            _merged_aux = _apply_user_default_headers(extra.get("default_headers"))
+            if _merged_aux:
+                extra["default_headers"] = _merged_aux
             _client = OpenAI(api_key=api_key, base_url=base_url, **extra)
             _client = _maybe_wrap_anthropic(_client, model, api_key, raw_base_url)
             return _client, model
@@ -1489,6 +1537,9 @@ def _resolve_api_key_provider() -> Tuple[Optional[OpenAI], Optional[str]]:
                     extra["default_headers"] = dict(_ph_aux2.default_headers)
             except Exception:
                 pass
+        _merged_aux2 = _apply_user_default_headers(extra.get("default_headers"))
+        if _merged_aux2:
+            extra["default_headers"] = _merged_aux2
         _client = OpenAI(api_key=api_key, base_url=base_url, **extra)
         _client = _maybe_wrap_anthropic(_client, model, api_key, raw_base_url)
         return _client, model
@@ -1879,6 +1930,13 @@ def _try_custom_endpoint() -> Tuple[Optional[Any], Optional[str]]:
     logger.debug("Auxiliary client: custom endpoint (%s, api_mode=%s)", model, custom_mode or "chat_completions")
     _clean_base, _dq = _extract_url_query_params(custom_base)
     _extra = {"default_query": _dq} if _dq else {}
+    # User-configured model.default_headers override the SDK's identifying
+    # headers (User-Agent: OpenAI/Python ..., X-Stainless-*) on this custom
+    # endpoint's auxiliary calls too — matching the main agent client so the
+    # whole session reaches a gateway/WAF that rejects the SDK fingerprint. (#40033)
+    _custom_headers = _apply_user_default_headers(None)
+    if _custom_headers:
+        _extra["default_headers"] = _custom_headers
     if custom_mode == "codex_responses":
         real_client = OpenAI(api_key=custom_key, base_url=_clean_base, **_extra)
         return CodexAuxiliaryClient(real_client, model), model
@@ -2426,6 +2484,25 @@ def _is_connection_error(exc: Exception) -> bool:
     )):
         return True
     return False
+
+
+def _is_transient_transport_error(exc: Exception) -> bool:
+    """Return True for a one-off transport blip worth retrying ONCE on the
+    same provider before any provider/model fallback.
+
+    Covers connection/streaming-close errors (via the canonical
+    ``_is_connection_error`` detector, shared so the two cannot drift) plus a
+    pure 5xx/408 HTTP status. Deliberately narrow: this is the "retry the
+    same target once" gate, distinct from ``_is_payment_error`` /
+    ``_is_auth_error`` / ``_is_rate_limit_error`` which the except-chain
+    handles by switching provider, refreshing creds, or rotating the pool.
+    """
+    if _is_connection_error(exc):
+        return True
+    status = getattr(exc, "status_code", None) or getattr(
+        getattr(exc, "response", None), "status_code", None
+    )
+    return isinstance(status, int) and (status == 408 or 500 <= status < 600)
 
 
 def _is_auth_error(exc: Exception) -> bool:
@@ -3058,124 +3135,49 @@ def _resolve_single_provider(
     return client
 
 def _resolve_auto(main_runtime: Optional[Dict[str, Any]] = None) -> Tuple[Optional[OpenAI], Optional[str]]:
-    """Full auto-detection chain.
+    """Fail-closed auto routing for text auxiliary tasks.
 
-    Priority:
-      1. User's main provider + main model, regardless of provider type.
-         This means auxiliary tasks (compression, vision, web extraction,
-         session search, etc.) use the same model the user configured for
-         chat.  Users on OpenRouter/Nous get their chosen chat model; users
-         on DeepSeek/ZAI/Alibaba get theirs; etc.  Running aux tasks on the
-         user's picked model keeps behavior predictable — no surprise
-         switches to a cheap fallback model for side tasks.
-      2. OpenRouter → Nous → custom → Codex → API-key providers (fallback
-         chain, only used when the main provider has no working client).
+    ``provider: auto`` is not a paid-provider discovery chain.  It may only
+    resolve to the sanctioned subscription route (openai-codex / gpt-5.5).  If
+    that route is unavailable, return ``(None, None)`` and log
+    ``BLOCKED_RUNTIME`` instead of trying OpenRouter/Nous/custom/API-key
+    fallbacks.
     """
-    global auxiliary_is_nous, _stale_base_url_warned
-    auxiliary_is_nous = False  # Reset — _try_nous() will set True if it wins
-    runtime = _normalize_main_runtime(main_runtime)
-    runtime_provider = runtime.get("provider", "")
-    runtime_model = str(runtime.get("model") or "")
-    runtime_base_url = str(runtime.get("base_url") or "")
-    runtime_api_key = runtime.get("api_key", "")
-    runtime_api_mode = str(runtime.get("api_mode") or "")
+    global auxiliary_is_nous
+    auxiliary_is_nous = False
 
-    # Fall back to process-local globals when main_runtime dict was not
-    # provided or was incomplete.  ``set_runtime_main()`` now records
-    # base_url/api_key/api_mode alongside provider/model, so custom:
-    # providers get the full credential surface in Step 1 of the
-    # auto-detect chain.
-    if not runtime_base_url and _RUNTIME_MAIN_BASE_URL:
-        runtime_base_url = _RUNTIME_MAIN_BASE_URL
-    if not runtime_api_key and _RUNTIME_MAIN_API_KEY:
-        runtime_api_key = _RUNTIME_MAIN_API_KEY
-    if not runtime_api_mode and _RUNTIME_MAIN_API_MODE:
-        runtime_api_mode = _RUNTIME_MAIN_API_MODE
+    client, resolved = resolve_provider_client(
+        _SANCTIONED_AUTO_PROVIDER,
+        _SANCTIONED_AUTO_MODEL,
+        api_mode="codex_responses",
+        main_runtime=main_runtime,
+    )
+    if client is None:
+        logger.error(
+            "%s: auxiliary provider 'auto' blocked — sanctioned provider "
+            "%s/%s is unavailable; OpenRouter/paid fallback is disabled.",
+            _BLOCKED_RUNTIME,
+            _SANCTIONED_AUTO_PROVIDER,
+            _SANCTIONED_AUTO_MODEL,
+        )
+        return None, None
 
-    # ── Warn once if OPENAI_BASE_URL is set but config.yaml uses a named
-    #    provider (not 'custom').  This catches the common "env poisoning"
-    #    scenario where a user switches providers via `hermes model` but the
-    #    old OPENAI_BASE_URL lingers in ~/.hermes/.env. ──
-    if not _stale_base_url_warned:
-        _env_base = os.getenv("OPENAI_BASE_URL", "").strip()
-        _cfg_provider = runtime_provider or _read_main_provider()
-        if (_env_base and _cfg_provider
-                and _cfg_provider != "custom"
-                and not _cfg_provider.startswith("custom:")):
-            logger.warning(
-                "OPENAI_BASE_URL is set (%s) but model.provider is '%s'. "
-                "Auxiliary clients may route to the wrong endpoint. "
-                "Run: hermes model to reconfigure, or remove "
-                "OPENAI_BASE_URL from ~/.hermes/.env",
-                _env_base, _cfg_provider,
-            )
-            _stale_base_url_warned = True
+    base_url = str(getattr(client, "base_url", "") or "")
+    if base_url_host_matches(base_url, "openrouter.ai"):
+        logger.error(
+            "%s: auxiliary provider 'auto' attempted to resolve to OpenRouter "
+            "(%s); blocked by fail-closed no-paid-fallback policy.",
+            _BLOCKED_RUNTIME,
+            base_url,
+        )
+        return None, None
 
-    # ── Step 1: main provider + main model → use them directly ──
-    #
-    # This is the primary aux backend for every user.  "auto" means
-    # "use my main chat model for side tasks as well" — including users
-    # on aggregators (OpenRouter, Nous) who previously got routed to a
-    # cheap provider-side default.  Explicit per-task overrides set via
-    # config.yaml (auxiliary.<task>.provider) still win over this.
-    main_provider = str(runtime_provider or _read_main_provider() or "")
-    main_model = str(runtime_model or _read_main_model() or "")
-    if (main_provider and main_model
-            and main_provider not in {"auto", ""}):
-        resolved_provider = main_provider
-        explicit_base_url = None
-        explicit_api_key = None
-        if runtime_base_url and (main_provider == "custom" or main_provider.startswith("custom:")):
-            resolved_provider = "custom"
-            explicit_base_url = runtime_base_url
-            explicit_api_key = runtime_api_key or None
-        elif runtime_api_key:
-            # Pin auxiliary to the same api_key as the active main chat session
-            # so that a working key is reused instead of re-selecting from the pool
-            # (which might pick a different, potentially exhausted key).
-            explicit_api_key = runtime_api_key
-        # Skip Step-1 if the main provider was recently 402'd. The unhealthy
-        # cache TTL bounds how long we bypass it, so a topped-up account
-        # recovers automatically. If we tried Step-1 anyway, every aux call
-        # on a depleted main provider would pay one doomed 402 RTT before
-        # falling to Step-2.
-        main_chain_label = _normalize_chain_label(resolved_provider)
-        if main_chain_label and _is_provider_unhealthy(main_chain_label):
-            _log_skip_unhealthy(main_chain_label)
-        else:
-            client, resolved = resolve_provider_client(
-                resolved_provider,
-                main_model,
-                explicit_base_url=explicit_base_url,
-                explicit_api_key=explicit_api_key,
-                api_mode=runtime_api_mode or None,
-            )
-            if client is not None:
-                logger.info("Auxiliary auto-detect: using main provider %s (%s)",
-                            main_provider, resolved or main_model)
-                return client, resolved or main_model
-
-    # ── Step 2: aggregator / fallback chain ──────────────────────────────
-    tried = []
-    for label, try_fn in _get_provider_chain():
-        if _is_provider_unhealthy(label):
-            _log_skip_unhealthy(label)
-            tried.append(f"{label} (unhealthy)")
-            continue
-        client, model = try_fn()
-        if client is not None:
-            if tried:
-                logger.info("Auxiliary auto-detect: using %s (%s) — skipped: %s",
-                            label, model or "default", ", ".join(tried))
-            else:
-                logger.info("Auxiliary auto-detect: using %s (%s)", label, model or "default")
-            return client, model
-        tried.append(label)
-    logger.warning("Auxiliary auto-detect: no provider available (tried: %s). "
-                   "Compression, summarization, and memory flush will not work. "
-                   "Set OPENROUTER_API_KEY or configure a local model in config.yaml.",
-                   ", ".join(tried))
-    return None, None
+    logger.info(
+        "Auxiliary auto-detect: fail-closed to sanctioned provider %s (%s)",
+        _SANCTIONED_AUTO_PROVIDER,
+        resolved or _SANCTIONED_AUTO_MODEL,
+    )
+    return client, resolved or _SANCTIONED_AUTO_MODEL
 
 
 # ── Centralized Provider Router ─────────────────────────────────────────────
@@ -3248,6 +3250,9 @@ def _to_async_client(sync_client, model: str, is_vision: bool = False):
                     async_kwargs["default_headers"] = dict(_ph_async.default_headers)
         except Exception:
             pass
+    _merged_async = _apply_user_default_headers(async_kwargs.get("default_headers"))
+    if _merged_async:
+        async_kwargs["default_headers"] = _merged_async
     return AsyncOpenAI(**async_kwargs), model
 
 
@@ -3286,7 +3291,7 @@ def resolve_provider_client(
             "openrouter", "nous", "openai-codex" (or "codex"),
             "zai", "kimi-coding", "minimax", "minimax-cn",
             "custom" (OPENAI_BASE_URL + OPENAI_API_KEY),
-            "auto" (full auto-detection chain).
+            "auto" (fail-closed to openai-codex/gpt-5.5; no OpenRouter fallback).
         model: Model slug override.  If None, uses the provider's default
                auxiliary model.
         async_mode: If True, return an async-compatible client.
@@ -3391,7 +3396,7 @@ def resolve_provider_client(
             client_obj, final_model_str, api_key_str, base_url_str, api_mode,
         )
 
-    # ── Auto: try all providers in priority order ────────────────────
+    # ── Auto: fail-closed sanctioned subscription route ───────────────
     if provider == "auto":
         client, resolved = _resolve_auto(main_runtime=main_runtime)
         if client is None:
@@ -3535,6 +3540,9 @@ def resolve_provider_client(
                         extra["default_headers"] = dict(_ph_custom.default_headers)
                 except Exception:
                     pass
+            _merged_custom = _apply_user_default_headers(extra.get("default_headers"))
+            if _merged_custom:
+                extra["default_headers"] = _merged_custom
             client = OpenAI(api_key=custom_key, base_url=_clean_base, **extra)
             client = _wrap_if_needed(client, final_model, custom_base, custom_key)
             return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode
@@ -3611,6 +3619,9 @@ def resolve_provider_client(
                     raw_base_for_wrap = custom_base
                 _clean_base2, _dq2 = _extract_url_query_params(openai_base)
                 _extra2 = {"default_query": _dq2} if _dq2 else {}
+                _headers2 = _apply_user_default_headers(_extra2.get("default_headers"))
+                if _headers2:
+                    _extra2["default_headers"] = _headers2
                 logger.debug(
                     "resolve_provider_client: named custom provider %r (%s, api_mode=%s)",
                     provider, final_model, entry_api_mode or "chat_completions")
@@ -3633,6 +3644,9 @@ def resolve_provider_client(
                         _fallback_base = _to_openai_base_url(custom_base)
                         _fb_clean, _fb_dq = _extract_url_query_params(_fallback_base)
                         _fb_extra = {"default_query": _fb_dq} if _fb_dq else {}
+                        _fb_headers = _apply_user_default_headers(_fb_extra.get("default_headers"))
+                        if _fb_headers:
+                            _fb_extra["default_headers"] = _fb_headers
                         client = OpenAI(api_key=custom_key, base_url=_fb_clean, **_fb_extra)
                         return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode
                                 else (client, final_model))
@@ -3781,6 +3795,9 @@ def resolve_provider_client(
                     headers.update(_ph_main.default_headers)
             except Exception:
                 pass
+        _merged_main = _apply_user_default_headers(headers)
+        if _merged_main:
+            headers = _merged_main
         client = OpenAI(api_key=api_key, base_url=base_url,
                         **({"default_headers": headers} if headers else {}))
 
@@ -4218,13 +4235,15 @@ def get_auxiliary_extra_body() -> dict:
     return _nous_extra_body() if auxiliary_is_nous else {}
 
 
-def auxiliary_max_tokens_param(value: int) -> dict:
+def auxiliary_max_tokens_param(value: int, *, model: Optional[str] = None) -> dict:
     """Return the correct max tokens kwarg for the auxiliary client's provider.
-    
+
     OpenRouter and local models use 'max_tokens'. Direct OpenAI with newer
-    models (gpt-4o, o-series, gpt-5+) requires 'max_completion_tokens'.
+    models (gpt-4o, gpt-4.1, gpt-5+, o-series) requires 'max_completion_tokens'.
     The Codex adapter translates max_tokens internally, so we use max_tokens
-    for it as well.
+    for it as well. Pass ``model`` so third-party OpenAI-compatible endpoints
+    fronting the newer families are also recognised — URL-only detection
+    misses the case where a custom base URL serves e.g. ``gpt-5.4``.
     """
     custom_base = _current_custom_base_url()
     or_key = os.getenv("OPENROUTER_API_KEY")
@@ -4233,6 +4252,9 @@ def auxiliary_max_tokens_param(value: int) -> dict:
     if (not or_key
             and _read_nous_auth() is None
             and base_url_hostname(custom_base) in {"api.openai.com", "api.githubcopilot.com"}):
+        return {"max_completion_tokens": value}
+    # ...and for any caller serving a newer OpenAI-family model by name.
+    if model_forces_max_completion_tokens(model):
         return {"max_completion_tokens": value}
     return {"max_tokens": value}
 
@@ -4917,7 +4939,7 @@ def _build_call_kwargs(
 
     # Provider-specific extra_body
     merged_extra = dict(extra_body or {})
-    if provider == "nous" or auxiliary_is_nous:
+    if provider == "nous":
         merged_extra.setdefault("tags", []).extend(_nous_portal_tags())
     if merged_extra:
         kwargs["extra_body"] = merged_extra
@@ -5054,6 +5076,12 @@ def call_llm(
                             task or "call", resolved_provider)
                 client, final_model = _get_cached_client("auto", main_runtime=main_runtime)
         if client is None:
+            if resolved_provider in {"auto", _SANCTIONED_AUTO_PROVIDER}:
+                raise RuntimeError(
+                    f"{_BLOCKED_RUNTIME}: No sanctioned subscription auxiliary provider "
+                    f"available for task={task} provider={resolved_provider}; "
+                    "OpenRouter/paid fallback is disabled. Run: hermes setup"
+                )
             raise RuntimeError(
                 f"No LLM provider configured for task={task} provider={resolved_provider}. "
                 f"Run: hermes setup")
@@ -5084,8 +5112,28 @@ def call_llm(
     # Handle unsupported temperature, max_tokens vs max_completion_tokens retry,
     # then payment fallback.
     try:
-        return _validate_llm_response(
-            client.chat.completions.create(**kwargs), task)
+        # Retry ONCE on the same provider for a one-off transient transport
+        # blip (streaming-close / incomplete chunked read / 5xx / 408) before
+        # the except-chain below escalates to provider/model fallback. A
+        # single dropped connection shouldn't abandon an otherwise-healthy
+        # provider. A second failure (or any non-transient error) falls
+        # through to ``first_err`` and the existing fallback handling
+        # unchanged. This is the unified home for the transient retry that
+        # every auxiliary task (compression, memory flush, title-gen,
+        # session-search, vision) shares. (PR #16587)
+        try:
+            return _validate_llm_response(
+                client.chat.completions.create(**kwargs), task)
+        except Exception as transient_err:
+            if not _is_transient_transport_error(transient_err):
+                raise
+            logger.info(
+                "Auxiliary %s: transient transport error; retrying once on "
+                "the same provider before fallback: %s",
+                task or "call", transient_err,
+            )
+            return _validate_llm_response(
+                client.chat.completions.create(**kwargs), task)
     except Exception as first_err:
         if "temperature" in kwargs and _is_unsupported_temperature_error(first_err):
             retry_kwargs = dict(kwargs)
@@ -5359,13 +5407,20 @@ def call_llm(
             # Fallback order (#26882, #26803):
             #   1. User-configured fallback_chain (per-task) if set
             #   2. Main agent model (last-resort safety net)
-            # For auto users (no explicit aux provider), use the full
-            # auto-detection chain instead — its Step 1 IS the main agent
-            # model, so users on `auto` already get main-model fallback.
+            # Literal auto and the sanctioned openai-codex aux route are
+            # fail-closed: never fall through to OpenRouter/main-provider paid
+            # routes after a capacity error.
             fb_client, fb_model, fb_label = (None, None, "")
-            if is_auto:
-                fb_client, fb_model, fb_label = _try_payment_fallback(
-                    resolved_provider, task, reason=reason)
+            fail_closed_aux = is_auto or _normalize_aux_provider(resolved_provider) == _SANCTIONED_AUTO_PROVIDER
+            if fail_closed_aux:
+                logger.error(
+                    "%s: auxiliary %s fail-closed after %s on %s; "
+                    "OpenRouter/paid fallback disabled.",
+                    _BLOCKED_RUNTIME,
+                    task or "call",
+                    reason,
+                    resolved_provider or _SANCTIONED_AUTO_PROVIDER,
+                )
             else:
                 fb_client, fb_model, fb_label = _try_configured_fallback_chain(
                     task, resolved_provider or "auto", reason=reason)
@@ -5530,6 +5585,12 @@ async def async_call_llm(
                             task or "call", resolved_provider)
                 client, final_model = _get_cached_client("auto", async_mode=True)
         if client is None:
+            if resolved_provider in {"auto", _SANCTIONED_AUTO_PROVIDER}:
+                raise RuntimeError(
+                    f"{_BLOCKED_RUNTIME}: No sanctioned subscription auxiliary provider "
+                    f"available for task={task} provider={resolved_provider}; "
+                    "OpenRouter/paid fallback is disabled. Run: hermes setup"
+                )
             raise RuntimeError(
                 f"No LLM provider configured for task={task} provider={resolved_provider}. "
                 f"Run: hermes setup")
@@ -5551,8 +5612,22 @@ async def async_call_llm(
         kwargs["messages"] = _convert_openai_images_to_anthropic(kwargs["messages"])
 
     try:
-        return _validate_llm_response(
-            await client.chat.completions.create(**kwargs), task)
+        # Retry ONCE on the same provider for a transient transport blip
+        # before the except-chain escalates to fallback — see call_llm()
+        # for the rationale. (PR #16587)
+        try:
+            return _validate_llm_response(
+                await client.chat.completions.create(**kwargs), task)
+        except Exception as transient_err:
+            if not _is_transient_transport_error(transient_err):
+                raise
+            logger.info(
+                "Auxiliary %s (async): transient transport error; retrying "
+                "once on the same provider before fallback: %s",
+                task or "call", transient_err,
+            )
+            return _validate_llm_response(
+                await client.chat.completions.create(**kwargs), task)
     except Exception as first_err:
         if "temperature" in kwargs and _is_unsupported_temperature_error(first_err):
             retry_kwargs = dict(kwargs)
@@ -5783,12 +5858,20 @@ async def async_call_llm(
             # Fallback order (#26882, #26803):
             #   1. User-configured fallback_chain (per-task) if set
             #   2. Main agent model (last-resort safety net)
-            # Auto users get the full auto-detection chain instead — its
-            # Step 1 IS the main agent model.
+            # Literal auto and the sanctioned openai-codex aux route are
+            # fail-closed: never fall through to OpenRouter/main-provider paid
+            # routes after a capacity error.
             fb_client, fb_model, fb_label = (None, None, "")
-            if is_auto:
-                fb_client, fb_model, fb_label = _try_payment_fallback(
-                    resolved_provider, task, reason=reason)
+            fail_closed_aux = is_auto or _normalize_aux_provider(resolved_provider) == _SANCTIONED_AUTO_PROVIDER
+            if fail_closed_aux:
+                logger.error(
+                    "%s: auxiliary %s (async) fail-closed after %s on %s; "
+                    "OpenRouter/paid fallback disabled.",
+                    _BLOCKED_RUNTIME,
+                    task or "call",
+                    reason,
+                    resolved_provider or _SANCTIONED_AUTO_PROVIDER,
+                )
             else:
                 fb_client, fb_model, fb_label = _try_configured_fallback_chain(
                     task, resolved_provider or "auto", reason=reason)

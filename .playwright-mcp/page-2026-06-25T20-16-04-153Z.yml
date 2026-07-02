@@ -1,0 +1,110 @@
+- generic [active] [ref=e1]:
+  - main [ref=e4]:
+    - generic [ref=e5]:
+      - generic [ref=e6]:
+        - generic [ref=e7]: Good afternoon, Josep
+        - generic "Live" [ref=e8]
+        - generic [ref=e9]:
+          - text: Tue · Jun 25
+          - text: Ordinary Time
+      - region "Scripture of the day" [ref=e10]:
+        - paragraph [ref=e11]: "\"Teach us to number our days, that we may gain a heart of wisdom.\""
+        - generic [ref=e12]: Psalm 90:12
+        - img [ref=e13]
+      - generic [ref=e17]:
+        - img [ref=e18]
+        - generic [ref=e21]: Today
+        - text: Luke 9
+        - text: 12 min read
+      - button "Begin morning prayer" [ref=e24] [cursor=pointer]:
+        - img [ref=e25]
+        - text: Begin morning prayer
+      - generic [ref=e28]:
+        - generic [ref=e29]: Morning
+        - tablist "Time of day" [ref=e31]:
+          - tab "Morning" [selected] [ref=e32] [cursor=pointer]
+          - tab "Midday" [ref=e33] [cursor=pointer]
+          - tab "Evening" [ref=e34] [cursor=pointer]
+      - generic [ref=e35]:
+        - button "82 Recovered. A good day to push." [ref=e36] [cursor=pointer]:
+          - generic [ref=e37]:
+            - img [ref=e38]
+            - generic [ref=e41]: "82"
+          - generic [ref=e42]:
+            - generic [ref=e43]: Recovered.
+            - generic [ref=e44]: A good day to push.
+          - img [ref=e45]
+        - 'button "Finances: on track $1,240 free to spend this month" [ref=e47] [cursor=pointer]':
+          - img [ref=e48]
+          - generic [ref=e51]:
+            - generic [ref=e52]: "Finances: on track"
+            - generic [ref=e53]: $1,240 free to spend this month
+          - img [ref=e54]
+        - generic [ref=e56]:
+          - generic [ref=e57]: Today's three
+          - generic [ref=e58]:
+            - img [ref=e60]
+            - generic [ref=e62]: Ship life-dashboard brief
+            - generic [ref=e63]: done
+          - generic [ref=e64]:
+            - generic [ref=e66]: Reply to Maria
+            - generic [ref=e67]: 11:00
+          - generic [ref=e68]:
+            - generic [ref=e70]: 30-min run
+            - generic [ref=e71]: pm
+        - generic [ref=e73]:
+          - generic [ref=e74]:
+            - generic [ref=e75]:
+              - img [ref=e76]
+              - img [ref=e80]
+            - generic [ref=e83]: Prayer
+          - generic [ref=e84]:
+            - generic [ref=e85]:
+              - img [ref=e86]
+              - img [ref=e90]
+            - generic [ref=e92]: Move
+            - generic [ref=e93]: AUTO
+          - generic [ref=e94]:
+            - generic [ref=e95]:
+              - img [ref=e96]
+              - img [ref=e99]
+            - generic [ref=e102]: Read
+          - generic [ref=e103]:
+            - generic [ref=e104]:
+              - img [ref=e105]
+              - generic [ref=e108]: ½
+            - generic [ref=e109]: Water
+        - generic [ref=e111]:
+          - generic [ref=e112]: The day ahead
+          - generic [ref=e113]:
+            - generic [ref=e115]: 10:30
+            - generic [ref=e116]: Standup
+            - generic [ref=e117]: Work · 25m
+          - generic [ref=e118]:
+            - generic [ref=e120]: 13:00
+            - generic [ref=e121]: Deep work
+            - generic [ref=e122]: Focus · 2h
+          - generic [ref=e123]:
+            - generic [ref=e125]: 18:30
+            - generic [ref=e126]: Examen
+            - generic [ref=e127]: Faith · 10m
+      - generic [ref=e129]:
+        - generic [ref=e130]: Evening
+        - generic [ref=e131]: Examen · wind-down · close the day — surfaces tonight.
+      - generic [ref=e132]: last synced 2m ago
+  - navigation "Sections" [ref=e134]:
+    - button "Today" [ref=e135] [cursor=pointer]:
+      - img [ref=e136]
+      - text: Today
+    - button "Finances" [ref=e141] [cursor=pointer]:
+      - img [ref=e142]
+      - text: Finances
+    - button "Health" [ref=e146] [cursor=pointer]:
+      - img [ref=e147]
+      - text: Health
+    - button "Faith" [ref=e149] [cursor=pointer]:
+      - img [ref=e150]
+      - text: Faith
+    - button "Life" [ref=e153] [cursor=pointer]:
+      - img [ref=e154]
+      - text: Life

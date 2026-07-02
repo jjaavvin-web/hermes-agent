@@ -1,5 +1,7 @@
 """Tests for hermes_cli.gateway."""
 
+import argparse
+import asyncio
 import sys
 from types import ModuleType, SimpleNamespace
 
@@ -26,6 +28,15 @@ def _install_fake_gateway_run(monkeypatch, start_gateway):
     monkeypatch.setattr(gateway, "supports_systemd_services", lambda: False)
     monkeypatch.setattr(
         gateway, "refresh_systemd_unit_if_needed", lambda system=False: False
+    )
+    # Neutralize the supervised-gateway conflict guard by default so these
+    # end-to-end tests don't trip over a launchd/systemd gateway that happens
+    # to be installed+running on the developer's machine. Conflict-guard tests
+    # override this snapshot after calling the helper.
+    monkeypatch.setattr(
+        gateway,
+        "get_gateway_runtime_snapshot",
+        lambda *a, **k: gateway.GatewayRuntimeSnapshot(manager="manual process"),
     )
 
 
@@ -102,6 +113,205 @@ def test_run_gateway_root_guard_has_escape_hatch(monkeypatch):
     gateway.run_gateway(verbose=2, replace=True)
 
     assert calls == [(True, 2)]
+
+
+def _clear_supervisor_markers(monkeypatch):
+    """Make ``_running_under_gateway_supervisor()`` report a plain shell."""
+    monkeypatch.delenv("INVOCATION_ID", raising=False)
+    monkeypatch.delenv("HERMES_S6_SUPERVISED_CHILD", raising=False)
+    # Interactive macOS shells inherit XPC_SERVICE_NAME="0"; launchd jobs get
+    # the real label. Default to the shell sentinel so the guard can fire.
+    monkeypatch.setenv("XPC_SERVICE_NAME", "0")
+
+
+def _running_snapshot(manager="systemd (user)"):
+    return gateway.GatewayRuntimeSnapshot(
+        manager=manager, service_installed=True, service_running=True
+    )
+
+
+def test_run_gateway_refuses_when_service_supervising(monkeypatch, capsys):
+    """A shell `gateway run --replace` must not become a second writer."""
+    calls = []
+
+    def fake_start_gateway(*, replace, verbosity):
+        calls.append((replace, verbosity))
+        return object()
+
+    _install_fake_gateway_run(monkeypatch, fake_start_gateway)
+    _clear_supervisor_markers(monkeypatch)
+    monkeypatch.setattr(gateway, "get_gateway_runtime_snapshot", _running_snapshot)
+
+    with pytest.raises(SystemExit) as exc_info:
+        gateway.run_gateway(replace=True)
+
+    assert exc_info.value.code == 1
+    assert calls == []  # dispatcher never started
+    out = capsys.readouterr().out
+    assert "already running under systemd (user)" in out
+    assert "hermes gateway restart" in out
+    assert "--force" in out
+
+
+def test_run_gateway_force_overrides_supervised_conflict(monkeypatch):
+    calls = []
+
+    def fake_start_gateway(*, replace, verbosity):
+        calls.append((replace, verbosity))
+        return object()
+
+    _install_fake_gateway_run(monkeypatch, fake_start_gateway)
+    _clear_supervisor_markers(monkeypatch)
+    monkeypatch.setattr(gateway, "get_gateway_runtime_snapshot", _running_snapshot)
+    monkeypatch.setattr(gateway.asyncio, "run", lambda coro: True)
+
+    gateway.run_gateway(replace=True, force=True)
+
+    assert calls == [(True, 0)]
+
+
+def test_run_gateway_allows_service_managed_startup(monkeypatch):
+    """systemd's own ExecStart (INVOCATION_ID set) must not be blocked."""
+    calls = []
+
+    def fake_start_gateway(*, replace, verbosity):
+        calls.append((replace, verbosity))
+        return object()
+
+    _install_fake_gateway_run(monkeypatch, fake_start_gateway)
+    _clear_supervisor_markers(monkeypatch)
+    monkeypatch.setenv("INVOCATION_ID", "deadbeefcafe")
+    # Even with a "running" snapshot, the supervisor marker means *we* are it.
+    monkeypatch.setattr(gateway, "get_gateway_runtime_snapshot", _running_snapshot)
+    monkeypatch.setattr(gateway.asyncio, "run", lambda coro: True)
+
+    gateway.run_gateway(replace=True)
+
+    assert calls == [(True, 0)]
+
+
+def test_run_gateway_allows_when_service_not_running(monkeypatch):
+    """Installed-but-stopped service: a foreground run is not a conflict."""
+    calls = []
+
+    def fake_start_gateway(*, replace, verbosity):
+        calls.append((replace, verbosity))
+        return object()
+
+    _install_fake_gateway_run(monkeypatch, fake_start_gateway)
+    _clear_supervisor_markers(monkeypatch)
+    monkeypatch.setattr(
+        gateway,
+        "get_gateway_runtime_snapshot",
+        lambda: gateway.GatewayRuntimeSnapshot(
+            manager="systemd (user)", service_installed=True, service_running=False
+        ),
+    )
+    monkeypatch.setattr(gateway.asyncio, "run", lambda coro: True)
+
+    gateway.run_gateway()
+
+    assert calls == [(False, 0)]
+
+
+def test_run_gateway_refuses_existing_process_before_importing_gateway_run(monkeypatch, capsys):
+    """Bare `gateway run` should fail cheaply when another gateway owns the profile."""
+    calls = []
+
+    def fake_start_gateway(*, replace, verbosity):
+        calls.append((replace, verbosity))
+        return object()
+
+    _install_fake_gateway_run(monkeypatch, fake_start_gateway)
+    _clear_supervisor_markers(monkeypatch)
+    monkeypatch.setattr("gateway.status.get_running_pid", lambda: 17907)
+
+    with pytest.raises(SystemExit) as exc_info:
+        gateway.run_gateway()
+
+    assert exc_info.value.code == 1
+    assert calls == []
+    out = capsys.readouterr().out
+    assert "Another gateway instance is already running (PID 17907)" in out
+    assert "hermes gateway run --replace" in out
+
+
+def test_run_gateway_replace_skips_existing_process_preflight(monkeypatch):
+    calls = []
+
+    def fake_start_gateway(*, replace, verbosity):
+        calls.append((replace, verbosity))
+        return object()
+
+    _install_fake_gateway_run(monkeypatch, fake_start_gateway)
+    _clear_supervisor_markers(monkeypatch)
+    monkeypatch.setattr("gateway.status.get_running_pid", lambda: 17907)
+    monkeypatch.setattr(gateway.asyncio, "run", lambda coro: True)
+
+    gateway.run_gateway(replace=True)
+
+    assert calls == [(True, 0)]
+
+
+def test_s6_runtime_snapshot_reports_supervised_service(monkeypatch, tmp_path):
+    service_dir = tmp_path / "gateway-default"
+    service_dir.mkdir()
+
+    class FakeS6Manager:
+        scandir = tmp_path
+
+        def is_running(self, name):
+            assert name == "gateway-default"
+            return True
+
+    monkeypatch.setattr(gateway, "is_linux", lambda: True)
+    monkeypatch.setattr("hermes_constants.is_container", lambda: True)
+    monkeypatch.setattr("hermes_cli.service_manager.detect_service_manager", lambda: "s6")
+    monkeypatch.setattr("hermes_cli.service_manager.get_service_manager", lambda: FakeS6Manager())
+    monkeypatch.setattr(gateway, "find_gateway_pids", lambda: [123])
+    monkeypatch.setattr(gateway, "_profile_suffix", lambda: "")
+
+    snapshot = gateway.get_gateway_runtime_snapshot()
+
+    assert snapshot.manager == "s6 (container supervisor)"
+    assert snapshot.service_installed is True
+    assert snapshot.service_running is True
+    assert snapshot.service_scope == "s6"
+    assert snapshot.gateway_pids == (123,)
+
+
+def test_running_under_gateway_supervisor_markers(monkeypatch):
+    _clear_supervisor_markers(monkeypatch)
+    assert gateway._running_under_gateway_supervisor() is False
+
+    monkeypatch.setenv("XPC_SERVICE_NAME", "org.nousresearch.hermes.gateway")
+    assert gateway._running_under_gateway_supervisor() is True
+
+    monkeypatch.setenv("XPC_SERVICE_NAME", "0")
+    monkeypatch.setenv("INVOCATION_ID", "abc123")
+    assert gateway._running_under_gateway_supervisor() is True
+
+    monkeypatch.delenv("INVOCATION_ID", raising=False)
+    monkeypatch.setenv("HERMES_S6_SUPERVISED_CHILD", "1")
+    assert gateway._running_under_gateway_supervisor() is True
+
+
+def test_gateway_run_force_flag_survives_parser_extraction():
+    from hermes_cli.subcommands.gateway import build_gateway_parser
+
+    parser = argparse.ArgumentParser()
+    subparsers = parser.add_subparsers(dest="command")
+
+    build_gateway_parser(
+        subparsers,
+        cmd_gateway=lambda _args: None,
+        cmd_proxy=lambda _args: None,
+        cmd_gateway_enroll=lambda _args: None,
+    )
+
+    args = parser.parse_args(["gateway", "run", "--force"])
+
+    assert args.force is True
 
 
 def test_run_gateway_windows_foreground_keeps_ctrl_c_enabled(monkeypatch):
@@ -274,6 +484,20 @@ def test_gateway_start_in_container_with_operational_systemd_uses_systemd(monkey
     assert calls == [False]
 
 
+def test_gateway_start_ignores_legacy_platform_selector(monkeypatch):
+    monkeypatch.setattr(gateway, "supports_systemd_services", lambda: True)
+    monkeypatch.setattr(gateway, "is_wsl", lambda: False)
+    monkeypatch.setattr(gateway, "is_macos", lambda: False)
+
+    calls = []
+    monkeypatch.setattr(gateway, "systemd_start", lambda system=False: calls.append(system))
+
+    args = SimpleNamespace(gateway_command="start", system=False, all=False, platform="photon")
+    gateway.gateway_command(args)
+
+    assert calls == [False]
+
+
 def test_gateway_restart_on_windows_without_service_uses_detached_backend(monkeypatch):
     """Windows manual restart must not fall back to foreground run_gateway().
 
@@ -369,6 +593,16 @@ def test_systemd_install_checks_linger_status(monkeypatch, tmp_path, capsys):
     unit_path = tmp_path / "systemd" / "user" / "hermes-gateway.service"
 
     monkeypatch.setattr(gateway, "get_systemd_unit_path", lambda system=False: unit_path)
+    # Synthetic unit with a non-temp home: the real generator bakes the
+    # hermetic test HERMES_HOME (a tmp dir), which the temp-home write
+    # guard correctly refuses.
+    monkeypatch.setattr(
+        gateway,
+        "generate_systemd_unit",
+        lambda system=False, run_as_user=None: (
+            '[Service]\nEnvironment="HERMES_HOME=/home/alice/.hermes"\n'
+        ),
+    )
 
     calls = []
     helper_calls = []
@@ -396,6 +630,15 @@ def test_systemd_install_can_skip_enable_on_startup(monkeypatch, tmp_path, capsy
     unit_path = tmp_path / "systemd" / "user" / "hermes-gateway.service"
 
     monkeypatch.setattr(gateway, "get_systemd_unit_path", lambda system=False: unit_path)
+    # Non-temp home so the temp-home write guard (which trips on the
+    # hermetic test HERMES_HOME) stays out of the way.
+    monkeypatch.setattr(
+        gateway,
+        "generate_systemd_unit",
+        lambda system=False, run_as_user=None: (
+            '[Service]\nEnvironment="HERMES_HOME=/home/alice/.hermes"\n'
+        ),
+    )
 
     calls = []
     helper_calls = []
@@ -724,3 +967,165 @@ def test_module_has_logger():
     """Verify module has a logger instance (regression guard for #27154)."""
     assert hasattr(gateway, "logger")
     assert gateway.logger.name == "hermes_cli.gateway"
+
+
+# ---------------------------------------------------------------------------
+# systemd sd_notify watchdog thread + loop-liveness gate
+# ---------------------------------------------------------------------------
+
+
+def test_sd_notify_noops_when_notify_socket_absent_or_malformed(monkeypatch):
+    monkeypatch.delenv("NOTIFY_SOCKET", raising=False)
+    gateway._sd_notify(b"WATCHDOG=1\n")
+
+    monkeypatch.setenv("NOTIFY_SOCKET", "/definitely/missing/hermes-notify.sock")
+    gateway._sd_notify(b"WATCHDOG=1\n")
+
+    monkeypatch.setenv("NOTIFY_SOCKET", "@definitely-missing-hermes-notify")
+    gateway._sd_notify(b"WATCHDOG=1\n")
+
+
+def test_gateway_loop_wedge_budget_default_and_config(monkeypatch):
+    monkeypatch.setattr(gateway, "read_raw_config", lambda: {})
+    assert gateway._gateway_loop_wedge_budget_sec() == 60.0
+
+    monkeypatch.setattr(
+        gateway,
+        "read_raw_config",
+        lambda: {"gateway": {"loop_wedge_budget_sec": "45"}},
+    )
+    assert gateway._gateway_loop_wedge_budget_sec() == 45.0
+
+    monkeypatch.setattr(
+        gateway,
+        "read_raw_config",
+        lambda: {"gateway": {"loop_wedge_budget_sec": "nope"}},
+    )
+    assert gateway._gateway_loop_wedge_budget_sec() == 60.0
+
+
+def test_watchdog_daemon_thread_keeps_pinging_when_loop_blocked_over_90s(monkeypatch):
+    now = 1000.0
+
+    def clock():
+        return now
+
+    # Simulate a loop tick that is >90s old but still inside the configured
+    # wedge budget: burst-slow is not dead, so the off-loop daemon thread must
+    # keep feeding systemd.
+    gate = gateway._LoopLivenessGate(wedge_budget_sec=120.0, clock=clock)
+    now += 91.0
+    pings = []
+    pinged = gateway.threading.Event()
+
+    def fake_notify(state):
+        pings.append(state)
+        pinged.set()
+
+    monkeypatch.setenv("NOTIFY_SOCKET", "/tmp/hermes-test-notify.sock")
+    monkeypatch.setattr(gateway, "_sd_notify", fake_notify)
+
+    watchdog = gateway._start_sd_notify_watchdog_thread(gate, interval=0.01)
+    assert watchdog is not None
+    try:
+        assert watchdog.thread.daemon is True
+        assert pinged.wait(1.0), "watchdog thread did not ping"
+    finally:
+        watchdog.stop(timeout=1.0)
+
+    assert pings[0] == b"WATCHDOG=1\n"
+
+
+def test_watchdog_thread_withholds_when_loop_tick_exceeds_budget(monkeypatch):
+    now = 1000.0
+
+    def clock():
+        return now
+
+    gate = gateway._LoopLivenessGate(wedge_budget_sec=60.0, clock=clock)
+    gate.touch()
+    now += 61.0
+
+    pings = []
+    monkeypatch.setattr(gateway, "_sd_notify", lambda state: pings.append(state))
+
+    stop_event = gateway.threading.Event()
+    monkeypatch.setattr(stop_event, "wait", lambda _timeout: stop_event.set() or True)
+    gateway._sd_notify_watchdog_thread_loop(stop_event, gate, interval=0.01)
+
+    assert pings == []
+
+
+@pytest.mark.asyncio
+async def test_loop_liveness_gate_distinguishes_slow_from_wedged_loop():
+    now = 0.0
+
+    def clock():
+        return now
+
+    gate = gateway._LoopLivenessGate(
+        wedge_budget_sec=60.0,
+        tick_interval_sec=0.05,
+        clock=clock,
+    )
+    gate.start()
+    await asyncio.sleep(0)
+
+    now = 45.0
+    assert gate.loop_is_live() is True
+
+    # Once the loop gets a scheduling slice after a slow burst, the cheap tick
+    # refreshes immediately, so a merely-slow 45s stall under WatchdogSec=90s
+    # does not trip the watchdog.
+    await asyncio.sleep(0.06)
+    assert gate.loop_is_live() is True
+
+    now += 61.0
+    assert gate.loop_is_live() is False
+    await gate.stop()
+
+
+@pytest.mark.asyncio
+async def test_run_gateway_stops_watchdog_thread_cleanly(monkeypatch):
+    calls = []
+
+    async def fake_start_gateway(**kwargs):
+        calls.append(("start", kwargs))
+        return True
+
+    async def fake_ready():
+        return True
+
+    class FakeWatchdog:
+        def stop(self, timeout=2.0):
+            calls.append(("watchdog-stop", timeout))
+
+    class FakeGate:
+        def __init__(self, *, wedge_budget_sec):
+            calls.append(("gate-init", wedge_budget_sec))
+
+        def start(self):
+            calls.append(("gate-start", None))
+
+        async def stop(self):
+            calls.append(("gate-stop", None))
+
+    monkeypatch.setenv("NOTIFY_SOCKET", "/tmp/hermes-test-notify.sock")
+    monkeypatch.setattr(gateway, "_gateway_runtime_ready_for_sd_notify", fake_ready)
+    monkeypatch.setattr(gateway, "_sd_notify", lambda state: calls.append(("notify", state)))
+    monkeypatch.setattr(gateway, "_gateway_loop_wedge_budget_sec", lambda: 45.0)
+    monkeypatch.setattr(gateway, "_LoopLivenessGate", FakeGate)
+    monkeypatch.setattr(
+        gateway,
+        "_start_sd_notify_watchdog_thread",
+        lambda gate: calls.append(("watchdog-start", gate)) or FakeWatchdog(),
+    )
+
+    assert await gateway._run_gateway_with_sd_notify(fake_start_gateway, replace=True) is True
+
+    assert ("notify", b"READY=1\n") in calls
+    assert ("gate-init", 45.0) in calls
+    assert ("gate-start", None) in calls
+    assert any(call[0] == "watchdog-start" for call in calls)
+    assert ("watchdog-stop", 2.0) in calls
+    assert ("gate-stop", None) in calls

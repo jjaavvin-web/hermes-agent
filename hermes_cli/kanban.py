@@ -160,7 +160,7 @@ def _check_dispatcher_presence() -> tuple[bool, str]:
     try:
         from hermes_cli.config import load_config
         cfg = load_config()
-        dispatch_on = bool(cfg.get("kanban", {}).get("dispatch_in_gateway", True))
+        dispatch_on = bool(cfg.get("kanban", {}).get("dispatch_in_gateway", False))  # fail-closed default (DISP-1)
     except Exception:
         dispatch_on = True  # can't tell — assume default
 
@@ -850,6 +850,29 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
     p_gc.add_argument("--log-retention-days", type=int, default=30,
                       help="Delete worker log files older than N days (default: 30)")
 
+    # --- lint-ready ---
+    p_lint = sub.add_parser(
+        "lint-ready",
+        help="Validate ready-spec declarations on ready-column cards (read-only)",
+        description=(
+            "Runs the ready-spec validator against every card in the 'ready' "
+            "column (or a single specified card) and reports PASS/FAIL per card. "
+            "Never mutates the database. Exit 0 = all pass, 1 = any fail, "
+            "2 = internal error."
+        ),
+    )
+    p_lint.add_argument(
+        "--task",
+        default="all",
+        metavar="ID|all",
+        help="Task id to lint, or 'all' for every ready card (default: all)",
+    )
+    p_lint.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit a JSON array instead of the default human-readable table",
+    )
+
     kanban_parser.set_defaults(_kanban_parser=kanban_parser)
     return kanban_parser
 
@@ -966,6 +989,7 @@ def kanban_command(args: argparse.Namespace) -> int:
             "specify":  _cmd_specify,
             "decompose":  _cmd_decompose,
             "gc":       _cmd_gc,
+            "lint-ready": _cmd_lint_ready,
         }
         handler = handlers.get(action)
         if not handler:
@@ -2814,6 +2838,82 @@ def _cmd_gc(args: argparse.Namespace) -> int:
     print(f"GC complete: {removed_ws} workspace(s), "
           f"{removed_events} event row(s), {removed_logs} log file(s) removed")
     return 0
+
+
+def _cmd_lint_ready(args: argparse.Namespace) -> int:
+    """Read-only validator for ready-spec declarations on ready-column cards.
+
+    Exit codes: 0 = all pass, 1 = any card failed lint, 2 = internal error.
+    Never mutates the database.
+    """
+    from hermes_cli.ready_spec import validate_ready_spec  # local import: keeps top-level lean
+
+    try:
+        board = kb.get_current_board()
+        task_arg = getattr(args, "task", "all")
+        want_json = getattr(args, "json", False)
+
+        with kb.connect_closing() as conn:
+            if task_arg == "all":
+                tasks = kb.list_tasks(conn, status="ready", include_archived=False)
+            else:
+                t = kb.get_task(conn, task_arg)
+                if t is None:
+                    print(
+                        f"kanban lint-ready: no such task {task_arg!r}",
+                        file=sys.stderr,
+                    )
+                    return 2
+                tasks = [t]
+
+        mode = kb._ready_spec_mode()
+        results: list[tuple[str, Any]] = []
+        for t in tasks:
+            descriptor = kb._ready_spec_descriptor(t)
+            task_dict = {
+                "id": t.id,
+                "board": board,
+                "body": t.body,
+                "workspace": descriptor,
+            }
+            res = validate_ready_spec(
+                task_dict,
+                resolved_workspace=descriptor,
+                board_policy=kb._ready_spec_board_policy(board),
+            )
+            results.append((t.id, res))
+
+        failed = [tid for tid, res in results if not res.ok]
+
+        if want_json:
+            out = []
+            for tid, res in results:
+                out.append({
+                    "task_id": tid,
+                    "status": "pass" if res.ok else "fail",
+                    "mode": mode,
+                    "errors": res.errors,
+                    "resolved_workspace": res.resolved.get("resolved_workspace"),
+                    "resolved_evidence_path": res.resolved.get("evidence_path"),
+                })
+            print(json.dumps(out, indent=2, ensure_ascii=False))
+        else:
+            for tid, res in results:
+                if res.ok:
+                    print(f"{tid}  PASS")
+                else:
+                    codes = ",".join(res.codes)
+                    print(f"{tid}  FAIL  {codes}")
+            n = len(results)
+            m = len(failed)
+            card_word = "card" if n == 1 else "cards"
+            print(f"{n} {card_word}, {m} fail (mode={mode})")
+
+        return 1 if failed else 0
+
+    except Exception as exc:
+        print(f"kanban lint-ready: {exc}", file=sys.stderr)
+        return 2
 
 
 # ---------------------------------------------------------------------------

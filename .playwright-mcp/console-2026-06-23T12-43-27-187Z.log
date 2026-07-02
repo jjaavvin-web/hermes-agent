@@ -1,0 +1,355 @@
+[     247ms] [INFO] Loading the stylesheet 'https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap' violates the following Content Security Policy directive: "style-src 'self' 'unsafe-inline'". Note that 'style-src-elem' was not explicitly set, so 'style-src' is used as a fallback. The policy is report-only, so the violation has been logged but no further action has been taken. @ http://127.0.0.1:9119/assets/index-D-HZBHZL.js:118
+[     252ms] [INFO] Loading the font 'https://fonts.gstatic.com/s/ibmplexmono/v20/-F63fjptAgt5VM-kVkqdyU8n1iIq129k.woff2' violates the following Content Security Policy directive: "font-src 'self' data:". The policy is report-only, so the violation has been logged but no further action has been taken. @ http://127.0.0.1:9119/os:0
+[     252ms] [INFO] Loading the font 'https://fonts.gstatic.com/s/ibmplexmono/v20/-F63fjptAgt5VM-kVkqdyU8n1isq129k.woff2' violates the following Content Security Policy directive: "font-src 'self' data:". The policy is report-only, so the violation has been logged but no further action has been taken. @ http://127.0.0.1:9119/os:0
+[     253ms] [INFO] Loading the font 'https://fonts.gstatic.com/s/ibmplexmono/v20/-F63fjptAgt5VM-kVkqdyU8n1iAq129k.woff2' violates the following Content Security Policy directive: "font-src 'self' data:". The policy is report-only, so the violation has been logged but no further action has been taken. @ http://127.0.0.1:9119/os:0
+[     253ms] [INFO] Loading the font 'https://fonts.gstatic.com/s/ibmplexmono/v20/-F63fjptAgt5VM-kVkqdyU8n1iEq129k.woff2' violates the following Content Security Policy directive: "font-src 'self' data:". The policy is report-only, so the violation has been logged but no further action has been taken. @ http://127.0.0.1:9119/os:0
+[     253ms] [INFO] Loading the font 'https://fonts.gstatic.com/s/ibmplexmono/v20/-F63fjptAgt5VM-kVkqdyU8n1i8q1w.woff2' violates the following Content Security Policy directive: "font-src 'self' data:". The policy is report-only, so the violation has been logged but no further action has been taken. @ http://127.0.0.1:9119/os:0
+[     253ms] [INFO] Loading the font 'https://fonts.gstatic.com/s/ibmplexmono/v20/-F6qfjptAgt5VM-kVkqdyU8n3twJwl1FgtIU.woff2' violates the following Content Security Policy directive: "font-src 'self' data:". The policy is report-only, so the violation has been logged but no further action has been taken. @ http://127.0.0.1:9119/os:0
+[     253ms] [INFO] Loading the font 'https://fonts.gstatic.com/s/ibmplexmono/v20/-F6qfjptAgt5VM-kVkqdyU8n3twJwlRFgtIU.woff2' violates the following Content Security Policy directive: "font-src 'self' data:". The policy is report-only, so the violation has been logged but no further action has been taken. @ http://127.0.0.1:9119/os:0
+[     253ms] [INFO] Loading the font 'https://fonts.gstatic.com/s/ibmplexmono/v20/-F6qfjptAgt5VM-kVkqdyU8n3twJwl9FgtIU.woff2' violates the following Content Security Policy directive: "font-src 'self' data:". The policy is report-only, so the violation has been logged but no further action has been taken. @ http://127.0.0.1:9119/os:0
+[     253ms] [INFO] Loading the font 'https://fonts.gstatic.com/s/ibmplexmono/v20/-F6qfjptAgt5VM-kVkqdyU8n3twJwl5FgtIU.woff2' violates the following Content Security Policy directive: "font-src 'self' data:". The policy is report-only, so the violation has been logged but no further action has been taken. @ http://127.0.0.1:9119/os:0
+[     253ms] [INFO] Loading the font 'https://fonts.gstatic.com/s/ibmplexmono/v20/-F6qfjptAgt5VM-kVkqdyU8n3twJwlBFgg.woff2' violates the following Content Security Policy directive: "font-src 'self' data:". The policy is report-only, so the violation has been logged but no further action has been taken. @ http://127.0.0.1:9119/os:0
+[     254ms] [INFO] Loading the font 'https://fonts.gstatic.com/s/ibmplexsans/v23/zYXzKVElMYYaJe8bpLHnCwDKr932-G7dytD-Dmu1syxTKYbABA.woff2' violates the following Content Security Policy directive: "font-src 'self' data:". The policy is report-only, so the violation has been logged but no further action has been taken. @ http://127.0.0.1:9119/os:0
+[     254ms] [INFO] Loading the font 'https://fonts.gstatic.com/s/ibmplexsans/v23/zYXzKVElMYYaJe8bpLHnCwDKr932-G7dytD-Dmu1syxaKYbABA.woff2' violates the following Content Security Policy directive: "font-src 'self' data:". The policy is report-only, so the violation has been logged but no further action has been taken. @ http://127.0.0.1:9119/os:0
+[     254ms] [INFO] Loading the font 'https://fonts.gstatic.com/s/ibmplexsans/v23/zYXzKVElMYYaJe8bpLHnCwDKr932-G7dytD-Dmu1syxdKYbABA.woff2' violates the following Content Security Policy directive: "font-src 'self' data:". The policy is report-only, so the violation has been logged but no further action has been taken. @ http://127.0.0.1:9119/os:0
+[     254ms] [INFO] Loading the font 'https://fonts.gstatic.com/s/ibmplexsans/v23/zYXzKVElMYYaJe8bpLHnCwDKr932-G7dytD-Dmu1syxRKYbABA.woff2' violates the following Content Security Policy directive: "font-src 'self' data:". The policy is report-only, so the violation has been logged but no further action has been taken. @ http://127.0.0.1:9119/os:0
+[     254ms] [INFO] Loading the font 'https://fonts.gstatic.com/s/ibmplexsans/v23/zYXzKVElMYYaJe8bpLHnCwDKr932-G7dytD-Dmu1syxQKYbABA.woff2' violates the following Content Security Policy directive: "font-src 'self' data:". The policy is report-only, so the violation has been logged but no further action has been taken. @ http://127.0.0.1:9119/os:0
+[     254ms] [INFO] Loading the font 'https://fonts.gstatic.com/s/ibmplexsans/v23/zYXzKVElMYYaJe8bpLHnCwDKr932-G7dytD-Dmu1syxeKYY.woff2' violates the following Content Security Policy directive: "font-src 'self' data:". The policy is report-only, so the violation has been logged but no further action has been taken. @ http://127.0.0.1:9119/os:0
+[     254ms] [INFO] Loading the font 'https://fonts.gstatic.com/s/ibmplexsans/v23/zYXzKVElMYYaJe8bpLHnCwDKr932-G7dytD-Dmu1syxTKYbABA.woff2' violates the following Content Security Policy directive: "font-src 'self' data:". The policy is report-only, so the violation has been logged but no further action has been taken. @ http://127.0.0.1:9119/os:0
+[     254ms] [INFO] Loading the font 'https://fonts.gstatic.com/s/ibmplexsans/v23/zYXzKVElMYYaJe8bpLHnCwDKr932-G7dytD-Dmu1syxaKYbABA.woff2' violates the following Content Security Policy directive: "font-src 'self' data:". The policy is report-only, so the violation has been logged but no further action has been taken. @ http://127.0.0.1:9119/os:0
+[     254ms] [INFO] Loading the font 'https://fonts.gstatic.com/s/ibmplexsans/v23/zYXzKVElMYYaJe8bpLHnCwDKr932-G7dytD-Dmu1syxdKYbABA.woff2' violates the following Content Security Policy directive: "font-src 'self' data:". The policy is report-only, so the violation has been logged but no further action has been taken. @ http://127.0.0.1:9119/os:0
+[     254ms] [INFO] Loading the font 'https://fonts.gstatic.com/s/ibmplexsans/v23/zYXzKVElMYYaJe8bpLHnCwDKr932-G7dytD-Dmu1syxRKYbABA.woff2' violates the following Content Security Policy directive: "font-src 'self' data:". The policy is report-only, so the violation has been logged but no further action has been taken. @ http://127.0.0.1:9119/os:0
+[     254ms] [INFO] Loading the font 'https://fonts.gstatic.com/s/ibmplexsans/v23/zYXzKVElMYYaJe8bpLHnCwDKr932-G7dytD-Dmu1syxQKYbABA.woff2' violates the following Content Security Policy directive: "font-src 'self' data:". The policy is report-only, so the violation has been logged but no further action has been taken. @ http://127.0.0.1:9119/os:0
+[     254ms] [INFO] Loading the font 'https://fonts.gstatic.com/s/ibmplexsans/v23/zYXzKVElMYYaJe8bpLHnCwDKr932-G7dytD-Dmu1syxeKYY.woff2' violates the following Content Security Policy directive: "font-src 'self' data:". The policy is report-only, so the violation has been logged but no further action has been taken. @ http://127.0.0.1:9119/os:0
+[     254ms] [INFO] Loading the font 'https://fonts.gstatic.com/s/ibmplexsans/v23/zYXzKVElMYYaJe8bpLHnCwDKr932-G7dytD-Dmu1syxTKYbABA.woff2' violates the following Content Security Policy directive: "font-src 'self' data:". The policy is report-only, so the violation has been logged but no further action has been taken. @ http://127.0.0.1:9119/os:0
+[     254ms] [INFO] Loading the font 'https://fonts.gstatic.com/s/ibmplexsans/v23/zYXzKVElMYYaJe8bpLHnCwDKr932-G7dytD-Dmu1syxaKYbABA.woff2' violates the following Content Security Policy directive: "font-src 'self' data:". The policy is report-only, so the violation has been logged but no further action has been taken. @ http://127.0.0.1:9119/os:0
+[     254ms] [INFO] Loading the font 'https://fonts.gstatic.com/s/ibmplexsans/v23/zYXzKVElMYYaJe8bpLHnCwDKr932-G7dytD-Dmu1syxdKYbABA.woff2' violates the following Content Security Policy directive: "font-src 'self' data:". The policy is report-only, so the violation has been logged but no further action has been taken. @ http://127.0.0.1:9119/os:0
+[     254ms] [INFO] Loading the font 'https://fonts.gstatic.com/s/ibmplexsans/v23/zYXzKVElMYYaJe8bpLHnCwDKr932-G7dytD-Dmu1syxRKYbABA.woff2' violates the following Content Security Policy directive: "font-src 'self' data:". The policy is report-only, so the violation has been logged but no further action has been taken. @ http://127.0.0.1:9119/os:0
+[     254ms] [INFO] Loading the font 'https://fonts.gstatic.com/s/ibmplexsans/v23/zYXzKVElMYYaJe8bpLHnCwDKr932-G7dytD-Dmu1syxQKYbABA.woff2' violates the following Content Security Policy directive: "font-src 'self' data:". The policy is report-only, so the violation has been logged but no further action has been taken. @ http://127.0.0.1:9119/os:0
+[     254ms] [INFO] Loading the font 'https://fonts.gstatic.com/s/ibmplexsans/v23/zYXzKVElMYYaJe8bpLHnCwDKr932-G7dytD-Dmu1syxeKYY.woff2' violates the following Content Security Policy directive: "font-src 'self' data:". The policy is report-only, so the violation has been logged but no further action has been taken. @ http://127.0.0.1:9119/os:0
+[    7710ms] [ERROR] Failed to load resource: the server responded with a status of 401 (Unauthorized) @ http://127.0.0.1:9119/api/auth/me:0
+[   33749ms] Error: Minified React error #185; visit https://react.dev/errors/185 for the full message or use the non-minified dev environment for full errors and additional helpful warnings.
+    at yp (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:8:27671)
+    at by (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:8:27196)
+    at Rh (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:8:60092)
+    at D3 (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:8:59716)
+    at ResizeObserver.s (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:119:159407)
+[   56301ms] Error: Minified React error #185; visit https://react.dev/errors/185 for the full message or use the non-minified dev environment for full errors and additional helpful warnings.
+    at yp (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:8:27671)
+    at by (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:8:27196)
+    at Rh (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:8:60092)
+    at D3 (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:8:59716)
+    at ResizeObserver.s (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:119:159407)
+[   67190ms] Error: Minified React error #185; visit https://react.dev/errors/185 for the full message or use the non-minified dev environment for full errors and additional helpful warnings.
+    at yp (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:8:27671)
+    at by (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:8:27196)
+    at Rh (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:8:60092)
+    at D3 (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:8:59716)
+    at ResizeObserver.s (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:119:159407)
+[   78223ms] Error: Minified React error #185; visit https://react.dev/errors/185 for the full message or use the non-minified dev environment for full errors and additional helpful warnings.
+    at yp (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:8:27671)
+    at by (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:8:27196)
+    at Rh (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:8:60092)
+    at D3 (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:8:59716)
+    at Object.onZoom (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:119:174175)
+    at HTMLCanvasElement.<anonymous> (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:119:22403)
+    at A0.call (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:70:21538)
+    at D.emit (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:70:68316)
+    at D.zoom (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:70:68158)
+    at HTMLCanvasElement.<anonymous> (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:70:65754)
+[   89407ms] Error: Minified React error #185; visit https://react.dev/errors/185 for the full message or use the non-minified dev environment for full errors and additional helpful warnings.
+    at yp (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:8:27671)
+    at by (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:8:27196)
+    at Rh (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:8:60092)
+    at D3 (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:8:59716)
+    at ResizeObserver.s (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:119:159407)
+[  115849ms] Error: Minified React error #185; visit https://react.dev/errors/185 for the full message or use the non-minified dev environment for full errors and additional helpful warnings.
+    at yp (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:8:27671)
+    at by (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:8:27196)
+    at Rh (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:8:60092)
+    at D3 (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:8:59716)
+    at ResizeObserver.s (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:119:159407)
+[  127483ms] Error: Minified React error #185; visit https://react.dev/errors/185 for the full message or use the non-minified dev environment for full errors and additional helpful warnings.
+    at yp (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:8:27671)
+    at by (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:8:27196)
+    at Rh (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:8:60092)
+    at D3 (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:8:59716)
+    at ResizeObserver.s (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:119:159407)
+[  141055ms] Error: Minified React error #185; visit https://react.dev/errors/185 for the full message or use the non-minified dev environment for full errors and additional helpful warnings.
+    at yp (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:8:27671)
+    at by (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:8:27196)
+    at Rh (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:8:60092)
+    at D3 (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:8:59716)
+    at Object.onZoom (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:119:174175)
+    at HTMLCanvasElement.<anonymous> (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:119:22403)
+    at A0.call (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:70:21538)
+    at D.emit (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:70:68316)
+    at D.zoom (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:70:68158)
+    at HTMLCanvasElement.<anonymous> (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:70:65754)
+[  156015ms] Error: Minified React error #185; visit https://react.dev/errors/185 for the full message or use the non-minified dev environment for full errors and additional helpful warnings.
+    at yp (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:8:27671)
+    at by (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:8:27196)
+    at Rh (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:8:60092)
+    at D3 (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:8:59716)
+    at ResizeObserver.s (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:119:159407)
+[  170086ms] Error: Minified React error #185; visit https://react.dev/errors/185 for the full message or use the non-minified dev environment for full errors and additional helpful warnings.
+    at yp (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:8:27671)
+    at by (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:8:27196)
+    at Rh (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:8:60092)
+    at D3 (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:8:59716)
+    at ResizeObserver.s (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:119:159407)
+[  185354ms] Error: Minified React error #185; visit https://react.dev/errors/185 for the full message or use the non-minified dev environment for full errors and additional helpful warnings.
+    at yp (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:8:27671)
+    at by (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:8:27196)
+    at Rh (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:8:60092)
+    at D3 (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:8:59716)
+    at ResizeObserver.s (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:119:159407)
+[  197254ms] Error: Minified React error #185; visit https://react.dev/errors/185 for the full message or use the non-minified dev environment for full errors and additional helpful warnings.
+    at yp (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:8:27671)
+    at by (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:8:27196)
+    at Rh (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:8:60092)
+    at D3 (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:8:59716)
+    at ResizeObserver.s (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:119:159407)
+[  209796ms] Error: Minified React error #185; visit https://react.dev/errors/185 for the full message or use the non-minified dev environment for full errors and additional helpful warnings.
+    at yp (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:8:27671)
+    at by (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:8:27196)
+    at Rh (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:8:60092)
+    at D3 (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:8:59716)
+    at ResizeObserver.s (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:119:159407)
+[  223814ms] Error: Minified React error #185; visit https://react.dev/errors/185 for the full message or use the non-minified dev environment for full errors and additional helpful warnings.
+    at yp (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:8:27671)
+    at by (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:8:27196)
+    at Rh (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:8:60092)
+    at D3 (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:8:59716)
+    at ResizeObserver.s (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:119:159407)
+[  236205ms] Error: Minified React error #185; visit https://react.dev/errors/185 for the full message or use the non-minified dev environment for full errors and additional helpful warnings.
+    at yp (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:8:27671)
+    at by (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:8:27196)
+    at Rh (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:8:60092)
+    at D3 (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:8:59716)
+    at ResizeObserver.s (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:119:159407)
+[  250282ms] Error: Minified React error #185; visit https://react.dev/errors/185 for the full message or use the non-minified dev environment for full errors and additional helpful warnings.
+    at yp (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:8:27671)
+    at by (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:8:27196)
+    at Rh (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:8:60092)
+    at D3 (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:8:59716)
+    at ResizeObserver.s (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:119:159407)
+[  261830ms] Error: Minified React error #185; visit https://react.dev/errors/185 for the full message or use the non-minified dev environment for full errors and additional helpful warnings.
+    at yp (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:8:27671)
+    at by (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:8:27196)
+    at Rh (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:8:60092)
+    at D3 (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:8:59716)
+    at ResizeObserver.s (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:119:159407)
+[  271342ms] Error: Minified React error #185; visit https://react.dev/errors/185 for the full message or use the non-minified dev environment for full errors and additional helpful warnings.
+    at yp (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:8:27671)
+    at by (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:8:27196)
+    at Rh (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:8:60092)
+    at D3 (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:8:59716)
+    at ResizeObserver.s (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:119:159407)
+[  283378ms] Error: Minified React error #185; visit https://react.dev/errors/185 for the full message or use the non-minified dev environment for full errors and additional helpful warnings.
+    at yp (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:8:27671)
+    at by (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:8:27196)
+    at Rh (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:8:60092)
+    at D3 (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:8:59716)
+    at Object.onZoom (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:119:174175)
+    at HTMLCanvasElement.<anonymous> (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:119:22403)
+    at A0.call (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:70:21538)
+    at D.emit (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:70:68316)
+    at D.zoom (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:70:68158)
+    at HTMLCanvasElement.<anonymous> (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:70:65754)
+[  295465ms] Error: Minified React error #185; visit https://react.dev/errors/185 for the full message or use the non-minified dev environment for full errors and additional helpful warnings.
+    at yp (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:8:27671)
+    at by (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:8:27196)
+    at Rh (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:8:60092)
+    at D3 (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:8:59716)
+    at ResizeObserver.s (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:119:159407)
+[  305030ms] Error: Minified React error #185; visit https://react.dev/errors/185 for the full message or use the non-minified dev environment for full errors and additional helpful warnings.
+    at yp (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:8:27671)
+    at by (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:8:27196)
+    at Rh (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:8:60092)
+    at D3 (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:8:59716)
+    at ResizeObserver.s (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:119:159407)
+[  316982ms] Error: Minified React error #185; visit https://react.dev/errors/185 for the full message or use the non-minified dev environment for full errors and additional helpful warnings.
+    at yp (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:8:27671)
+    at by (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:8:27196)
+    at Rh (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:8:60092)
+    at D3 (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:8:59716)
+    at ResizeObserver.s (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:119:159407)
+[  326304ms] Error: Minified React error #185; visit https://react.dev/errors/185 for the full message or use the non-minified dev environment for full errors and additional helpful warnings.
+    at yp (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:8:27671)
+    at by (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:8:27196)
+    at Rh (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:8:60092)
+    at D3 (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:8:59716)
+    at ResizeObserver.s (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:119:159407)
+[  336590ms] Error: Minified React error #185; visit https://react.dev/errors/185 for the full message or use the non-minified dev environment for full errors and additional helpful warnings.
+    at yp (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:8:27671)
+    at by (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:8:27196)
+    at Rh (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:8:60092)
+    at D3 (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:8:59716)
+    at ResizeObserver.s (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:119:159407)
+[  348951ms] Error: Minified React error #185; visit https://react.dev/errors/185 for the full message or use the non-minified dev environment for full errors and additional helpful warnings.
+    at yp (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:8:27671)
+    at by (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:8:27196)
+    at Rh (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:8:60092)
+    at D3 (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:8:59716)
+    at Object.onZoom (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:119:174175)
+    at HTMLCanvasElement.<anonymous> (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:119:22403)
+    at A0.call (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:70:21538)
+    at D.emit (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:70:68316)
+    at D.zoom (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:70:68158)
+    at HTMLCanvasElement.<anonymous> (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:70:65754)
+[  357617ms] Error: Minified React error #185; visit https://react.dev/errors/185 for the full message or use the non-minified dev environment for full errors and additional helpful warnings.
+    at yp (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:8:27671)
+    at by (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:8:27196)
+    at Rh (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:8:60092)
+    at D3 (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:8:59716)
+    at ResizeObserver.s (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:119:159407)
+[  369192ms] Error: Minified React error #185; visit https://react.dev/errors/185 for the full message or use the non-minified dev environment for full errors and additional helpful warnings.
+    at yp (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:8:27671)
+    at by (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:8:27196)
+    at Rh (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:8:60092)
+    at D3 (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:8:59716)
+    at Object.onZoom (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:119:174175)
+    at HTMLCanvasElement.<anonymous> (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:119:22403)
+    at A0.call (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:70:21538)
+    at D.emit (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:70:68316)
+    at D.zoom (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:70:68158)
+    at HTMLCanvasElement.<anonymous> (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:70:65754)
+[  379469ms] Error: Minified React error #185; visit https://react.dev/errors/185 for the full message or use the non-minified dev environment for full errors and additional helpful warnings.
+    at yp (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:8:27671)
+    at by (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:8:27196)
+    at Rh (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:8:60092)
+    at D3 (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:8:59716)
+    at ResizeObserver.s (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:119:159407)
+[  391402ms] Error: Minified React error #185; visit https://react.dev/errors/185 for the full message or use the non-minified dev environment for full errors and additional helpful warnings.
+    at yp (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:8:27671)
+    at by (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:8:27196)
+    at Rh (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:8:60092)
+    at D3 (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:8:59716)
+    at ResizeObserver.s (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:119:159407)
+[  403979ms] Error: Minified React error #185; visit https://react.dev/errors/185 for the full message or use the non-minified dev environment for full errors and additional helpful warnings.
+    at yp (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:8:27671)
+    at by (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:8:27196)
+    at Rh (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:8:60092)
+    at D3 (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:8:59716)
+    at ResizeObserver.s (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:119:159407)
+[  414777ms] Error: Minified React error #185; visit https://react.dev/errors/185 for the full message or use the non-minified dev environment for full errors and additional helpful warnings.
+    at yp (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:8:27671)
+    at by (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:8:27196)
+    at Rh (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:8:60092)
+    at D3 (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:8:59716)
+    at ResizeObserver.s (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:119:159407)
+[  427751ms] Error: Minified React error #185; visit https://react.dev/errors/185 for the full message or use the non-minified dev environment for full errors and additional helpful warnings.
+    at yp (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:8:27671)
+    at by (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:8:27196)
+    at Rh (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:8:60092)
+    at D3 (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:8:59716)
+    at ResizeObserver.s (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:119:159407)
+[  438618ms] Error: Minified React error #185; visit https://react.dev/errors/185 for the full message or use the non-minified dev environment for full errors and additional helpful warnings.
+    at yp (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:8:27671)
+    at by (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:8:27196)
+    at Rh (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:8:60092)
+    at D3 (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:8:59716)
+    at ResizeObserver.s (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:119:159407)
+[  451434ms] Error: Minified React error #185; visit https://react.dev/errors/185 for the full message or use the non-minified dev environment for full errors and additional helpful warnings.
+    at yp (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:8:27671)
+    at by (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:8:27196)
+    at Rh (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:8:60092)
+    at D3 (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:8:59716)
+    at ResizeObserver.s (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:119:159407)
+[  464592ms] Error: Minified React error #185; visit https://react.dev/errors/185 for the full message or use the non-minified dev environment for full errors and additional helpful warnings.
+    at yp (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:8:27671)
+    at by (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:8:27196)
+    at Rh (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:8:60092)
+    at D3 (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:8:59716)
+    at ResizeObserver.s (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:119:159407)
+[  475659ms] Error: Minified React error #185; visit https://react.dev/errors/185 for the full message or use the non-minified dev environment for full errors and additional helpful warnings.
+    at yp (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:8:27671)
+    at by (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:8:27196)
+    at Rh (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:8:60092)
+    at D3 (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:8:59716)
+    at ResizeObserver.s (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:119:159407)
+[  488335ms] Error: Minified React error #185; visit https://react.dev/errors/185 for the full message or use the non-minified dev environment for full errors and additional helpful warnings.
+    at yp (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:8:27671)
+    at by (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:8:27196)
+    at Rh (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:8:60092)
+    at D3 (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:8:59716)
+    at ResizeObserver.s (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:119:159407)
+[  499288ms] Error: Minified React error #185; visit https://react.dev/errors/185 for the full message or use the non-minified dev environment for full errors and additional helpful warnings.
+    at yp (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:8:27671)
+    at by (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:8:27196)
+    at Rh (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:8:60092)
+    at D3 (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:8:59716)
+    at Object.onZoom (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:119:174175)
+    at HTMLCanvasElement.<anonymous> (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:119:22403)
+    at A0.call (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:70:21538)
+    at D.emit (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:70:68316)
+    at D.zoom (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:70:68158)
+    at HTMLCanvasElement.<anonymous> (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:70:65754)
+[  511243ms] Error: Minified React error #185; visit https://react.dev/errors/185 for the full message or use the non-minified dev environment for full errors and additional helpful warnings.
+    at yp (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:8:27671)
+    at by (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:8:27196)
+    at Rh (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:8:60092)
+    at D3 (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:8:59716)
+    at ResizeObserver.s (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:119:159407)
+[  524237ms] Error: Minified React error #185; visit https://react.dev/errors/185 for the full message or use the non-minified dev environment for full errors and additional helpful warnings.
+    at yp (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:8:27671)
+    at by (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:8:27196)
+    at Rh (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:8:60092)
+    at D3 (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:8:59716)
+    at Object.onZoom (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:119:174175)
+    at HTMLCanvasElement.<anonymous> (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:119:22403)
+    at A0.call (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:70:21538)
+    at D.emit (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:70:68316)
+    at D.zoom (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:70:68158)
+    at HTMLCanvasElement.<anonymous> (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:70:65754)
+[  536123ms] Error: Minified React error #185; visit https://react.dev/errors/185 for the full message or use the non-minified dev environment for full errors and additional helpful warnings.
+    at yp (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:8:27671)
+    at by (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:8:27196)
+    at Rh (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:8:60092)
+    at D3 (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:8:59716)
+    at ResizeObserver.s (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:119:159407)
+[  548929ms] Error: Minified React error #185; visit https://react.dev/errors/185 for the full message or use the non-minified dev environment for full errors and additional helpful warnings.
+    at yp (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:8:27671)
+    at by (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:8:27196)
+    at Rh (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:8:60092)
+    at D3 (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:8:59716)
+    at ResizeObserver.s (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:119:159407)
+[  558893ms] Error: Minified React error #185; visit https://react.dev/errors/185 for the full message or use the non-minified dev environment for full errors and additional helpful warnings.
+    at yp (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:8:27671)
+    at by (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:8:27196)
+    at Rh (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:8:60092)
+    at D3 (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:8:59716)
+    at ResizeObserver.s (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:119:159407)
+[  568551ms] Error: Minified React error #185; visit https://react.dev/errors/185 for the full message or use the non-minified dev environment for full errors and additional helpful warnings.
+    at yp (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:8:27671)
+    at by (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:8:27196)
+    at Rh (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:8:60092)
+    at D3 (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:8:59716)
+    at ResizeObserver.s (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:119:159407)
+[  581762ms] Error: Minified React error #185; visit https://react.dev/errors/185 for the full message or use the non-minified dev environment for full errors and additional helpful warnings.
+    at yp (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:8:27671)
+    at by (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:8:27196)
+    at Rh (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:8:60092)
+    at D3 (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:8:59716)
+    at ResizeObserver.s (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:119:159407)
+[  592543ms] Error: Minified React error #185; visit https://react.dev/errors/185 for the full message or use the non-minified dev environment for full errors and additional helpful warnings.
+    at yp (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:8:27671)
+    at by (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:8:27196)
+    at Rh (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:8:60092)
+    at D3 (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:8:59716)
+    at ResizeObserver.s (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:119:159407)
+[  609416ms] Error: Minified React error #185; visit https://react.dev/errors/185 for the full message or use the non-minified dev environment for full errors and additional helpful warnings.
+    at yp (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:8:27671)
+    at by (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:8:27196)
+    at Rh (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:8:60092)
+    at D3 (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:8:59716)
+    at ResizeObserver.s (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:119:159407)
+[  618655ms] [WARNING] [chat] PTY WebSocket closed code=1012 @ http://127.0.0.1:9119/assets/index-D-HZBHZL.js:222
+[  628697ms] Error: Minified React error #185; visit https://react.dev/errors/185 for the full message or use the non-minified dev environment for full errors and additional helpful warnings.
+    at yp (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:8:27671)
+    at by (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:8:27196)
+    at Rh (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:8:60092)
+    at D3 (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:8:59716)
+    at ResizeObserver.s (http://127.0.0.1:9119/assets/index-D-HZBHZL.js:119:159407)
+[  630633ms] [ERROR] Failed to load resource: the server responded with a status of 401 (Unauthorized) @ http://127.0.0.1:9119/api/dashboard/os:0

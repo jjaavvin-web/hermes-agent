@@ -48,4 +48,10 @@ PUBLIC_API_PATHS: frozenset[str] = frozenset({
     "/api/dashboard/plugins",
     # Read-only first-run bootstrap. Returns only whether the local SOUL file exists.
     "/api/welcome/first-run-status",
+    # Chronos managed-cron fire webhook (NAS -> agent). NOT cookie-gated: it
+    # carries its own short-lived NAS-minted JWT (purpose=cron_fire), which the
+    # handler verifies as the real auth. Must bypass the dashboard auth gate so
+    # the NAS relay's bearer-only callback reaches the verifier instead of a
+    # 401 no_cookie. The JWT — not this allowlist — is the security boundary.
+    "/api/cron/fire",
 })

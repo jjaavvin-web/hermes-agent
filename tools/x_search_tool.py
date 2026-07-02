@@ -34,7 +34,9 @@ can tell a real citation-backed answer from an unsourced one:
   active AND xAI returned no citations in either the top-level ``citations``
   array or the inline ``url_citation`` annotations. In that case the
   ``answer`` came from the model's own knowledge rather than the X index,
-  and the caller should treat the result as unsourced.
+  and the caller should treat the result as unsourced. Use
+  :func:`is_x_search_result_ingestible` to gate consumer ingestion
+  on success + not degraded + citation_count >= threshold.
 
 Salvaged from PR #10786 (originally by @Jaaneek); credential resolution
 reworked to honor both auth modes per Teknium's design.
@@ -96,6 +98,63 @@ def _get_x_search_retries() -> int:
         return max(0, int(raw_value))
     except Exception:
         return DEFAULT_X_SEARCH_RETRIES
+
+
+# ---------------------------------------------------------------------------
+# Result gating / quality assurance
+# ---------------------------------------------------------------------------
+
+def _get_x_search_citation_floor() -> int:
+    """Minimum citation count required for a result to be ingestible.
+
+    Configured via x_search.citation_floor in hermes config (default 10).
+    Results with success=true but degraded=true or citation_count below this
+    threshold are flagged as low-quality and should be skipped by consumers.
+    """
+    cfg = _load_x_search_config()
+    raw_value = cfg.get("citation_floor", 10)
+    try:
+        return max(0, int(raw_value))
+    except Exception:
+        return 10
+
+
+def is_x_search_result_ingestible(result: Dict[str, Any], strict: bool = True) -> Tuple[bool, Optional[str]]:
+    """Check if an x_search result meets quality gates.
+
+    Args:
+        result: Parsed x_search tool output (JSON dict).
+        strict: If True, require citation_count >= citation_floor.
+                If False, only check success and not degraded.
+
+    Returns:
+        (is_ingestible, reason_if_not). reason is None when ingestible.
+
+    Gates:
+    - success must be true (call-level failure)
+    - degraded must be false (xAI index returned no citations despite filters)
+    - if strict, citation_count >= citation_floor (result quality floor)
+    """
+    if not isinstance(result, dict):
+        return False, "result is not a dict"
+
+    if not result.get("success"):
+        reason = result.get("error") or "unknown error"
+        return False, f"success=false: {reason}"
+
+    if result.get("degraded"):
+        reason = result.get("degraded_reason") or "degraded (no reason given)"
+        return False, f"degraded=true: {reason}"
+
+    if strict:
+        citation_floor = _get_x_search_citation_floor()
+        citations = result.get("citations") or []
+        inline_citations = result.get("inline_citations") or []
+        citation_count = len(citations) + len(inline_citations)
+        if citation_count < citation_floor:
+            return False, f"citation_count={citation_count} below floor {citation_floor}"
+
+    return True, None
 
 
 # ---------------------------------------------------------------------------
@@ -502,7 +561,7 @@ X_SEARCH_SCHEMA = {
 
 
 def _handle_x_search(args, **kw):
-    return x_search_tool(
+    raw = x_search_tool(
         query=args.get("query", ""),
         allowed_x_handles=args.get("allowed_x_handles"),
         excluded_x_handles=args.get("excluded_x_handles"),
@@ -511,6 +570,15 @@ def _handle_x_search(args, **kw):
         enable_image_understanding=bool(args.get("enable_image_understanding", False)),
         enable_video_understanding=bool(args.get("enable_video_understanding", False)),
     )
+    try:
+        result = json.loads(raw)
+    except Exception:
+        return raw
+    ingestible, reason = is_x_search_result_ingestible(result, strict=True)
+    result["ingestible"] = ingestible
+    if not ingestible:
+        result["ingest_skip_reason"] = reason
+    return json.dumps(result, ensure_ascii=False)
 
 
 registry.register(

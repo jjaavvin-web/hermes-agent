@@ -91,6 +91,12 @@ class SessionSource:
     guild_id: Optional[str] = None  # Discord guild / Slack workspace / Matrix server scope
     parent_chat_id: Optional[str] = None  # Parent channel when chat_id refers to a thread
     message_id: Optional[str] = None  # ID of the triggering message (for pin/reply/react)
+    role_authorized: bool = False  # True when adapter granted access via role (not user ID)
+    # Profile this inbound message is routed to in a multiplexing gateway
+    # (from the /p/<profile>/ URL prefix or per-credential adapter ownership).
+    # None => the gateway's active/default profile. Drives both session-key
+    # namespacing and the per-turn config/credential scope.
+    profile: Optional[str] = None
     
     @property
     def description(self) -> str:
@@ -134,6 +140,8 @@ class SessionSource:
             d["parent_chat_id"] = self.parent_chat_id
         if self.message_id:
             d["message_id"] = self.message_id
+        if self.profile:
+            d["profile"] = self.profile
         return d
 
     @classmethod
@@ -152,6 +160,7 @@ class SessionSource:
             guild_id=data.get("guild_id"),
             parent_chat_id=data.get("parent_chat_id"),
             message_id=data.get("message_id"),
+            profile=data.get("profile"),
         )
     
 
@@ -293,6 +302,22 @@ def build_session_context_prompt(
     if context.source.chat_topic:
         lines.append(f"**Channel Topic:** {context.source.chat_topic}")
 
+    if context.source.platform == Platform.MATRIX:
+        src = context.source
+        room_name = src.chat_name or src.chat_id
+        room_id = _hash_chat_id(src.chat_id) if redact_pii else src.chat_id
+        lines.append("")
+        lines.append(f"**Matrix Room:** {room_name}")
+        lines.append(f"**Matrix Room ID:** {room_id}")
+        if src.thread_id:
+            thread_id = _hash_chat_id(src.thread_id) if redact_pii else src.thread_id
+            lines.append(f"**Matrix Thread:** {thread_id}")
+        lines.append(
+            "**Matrix room boundary:** Treat this turn as scoped to the current "
+            "Matrix room/thread only. Do not assume unresolved references are "
+            "about other Matrix rooms or projects unless the user explicitly says so."
+        )
+
     # User identity.
     # In shared multi-user sessions (shared threads OR shared non-thread groups
     # when group_sessions_per_user=False), multiple users contribute to the same
@@ -369,9 +394,10 @@ def build_session_context_prompt(
         lines.append("")
         lines.append(
             "**Platform notes:** You are running inside Yuanbao. "
-            "You CAN send private (DM) messages via the send_message tool. "
-            "Use target='yuanbao:direct:<account_id>' for DM "
-            "and target='yuanbao:group:<group_code>' for group chat."
+            "To send a private (DM) message to a user in the current group, "
+            "use the yb_send_dm tool (look up the recipient by name or pass "
+            "their user_id). Your normal reply is delivered to the group you "
+            "are responding in."
         )
 
     # Connected platforms
@@ -491,6 +517,24 @@ class SessionEntry:
     resume_reason: Optional[str] = None  # e.g. "restart_timeout"
     last_resume_marked_at: Optional[datetime] = None
 
+    # Autonomous-dispatch security envelope.  Persisted so a gateway restart's
+    # auto-resume (which takes the generic handle_message path) can re-arm the
+    # in-process safety setup the original webhook/loki dispatch installed: the
+    # DISP-5 push/PR/workflow floor (a per-task ContextVar), the per-session
+    # terminal-deny list (an in-memory dict), and worktree isolation (a
+    # ContextVar).  All three are wiped by a restart — without this durable
+    # marker a resumed run silently regains git-push / gh-pr / live-tree access
+    # (finding #8).
+    autonomous_dispatch: bool = False
+    worktree_path: Optional[str] = None
+    deny_patterns: Optional[list] = None
+    # The session key the ORIGINAL dispatch registered its deny patterns under
+    # (build_session_key in the webhook/relay dispatcher).  Persisted because it
+    # can diverge from ``session_key`` (e.g. profile namespacing) — the resume
+    # re-registers under BOTH so the deny stays live no matter which key
+    # check_session_deny_patterns resolves at tool-exec time (finding #8).
+    approval_key: Optional[str] = None
+
     def to_dict(self) -> Dict[str, Any]:
         result = {
             "session_key": self.session_key,
@@ -521,6 +565,10 @@ class SessionEntry:
             "was_auto_reset": self.was_auto_reset,
             "auto_reset_reason": self.auto_reset_reason,
             "reset_had_activity": self.reset_had_activity,
+            "autonomous_dispatch": self.autonomous_dispatch,
+            "worktree_path": self.worktree_path,
+            "deny_patterns": self.deny_patterns,
+            "approval_key": self.approval_key,
         }
         if self.origin:
             result["origin"] = self.origin.to_dict()
@@ -573,6 +621,10 @@ class SessionEntry:
             was_auto_reset=data.get("was_auto_reset", False),
             auto_reset_reason=data.get("auto_reset_reason"),
             reset_had_activity=data.get("reset_had_activity", False),
+            autonomous_dispatch=data.get("autonomous_dispatch", False),
+            worktree_path=data.get("worktree_path"),
+            deny_patterns=data.get("deny_patterns"),
+            approval_key=data.get("approval_key"),
         )
 
 
@@ -597,14 +649,40 @@ def is_shared_multi_user_session(
     return not group_sessions_per_user
 
 
+def _session_key_namespace(profile: Optional[str]) -> str:
+    """Return the ``agent:<ns>`` namespace prefix for a session key.
+
+    The historical key format is ``agent:main:<platform>:<chat_type>:...`` where
+    ``main`` is a static namespace literal (NOT a branch name — branching keys
+    off ``session_id``, not this slot). Multi-profile multiplexing reuses this
+    slot to carry the profile:
+
+    - default profile (or ``None``/``""``/``"default"``) → ``agent:main`` —
+      BYTE-IDENTICAL to every key ever generated, so existing sessions and all
+      positional parsers (``parts[2]`` == platform, etc.) are unaffected.
+    - named profile ``coder`` → ``agent:coder`` — keeps the same positional
+      layout, just a different namespace, so two profiles serving the same
+      platform/chat never collide.
+    """
+    if not profile or profile == "default":
+        return "agent:main"
+    return f"agent:{profile}"
+
+
 def build_session_key(
     source: SessionSource,
     group_sessions_per_user: bool = True,
     thread_sessions_per_user: bool = False,
+    profile: Optional[str] = None,
 ) -> str:
     """Build a deterministic session key from a message source.
 
     This is the single source of truth for session key construction.
+
+    ``profile`` selects the key namespace (see :func:`_session_key_namespace`).
+    It defaults to ``None`` ⇒ the legacy ``agent:main`` namespace, so callers
+    that don't multiplex produce byte-identical keys to before. Only the
+    multiplexing gateway passes a non-default profile.
 
     DM rules:
       - DMs include chat_id when present, so each private conversation is isolated.
@@ -625,6 +703,7 @@ def build_session_key(
         shared session per chat.
       - Without identifiers, messages fall back to one session per platform/chat_type.
     """
+    ns = _session_key_namespace(profile)
     platform = source.platform.value
     if source.chat_type == "dm":
         dm_chat_id = source.chat_id
@@ -633,11 +712,27 @@ def build_session_key(
 
         if dm_chat_id:
             if source.thread_id:
-                return f"agent:main:{platform}:dm:{dm_chat_id}:{source.thread_id}"
-            return f"agent:main:{platform}:dm:{dm_chat_id}"
+                return f"{ns}:{platform}:dm:{dm_chat_id}:{source.thread_id}"
+            return f"{ns}:{platform}:dm:{dm_chat_id}"
+        # No chat_id — fall back to the sender's own identifier before the
+        # bare per-platform sink.  Without this, every DM from every user that
+        # arrives without a chat_id (non-standard adapters / synthetic sources)
+        # collapses into one shared "<ns>:<platform>:dm" session, and a
+        # single cached agent ends up serving multiple people's conversations —
+        # cross-user history bleed.  participant_id keeps DMs isolated per user.
+        dm_participant_id = source.user_id_alt or source.user_id
+        if dm_participant_id and source.platform == Platform.WHATSAPP:
+            dm_participant_id = (
+                canonical_whatsapp_identifier(str(dm_participant_id))
+                or dm_participant_id
+            )
+        if dm_participant_id:
+            if source.thread_id:
+                return f"{ns}:{platform}:dm:{dm_participant_id}:{source.thread_id}"
+            return f"{ns}:{platform}:dm:{dm_participant_id}"
         if source.thread_id:
-            return f"agent:main:{platform}:dm:{source.thread_id}"
-        return f"agent:main:{platform}:dm"
+            return f"{ns}:{platform}:dm:{source.thread_id}"
+        return f"{ns}:{platform}:dm"
 
     participant_id = source.user_id_alt or source.user_id
     if participant_id and source.platform == Platform.WHATSAPP:
@@ -645,7 +740,7 @@ def build_session_key(
         # single group member gets two isolated per-user sessions when the
         # bridge reshuffles alias forms.
         participant_id = canonical_whatsapp_identifier(str(participant_id)) or participant_id
-    key_parts = ["agent:main", platform, source.chat_type]
+    key_parts = [ns, platform, source.chat_type]
 
     if source.chat_id:
         key_parts.append(source.chat_id)
@@ -741,12 +836,32 @@ class SessionStore:
                 logger.debug("Could not remove temp file %s: %s", tmp_path, e)
             raise
     
+    def _resolve_profile_for_key(self, source: Optional[SessionSource] = None) -> Optional[str]:
+        """Return the profile namespace for session keys, or None when off.
+
+        When ``multiplex_profiles`` is disabled (default), returns ``None`` so
+        keys stay in the legacy ``agent:main`` namespace — byte-identical to
+        before. When enabled, prefers the profile the inbound source was routed
+        to (``source.profile`` — set by the /p/<profile>/ URL prefix or
+        per-credential adapter), falling back to the active profile name.
+        """
+        if not getattr(self.config, "multiplex_profiles", False):
+            return None
+        if source is not None and source.profile:
+            return source.profile
+        try:
+            from hermes_cli.profiles import get_active_profile_name
+            return get_active_profile_name() or "default"
+        except Exception:
+            return None
+
     def _generate_session_key(self, source: SessionSource) -> str:
         """Generate a session key from a source."""
         return build_session_key(
             source,
             group_sessions_per_user=getattr(self.config, "group_sessions_per_user", True),
             thread_sessions_per_user=getattr(self.config, "thread_sessions_per_user", False),
+            profile=self._resolve_profile_for_key(source),
         )
     
     def _is_session_expired(self, entry: SessionEntry) -> bool:
@@ -1014,6 +1129,38 @@ class SessionStore:
                 return True
         return False
 
+    def set_autonomous_envelope(
+        self,
+        session_key: str,
+        *,
+        autonomous: bool = True,
+        worktree_path: Optional[str] = None,
+        deny_patterns: Optional[list] = None,
+        approval_key: Optional[str] = None,
+    ) -> bool:
+        """Persist the autonomous-dispatch security envelope onto a session.
+
+        Stored so gateway-restart auto-resume can re-arm the DISP-5 push/PR/
+        workflow floor, the per-session terminal-deny list, and worktree
+        isolation that the original webhook/loki dispatch installed in-process
+        (those live in per-task ContextVars + an in-memory dict that a restart
+        wipes — finding #8).  Returns True if the session existed and was
+        updated.
+        """
+        if not session_key:
+            return False
+        with self._lock:
+            self._ensure_loaded_locked()
+            entry = self._entries.get(session_key)
+            if entry is None:
+                return False
+            entry.autonomous_dispatch = bool(autonomous)
+            entry.worktree_path = worktree_path or None
+            entry.deny_patterns = list(deny_patterns) if deny_patterns else None
+            entry.approval_key = approval_key or None
+            self._save()
+            return True
+
     def clear_resume_pending(self, session_key: str) -> bool:
         """Clear the resume-pending flag after a successful resumed turn.
 
@@ -1247,6 +1394,17 @@ class SessionStore:
         entries.sort(key=lambda e: e.updated_at, reverse=True)
 
         return entries
+
+    def lookup_by_session_id(self, session_id: str) -> Optional[SessionEntry]:
+        """Return the active session entry for a persisted session ID, if any."""
+        if not session_id:
+            return None
+        with self._lock:
+            self._ensure_loaded_locked()
+            for entry in self._entries.values():
+                if entry.session_id == session_id:
+                    return entry
+        return None
     
     def append_to_transcript(self, session_id: str, message: Dict[str, Any], skip_db: bool = False) -> None:
         """Append a message to a session's transcript (SQLite).
@@ -1278,6 +1436,7 @@ class SessionStore:
                         message.get("platform_message_id") or message.get("message_id")
                     ),
                     observed=bool(message.get("observed")),
+                    timestamp=message.get("timestamp"),
                 )
             except Exception as e:
                 logger.debug("Session DB operation failed: %s", e)

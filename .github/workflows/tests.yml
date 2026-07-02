@@ -4,16 +4,17 @@ on:
   push:
     branches: [main]
     paths-ignore:
-      - '**/*.md'
-      - 'docs/**'
+      - "**/*.md"
+      - "docs/**"
+  # No paths filter — the job must always run so the required check
+  # reports a status (path-gated workflows leave checks "pending" forever
+  # when no matching files change, which blocks merge).
   pull_request:
     branches: [main]
-    paths-ignore:
-      - '**/*.md'
-      - 'docs/**'
 
 permissions:
   contents: read
+  pull-requests: write
 
 # Cancel in-progress runs for the same PR/branch
 concurrency:
@@ -30,13 +31,17 @@ jobs:
         slice: [1, 2, 3, 4, 5, 6]
     steps:
       - name: Checkout code
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
       - name: Restore duration cache
-        uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae  # v5.0.5
+        uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
         with:
           path: test_durations.json
-          # Single stable key. main always overwrites, PRs always find it.
+          # main always writes a new suffix, but jobs pick the latest one with the same prefix
+          # quote from https://docs.github.com/en/actions/reference/workflows-and-actions/dependency-caching#cache-hits-and-misses
+          # If you provide restore-keys, the cache action sequentially searches for any caches that match the list of restore-keys.
+          # If there are no exact matches, the action searches for partial matches of the restore keys.
+          # When the action finds a partial match, the most recent cache is restored to the path directory.
           key: test-durations
 
       - name: Install ripgrep (prebuilt binary)
@@ -54,16 +59,48 @@ jobs:
           rg --version
 
       - name: Install uv
-        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86  # v5
+        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
+        with:
+          # Persist uv's download/wheel cache (~/.cache/uv) across runs.
+          # Keyed on the dependency manifests, so the cache is reused until
+          # pyproject.toml or uv.lock changes. `uv sync` still runs every
+          # time, but resolves from the warm cache instead of re-downloading
+          # and re-building wheels.
+          enable-cache: true
+          cache-dependency-glob: |
+            pyproject.toml
+            uv.lock
 
       - name: Set up Python 3.11
         run: uv python install 3.11
 
       - name: Install dependencies
+        # `uv sync --locked` installs the exact pinned set from uv.lock (and
+        # fails if the lock is out of sync with pyproject.toml), giving a
+        # reproducible env. It also creates .venv itself, so no separate
+        # `uv venv` step is needed.
+        run: uv sync --locked --python 3.11 --extra all --extra dev
+
+      - name: Install advisory coverage tools
+        run: uv pip install --python .venv/bin/python coverage==7.14.0 diff-cover==10.3.0
+
+      - name: Minimize uv cache
+        # Optimized for CI: prunes pre-built wheels that are cheap to
+        # re-download, keeping the persisted cache small and fast to restore.
+        run: uv cache prune --ci
+
+      - name: Dashboard full route smoke gate
+        # Fail loudly if app.routes drifts, a dashboard router silently drops,
+        # an /api GET route is unprobed/unskipped, or mutating handlers stop
+        # being importable. Kept outside the sliced runner so the route-table
+        # contract is always visible as a named CI gate.
         run: |
-          uv venv .venv --python 3.11
           source .venv/bin/activate
-          uv pip install -e ".[all,dev]"
+          python -m pytest tests/hermes_cli/test_dashboard_smoke.py -q
+        env:
+          OPENROUTER_API_KEY: ""
+          OPENAI_API_KEY: ""
+          NOUS_API_KEY: ""
 
       - name: Run tests (slice ${{ matrix.slice }}/6)
         # Per-file isolation via scripts/run_tests_parallel.py: discovers
@@ -91,7 +128,7 @@ jobs:
         # just not perfectly balanced.
         run: |
           source .venv/bin/activate
-          python scripts/run_tests_parallel.py --slice ${{ matrix.slice }}/6
+          python scripts/run_tests_parallel.py --slice ${{ matrix.slice }}/6 --coverage --coverage-dir .coverage-fragments/slice-${{ matrix.slice }}
         env:
           # Ensure tests don't accidentally call real APIs
           OPENROUTER_API_KEY: ""
@@ -99,21 +136,53 @@ jobs:
           NOUS_API_KEY: ""
 
       - name: Upload per-slice durations
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: test-durations-slice-${{ matrix.slice }}
           path: test_durations.json
           retention-days: 1
 
+      - name: Upload per-slice coverage fragments
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: coverage-fragments-slice-${{ matrix.slice }}
+          path: .coverage-fragments/slice-${{ matrix.slice }}/.coverage.*
+          if-no-files-found: warn
+          retention-days: 1
+
   # Merge per-slice duration data into a single cache, so future runs
-  # (including PRs) get balanced slicing.
+  # (including PRs) get balanced slicing. Also combine per-slice coverage
+  # fragments and publish advisory diff coverage without blocking merge.
   save-durations:
     needs: test
-    if: always() && github.ref == 'refs/heads/main'
+    if: needs.test.result == 'success'
     runs-on: ubuntu-latest
     steps:
+      - name: Checkout code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: |
+            pyproject.toml
+            uv.lock
+
+      - name: Set up Python 3.11
+        run: uv python install 3.11
+
+      - name: Install dependencies
+        run: uv sync --locked --python 3.11 --extra all --extra dev
+
+      - name: Install advisory coverage tools
+        run: uv pip install --python .venv/bin/python coverage==7.14.0 diff-cover==10.3.0
+
       - name: Download all slice durations
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           pattern: test-durations-slice-*
           path: durations
@@ -133,17 +202,74 @@ jobs:
           "
 
       - name: Save merged duration cache
-        uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae  # v5.0.5
+        if: github.ref == 'refs/heads/main'
+        uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
         with:
           path: test_durations.json
-          key: test-durations
+          key: test-durations-${{ github.run_id }}
+
+      - name: Download all coverage fragments
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: coverage-fragments-slice-*
+          path: .coverage-fragments
+          merge-multiple: true
+
+      - name: Combine coverage and run advisory diff-cover
+        run: |
+          source .venv/bin/activate
+          if python -m coverage combine --keep --data-file .coverage .coverage-fragments; then
+            python -m coverage xml -o coverage.xml --data-file .coverage || true
+          else
+            echo "coverage combine failed (advisory)" > diff-cover.md
+          fi
+          if [ -f coverage.xml ]; then
+            python -m diff_cover.diff_cover_tool coverage.xml \
+              --show-uncovered \
+              --include 'agent/*' 'gateway/*' 'tools/*' 'hermes_cli/*' \
+              --fail-under 85 \
+              --format markdown > diff-cover.md || true
+          fi
+          cat diff-cover.md || true
+
+      - name: Upload combined coverage artifacts
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: coverage-report
+          path: |
+            .coverage
+            coverage.xml
+            diff-cover.md
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Post advisory diff-cover PR comment
+        if: github.event_name == 'pull_request'
+        continue-on-error: true
+        uses: actions/github-script@501413f7c774666dd86d3e54c4b74a6349c13582 # v9.0.0
+        with:
+          script: |
+            const fs = require('fs');
+            const body = [
+              '## Advisory diff coverage',
+              '',
+              'Non-blocking baseline signal for changed `agent/`, `gateway/`, `tools/`, and `hermes_cli/` lines.',
+              '',
+              fs.readFileSync('diff-cover.md', 'utf8')
+            ].join('\n');
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body
+            });
 
   e2e:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
       - name: Checkout code
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
       - name: Install ripgrep (prebuilt binary)
         run: |
@@ -160,16 +286,32 @@ jobs:
           rg --version
 
       - name: Install uv
-        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86  # v5
+        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
+        with:
+          # Persist uv's download/wheel cache (~/.cache/uv) across runs.
+          # Keyed on the dependency manifests, so the cache is reused until
+          # pyproject.toml or uv.lock changes. `uv sync` still runs every
+          # time, but resolves from the warm cache instead of re-downloading
+          # and re-building wheels.
+          enable-cache: true
+          cache-dependency-glob: |
+            pyproject.toml
+            uv.lock
 
       - name: Set up Python 3.11
         run: uv python install 3.11
 
       - name: Install dependencies
-        run: |
-          uv venv .venv --python 3.11
-          source .venv/bin/activate
-          uv pip install -e ".[all,dev]"
+        # `uv sync --locked` installs the exact pinned set from uv.lock (and
+        # fails if the lock is out of sync with pyproject.toml), giving a
+        # reproducible env. It also creates .venv itself, so no separate
+        # `uv venv` step is needed.
+        run: uv sync --locked --python 3.11 --extra all --extra dev
+
+      - name: Minimize uv cache
+        # Optimized for CI: prunes pre-built wheels that are cheap to
+        # re-download, keeping the persisted cache small and fast to restore.
+        run: uv cache prune --ci
 
       - name: Packaged-wheel i18n smoke test
         run: |

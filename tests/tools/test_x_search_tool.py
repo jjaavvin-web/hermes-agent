@@ -70,7 +70,7 @@ def test_x_search_posts_responses_request(monkeypatch):
     tool_def = captured["json"]["tools"][0]
     assert captured["url"] == "https://api.x.ai/v1/responses"
     assert captured["headers"]["User-Agent"] == f"Hermes-Agent/{__version__}"
-    assert captured["json"]["model"] == "grok-4.20-reasoning"
+    assert captured["json"]["model"] == "grok-4.3"
     assert captured["json"]["store"] is False
     assert tool_def["type"] == "x_search"
     assert tool_def["allowed_x_handles"] == ["xai", "grok"]
@@ -722,3 +722,76 @@ def test_x_search_not_degraded_when_no_filters_active(monkeypatch):
     assert result["success"] is True
     assert result["degraded"] is False
     assert result["degraded_reason"] is None
+
+
+# ---------------------------------------------------------------------------
+# Ingestibility annotation — _handle_x_search wires is_x_search_result_ingestible
+# into every tool response so consumers can gate on result["ingestible"].
+# ---------------------------------------------------------------------------
+
+def test_handle_x_search_annotates_ingestible_false_on_low_quality(monkeypatch):
+    """Handler marks ingestible=False + ingest_skip_reason when the result fails a gate.
+
+    Uses a degraded result (success=True but degraded=True) so the gate fails
+    without needing to reach the citation-floor check.
+    """
+    import json as _json
+    from tools.x_search_tool import _handle_x_search
+
+    degraded_result = {
+        "success": True,
+        "provider": "xai",
+        "credential_source": "xai",
+        "tool": "x_search",
+        "model": "grok-test",
+        "query": "anything",
+        "answer": "unsourced fluff",
+        "citations": [],
+        "inline_citations": [],
+        "degraded": True,
+        "degraded_reason": "no citations returned despite filters: allowed_x_handles",
+    }
+
+    monkeypatch.setattr(
+        "tools.x_search_tool.x_search_tool",
+        lambda **kw: _json.dumps(degraded_result, ensure_ascii=False),
+    )
+
+    out = _json.loads(_handle_x_search({"query": "anything"}))
+
+    assert out["ingestible"] is False
+    assert out.get("ingest_skip_reason")
+    assert "degraded" in out["ingest_skip_reason"]
+
+
+def test_handle_x_search_annotates_ingestible_true_on_healthy_result(monkeypatch):
+    """Handler marks ingestible=True (no ingest_skip_reason key) for a quality result."""
+    import json as _json
+    from tools.x_search_tool import _handle_x_search, _get_x_search_citation_floor
+
+    citation_floor = _get_x_search_citation_floor()
+    citations = [{"url": f"https://x.com/ex/status/{i}"} for i in range(citation_floor)]
+
+    healthy_result = {
+        "success": True,
+        "provider": "xai",
+        "credential_source": "xai",
+        "tool": "x_search",
+        "model": "grok-test",
+        "query": "anything",
+        "answer": "well-sourced answer",
+        "citations": citations,
+        "inline_citations": [],
+        "degraded": False,
+        "degraded_reason": None,
+    }
+
+    monkeypatch.setattr(
+        "tools.x_search_tool.x_search_tool",
+        lambda **kw: _json.dumps(healthy_result, ensure_ascii=False),
+    )
+
+    out = _json.loads(_handle_x_search({"query": "anything"}))
+
+    assert out["ingestible"] is True
+    assert "ingest_skip_reason" not in out

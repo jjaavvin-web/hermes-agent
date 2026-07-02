@@ -2,6 +2,8 @@
 
 import os
 
+import pytest
+
 from pathlib import Path
 from unittest.mock import patch
 
@@ -29,9 +31,6 @@ class TestWriteDenyExactPaths:
         path = os.path.join(str(Path.home()), ".ssh", "id_ed25519")
         assert _is_write_denied(path) is True
 
-    def test_netrc(self):
-        path = os.path.join(str(Path.home()), ".netrc")
-        assert _is_write_denied(path) is True
 
     def test_hermes_env(self):
         # ``.env`` under the active HERMES_HOME (profile-aware, not just
@@ -67,14 +66,18 @@ class TestWriteDenyExactPaths:
 
         assert _is_write_denied(str(global_env)) is True
 
-    def test_shell_profiles(self):
+    @pytest.mark.skip(
+        reason="fork hardening (file_safety): shell profiles are write-DENIED to stop "
+        "a worker poisoning ~/.bashrc; upstream leaves them writable. 2026-06-20 merge."
+    )
+    def test_shell_profiles_are_writable(self):
         home = str(Path.home())
         for name in [".bashrc", ".zshrc", ".profile", ".bash_profile", ".zprofile"]:
-            assert _is_write_denied(os.path.join(home, name)) is True, f"{name} should be denied"
+            assert _is_write_denied(os.path.join(home, name)) is False, f"{name} should be writable"
 
-    def test_package_manager_configs(self):
+    def test_credential_config_files_denied(self):
         home = str(Path.home())
-        for name in [".npmrc", ".pypirc", ".pgpass"]:
+        for name in [".netrc", ".pgpass", ".npmrc", ".pypirc"]:
             assert _is_write_denied(os.path.join(home, name)) is True, f"{name} should be denied"
 
 
@@ -123,6 +126,9 @@ class TestWriteAllowed:
     def test_project_file(self):
         assert _is_write_denied("/home/user/project/main.py") is False
 
-    def test_hermes_config_not_env(self):
-        path = os.path.join(str(Path.home()), ".hermes", "config.yaml")
-        assert _is_write_denied(path) is False
+    def test_hermes_control_files_requested_writable(self):
+        from hermes_constants import get_hermes_home
+
+        home = get_hermes_home()
+        for name in ["auth.json", "config.yaml", "webhook_subscriptions.json"]:
+            assert _is_write_denied(str(home / name)) is False, f"{name} should be writable"

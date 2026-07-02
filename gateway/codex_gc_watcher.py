@@ -33,6 +33,7 @@ import asyncio
 import json
 import logging
 import subprocess
+from pathlib import Path
 from typing import Any, Callable, Optional
 
 log = logging.getLogger(__name__)
@@ -40,6 +41,7 @@ log = logging.getLogger(__name__)
 # ``gh pr list`` should be quick (<5 s in practice).  Cap defensively
 # so a hung call cannot stall the gc loop.
 _GH_TIMEOUT_SEC = 30
+_REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
 def _gh_list_open_branches() -> set[str]:
@@ -56,6 +58,7 @@ def _gh_list_open_branches() -> set[str]:
             ["gh", "pr", "list", "--state", "open",
              "--json", "headRefName", "--limit", "200"],
             capture_output=True, text=True, check=False, timeout=_GH_TIMEOUT_SEC,
+            cwd=_REPO_ROOT,
         )
     except FileNotFoundError:
         log.warning("CodexGcWatcher: gh CLI not on PATH; live_branches=empty")
@@ -196,3 +199,19 @@ class CodexGcWatcher:
                 )
         except Exception as exc:
             log.warning("CodexGcWatcher: broker.reap_deleted failed: %s", exc)
+
+        try:
+            from gateway.codex_session_reaper import CodexSessionReaper
+
+            decisions = CodexSessionReaper(
+                dispatcher_state=self._dispatcher,
+                broker=self._broker,
+                gh_open_branches_fn=self._gh_list_open_branches,
+            ).reap(reap_idle_days=10, dry_run=True)
+            if decisions:
+                log.info(
+                    "CodexGcWatcher: session reaper dry-run evaluated %d decision(s)",
+                    len(decisions),
+                )
+        except Exception as exc:
+            log.warning("CodexGcWatcher: session reaper dry-run failed: %s", exc)

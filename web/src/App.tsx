@@ -5,6 +5,8 @@ import {
   useRef,
   useState,
   type ComponentType,
+  type FocusEvent,
+  type MouseEvent,
   type ReactNode,
 } from "react";
 import { createPortal } from "react-dom";
@@ -26,8 +28,8 @@ import {
   Database,
   Download,
   Eye,
+  FolderOpen,
   FileText,
-  GitBranch,
   Globe,
   Heart,
   KeyRound,
@@ -43,6 +45,7 @@ import {
   Puzzle,
   Radio,
   RotateCw,
+  Server,
   Settings,
   Shield,
   ShieldCheck,
@@ -55,6 +58,7 @@ import {
   Wrench,
   X,
   Zap,
+  DollarSign,
 } from "lucide-react";
 import { Button } from "@nous-research/ui/ui/components/button";
 import { SelectionSwitcher } from "@nous-research/ui/ui/components/selection-switcher";
@@ -64,30 +68,34 @@ import { cn } from "@/lib/utils";
 import { Backdrop } from "@/components/Backdrop";
 import { SidebarFooter } from "@/components/SidebarFooter";
 import { SidebarStatusStrip, gatewayLine } from "@/components/SidebarStatusStrip";
-import { useBelowBreakpoint } from "@nous-research/ui/hooks/use-below-breakpoint";
+import { useBelowBreakpoint } from "@/components/ui-shims";
 import { useSidebarStatus } from "@/hooks/useSidebarStatus";
 import { AuthWidget } from "@/components/AuthWidget";
 import { PageHeaderProvider } from "@/contexts/PageHeaderProvider";
+import { ProfileProvider } from "@/contexts/ProfileProvider";
+import { useProfileScope } from "@/contexts/useProfileScope";
+import { ProfileSwitcher } from "@/components/ProfileSwitcher";
+import { ProfileScopeBanner } from "@/components/ProfileScopeBanner";
 import { useSystemActions } from "@/contexts/useSystemActions";
 import type { SystemAction } from "@/contexts/system-actions-context";
 import ConfigPage from "@/pages/ConfigPage";
 import DocsPage from "@/pages/DocsPage";
 import EnvPage from "@/pages/EnvPage";
+import FilesPage from "@/pages/FilesPage";
 import SessionsPage from "@/pages/SessionsPage";
 import LogsPage from "@/pages/LogsPage";
 import AnalyticsPage from "@/pages/AnalyticsPage";
+import CostPage from "@/pages/CostPage";
 import ModelsPage from "@/pages/ModelsPage";
 import CronPage from "@/pages/CronPage";
 import ProfilesPage from "@/pages/ProfilesPage";
+import ProfileBuilderPage from "@/pages/ProfileBuilderPage";
 import SkillsPage from "@/pages/SkillsPage";
 import PluginsPage from "@/pages/PluginsPage";
-import NexusHealthPage from "@/pages/NexusHealthPage";
-import HivesPage from "@/pages/HivesPage";
+import OSPage from "@/pages/OSPage";
+import HtmlGalleryPage from "@/pages/HtmlGalleryPage";
+import LearningPage from "@/pages/LearningPage";
 import ExplorerPage from "@/pages/ExplorerPage";
-import PulsePage from "@/pages/PulsePage";
-import CodexSessionsPage from "@/pages/CodexSessionsPage";
-import GitHealthPage from "@/pages/GitHealthPage";
-import GetSomePage from "@/pages/GetSomePage";
 import WelcomePage from "@/pages/WelcomePage";
 import McpPage from "@/pages/McpPage";
 import PairingPage from "@/pages/PairingPage";
@@ -95,6 +103,7 @@ import ChannelsPage from "@/pages/ChannelsPage";
 import WebhooksPage from "@/pages/WebhooksPage";
 import SystemPage from "@/pages/SystemPage";
 import ChatPage from "@/pages/ChatPage";
+import LifePage from "@/pages/LifePage";
 import { LanguageSwitcher } from "@/components/LanguageSwitcher";
 import { ThemeSwitcher } from "@/components/ThemeSwitcher";
 import { useI18n } from "@/i18n";
@@ -114,8 +123,8 @@ function RootRedirect() {
     if (fetched.current) return;
     fetched.current = true;
     fetchJSON<{ soul_exists: boolean }>("/api/welcome/first-run-status")
-      .then((data) => setTarget(data.soul_exists ? "/nexus-health" : "/welcome"))
-      .catch(() => setTarget("/nexus-health"));
+      .then((data) => setTarget(data.soul_exists ? "/os" : "/welcome"))
+      .catch(() => setTarget("/os"));
   }, []);
 
   if (!target) return null;
@@ -148,26 +157,27 @@ const CHAT_NAV_ITEM: NavItem = {
  */
 const BUILTIN_ROUTES_CORE: Record<string, ComponentType> = {
   "/": RootRedirect,
-  "/pulse": PulsePage,
+  "/life": LifePage,
   "/sessions": SessionsPage,
+  "/files": FilesPage,
   "/analytics": AnalyticsPage,
+  "/cost": CostPage,
   "/models": ModelsPage,
   "/logs": LogsPage,
   "/cron": CronPage,
   "/skills": SkillsPage,
   "/plugins": PluginsPage,
   "/explorer": ExplorerPage,
-  "/nexus-health": NexusHealthPage,
-  "/hives": HivesPage,
-  "/codex-sessions": CodexSessionsPage,
-  "/git-health": GitHealthPage,
-  "/get-some": GetSomePage,
+  "/os": OSPage,
+  "/html": HtmlGalleryPage,
+  "/learning": LearningPage,
   "/mcp": McpPage,
   "/pairing": PairingPage,
   "/channels": ChannelsPage,
   "/webhooks": WebhooksPage,
   "/system": SystemPage,
   "/profiles": ProfilesPage,
+  "/profiles/new": ProfileBuilderPage,
   "/config": ConfigPage,
   "/env": EnvPage,
   "/docs": DocsPage,
@@ -183,18 +193,15 @@ function ChatRouteSink() {
 }
 
 const BUILTIN_NAV_REST: NavItem[] = [
-  {
-    path: "/pulse",
-    labelKey: "pulse",
-    label: "Pulse",
-    icon: Activity,
-  },
+  { path: "/life", label: "Life", icon: LayoutDashboard },
   {
     path: "/sessions",
     labelKey: "sessions",
     label: "Sessions",
     icon: MessageSquare,
   },
+  { path: "/files", label: "Files", icon: FolderOpen },
+  { path: "/cost", label: "Cost", icon: DollarSign },
   {
     path: "/analytics",
     labelKey: "analytics",
@@ -211,11 +218,9 @@ const BUILTIN_NAV_REST: NavItem[] = [
   { path: "/cron", labelKey: "cron", label: "Cron", icon: Clock },
   { path: "/skills", labelKey: "skills", label: "Skills", icon: Package },
   { path: "/explorer", labelKey: "explorer", label: "Explorer", icon: Network },
-  { path: "/nexus-health", labelKey: "system_health", label: "System Health", icon: Shield },
-  { path: "/hives", labelKey: "hives", label: "Hives", icon: Workflow },
-  { path: "/codex-sessions", labelKey: "codex_sessions", label: "Codex Sessions", icon: GitBranch },
-  { path: "/get-some", labelKey: "get_some", label: "Get Some", icon: Sparkles },
-  { path: "/git-health", labelKey: "git_health", label: "Git Health", icon: Heart },
+  { path: "/os", labelKey: "os", label: "OS", icon: Server },
+  { path: "/html", label: "HTML", icon: Code },
+  { path: "/learning", label: "Learning", icon: Sparkles },
   { path: "/plugins", labelKey: "plugins", label: "Plugins", icon: Puzzle },
   { path: "/mcp", label: "MCP", icon: Plug },
   { path: "/channels", label: "Channels", icon: Radio },
@@ -239,6 +244,7 @@ const ICON_MAP: Record<string, ComponentType<{ className?: string }>> = {
   Clock,
   Cpu,
   FileText,
+  FolderOpen,
   KeyRound,
   LayoutDashboard,
   Landmark,
@@ -414,11 +420,6 @@ export default function App() {
   const normalizedPath = pathname.replace(/\/$/, "") || "/";
   const isExplorerRoute = normalizedPath === "/explorer";
   const isChatRoute = normalizedPath === "/chat";
-  // H3: /pulse needs full-height layout so the force-directed constellation
-  // canvas has vertical space to render. Without this, the page wrapper
-  // collapses to its content's min-height and the canvas degenerates to a
-  // 44px-tall strip.
-  const isPulseRoute = normalizedPath === "/pulse";
   const embeddedChat = isDashboardEmbeddedChatEnabled();
 
   // `dashboard.show_token_analytics` gates the Analytics nav item.  The
@@ -522,6 +523,7 @@ export default function App() {
   }, []);
 
   return (
+    <ProfileProvider>
     <div
       data-layout-variant={layoutVariant}
       className="flex h-dvh max-h-dvh min-h-0 flex-col overflow-hidden bg-black text-text-primary antialiased"
@@ -591,6 +593,7 @@ export default function App() {
       )}
 
       <PluginSlot name="header-banner" />
+      <ProfileScopeBanner />
 
       <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden pt-14 lg:pt-0">
         <div className="flex min-h-0 min-w-0 flex-1">
@@ -664,6 +667,8 @@ export default function App() {
                 )}
               </Button>
             </div>
+
+            <ProfileSwitcher collapsed={isDesktopCollapsed} />
 
             <nav
               className="min-h-0 w-full flex-1 overflow-y-auto overflow-x-hidden border-t border-current/10 py-2"
@@ -781,7 +786,7 @@ export default function App() {
                   : isChatRoute
                     ? "pb-0 pt-1 sm:pt-2 lg:pt-4"
                     : "pt-2 sm:pt-4 lg:pt-6",
-                (isDocsRoute || isExplorerRoute || isPulseRoute) && "min-h-0 flex-1",
+                (isDocsRoute || isExplorerRoute) && "min-h-0 flex-1",
                 "focus:outline-none",
               )}
             >
@@ -791,21 +796,23 @@ export default function App() {
                   "w-full min-w-0",
                   !isChatRoute && !isExplorerRoute &&
                     "pb-[calc(2rem+env(safe-area-inset-bottom,0px))] lg:pb-8",
-                  (isDocsRoute || isChatRoute || isExplorerRoute || isPulseRoute) &&
+                  (isDocsRoute || isChatRoute || isExplorerRoute) &&
                     "min-h-0 flex flex-1 flex-col",
                 )}
               >
-                <Routes>
-                  {routes.map(({ key, path, element }) => (
-                    <Route key={key} path={path} element={element} />
-                  ))}
-                  <Route
-                    path="*"
-                    element={
-                      <UnknownRouteFallback pluginsLoading={pluginsLoading} />
-                    }
-                  />
-                </Routes>
+                <ProfileKeyedRoutes>
+                  <Routes>
+                    {routes.map(({ key, path, element }) => (
+                      <Route key={key} path={path} element={element} />
+                    ))}
+                    <Route
+                      path="*"
+                      element={
+                        <UnknownRouteFallback pluginsLoading={pluginsLoading} />
+                      }
+                    />
+                  </Routes>
+                </ProfileKeyedRoutes>
 
                 {embeddedChat &&
                   !chatOverriddenByPlugin &&
@@ -843,7 +850,23 @@ export default function App() {
 
       <PluginSlot name="overlay" />
     </div>
+    </ProfileProvider>
   );
+}
+
+/**
+ * Remounts the entire routed page tree when the global management profile
+ * changes. Pages load their data on mount; without this, a page opened
+ * under profile A would keep showing A's state while writes (via the
+ * fetchJSON ?profile= injection) silently targeted the newly selected
+ * profile B — the exact stale-target footgun the switcher exists to kill.
+ * Keying by profile resets every page's local state so it refetches under
+ * the new scope. The persistent ChatPage host below handles its own
+ * remount (channel keyed on scopedProfile).
+ */
+function ProfileKeyedRoutes({ children }: { children: ReactNode }) {
+  const { profile } = useProfileScope();
+  return <div key={profile || "__own__"} className="contents">{children}</div>;
 }
 
 function SidebarNavLink({
@@ -854,26 +877,33 @@ function SidebarNavLink({
   t,
 }: SidebarNavLinkProps) {
   const { path, label, labelKey, icon: Icon } = item;
-  const liRef = useRef<HTMLLIElement>(null);
   const [hovered, setHovered] = useState(false);
+  const [tooltipAnchor, setTooltipAnchor] = useState<HTMLElement | null>(null);
 
   const navLabel = labelKey
     ? ((t.app.nav as Record<string, string>)[labelKey] ?? label)
     : label;
+  const showTooltip = (event: MouseEvent<HTMLElement> | FocusEvent<HTMLElement>) => {
+    setHovered(true);
+    setTooltipAnchor(event.currentTarget);
+  };
+  const hideTooltip = () => {
+    setHovered(false);
+    setTooltipAnchor(null);
+  };
 
   return (
     <li
-      ref={liRef}
-      onMouseEnter={collapsed ? () => setHovered(true) : undefined}
-      onMouseLeave={collapsed ? () => setHovered(false) : undefined}
+      onMouseEnter={collapsed ? showTooltip : undefined}
+      onMouseLeave={collapsed ? hideTooltip : undefined}
     >
       <NavLink
         to={path}
         end={path === "/sessions"}
         onClick={closeMobile}
         aria-label={collapsed ? navLabel : undefined}
-        onFocus={collapsed ? () => setHovered(true) : undefined}
-        onBlur={collapsed ? () => setHovered(false) : undefined}
+        onFocus={collapsed ? showTooltip : undefined}
+        onBlur={collapsed ? hideTooltip : undefined}
         className={({ isActive }) =>
           cn(
             "group/nav relative flex items-center gap-3",
@@ -924,8 +954,8 @@ function SidebarNavLink({
         )}
       </NavLink>
 
-      {collapsed && hovered && liRef.current && (
-        <SidebarTooltip anchor={liRef.current} label={navLabel} warmRef={tooltipWarmRef} />
+      {collapsed && hovered && tooltipAnchor && (
+        <SidebarTooltip anchor={tooltipAnchor} label={navLabel} warmRef={tooltipWarmRef} />
       )}
     </li>
   );
@@ -941,6 +971,7 @@ function SidebarSystemActions({
   const navigate = useNavigate();
   const { activeAction, isBusy, isRunning, pendingAction, runAction } =
     useSystemActions();
+  const canUpdateHermes = status?.can_update_hermes === true;
 
   const items: SystemActionItem[] = [
     {
@@ -950,14 +981,16 @@ function SidebarSystemActions({
       runningLabel: t.status.restartingGateway,
       spin: true,
     },
-    {
+  ];
+  if (canUpdateHermes) {
+    items.push({
       action: "update",
       icon: Download,
       label: t.status.updateHermes,
       runningLabel: t.status.updatingHermes,
       spin: false,
-    },
-  ];
+    });
+  }
 
   const handleClick = (action: SystemAction) => {
     if (isBusy) return;
@@ -1018,24 +1051,31 @@ function SystemActionButton({
   tooltipWarmRef,
 }: SystemActionButtonProps) {
   const { icon: Icon, label, runningLabel, spin } = item;
-  const liRef = useRef<HTMLLIElement>(null);
   const [hovered, setHovered] = useState(false);
+  const [tooltipAnchor, setTooltipAnchor] = useState<HTMLElement | null>(null);
   const busy = isPending || isActionRunning;
   const displayLabel = isActionRunning ? runningLabel : label;
+  const showTooltip = (event: MouseEvent<HTMLElement> | FocusEvent<HTMLElement>) => {
+    setHovered(true);
+    setTooltipAnchor(event.currentTarget);
+  };
+  const hideTooltip = () => {
+    setHovered(false);
+    setTooltipAnchor(null);
+  };
 
   return (
     <li
-      ref={liRef}
-      onMouseEnter={collapsed ? () => setHovered(true) : undefined}
-      onMouseLeave={collapsed ? () => setHovered(false) : undefined}
+      onMouseEnter={collapsed ? showTooltip : undefined}
+      onMouseLeave={collapsed ? hideTooltip : undefined}
     >
       <button
         onClick={onClick}
         disabled={disabled}
         aria-busy={busy}
         aria-label={collapsed ? displayLabel : undefined}
-        onFocus={collapsed ? () => setHovered(true) : undefined}
-        onBlur={collapsed ? () => setHovered(false) : undefined}
+        onFocus={collapsed ? showTooltip : undefined}
+        onBlur={collapsed ? hideTooltip : undefined}
         type="button"
         className={cn(
           "group/action relative flex w-full items-center gap-3",
@@ -1083,8 +1123,8 @@ function SystemActionButton({
         )}
       </button>
 
-      {collapsed && hovered && liRef.current && (
-        <SidebarTooltip anchor={liRef.current} label={displayLabel} warmRef={tooltipWarmRef} />
+      {collapsed && hovered && tooltipAnchor && (
+        <SidebarTooltip anchor={tooltipAnchor} label={displayLabel} warmRef={tooltipWarmRef} />
       )}
     </li>
   );
@@ -1096,18 +1136,25 @@ function SidebarIconWithTooltip({
   label,
   tooltipWarmRef,
 }: SidebarIconWithTooltipProps) {
-  const ref = useRef<HTMLDivElement>(null);
   const [hovered, setHovered] = useState(false);
+  const [tooltipAnchor, setTooltipAnchor] = useState<HTMLElement | null>(null);
+  const showTooltip = (event: MouseEvent<HTMLDivElement>) => {
+    setHovered(true);
+    setTooltipAnchor(event.currentTarget);
+  };
+  const hideTooltip = () => {
+    setHovered(false);
+    setTooltipAnchor(null);
+  };
 
   return (
     <div
-      ref={ref}
       className={cn(
         "relative w-fit",
         collapsed && "group/icon",
       )}
-      onMouseEnter={collapsed ? () => setHovered(true) : undefined}
-      onMouseLeave={collapsed ? () => setHovered(false) : undefined}
+      onMouseEnter={collapsed ? showTooltip : undefined}
+      onMouseLeave={collapsed ? hideTooltip : undefined}
     >
       {children}
 
@@ -1118,8 +1165,8 @@ function SidebarIconWithTooltip({
         />
       )}
 
-      {collapsed && hovered && ref.current && (
-        <SidebarTooltip anchor={ref.current} label={label} warmRef={tooltipWarmRef} />
+      {collapsed && hovered && tooltipAnchor && (
+        <SidebarTooltip anchor={tooltipAnchor} label={label} warmRef={tooltipWarmRef} />
       )}
     </div>
   );
@@ -1127,8 +1174,8 @@ function SidebarIconWithTooltip({
 
 function GatewayDot({ collapsed, status, tooltipWarmRef }: GatewayDotProps) {
   const { t } = useI18n();
-  const ref = useRef<HTMLDivElement>(null);
   const [hovered, setHovered] = useState(false);
+  const [tooltipAnchor, setTooltipAnchor] = useState<HTMLElement | null>(null);
 
   const toneToColor: Record<string, string> = {
     "text-success": "bg-success",
@@ -1148,10 +1195,17 @@ function GatewayDot({ collapsed, status, tooltipWarmRef }: GatewayDotProps) {
     color = toneToColor[gw.tone] ?? "bg-muted-foreground";
     label = `${t.status.gateway} ${gw.label}`;
   }
+  const showTooltip = (event: MouseEvent<HTMLDivElement> | FocusEvent<HTMLDivElement>) => {
+    setHovered(true);
+    setTooltipAnchor(event.currentTarget);
+  };
+  const hideTooltip = () => {
+    setHovered(false);
+    setTooltipAnchor(null);
+  };
 
   return (
     <div
-      ref={ref}
       className={cn(
         "hidden lg:flex py-3 pl-[1.625rem] transition-opacity duration-300",
         collapsed ? "lg:opacity-100" : "lg:opacity-0 lg:h-0 lg:py-0 lg:overflow-hidden",
@@ -1159,18 +1213,18 @@ function GatewayDot({ collapsed, status, tooltipWarmRef }: GatewayDotProps) {
       role="status"
       aria-label={label}
       tabIndex={collapsed ? 0 : -1}
-      onMouseEnter={collapsed ? () => setHovered(true) : undefined}
-      onMouseLeave={collapsed ? () => setHovered(false) : undefined}
-      onFocus={collapsed ? () => setHovered(true) : undefined}
-      onBlur={collapsed ? () => setHovered(false) : undefined}
+      onMouseEnter={collapsed ? showTooltip : undefined}
+      onMouseLeave={collapsed ? hideTooltip : undefined}
+      onFocus={collapsed ? showTooltip : undefined}
+      onBlur={collapsed ? hideTooltip : undefined}
     >
       <span
         aria-hidden
         className={cn("h-1.5 w-1.5 rounded-full", color)}
       />
 
-      {hovered && ref.current && (
-        <SidebarTooltip anchor={ref.current} label={label} warmRef={tooltipWarmRef} />
+      {hovered && tooltipAnchor && (
+        <SidebarTooltip anchor={tooltipAnchor} label={label} warmRef={tooltipWarmRef} />
       )}
     </div>
   );
@@ -1180,11 +1234,16 @@ function SidebarTooltip({ anchor, label, warmRef }: SidebarTooltipProps) {
   const rect = anchor.getBoundingClientRect();
   const sidebar = document.getElementById("app-sidebar");
   const sidebarRight = sidebar?.getBoundingClientRect().right ?? rect.right;
-
-  const isWarm = warmRef ? Date.now() - warmRef.current < 300 : false;
+  const [isWarm, setIsWarm] = useState(false);
 
   useEffect(() => {
-    if (warmRef) warmRef.current = Date.now();
+    if (!warmRef) {
+      setIsWarm(false);
+      return;
+    }
+    const now = Date.now();
+    setIsWarm(now - warmRef.current < 300);
+    warmRef.current = now;
     return () => {
       if (warmRef) warmRef.current = Date.now();
     };

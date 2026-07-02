@@ -24,6 +24,291 @@ from typing import Any, Dict, List
 
 logger = logging.getLogger(__name__)
 
+# Lazily populated at the app-server call site.  Keeping the symbol in this
+# module lets tests monkeypatch the constructor seam without importing the
+# transport at module import time.
+CodexAppServerSession = None
+
+
+def _coerce_usage_int(value: Any) -> int:
+    if isinstance(value, bool):
+        return 0
+    if isinstance(value, int):
+        return max(value, 0)
+    if isinstance(value, float):
+        return max(int(value), 0)
+    if isinstance(value, str):
+        try:
+            return max(int(value), 0)
+        except ValueError:
+            return 0
+    return 0
+
+
+def _record_codex_app_server_usage(agent, turn) -> dict[str, Any]:
+    """Translate Codex app-server token usage into Hermes accounting.
+
+    Codex app-server reports usage via thread/tokenUsage/updated as:
+    inputTokens, cachedInputTokens, outputTokens, reasoningOutputTokens,
+    totalTokens.
+
+    Hermes' canonical prompt bucket includes uncached input + cached input.
+    The Codex app-server protocol does not currently expose cache-write tokens,
+    so that bucket remains zero on this runtime.
+
+    Even when Codex omits usage for a turn, Hermes should still count that turn
+    as one API call for session/status accounting.
+    """
+    agent.session_api_calls += 1
+
+    usage = getattr(turn, "token_usage_last", None)
+    if not isinstance(usage, dict) or not usage:
+        if agent._session_db and agent.session_id:
+            try:
+                if not agent._session_db_created:
+                    agent._ensure_db_session()
+                agent._session_db.update_token_counts(
+                    agent.session_id,
+                    model=agent.model,
+                    api_call_count=1,
+                )
+            except Exception as exc:
+                logger.debug(
+                    "Codex app-server api-call persistence failed (session=%s): %s",
+                    agent.session_id, exc,
+                )
+        return {}
+
+    from agent.usage_pricing import CanonicalUsage, estimate_usage_cost
+
+    input_tokens = _coerce_usage_int(usage.get("inputTokens"))
+    cache_read_tokens = _coerce_usage_int(usage.get("cachedInputTokens"))
+    output_tokens = _coerce_usage_int(usage.get("outputTokens"))
+    reasoning_tokens = _coerce_usage_int(usage.get("reasoningOutputTokens"))
+    reported_total = _coerce_usage_int(usage.get("totalTokens"))
+
+    canonical_usage = CanonicalUsage(
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
+        cache_read_tokens=cache_read_tokens,
+        cache_write_tokens=0,
+        reasoning_tokens=reasoning_tokens,
+        raw_usage=usage,
+    )
+    prompt_tokens = canonical_usage.prompt_tokens
+    completion_tokens = canonical_usage.output_tokens
+    total_tokens = reported_total or canonical_usage.total_tokens
+    usage_dict = {
+        "prompt_tokens": prompt_tokens,
+        "completion_tokens": completion_tokens,
+        "total_tokens": total_tokens,
+        "input_tokens": canonical_usage.input_tokens,
+        "output_tokens": canonical_usage.output_tokens,
+        "cache_read_tokens": canonical_usage.cache_read_tokens,
+        "cache_write_tokens": canonical_usage.cache_write_tokens,
+        "reasoning_tokens": canonical_usage.reasoning_tokens,
+    }
+
+    compressor = getattr(agent, "context_compressor", None)
+    if compressor is not None:
+        try:
+            compressor.update_from_response(usage_dict)
+            context_window = getattr(turn, "model_context_window", None)
+            if isinstance(context_window, int) and context_window > 0:
+                compressor.context_length = context_window
+        except Exception:
+            logger.debug("codex app-server usage update failed", exc_info=True)
+
+    agent.session_prompt_tokens += prompt_tokens
+    agent.session_completion_tokens += completion_tokens
+    agent.session_total_tokens += total_tokens
+    agent.session_input_tokens += canonical_usage.input_tokens
+    agent.session_output_tokens += canonical_usage.output_tokens
+    agent.session_cache_read_tokens += canonical_usage.cache_read_tokens
+    agent.session_cache_write_tokens += canonical_usage.cache_write_tokens
+    agent.session_reasoning_tokens += canonical_usage.reasoning_tokens
+
+    cost_result = estimate_usage_cost(
+        agent.model,
+        canonical_usage,
+        provider=agent.provider,
+        base_url=agent.base_url,
+        api_key=getattr(agent, "api_key", ""),
+    )
+    if cost_result.amount_usd is not None:
+        agent.session_estimated_cost_usd += float(cost_result.amount_usd)
+    agent.session_cost_status = cost_result.status
+    agent.session_cost_source = cost_result.source
+
+    if agent._session_db and agent.session_id:
+        try:
+            if not agent._session_db_created:
+                agent._ensure_db_session()
+            agent._session_db.update_token_counts(
+                agent.session_id,
+                input_tokens=canonical_usage.input_tokens,
+                output_tokens=canonical_usage.output_tokens,
+                cache_read_tokens=canonical_usage.cache_read_tokens,
+                cache_write_tokens=canonical_usage.cache_write_tokens,
+                reasoning_tokens=canonical_usage.reasoning_tokens,
+                estimated_cost_usd=float(cost_result.amount_usd)
+                if cost_result.amount_usd is not None else None,
+                cost_status=cost_result.status,
+                cost_source=cost_result.source,
+                billing_provider=agent.provider,
+                billing_base_url=agent.base_url,
+                billing_mode="subscription_included"
+                if cost_result.status == "included" else None,
+                model=agent.model,
+                api_call_count=1,
+            )
+        except Exception as exc:
+            logger.debug(
+                "Codex app-server token persistence failed (session=%s, tokens=%d): %s",
+                agent.session_id, total_tokens, exc,
+            )
+
+    return {
+        **usage_dict,
+        "last_prompt_tokens": prompt_tokens,
+        "estimated_cost_usd": float(cost_result.amount_usd)
+        if cost_result.amount_usd is not None else None,
+        "cost_status": cost_result.status,
+        "cost_source": cost_result.source,
+    }
+
+
+def _resolve_codex_permission_profile() -> "str | None":
+    """Read tools.terminal.security_mode from the active profile config.
+
+    Returns the mapped Codex permission-profile id when the key is
+    explicitly set in the profile's config.yaml, or ``None`` to let
+    ``CodexAppServerSession``'s built-in env-var fallback
+    (``HERMES_TERMINAL_SECURITY_MODE``) run unchanged.
+
+    Precedence contract (mirrors PR A2b spec):
+      1. profile config tools.terminal.security_mode  (this function)
+      2. env HERMES_TERMINAL_SECURITY_MODE            (session __init__)
+      3. "auto" / "workspace-write"                   (session __init__)
+
+    An unrecognised mode value logs a warning and returns ``None``
+    (fail-safe: never silently maps to full-access).
+    """
+    from agent.transports.codex_app_server_session import (
+        _HERMES_TO_CODEX_PERMISSION_PROFILE,
+    )
+
+    try:
+        from hermes_cli.config import load_config
+        cfg = load_config() or {}
+    except Exception:
+        return None
+
+    mode = (
+        (cfg.get("tools") or {})
+        .get("terminal") or {}
+    ).get("security_mode")
+
+    if not isinstance(mode, str) or not mode.strip():
+        return None  # Not set — let the session's env-var fallback handle it
+
+    mode = mode.strip()
+    mapped = _HERMES_TO_CODEX_PERMISSION_PROFILE.get(mode)
+    if mapped is None:
+        logger.warning(
+            "codex: unknown tools.terminal.security_mode=%r in profile config; "
+            "ignoring (falling back to HERMES_TERMINAL_SECURITY_MODE env var). "
+            "Valid values: %s",
+            mode,
+            ", ".join(sorted(_HERMES_TO_CODEX_PERMISSION_PROFILE)),
+        )
+        return None
+
+    return mapped
+
+
+class CodexCwdConfinementError(RuntimeError):
+    """Bound lane cwd confinement violation, card t_0113eacc."""
+
+
+def _realpath(path: str) -> str:
+    return os.path.realpath(os.path.abspath(os.path.expanduser(path)))
+
+
+def _is_within_path(path: str, root: str) -> bool:
+    return path == root or path.startswith(root + os.sep)
+
+
+def _resolve_codex_thread_cwd(agent) -> tuple[str, str]:
+    """Resolve the cwd for a codex-native app-server thread.
+
+    Returns ``(cwd, source)`` where source is exactly one of:
+    ``session_cwd`` | ``bound_worktree`` | ``legacy_process_cwd``.
+
+    Confinement-aware fail-closed precedence (Hermes review 2026-07-01):
+      1. ``session_cwd`` set + active worktree bound: resolve both paths
+         (expanduser + abspath + realpath). Return ``(session_cwd_real,
+         "session_cwd")`` only when it is the bound worktree or a descendant;
+         otherwise raise ``CodexCwdConfinementError`` naming both paths.
+      2. ``session_cwd`` set + unbound: return ``(session_cwd,
+         "session_cwd")`` unchanged for legacy interactive compatibility.
+      3. no ``session_cwd`` + active worktree bound: return
+         ``(bound_worktree_realpath, "bound_worktree")`` only when it is an
+         existing directory. If the bound path is missing/invalid, raise
+         ``CodexCwdConfinementError`` fail-closed.
+      4. fully unbound: fail closed if confinement is required without a
+         bound worktree; otherwise return ``(os.getcwd(), "legacy_process_cwd")``
+         for legacy behavior.
+
+    Why: webhook/loki lanes bind a per-thread worktree through a ContextVar;
+    V1/V2 escape vectors let a bound lane silently run in the gateway/process
+    cwd or an explicit cwd outside its worktree. Fallback to another cwd while
+    bound would recreate the escape (card t_0113eacc).
+    """
+    session_cwd = getattr(agent, "session_cwd", None)
+
+    try:
+        from agent.codex_session_context import (
+            get_active_worktree,
+            is_worktree_confinement_required,
+        )
+        active_worktree = get_active_worktree()
+    except Exception:
+        active_worktree = None
+        is_worktree_confinement_required = lambda: False
+
+    if active_worktree:
+        wt_real = _realpath(str(active_worktree))
+        if session_cwd:
+            session_cwd_real = _realpath(str(session_cwd))
+            if _is_within_path(session_cwd_real, wt_real):
+                return session_cwd_real, "session_cwd"
+            raise CodexCwdConfinementError(
+                "Codex cwd outside bound worktree blocked: "
+                f"session_cwd={session_cwd_real!r}, active_worktree={wt_real!r}"
+            )
+        if os.path.isdir(wt_real):
+            return wt_real, "bound_worktree"
+        raise CodexCwdConfinementError(
+            "Codex bound worktree missing or invalid; refusing process-cwd fallback: "
+            f"active_worktree={wt_real!r}"
+        )
+
+    # Unbound: confinement wins over ANY unbound resolution — including a
+    # session_cwd (which no production code sets today, but a future refactor
+    # could). Checking it before the session_cwd branch keeps the fail-closed
+    # invariant consistent so that path can't silently reopen the escape.
+    if is_worktree_confinement_required():
+        raise CodexCwdConfinementError(
+            "Codex thread cwd denied — confinement required but no worktree bound "
+            "(isolation lost on resume); refusing process-cwd fallback."
+        )
+
+    if session_cwd:
+        return session_cwd, "session_cwd"
+
+    return os.getcwd(), "legacy_process_cwd"
+
 
 def run_codex_app_server_turn(
     agent,
@@ -41,13 +326,18 @@ def run_codex_app_server_turn(
     Called from run_conversation() when agent.api_mode == "codex_app_server".
     Returns the same dict shape as the chat_completions path.
     """
-    from agent.transports.codex_app_server_session import CodexAppServerSession
+    session_cls = CodexAppServerSession
+    if session_cls is None:
+        from agent.transports.codex_app_server_session import (
+            CodexAppServerSession as session_cls,
+        )
 
     # Lazy session: one CodexAppServerSession per AIAgent instance.
     # Spawned on first turn, reused across turns, closed at AIAgent
     # shutdown (see _cleanup hook).
     if not hasattr(agent, "_codex_session") or agent._codex_session is None:
-        cwd = getattr(agent, "session_cwd", None) or os.getcwd()
+        cwd, cwd_source = _resolve_codex_thread_cwd(agent)
+        logger.info("codex thread cwd resolved: %s (source=%s)", cwd, cwd_source)
         # Approval callback: defer to Hermes' standard prompt flow if a
         # CLI thread has installed one. Gateway / cron contexts get the
         # codex-side fail-closed default.
@@ -56,9 +346,15 @@ def run_codex_app_server_turn(
             approval_callback = _get_approval_callback()
         except Exception:
             approval_callback = None
-        agent._codex_session = CodexAppServerSession(
+        # Resolve the permission profile from the active profile's config
+        # (tools.terminal.security_mode).  None means "let the session's
+        # own env-var fallback run unchanged", so all profiles that don't
+        # explicitly opt in are byte-identical to pre-change behaviour.
+        permission_profile = _resolve_codex_permission_profile()
+        agent._codex_session = session_cls(
             cwd=cwd,
             approval_callback=approval_callback,
+            permission_profile=permission_profile,
         )
 
     # NOTE: the user message is ALREADY appended to messages by the
@@ -120,6 +416,8 @@ def run_codex_app_server_turn(
     agent._iters_since_skill = (
         getattr(agent, "_iters_since_skill", 0) + turn.tool_iterations
     )
+    usage_result = _record_codex_app_server_usage(agent, turn)
+    api_calls = 1
 
     # Now check the skill nudge AFTER iters were incremented — same
     # pattern the chat_completions path uses (line ~15432).
@@ -140,6 +438,7 @@ def run_codex_app_server_turn(
                 original_user_message=original_user_message,
                 final_response=turn.final_text,
                 interrupted=False,
+                messages=messages,
             )
         except Exception:
             logger.debug("external memory sync raised", exc_info=True)
@@ -164,12 +463,13 @@ def run_codex_app_server_turn(
     return {
         "final_response": turn.final_text,
         "messages": messages,
-        "api_calls": 1,  # one app-server "turn" maps to one logical API call
+        "api_calls": api_calls,
         "completed": not turn.interrupted and turn.error is None,
         "partial": turn.interrupted or turn.error is not None,
         "error": turn.error,
         "codex_thread_id": turn.thread_id,
         "codex_turn_id": turn.turn_id,
+        **usage_result,
     }
 
 

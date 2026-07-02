@@ -121,6 +121,16 @@ DEFAULT_CLAIM_TTL_SECONDS = 15 * 60
 # effect of normal API traffic.
 DEFAULT_CLAIM_HEARTBEAT_MAX_STALE_SECONDS = 60 * 60
 
+# Grace added to a claim when a reclaim is deferred because the previous
+# host-local worker is still alive after a termination attempt. Releasing the
+# claim in that state would spawn a duplicate alongside the surviving worker —
+# the runaway seen when a cgroup memory.high throttle parks a worker in
+# uninterruptible (D) state, where a pending SIGKILL cannot be delivered until
+# the throttle lifts. Holding the claim a short grace and retrying next tick
+# stops the duplication; once no duplicate is spawned the pressure eases, the
+# signal lands, and the following tick reclaims cleanly.
+RECLAIM_DEFER_GRACE_SECONDS = 120
+
 
 def _resolve_claim_ttl_seconds(ttl_seconds: Optional[int] = None) -> int:
     """Return the effective claim TTL, honoring the kanban env override.
@@ -3286,6 +3296,14 @@ def release_stale_claims(
         termination = _terminate_reclaimed_worker(
             row["worker_pid"], row["claim_lock"], signal_fn=signal_fn,
         )
+        # Never release a claim while our own worker is still alive: that would
+        # spawn a duplicate beside it. Hold the claim and retry next tick.
+        if _worker_survived_termination(termination):
+            _defer_reclaim_for_live_worker(
+                conn, row["id"], row["claim_lock"], now, termination,
+                reason="ttl_expired_worker_alive",
+            )
+            continue
         with write_txn(conn):
             cur = conn.execute(
                 "UPDATE tasks SET status = 'ready', claim_lock = NULL, "
@@ -3838,6 +3856,27 @@ def _cleanup_workspace(conn: sqlite3.Connection, task_id: str) -> None:
         kind: Optional[str] = row["workspace_kind"]
         path: Optional[str] = row["workspace_path"]
         if kind != "scratch" or not path:
+            # This task's own workspace isn't a removable scratch dir, but its
+            # completion may still unblock a deferred parent scratch cleanup
+            # (e.g. a 'dir' child whose scratch parent was waiting on it). #33774
+            _try_cleanup_parent_workspaces(conn, task_id)
+            return
+        # Check if this task has children that still need the workspace.
+        # If any child is not yet done/archived, defer cleanup so the
+        # child can read handoff artifacts from the scratch dir (#33774).
+        _active_children = conn.execute(
+            "SELECT 1 FROM task_links l "
+            "JOIN tasks t ON t.id = l.child_id "
+            "WHERE l.parent_id = ? AND t.status NOT IN ('done', 'archived', 'failed', 'cancelled') "
+            "LIMIT 1",
+            (task_id,),
+        ).fetchone()
+        if _active_children:
+            _log.debug(
+                "Deferring scratch workspace cleanup for task %s: "
+                "active children still need workspace at %s",
+                task_id, path,
+            )
             return
         import shutil
         wp = Path(path)
@@ -3860,8 +3899,52 @@ def _cleanup_workspace(conn: sqlite3.Connection, task_id: str) -> None:
         # Also kill the tmux session for the worker that owned this task,
         # if the tmux session is now dead (worker process exited).
         _cleanup_worker_tmux(conn, task_id)
+        # After cleaning up this task's workspace, check if any parent
+        # tasks now have all children done — their deferred cleanup can
+        # proceed (#33774).
+        _try_cleanup_parent_workspaces(conn, task_id)
     except Exception:
         pass  # best-effort — never block completion
+
+
+def _try_cleanup_parent_workspaces(conn: sqlite3.Connection, task_id: str) -> None:
+    """Clean up parent scratch workspaces now that *task_id* completed.
+
+    When a parent task's cleanup was deferred because it had active children,
+    this function is called after each child completes.  If all children of a
+    parent are now done/archived/failed/cancelled, the parent's scratch
+    workspace is removed (#33774).
+    """
+    try:
+        parents = conn.execute(
+            "SELECT parent_id FROM task_links WHERE child_id = ?",
+            (task_id,),
+        ).fetchall()
+        for (parent_id,) in parents:
+            row = conn.execute(
+                "SELECT workspace_kind, workspace_path FROM tasks WHERE id = ?",
+                (parent_id,),
+            ).fetchone()
+            if not row or row["workspace_kind"] != "scratch" or not row["workspace_path"]:
+                continue
+            # Check if ALL children of this parent are terminal
+            active = conn.execute(
+                "SELECT 1 FROM task_links l "
+                "JOIN tasks t ON t.id = l.child_id "
+                "WHERE l.parent_id = ? AND t.status NOT IN ('done', 'archived', 'failed', 'cancelled') "
+                "LIMIT 1",
+                (parent_id,),
+            ).fetchone()
+            if active:
+                continue  # still has active children
+            # All children done — safe to clean up parent workspace
+            import shutil
+            wp = Path(row["workspace_path"])
+            if wp.is_dir() and _is_managed_scratch_path(wp):
+                shutil.rmtree(wp, ignore_errors=True)
+                _log.debug("Deferred cleanup: removed parent %s scratch workspace: %s", parent_id, wp)
+    except Exception:
+        pass  # best-effort
 
 
 def _cleanup_worker_tmux(conn: sqlite3.Connection, task_id: str) -> None:
@@ -4880,6 +4963,12 @@ class DispatchResult:
     subsequent tick when the assignee has capacity. Separate bucket so
     telemetry / dashboards can show "this profile is busy" vs
     "task is genuinely stuck"."""
+    skipped_ready_spec: list[tuple[str, str]] = field(default_factory=list)
+    """Tasks NOT claimed this tick because they failed the READY_SPEC trust-compiler
+    gate under ``HERMES_KANBAN_ENFORCE_READY_SPEC=enforce``. Each entry is
+    ``(task_id, comma_joined_error_codes)``. The card is left in ``ready`` (no status
+    mutation); a deduped ``ready_spec.skipped`` event carries the detail. Empty unless
+    enforcement is on — default OFF means byte-for-byte unchanged dispatch."""
     crashed: list[str] = field(default_factory=list)
     """Task ids reclaimed because their worker PID disappeared."""
     auto_blocked: list[str] = field(default_factory=list)
@@ -5256,7 +5345,13 @@ def _terminate_reclaimed_worker(
     info["termination_attempted"] = True
     try:
         kill(int(pid), signal.SIGTERM)
-    except (ProcessLookupError, OSError):
+    except ProcessLookupError:
+        # Process is already gone — that's a successful termination, not a
+        # survival. Leaving terminated=False here would make the reclaim guard
+        # misread a dead worker as still-alive and defer forever.
+        info["terminated"] = True
+        return info
+    except OSError:
         return info
 
     for _ in range(10):
@@ -5277,6 +5372,63 @@ def _terminate_reclaimed_worker(
 
     info["terminated"] = not _pid_alive(pid)
     return info
+
+
+def _worker_survived_termination(termination: dict) -> bool:
+    """True when we tried to kill our own host-local worker and it is still alive.
+
+    Reclaiming in this state would release the claim and let the dispatcher
+    spawn a second worker while the first is still running — the duplication
+    loop. Only host-local workers we actually signalled count: a non-local
+    claim lock or a no-op attempt (no ``os.kill`` available) must fall through
+    to the normal release path, since we cannot manage that worker anyway.
+    """
+    return bool(
+        termination.get("termination_attempted")
+        and termination.get("host_local")
+        and not termination.get("terminated")
+    )
+
+
+def _defer_reclaim_for_live_worker(
+    conn: sqlite3.Connection,
+    task_id: str,
+    claim_lock: Optional[str],
+    now: int,
+    termination: dict,
+    *,
+    reason: str,
+) -> None:
+    """Hold a claim whose worker survived termination instead of releasing it.
+
+    Extends ``claim_expires`` by ``RECLAIM_DEFER_GRACE_SECONDS`` so the task
+    stays ``running`` (no duplicate spawn) and records a ``reclaim_deferred``
+    event so the hold is visible in ``hermes kanban tail``. The next dispatch
+    tick retries the kill; this is self-correcting because not spawning a
+    duplicate is what lets the throttled worker finally die.
+    """
+    grace = now + RECLAIM_DEFER_GRACE_SECONDS
+    with write_txn(conn):
+        cur = conn.execute(
+            "UPDATE tasks SET claim_expires = ? "
+            "WHERE id = ? AND status = 'running' AND claim_lock IS ?",
+            (grace, task_id, claim_lock),
+        )
+        if cur.rowcount != 1:
+            return
+        run_id = _current_run_id(conn, task_id)
+        if run_id is not None:
+            conn.execute(
+                "UPDATE task_runs SET claim_expires = ? WHERE id = ?",
+                (grace, run_id),
+            )
+        payload = {
+            "reason": reason,
+            "claim_lock": claim_lock,
+            "claim_expires_now": grace,
+        }
+        payload.update(termination)
+        _append_event(conn, task_id, "reclaim_deferred", payload, run_id=run_id)
 
 
 def heartbeat_worker(
@@ -5516,6 +5668,15 @@ def detect_stale_running(
         termination = _terminate_reclaimed_worker(
             pid, lock, signal_fn=signal_fn,
         )
+
+        # Never release a claim while our own worker is still alive: that would
+        # spawn a duplicate beside it. Hold the claim and retry next tick.
+        if _worker_survived_termination(termination):
+            _defer_reclaim_for_live_worker(
+                conn, tid, lock, now, termination,
+                reason="heartbeat_stale_worker_alive",
+            )
+            continue
 
         with write_txn(conn):
             cur = conn.execute(
@@ -6165,6 +6326,115 @@ def has_spawnable_review(conn: sqlite3.Connection) -> bool:
     return False
 
 
+# ── READY_SPEC trust-compiler dispatch gate (additive; OFF by default) ──────
+# Makes a card's ``ready`` status mean *provably safe to dispatch*: before claiming
+# an otherwise-dispatchable card we validate its fenced ``ready-spec`` block. Gated by
+# HERMES_KANBAN_ENFORCE_READY_SPEC (unset/off => skipped entirely, dispatch unchanged).
+# The pure validator lives in hermes_cli/ready_spec.py; this is the I/O-bound glue.
+_READY_SPEC_ENV = "HERMES_KANBAN_ENFORCE_READY_SPEC"
+_READY_SPEC_FLIP_EPOCH_ENV = "HERMES_KANBAN_READY_SPEC_FLIP_EPOCH"
+_ready_spec_emitted: dict[str, str] = {}  # task_id -> last dedup key (process-local)
+_READY_SPEC_EMIT_CAP = 2000  # bound the dedup map; best-effort dedup, clear-on-overflow
+
+
+def _ready_spec_mode() -> str:
+    """``off`` (default) | ``warn`` | ``enforce`` from the env flag."""
+    raw = os.environ.get(_READY_SPEC_ENV, "").strip().lower()
+    return raw if raw in ("warn", "enforce") else "off"
+
+
+def _ready_spec_descriptor(task) -> str:
+    """The card's workspace descriptor — what dispatch resolves FROM, read-only:
+    ``scratch``/``sandbox`` slug, else the absolute workspace_path for dir/worktree.
+
+    NOTE: a ``dir``/``worktree`` card with NO workspace_path yields the bare kind name,
+    which the validator treats as an unsafe (unresolved) workspace and BLOCKS under
+    enforce — conservative/fail-closed by design (such a card has no concrete, checkable
+    sandbox path). Give those cards an explicit absolute scratch/sandbox path to pass."""
+    kind = getattr(task, "workspace_kind", None) or "scratch"
+    path = getattr(task, "workspace_path", None)
+    if kind == "scratch" and not path:
+        return "scratch"
+    return path or kind
+
+
+def _ready_spec_board_policy(board: Optional[str]) -> dict:
+    """Validation context: REAL profile resolution (no fake green), canonical audits
+    prefix, live repo root."""
+    policy: dict = {
+        "audits_prefix": os.path.expanduser("~/.hermes/audits"),
+        "repo_root": os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+        "default_verifier": "h2reviewer",
+    }
+    try:
+        from hermes_cli.profiles import profile_exists as _pe
+        policy["verifier_resolver"] = _pe
+    except Exception:
+        # profiles unavailable -> do NOT silently skip the check (that is a fail-open).
+        # Degrade to a conservative known set so unknown verifiers still fail closed.
+        _log.warning(
+            "ready_spec: profiles import failed; verifier resolution degraded to fallback set"
+        )
+        policy["known_profiles"] = {
+            "h2reviewer", "h2librarian", "h2coder", "h2patcher", "h2governor",
+        }
+    return policy
+
+
+def _ready_spec_flip_epoch() -> int:
+    try:
+        return int(os.environ.get(_READY_SPEC_FLIP_EPOCH_ENV, "").strip())
+    except (TypeError, ValueError):
+        return 0
+
+
+def ready_spec_evaluate(conn, task_id, board, mode):
+    """Pure-ish evaluation for one card: returns (decision, event) where decision is
+    ``proceed`` | ``skip`` and event is a dict to emit (or None). ``skip`` only under
+    enforce on a non-grandfathered failing card. Reused by dispatch AND ``lint-ready``."""
+    from hermes_cli.ready_spec import validate_ready_spec
+    task = get_task(conn, task_id)
+    if task is None:
+        return "proceed", None
+    descriptor = _ready_spec_descriptor(task)
+    res = validate_ready_spec(
+        {"id": task.id, "board": board or "", "body": task.body, "workspace": descriptor},
+        resolved_workspace=descriptor, board_policy=_ready_spec_board_policy(board),
+    )
+    if res.ok:
+        return "proceed", None
+    eff_mode, grandfathered = mode, False
+    if mode == "enforce":
+        epoch = _ready_spec_flip_epoch()
+        if epoch and int(getattr(task, "created_at", 0) or 0) < epoch:
+            eff_mode, grandfathered = "warn", True
+    kind = "ready_spec.warn" if eff_mode != "enforce" else "ready_spec.skipped"
+    decision = "skip" if eff_mode == "enforce" else "proceed"
+    event = {"kind": kind, "codes": res.codes,
+             "payload": {"codes": res.codes, "errors": res.errors,
+                         "mode": eff_mode, "grandfathered": grandfathered}}
+    return decision, event
+
+
+def _ready_spec_emit(conn, task_id, event) -> None:
+    """Emit the ready_spec event, deduped by (task_id, kind, codes) so a stuck card
+    does not spam one event per dispatcher tick."""
+    import hashlib
+    key = hashlib.sha256(
+        ("|".join([task_id, event["kind"], ",".join(sorted(event["codes"]))])).encode()
+    ).hexdigest()[:16]
+    if _ready_spec_emitted.get(task_id) == key:
+        return
+    if len(_ready_spec_emitted) > _READY_SPEC_EMIT_CAP:
+        _ready_spec_emitted.clear()  # bound growth; dedup is best-effort (one re-emit max)
+    _ready_spec_emitted[task_id] = key
+    try:
+        with write_txn(conn):
+            _append_event(conn, task_id, event["kind"], event["payload"])
+    except Exception:
+        _log.debug("ready_spec: event emit failed for %s", task_id, exc_info=True)
+
+
 def dispatch_once(
     conn: sqlite3.Connection,
     *,
@@ -6307,6 +6577,9 @@ def dispatch_once(
             # bucket it as nonspawnable if the profile genuinely isn't
             # there, with the existing diagnostic.
             _default_assignee_resolved = True
+    # READY_SPEC enforcement mode is fixed for the whole tick — read ONCE here, not
+    # per-card, so a mid-tick env change can't evaluate cards under different modes.
+    _rs_mode = _ready_spec_mode()
     for row in ready_rows:
         if max_spawn is not None and running_count + spawned >= max_spawn:
             break
@@ -6431,6 +6704,43 @@ def dispatch_once(
                         {"reason": guard_reason},
                     )
             continue
+        # ── READY_SPEC trust-compiler gate (additive; OFF => no behavior change) ──
+        # Validate the card's ready-spec BEFORE claim_task. claim_task stays the sole
+        # status-mutation point, so a gated card simply never reaches it.
+        #   off     -> gate skipped entirely (dispatch byte-for-byte unchanged)
+        #   warn    -> validate, emit telemetry, STILL claim (audit blast radius first)
+        #   enforce -> on validation failure OR a gate error, SKIP and FAIL CLOSED: a
+        #              validator/infra crash must NEVER become a silent claim bypass.
+        if _rs_mode != "off":
+            try:
+                _rs_decision, _rs_event = ready_spec_evaluate(
+                    conn, row["id"], board, _rs_mode
+                )
+            except Exception:
+                # The gate itself errored (DB/import/etc). FAIL CLOSED under enforce
+                # (no confident "claimable" => not claimable); warn just proceeds.
+                _log.debug("ready_spec gate error on %s", row["id"], exc_info=True)
+                if _rs_mode == "enforce":
+                    if not dry_run:
+                        _ready_spec_emit(conn, row["id"], {
+                            "kind": "ready_spec.skipped",
+                            "codes": ["ready_spec_gate_error"],
+                            "payload": {
+                                "codes": ["ready_spec_gate_error"], "mode": "enforce",
+                                "errors": [{"code": "ready_spec_gate_error",
+                                            "message": "gate raised; failing closed"}],
+                            },
+                        })
+                    result.skipped_ready_spec.append((row["id"], "ready_spec_gate_error"))
+                    continue
+                _rs_decision, _rs_event = "proceed", None
+            if _rs_event is not None and not dry_run:
+                _ready_spec_emit(conn, row["id"], _rs_event)
+            if _rs_decision == "skip":
+                result.skipped_ready_spec.append(
+                    (row["id"], ",".join(_rs_event["codes"]) if _rs_event else "")
+                )
+                continue
         if dry_run:
             result.spawned.append((row["id"], row_assignee, ""))
             # Increment per-profile counter even in dry_run so the cap
@@ -6838,6 +7148,40 @@ def _worker_terminal_timeout_env(
     return str(desired)
 
 
+def _resolve_worker_cli_toolsets(hermes_home: Optional[str]) -> Optional[list[str]]:
+    """Return the assigned profile's effective CLI toolsets for a worker.
+
+    Dispatcher-spawned workers are launched from a long-lived gateway process,
+    then the child re-enters the CLI with ``-p <assignee>``. Resolve the
+    assignee profile's CLI tool surface at dispatch time and pass it as an
+    explicit ``--toolsets`` pin so worker startup cannot fall back to a stale
+    root/active-profile config or a profile whose top-level ``toolsets`` entry
+    is only the kanban orchestrator surface. ``model_tools`` still appends the
+    task-scoped kanban lifecycle tools when ``HERMES_KANBAN_TASK`` is set.
+    """
+    if not hermes_home:
+        return None
+    try:
+        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+        from hermes_cli.config import load_config
+        from hermes_cli.tools_config import _get_platform_tools
+
+        token = set_hermes_home_override(hermes_home)
+        try:
+            cfg = load_config()
+            toolsets = sorted(_get_platform_tools(cfg, "cli"))
+        finally:
+            reset_hermes_home_override(token)
+        return toolsets or None
+    except Exception as exc:
+        _log.debug(
+            "kanban worker: could not resolve CLI toolsets for HERMES_HOME=%r (%s)",
+            hermes_home,
+            exc,
+        )
+        return None
+
+
 def _default_spawn(
     task: Task,
     workspace: str,
@@ -6971,6 +7315,9 @@ def _default_spawn(
                 cmd.extend(["--skills", sk])
     if task.model_override:
         cmd.extend(["-m", task.model_override])
+    worker_toolsets = _resolve_worker_cli_toolsets(env.get("HERMES_HOME"))
+    if worker_toolsets:
+        cmd.extend(["--toolsets", ",".join(worker_toolsets)])
     cmd.extend([
         "chat",
         "-q", prompt,

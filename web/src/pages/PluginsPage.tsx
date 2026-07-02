@@ -10,12 +10,12 @@ import { Select, SelectOption } from "@nous-research/ui/ui/components/select";
 import { Switch } from "@nous-research/ui/ui/components/switch";
 import { Spinner } from "@nous-research/ui/ui/components/spinner";
 import { CommandBlock } from "@nous-research/ui/ui/components/command-block";
-import { Card, CardContent, CardHeader, CardTitle } from "@nous-research/ui/ui/components/card";
-import { ConfirmDialog } from "@nous-research/ui/ui/components/confirm-dialog";
-import { Input } from "@nous-research/ui/ui/components/input";
-import { Label } from "@nous-research/ui/ui/components/label";
-import { useToast } from "@nous-research/ui/hooks/use-toast";
-import { Toast } from "@nous-research/ui/ui/components/toast";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui-shims";
+import { ConfirmDialog } from "@/components/ui-shims";
+import { Input } from "@/components/ui-shims";
+import { Label } from "@/components/ui-shims";
+import { useToast } from "@/components/ui-shims";
+import { Toast } from "@/components/ui-shims";
 import { useI18n } from "@/i18n";
 import { PluginSlot } from "@/plugins";
 import { cn } from "@/lib/utils";
@@ -240,7 +240,7 @@ export default function PluginsPage() {
               <Input
                 className="font-mono-ui lowercase"
                 id="install-url"
-                placeholder="owner/repo or https://..."
+                placeholder="owner/repo, owner/repo/subdir, or https://..."
                 spellCheck={false}
                 value={installId}
                 onChange={(e) => setInstallId(e.target.value)}

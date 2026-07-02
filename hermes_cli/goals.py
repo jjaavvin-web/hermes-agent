@@ -776,6 +776,17 @@ KANBAN_GOAL_FINALIZE_TEMPLATE = (
     "kanban_block with the reason instead."
 )
 
+# Fed when the deterministic code gate (pytest + ruff PLW1514 over the diff)
+# vetoes a "done": newly-red tests or missing-encoding violations the lane
+# introduced. This is a PRIMARY veto — it skips the LLM judge entirely for
+# that turn so a judge can't override hard evidence of broken code.
+CODE_GATE_CONTINUATION_TEMPLATE = (
+    "[Continuing — deterministic code gate failed; task NOT done]\n"
+    "{report}\n\n"
+    "Fix the failing tests and PLW1514 (encoding=) violations above, then "
+    "continue. Do not call kanban_complete until the gate is green."
+)
+
 
 def run_kanban_goal_loop(
     *,
@@ -787,6 +798,7 @@ def run_kanban_goal_loop(
     max_turns: int = DEFAULT_MAX_TURNS,
     first_response: str = "",
     log=None,
+    code_gate_fn=None,
 ) -> Dict[str, Any]:
     """Drive a kanban worker through a Ralph-style goal loop.
 
@@ -811,9 +823,21 @@ def run_kanban_goal_loop(
     (str -> str), ``task_status_fn`` (() -> str|None), and ``block_fn``
     (reason: str -> None).
 
+    ``code_gate_fn`` (optional, default None) is the deterministic CODE-lane
+    gate — a zero-arg callable returning an object with ``.ran`` / ``.passed``
+    / ``.report`` (see ``hermes_cli.code_lane_gate.GateResult``). When
+    supplied it runs as the PRIMARY check each turn BEFORE the LLM judge: if
+    the gate ran and did not pass, the loop deterministically CONTINUEs with
+    the gate's report and skips the judge for that turn (a judge cannot
+    override hard evidence of broken code). If the gate passed or could not
+    run (fail-open), the loop falls through to the existing LLM judge, which
+    is the secondary semantic check. Default None preserves every existing
+    call-site's behaviour exactly (pure LLM-judge loop).
+
     Returns a decision dict: ``{"outcome", "turns_used", "reason"}`` where
     outcome is one of ``"completed_by_worker"``, ``"blocked_budget"``,
-    ``"blocked_by_worker"``, or ``"stopped"``.
+    ``"blocked_by_worker"``, ``"blocked_by_code_gate"`` (a worker self-marked
+    the card done but the deterministic gate vetoed it), or ``"stopped"``.
     """
 
     def _log(msg: str) -> None:
@@ -841,6 +865,46 @@ def run_kanban_goal_loop(
             return {"outcome": "stopped", "turns_used": turns_used, "reason": "status check failed"}
 
         if status == "done":
+            # MED2: a worker that marked the card done MUST NOT bypass the
+            # deterministic code gate. Run it ONCE here, before accepting the
+            # completion. If it RAN and vetoed (newly-red tests / PLW1514),
+            # reject the completion and block the card for review. Fail-OPEN:
+            # a gate that could not run (ran=False), raised, or is absent
+            # accepts the completion exactly as before.
+            if code_gate_fn is not None:
+                done_gate = None
+                try:
+                    done_gate = code_gate_fn()
+                except Exception as exc:
+                    _log(f"kanban goal loop: code gate raised on completion ({exc}); fail-open accept")
+                    done_gate = None
+                if (
+                    done_gate is not None
+                    and getattr(done_gate, "ran", False)
+                    and not getattr(done_gate, "passed", False)
+                ):
+                    report = _truncate(getattr(done_gate, "report", "") or "", 1500)
+                    n_red = len(getattr(done_gate, "tests_red", []) or [])
+                    n_ruff = len(getattr(done_gate, "ruff_violations", []) or [])
+                    _log(
+                        f"kanban goal loop: task {task_id} marked done by worker but "
+                        f"code gate VETOED (tests_red={n_red} ruff={n_ruff}); blocking"
+                    )
+                    try:
+                        block_fn(
+                            "Worker marked this task complete, but the deterministic "
+                            "code gate rejected the completion:\n" + report
+                        )
+                    except Exception as exc:
+                        _log(f"kanban goal loop: block_fn failed ({exc})")
+                    return {
+                        "outcome": "blocked_by_code_gate",
+                        "turns_used": turns_used,
+                        "reason": (
+                            f"code gate vetoed worker completion "
+                            f"({n_red} new test failure(s), {n_ruff} PLW1514 violation(s))"
+                        ),
+                    }
             _log(f"kanban goal loop: task {task_id} completed by worker after {turns_used} turn(s)")
             return {"outcome": "completed_by_worker", "turns_used": turns_used, "reason": "worker completed the task"}
         if status == "blocked":
@@ -851,27 +915,53 @@ def run_kanban_goal_loop(
             _log(f"kanban goal loop: task {task_id} status={status!r}; stopping")
             return {"outcome": "stopped", "turns_used": turns_used, "reason": f"status={status}"}
 
-        # Still open — judge whether the latest response satisfies the card.
-        verdict, reason, _parse_failed = judge_goal(goal_text, last_response)
-        _log(f"kanban goal loop: turn {turns_used}/{max_turns} verdict={verdict} reason={_truncate(reason, 120)}")
+        # Deterministic code gate (PRIMARY). When it vetoes, skip the LLM
+        # judge for this turn and feed the gate's report back. Fail-OPEN: any
+        # gate error leaves the loop on the existing LLM-judge path so a
+        # buggy gate degrades to today's behaviour rather than wedging.
+        gate = None
+        if code_gate_fn is not None:
+            try:
+                gate = code_gate_fn()
+            except Exception as exc:
+                _log(f"kanban goal loop: code gate raised ({exc}); fail-open to judge")
+                gate = None
 
-        if verdict == "done":
-            if nudged_to_finalize:
-                # Already asked once to call kanban_complete and it still
-                # didn't — block for review rather than spin.
-                _log(f"kanban goal loop: task {task_id} judged done but worker won't finalize; blocking")
-                try:
-                    block_fn(
-                        f"Goal-mode worker's output looked complete but it never "
-                        f"called kanban_complete after a finalize nudge ({reason})."
-                    )
-                except Exception as exc:
-                    _log(f"kanban goal loop: block_fn failed ({exc})")
-                return {"outcome": "blocked_budget", "turns_used": turns_used, "reason": "judged done, never finalized"}
-            prompt = KANBAN_GOAL_FINALIZE_TEMPLATE.format(reason=_truncate(reason, 400))
-            nudged_to_finalize = True
+        if gate is not None and getattr(gate, "ran", False) and not getattr(gate, "passed", False):
+            # Deterministic veto — the LLM judge does not get a say this turn.
+            report = _truncate(getattr(gate, "report", "") or "", 1500)
+            n_red = len(getattr(gate, "tests_red", []) or [])
+            n_ruff = len(getattr(gate, "ruff_violations", []) or [])
+            # Bind ``reason`` so the shared budget-exhaustion message below has
+            # a value on the veto path too (it is otherwise set by the judge).
+            reason = f"code gate failed ({n_red} new test failure(s), {n_ruff} PLW1514 violation(s))"
+            _log(
+                f"kanban goal loop: turn {turns_used}/{max_turns} code gate VETO "
+                f"(tests_red={n_red} ruff={n_ruff})"
+            )
+            prompt = CODE_GATE_CONTINUATION_TEMPLATE.format(report=report)
         else:
-            prompt = KANBAN_GOAL_CONTINUATION_TEMPLATE.format(reason=_truncate(reason, 400))
+            # Gate passed or did not run — LLM judge is the secondary check.
+            verdict, reason, _parse_failed = judge_goal(goal_text, last_response)
+            _log(f"kanban goal loop: turn {turns_used}/{max_turns} verdict={verdict} reason={_truncate(reason, 120)}")
+
+            if verdict == "done":
+                if nudged_to_finalize:
+                    # Already asked once to call kanban_complete and it still
+                    # didn't — block for review rather than spin.
+                    _log(f"kanban goal loop: task {task_id} judged done but worker won't finalize; blocking")
+                    try:
+                        block_fn(
+                            f"Goal-mode worker's output looked complete but it never "
+                            f"called kanban_complete after a finalize nudge ({reason})."
+                        )
+                    except Exception as exc:
+                        _log(f"kanban goal loop: block_fn failed ({exc})")
+                    return {"outcome": "blocked_budget", "turns_used": turns_used, "reason": "judged done, never finalized"}
+                prompt = KANBAN_GOAL_FINALIZE_TEMPLATE.format(reason=_truncate(reason, 400))
+                nudged_to_finalize = True
+            else:
+                prompt = KANBAN_GOAL_CONTINUATION_TEMPLATE.format(reason=_truncate(reason, 400))
 
         # Budget check BEFORE spending another turn.
         if turns_used >= max_turns:
@@ -904,6 +994,7 @@ __all__ = [
     "JUDGE_USER_PROMPT_WITH_SUBGOALS_TEMPLATE",
     "KANBAN_GOAL_CONTINUATION_TEMPLATE",
     "KANBAN_GOAL_FINALIZE_TEMPLATE",
+    "CODE_GATE_CONTINUATION_TEMPLATE",
     "DEFAULT_MAX_TURNS",
     "load_goal",
     "save_goal",

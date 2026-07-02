@@ -162,6 +162,33 @@ def _stage_repo_in_container(host_path: Path, label: str) -> str | None:
     return container_path
 
 
+_ANALYZE_BUSY_RE = re.compile(r"job\s+([0-9a-fA-F][0-9a-fA-F-]{7,})")
+
+
+def _post_analyze(container_path: str, label: str, *, deadline: float) -> dict:
+    """POST /api/analyze, coalescing with GitNexus's single global job slot.
+
+    GitNexus runs one analysis at a time across ALL repos; a concurrent POST
+    returns HTTP 409 with the in-flight job id. Rather than dropping this
+    repo's reindex (leaving it stale until its next commit), wait for the
+    busy job to finish and retry, until our job is accepted or the deadline
+    passes.
+    """
+    while True:
+        try:
+            return _api("POST", "/api/analyze", {"path": container_path})
+        except urllib.error.HTTPError as e:
+            if e.code != 409:
+                raise
+            body = e.read().decode("utf-8", "replace")
+            match = _ANALYZE_BUSY_RE.search(body)
+            if not match or time.time() >= deadline:
+                raise
+            busy_job = match.group(1)
+            print(f"  [{label}] GitNexus busy (job {busy_job[:8]}); waiting to reindex…")
+            _wait_for_job(busy_job, f"{label}:busy", timeout=max(1, int(deadline - time.time())))
+
+
 def _index_repo(path: Path, label: str) -> bool:
     """Stage a repo inside the GitNexus container, analyze it, and wait."""
     print(f"  Indexing {label} ({path})…")
@@ -169,7 +196,7 @@ def _index_repo(path: Path, label: str) -> bool:
         container_path = _stage_repo_in_container(path, label)
         if container_path is None:
             return False
-        job = _api("POST", "/api/analyze", {"path": container_path})
+        job = _post_analyze(container_path, label, deadline=time.time() + ANALYZE_TIMEOUT)
     except Exception as e:
         print(f"  ERROR triggering analyze for {label}: {e}")
         return False
@@ -288,6 +315,39 @@ def _resolve_repo_selection(
     return requested, requested.name
 
 
+def _main_worktree_root(path: Path) -> Path:
+    """Return the main working-tree root for any path (linked worktree → canonical)."""
+    common = _git_common_dir(path)
+    # A standard repo's common dir is "<root>/.git"; linked worktrees report the
+    # SAME shared "<root>/.git", so the parent is always the main worktree root.
+    if common.name == ".git":
+        return common.parent
+    return _expanded_path(path)
+
+
+def _resolve_on_commit(config: dict, host_path: str) -> tuple[Path, str] | None:
+    """Resolve a post-commit hook fire into a repo to reindex, or None to skip.
+
+    Reindex ONLY when the commit happened in a configured repo's MAIN worktree.
+    Commits in linked worktrees (loki/relay feature branches share the same
+    .git) are skipped — they must not redefine the canonical graph nor spawn
+    per-worktree repos.
+    """
+    requested = _expanded_path(host_path)
+    main_root = _main_worktree_root(requested)
+    if _resolved_path(requested) != _resolved_path(main_root):
+        print(f"  Skip {requested}: linked worktree of {main_root}; not reindexing")
+        return None
+    requested_resolved = _resolved_path(requested)
+    for repo_cfg in config.get("repos", []):
+        if not repo_cfg.get("reindex_on_commit"):
+            continue
+        if _resolved_path(_expanded_path(repo_cfg.get("path", ""))) == requested_resolved:
+            return _expanded_path(repo_cfg.get("path", "")), _repo_label(repo_cfg)
+    print(f"  Skip {requested}: not a configured reindex_on_commit repo")
+    return None
+
+
 # ---------------------------------------------------------------------------
 # Hook installation
 # ---------------------------------------------------------------------------
@@ -301,7 +361,7 @@ def _hook_block(label: str) -> str:
   repo_root="$(git rev-parse --show-toplevel 2>/dev/null)" || exit 0
   lockfile="{HOOK_LOCK_DIR}/gitnexus-reindex-{safe_label}.lock"
   echo "[$(date -Is)] gitnexus hook for {safe_label}: repo=$repo_root" >> {HOOK_LOG}
-  if flock -n -E 75 "$lockfile" {HOOK_PYTHON} -m hermes_cli.gitnexus_repo_manager --path "$repo_root" >> {HOOK_LOG} 2>&1; then
+  if flock -n -E 75 "$lockfile" {HOOK_PYTHON} -m hermes_cli.gitnexus_repo_manager --on-commit --path "$repo_root" >> {HOOK_LOG} 2>&1; then
     echo "[$(date -Is)] gitnexus hook for {safe_label}: complete" >> {HOOK_LOG}
   else
     rc=$?
@@ -419,7 +479,14 @@ def run(argv: list[str] | None = None) -> None:
     selector.add_argument("--repo", help="Config repo label to stage and reindex")
     selector.add_argument("--path", help="Host repo path to stage and reindex")
     parser.add_argument("--install-hooks", action="store_true", help="Install post-commit/post-merge hooks")
+    parser.add_argument(
+        "--on-commit",
+        action="store_true",
+        help="Hook mode: reindex only if --path is a configured repo's MAIN worktree",
+    )
     args = parser.parse_args(argv)
+    if args.on_commit and not args.path:
+        parser.error("--on-commit requires --path")
 
     print("GitNexus Repo Manager")
     print("=" * 40)
@@ -431,6 +498,16 @@ def run(argv: list[str] | None = None) -> None:
         print(f"\nDone. Installed/updated hooks: {count}")
         if not (args.repo or args.path):
             return
+
+    if args.on_commit:
+        selection = _resolve_on_commit(config, args.path)
+        if selection is None:
+            print("\nDone. Indexed: 0, Skipped: 1")
+            return
+        path, label = selection
+        ok = _index_repo(path, label) if path.exists() else False
+        print(f"\nDone. Indexed: {1 if ok else 0}, Skipped: {0 if ok else 1}")
+        return
 
     if args.repo or args.path:
         ok = _run_single_repo(config, repo_label=args.repo, host_path=args.path)

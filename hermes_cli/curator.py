@@ -11,12 +11,13 @@ from __future__ import annotations
 
 import argparse
 import sys
+from collections.abc import Sequence
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional
+from typing import Any, cast
 
 
-def _fmt_ts(ts: Optional[str]) -> str:
+def _fmt_ts(ts: str | None) -> str:
     if not ts:
         return "never"
     try:
@@ -36,7 +37,7 @@ def _fmt_ts(ts: Optional[str]) -> str:
     return f"{secs // 86400}d ago"
 
 
-def _cmd_status(args) -> int:
+def _cmd_status(args: argparse.Namespace) -> int:
     from agent import curator
     from tools import skill_usage
 
@@ -77,14 +78,18 @@ def _cmd_status(args) -> int:
     print(f"  interval:       every {_interval_label}")
     print(f"  stale after:    {curator.get_stale_after_days()}d unused")
     print(f"  archive after:  {curator.get_archive_after_days()}d unused")
+    print(
+        f"  consolidate:    {'on' if curator.get_consolidate() else 'off'}"
+        f"{'' if curator.get_consolidate() else ' (prune-only; LLM merge pass opt-in)'}"
+    )
 
     rows = skill_usage.agent_created_report()
     if not rows:
         print("\nno agent-created skills")
         return 0
 
-    by_state = {"active": [], "stale": [], "archived": []}
-    pinned = []
+    by_state: dict[str, list[dict[str, Any]]] = {"active": [], "stale": [], "archived": []}
+    pinned: list[str] = []
     for r in rows:
         state_name = r.get("state", "active")
         by_state.setdefault(state_name, []).append(r)
@@ -102,9 +107,12 @@ def _cmd_status(args) -> int:
     # Show top 5 least-recently-active skills. Views and edits are activity too:
     # curator should not report a skill as "never used" right after skill_view()
     # or skill_manage() touched it.
+    def _last_activity_key(row: dict[str, Any]) -> str:
+        return cast(str, row.get("last_activity_at") or row.get("created_at") or "")
+
     active = sorted(
         by_state.get("active", []),
-        key=lambda r: r.get("last_activity_at") or r.get("created_at") or "",
+        key=_last_activity_key,
     )[:5]
     if active:
         print("\nleast recently active (top 5):")
@@ -125,11 +133,17 @@ def _cmd_status(args) -> int:
     # last_activity_at reflects recency. A skill touched 30 times a year
     # ago is high-frequency but stale; a skill touched once yesterday is
     # recent but low-frequency. Both can matter.
+    def _activity_count_key(row: dict[str, Any]) -> tuple[int, str]:
+        return cast(
+            tuple[int, str],
+            (row.get("activity_count") or 0, row.get("last_activity_at") or ""),
+        )
+
     active_all = by_state.get("active", [])
     if active_all:
         most_active = sorted(
             active_all,
-            key=lambda r: (r.get("activity_count") or 0, r.get("last_activity_at") or ""),
+            key=_activity_count_key,
             reverse=True,
         )[:5]
         if most_active and (most_active[0].get("activity_count") or 0) > 0:
@@ -147,7 +161,7 @@ def _cmd_status(args) -> int:
 
         least_active = sorted(
             active_all,
-            key=lambda r: (r.get("activity_count") or 0, r.get("last_activity_at") or ""),
+            key=_activity_count_key,
         )[:5]
         if least_active:
             print("\nleast active (top 5):")
@@ -165,7 +179,7 @@ def _cmd_status(args) -> int:
     return 0
 
 
-def _cmd_run(args) -> int:
+def _cmd_run(args: argparse.Namespace) -> int:
     from agent import curator
     if not curator.is_enabled():
         print("curator: disabled via config; enable with `curator.enabled: true`")
@@ -174,10 +188,20 @@ def _cmd_run(args) -> int:
     dry = bool(getattr(args, "dry_run", False))
     background = bool(getattr(args, "background", False))
     synchronous = bool(getattr(args, "synchronous", False)) or not background
+    # --consolidate forces the LLM umbrella-building pass on for this run,
+    # overriding the config default (off). When the flag is absent, pass None
+    # so run_curator_review reads curator.consolidate from config.
+    consolidate = True if bool(getattr(args, "consolidate", False)) else None
     if dry:
         print("curator: running DRY-RUN (report only, no mutations)...")
     else:
         print("curator: running review pass...")
+    if consolidate is None and not curator.get_consolidate():
+        print(
+            "curator: consolidation is off — running prune-only "
+            "(deterministic stale/archive). Pass --consolidate or set "
+            "`curator.consolidate: true` to enable the LLM merge pass."
+        )
 
     def _on_summary(msg: str) -> None:
         print(msg)
@@ -186,6 +210,7 @@ def _cmd_run(args) -> int:
         on_summary=_on_summary,
         synchronous=synchronous,
         dry_run=dry,
+        consolidate=consolidate,
     )
     auto = result.get("auto_transitions", {})
     if auto:
@@ -217,21 +242,21 @@ def _cmd_run(args) -> int:
     return 0
 
 
-def _cmd_pause(args) -> int:
+def _cmd_pause(args: argparse.Namespace) -> int:
     from agent import curator
     curator.set_paused(True)
     print("curator: paused")
     return 0
 
 
-def _cmd_resume(args) -> int:
+def _cmd_resume(args: argparse.Namespace) -> int:
     from agent import curator
     curator.set_paused(False)
     print("curator: resumed")
     return 0
 
 
-def _cmd_pin(args) -> int:
+def _cmd_pin(args: argparse.Namespace) -> int:
     from tools import skill_usage
     if not skill_usage.is_agent_created(args.skill):
         print(
@@ -244,7 +269,7 @@ def _cmd_pin(args) -> int:
     return 0
 
 
-def _cmd_unpin(args) -> int:
+def _cmd_unpin(args: argparse.Namespace) -> int:
     from tools import skill_usage
     if not skill_usage.is_agent_created(args.skill):
         print(
@@ -257,14 +282,14 @@ def _cmd_unpin(args) -> int:
     return 0
 
 
-def _cmd_restore(args) -> int:
+def _cmd_restore(args: argparse.Namespace) -> int:
     from tools import skill_usage
     ok, msg = skill_usage.restore_skill(args.skill)
     print(f"curator: {msg}")
     return 0 if ok else 1
 
 
-def _cmd_archive(args) -> int:
+def _cmd_archive(args: argparse.Namespace) -> int:
     """Manually archive an agent-created skill. Refuses if pinned.
 
     The auto-curator archives stale skills on its own schedule; this verb is
@@ -282,7 +307,7 @@ def _cmd_archive(args) -> int:
     return 0 if ok else 1
 
 
-def _idle_days(record: dict) -> Optional[int]:
+def _idle_days(record: dict[str, Any]) -> int | None:
     """Days since the skill's last activity (view / use / patch).
 
     Falls back to ``created_at`` so a skill that was authored but never used
@@ -301,7 +326,7 @@ def _idle_days(record: dict) -> Optional[int]:
     return max(0, (datetime.now(timezone.utc) - dt).days)
 
 
-def _cmd_prune(args) -> int:
+def _cmd_prune(args: argparse.Namespace) -> int:
     """Bulk-archive agent-created skills idle for >= N days.
 
     Pinned skills are exempt. Already-archived skills are skipped. Default
@@ -317,7 +342,7 @@ def _cmd_prune(args) -> int:
     dry_run = bool(getattr(args, "dry_run", False))
     skip_confirm = bool(getattr(args, "yes", False))
 
-    candidates = []
+    candidates: list[tuple[str, int]] = []
     for r in skill_usage.agent_created_report():
         if r.get("pinned"):
             continue
@@ -332,7 +357,10 @@ def _cmd_prune(args) -> int:
         print(f"curator: nothing to prune (no unpinned skills idle >= {days}d)")
         return 0
 
-    candidates.sort(key=lambda c: -c[1])
+    def _idle_desc(candidate: tuple[str, int]) -> int:
+        return -candidate[1]
+
+    candidates.sort(key=_idle_desc)
     print(f"curator: {len(candidates)} skill(s) idle >= {days}d:")
     for name, idle in candidates:
         print(f"  {name:40s} idle {idle}d")
@@ -369,7 +397,7 @@ def _cmd_prune(args) -> int:
     return 0
 
 
-def _cmd_backup(args) -> int:
+def _cmd_backup(args: argparse.Namespace) -> int:
     """Take a manual snapshot of the skills tree. Same mechanism as the
     automatic pre-run snapshot, just user-initiated."""
     from agent import curator_backup
@@ -388,7 +416,7 @@ def _cmd_backup(args) -> int:
     return 0
 
 
-def _cmd_rollback(args) -> int:
+def _cmd_rollback(args: argparse.Namespace) -> int:
     """Restore the skills tree from a snapshot. Defaults to newest.
 
     ``--list`` prints available snapshots and exits. ``--id <stamp>`` picks
@@ -461,7 +489,7 @@ def _cmd_rollback(args) -> int:
     return 1
 
 
-def _cmd_list_archived(args) -> int:
+def _cmd_list_archived(args: argparse.Namespace) -> int:
     """List archived (recoverable) skills."""
     from tools import skill_usage
     names = skill_usage.list_archived_skill_names()
@@ -483,7 +511,12 @@ def register_cli(parent: argparse.ArgumentParser) -> None:
     main.py calls this with the ArgumentParser returned by
     ``subparsers.add_parser("curator", ...)``.
     """
-    parent.set_defaults(func=lambda a: (parent.print_help(), 0)[1])
+
+    def _print_help(_args: argparse.Namespace) -> int:
+        parent.print_help()
+        return 0
+
+    parent.set_defaults(func=_print_help)
     subs = parent.add_subparsers(dest="curator_command")
 
     p_status = subs.add_parser("status", help="Show curator status and skill stats")
@@ -502,6 +535,12 @@ def register_cli(parent: argparse.ArgumentParser) -> None:
         "--dry-run", dest="dry_run", action="store_true",
         help="Report only — no state changes, no archives, no consolidation "
              "(use this to preview what curator would do)",
+    )
+    p_run.add_argument(
+        "--consolidate", dest="consolidate", action="store_true",
+        help="Force the LLM umbrella-building consolidation pass on for this "
+             "run, overriding the config default (off). Without this flag the "
+             "run is prune-only unless `curator.consolidate: true` is set.",
     )
     p_run.set_defaults(func=_cmd_run)
 
@@ -582,7 +621,7 @@ def register_cli(parent: argparse.ArgumentParser) -> None:
     p_rollback.set_defaults(func=_cmd_rollback)
 
 
-def cli_main(argv=None) -> int:
+def cli_main(argv: Sequence[str] | None = None) -> int:
     """Standalone entry (also usable by hermes_cli.main fallthrough)."""
     parser = argparse.ArgumentParser(prog="hermes curator")
     register_cli(parser)

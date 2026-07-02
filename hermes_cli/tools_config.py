@@ -15,8 +15,12 @@ import os
 import shutil
 import subprocess
 import sys
+from collections.abc import Callable, Sequence
 from pathlib import Path
-from typing import Dict, List, Optional, Set
+from typing import Any, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    import argparse
 
 
 from hermes_cli.config import (
@@ -36,6 +40,14 @@ logger = logging.getLogger(__name__)
 
 PROJECT_ROOT = Path(__file__).parent.parent.resolve()
 
+Config = dict[str, Any]
+ProviderConfig = dict[str, Any]
+ToolCategory = dict[str, Any]
+ToolsetEntry = tuple[str, str, str]
+ModelCatalog = dict[str, dict[str, Any]]
+ModelCatalogResult = tuple[ModelCatalog, str | None]
+InstallPredicate = Callable[[], bool]
+
 
 # ─── UI Helpers (shared with setup.py) ────────────────────────────────────────
 
@@ -52,7 +64,7 @@ from hermes_cli.cli_output import (  # noqa: E402 — late import block
 # Toolsets shown in the configurator, grouped for display.
 # Each entry: (toolset_name, label, description)
 # These map to keys in toolsets.py TOOLSETS dict.
-CONFIGURABLE_TOOLSETS = [
+CONFIGURABLE_TOOLSETS: list[ToolsetEntry] = [
     ("web",             "🔍 Web Search & Scraping",    "web_search, web_extract"),
     ("browser",         "🌐 Browser Automation",       "navigate, click, type, scroll"),
     ("terminal",        "💻 Terminal & Processes",      "terminal, process"),
@@ -73,7 +85,6 @@ CONFIGURABLE_TOOLSETS = [
     ("clarify",         "❓ Clarifying Questions",      "clarify"),
     ("delegation",      "👥 Task Delegation",           "delegate_task"),
     ("cronjob",         "⏰ Cron Jobs",                 "create/list/update/pause/resume/run, with optional attached skills"),
-    ("messaging",       "📨 Cross-Platform Messaging",  "send_message"),
     ("homeassistant",    "🏠 Home Assistant",           "smart home device control"),
     ("spotify",          "🎵 Spotify",                  "playback, search, playlists, library"),
     ("discord",         "💬 Discord (read/participate)", "fetch messages, search members, create thread"),
@@ -147,7 +158,7 @@ def _xai_credentials_present() -> bool:
 # Use this for tools whose APIs only make sense on one platform (Discord
 # server admin, Slack workspace admin, etc.).  Keeps every other platform's
 # checklist from filling up with irrelevant toggles.
-_TOOLSET_PLATFORM_RESTRICTIONS: Dict[str, Set[str]] = {
+_TOOLSET_PLATFORM_RESTRICTIONS: dict[str, set[str]] = {
     "discord": {"discord"},
     "discord_admin": {"discord"},
 }
@@ -162,7 +173,7 @@ def _toolset_allowed_for_platform(ts_key: str, platform: str) -> bool:
     return allowed is None or platform in allowed
 
 
-def _get_effective_configurable_toolsets():
+def _get_effective_configurable_toolsets() -> list[ToolsetEntry]:
     """Return CONFIGURABLE_TOOLSETS + any plugin-provided toolsets.
 
     Plugin toolsets are appended at the end so they appear after the
@@ -188,7 +199,7 @@ def _get_effective_configurable_toolsets():
     return result
 
 
-def _get_plugin_toolset_keys() -> set:
+def _get_plugin_toolset_keys() -> set[str]:
     """Return the set of toolset keys provided by plugins."""
     try:
         from hermes_cli.plugins import discover_plugins, get_plugin_toolsets
@@ -198,7 +209,7 @@ def _get_plugin_toolset_keys() -> set:
         return set()
 
 
-def _checklist_toolset_keys(platform: str) -> Set[str]:
+def _checklist_toolset_keys(platform: str) -> set[str]:
     """Return the toolset keys the ``hermes tools`` checklist actually offers
     for ``platform``.
 
@@ -226,7 +237,7 @@ def _checklist_toolset_keys(platform: str) -> Set[str]:
 # compatibility with existing ``PLATFORMS[key]["label"]`` access patterns.
 from hermes_cli.platforms import PLATFORMS as _PLATFORMS_REGISTRY
 
-PLATFORMS = {
+PLATFORMS: dict[str, dict[str, str]] = {
     k: {"label": info.label, "default_toolset": info.default_toolset}
     for k, info in _PLATFORMS_REGISTRY.items()
 }
@@ -237,7 +248,7 @@ PLATFORMS = {
 # we use this to show provider selection and prompt for the right API keys.
 # Toolsets not in this map either need no config or use the simple fallback.
 
-TOOL_CATEGORIES = {
+TOOL_CATEGORIES: dict[str, ToolCategory] = {
     "tts": {
         "name": "Text-to-Speech",
         "icon": "🔊",
@@ -566,7 +577,7 @@ TOOL_CATEGORIES = {
 
 # Simple env-var requirements for toolsets NOT in TOOL_CATEGORIES.
 # Used as a fallback for tools like vision/moa that just need an API key.
-TOOLSET_ENV_REQUIREMENTS = {
+TOOLSET_ENV_REQUIREMENTS: dict[str, list[tuple[str, str]]] = {
     "vision":     [("OPENROUTER_API_KEY",   "https://openrouter.ai/keys")],
     "moa":        [("OPENROUTER_API_KEY",   "https://openrouter.ai/keys")],
 }
@@ -581,11 +592,11 @@ def _cua_driver_cmd() -> str:
 
 
 def _pip_install(
-    args: List[str],
+    args: list[str],
     *,
     timeout: int = 300,
     capture_output: bool = True,
-):
+) -> subprocess.CompletedProcess[str]:
     """Install Python packages from a post-setup hook.
 
     Strategy (in order):
@@ -830,7 +841,7 @@ def _run_cua_driver_installer(label: str = "Installing", verbose: bool = True) -
         return False
 
 
-def _run_post_setup(post_setup_key: str):
+def _run_post_setup(post_setup_key: str) -> None:
     """Run post-setup hooks for tools that need extra installation steps."""
     import shutil
     if post_setup_key in {"agent_browser", "browserbase"}:
@@ -846,14 +857,17 @@ def _run_post_setup(post_setup_key: str):
             # batch shims).  On POSIX npm_bin is the plain path — same
             # behaviour as before.
             result = subprocess.run(
-                [npm_bin, "install", "--silent"],
+                # --workspaces=false restricts the install to the repo root
+                # only, avoiding the apps/* glob which would pull in
+                # apps/desktop (Electron + node-pty) unnecessarily. See #38772.
+                [npm_bin, "install", "--silent", "--workspaces=false"],
                 capture_output=True, text=True, cwd=str(PROJECT_ROOT)
             )
             if result.returncode == 0:
                 _print_success("    Node.js dependencies installed")
             else:
                 from hermes_constants import display_hermes_home
-                _print_warning(f"    npm install failed - run manually: cd {display_hermes_home()}/hermes-agent && npm install")
+                _print_warning(f"    npm install failed - run manually: cd {display_hermes_home()}/hermes-agent && npm install --workspaces=false")
                 if result.stderr:
                     _print_info(f"      {result.stderr.strip()[:200]}")
         elif not node_modules.exists():
@@ -951,13 +965,14 @@ def _run_post_setup(post_setup_key: str):
             import subprocess
             # Absolute npm path so .cmd shim executes on Windows.
             result = subprocess.run(
-                [_npm_bin, "install", "--silent"],
+                # --workspaces=false avoids resolving apps/desktop. See #38772.
+                [_npm_bin, "install", "--silent", "--workspaces=false"],
                 capture_output=True, text=True, cwd=str(PROJECT_ROOT)
             )
             if result.returncode == 0:
                 _print_success("    Camofox installed")
             else:
-                _print_warning("    npm install failed - run manually: npm install")
+                _print_warning("    npm install failed - run manually: npm install --workspaces=false")
         if camofox_dir.exists():
             _print_info("    Start the Camofox server:")
             _print_info("      npx @askjo/camofox-browser")
@@ -1168,7 +1183,7 @@ def _run_post_setup(post_setup_key: str):
             _print_info("    xAI will remain inactive until credentials are configured.")
 
 
-def valid_post_setup_keys() -> Set[str]:
+def valid_post_setup_keys() -> set[str]:
     """Return the set of post-setup keys declared by any visible provider.
 
     Collected from ``TOOL_CATEGORIES`` plus the plugin-registered web /
@@ -1177,7 +1192,7 @@ def valid_post_setup_keys() -> Set[str]:
     command and the dashboard post-setup endpoint validate against, so a
     caller can't drive ``_run_post_setup`` with an arbitrary key.
     """
-    keys: Set[str] = set()
+    keys: set[str] = set()
     for cat in TOOL_CATEGORIES.values():
         for prov in cat.get("providers", []):
             ps = prov.get("post_setup")
@@ -1200,7 +1215,7 @@ def valid_post_setup_keys() -> Set[str]:
     return keys
 
 
-def run_post_setup_command(args) -> int:
+def run_post_setup_command(args: "argparse.Namespace") -> int:
     """``hermes tools post-setup <key>`` — non-interactive post-setup runner.
 
     Runs the install/bootstrap hook a provider declares (npm install for
@@ -1232,7 +1247,7 @@ def run_post_setup_command(args) -> int:
 
 # ─── Platform / Toolset Helpers ───────────────────────────────────────────────
 
-def _get_enabled_platforms() -> List[str]:
+def _get_enabled_platforms() -> list[str]:
     """Return platform keys that are configured (have tokens or are CLI)."""
     enabled = ["cli"]
     if get_env_value("TELEGRAM_BOT_TOKEN"):
@@ -1248,7 +1263,7 @@ def _get_enabled_platforms() -> List[str]:
     return enabled
 
 
-def _platform_toolset_summary(config: dict, platforms: Optional[List[str]] = None) -> Dict[str, Set[str]]:
+def _platform_toolset_summary(config: Config, platforms: list[str] | None = None) -> dict[str, set[str]]:
     """Return a summary of enabled toolsets per platform.
 
     When ``platforms`` is None, this uses ``_get_enabled_platforms`` to
@@ -1258,13 +1273,13 @@ def _platform_toolset_summary(config: dict, platforms: Optional[List[str]] = Non
     if platforms is None:
         platforms = _get_enabled_platforms()
 
-    summary: Dict[str, Set[str]] = {}
+    summary: dict[str, set[str]] = {}
     for pkey in platforms:
         summary[pkey] = _get_platform_tools(config, pkey)
     return summary
 
 
-def _parse_enabled_flag(value, default: bool = True) -> bool:
+def _parse_enabled_flag(value: Any, default: bool = True) -> bool:
     """Parse bool-like config values used by tool/platform settings."""
     if value is None:
         return default
@@ -1282,11 +1297,11 @@ def _parse_enabled_flag(value, default: bool = True) -> bool:
 
 
 def _get_platform_tools(
-    config: dict,
+    config: Config,
     platform: str,
     *,
     include_default_mcp_servers: bool = True,
-) -> Set[str]:
+) -> set[str]:
     """Resolve which individual toolset names are enabled for a platform."""
     from toolsets import resolve_toolset, TOOLSETS
 
@@ -1433,6 +1448,10 @@ def _get_platform_tools(
             continue
         if ts_def.get("includes"):
             continue
+        # Posture toolsets (e.g. ``coding``) are session-level selections made
+        # by agent/coding_context.py — not per-platform capabilities to recover.
+        if ts_def.get("posture"):
+            continue
         ts_tools = set(resolve_toolset(ts_key))
         if not ts_tools or not ts_tools.issubset(platform_tool_universe):
             continue
@@ -1531,7 +1550,7 @@ def _get_platform_tools(
     return enabled_toolsets
 
 
-def _save_platform_tools(config: dict, platform: str, enabled_toolset_keys: Set[str]):
+def _save_platform_tools(config: Config, platform: str, enabled_toolset_keys: set[str]) -> None:
     """Save the selected toolset keys for a platform to config.
 
     Preserves any non-configurable toolset entries (like MCP server names)
@@ -1589,7 +1608,7 @@ def _save_platform_tools(config: dict, platform: str, enabled_toolset_keys: Set[
 
 def _toolset_has_keys(
     ts_key: str,
-    config: dict = None,
+    config: Config | None = None,
     *,
     force_fresh: bool = False,
 ) -> bool:
@@ -1632,7 +1651,7 @@ def _toolset_has_keys(
 
 # ─── Menu Helpers ─────────────────────────────────────────────────────────────
 
-def _prompt_choice(question: str, choices: list, default: int = 0) -> int:
+def _prompt_choice(question: str, choices: list[str], default: int = 0) -> int:
     """Single-select menu (arrow keys). Delegates to curses_radiolist."""
     from hermes_cli.curses_ui import curses_radiolist
     return curses_radiolist(question, choices, selected=default, cancel_returns=default)
@@ -1641,10 +1660,10 @@ def _prompt_choice(question: str, choices: list, default: int = 0) -> int:
 # ─── Token Estimation ────────────────────────────────────────────────────────
 
 # Module-level cache so discovery + tokenization runs at most once per process.
-_tool_token_cache: Optional[Dict[str, int]] = None
+_tool_token_cache: dict[str, int] | None = None
 
 
-def _estimate_tool_tokens() -> Dict[str, int]:
+def _estimate_tool_tokens() -> dict[str, int]:
     """Return estimated token counts per individual tool name.
 
     Uses tiktoken (cl100k_base) to count tokens in the JSON-serialised
@@ -1674,7 +1693,7 @@ def _estimate_tool_tokens() -> Dict[str, int]:
         _tool_token_cache = {}
         return _tool_token_cache
 
-    counts: Dict[str, int] = {}
+    counts: dict[str, int] = {}
     for name in registry.get_all_tool_names():
         schema = registry.get_schema(name)
         if schema:
@@ -1688,11 +1707,11 @@ def _estimate_tool_tokens() -> Dict[str, int]:
 
 def _prompt_toolset_checklist(
     platform_label: str,
-    enabled: Set[str],
+    enabled: set[str],
     platform: str = "cli",
     *,
     force_fresh: bool = True,
-) -> Set[str]:
+) -> set[str]:
     """Multi-select checklist of toolsets. Returns set of selected toolset keys."""
     from hermes_cli.curses_ui import curses_checklist
     from toolsets import resolve_toolset
@@ -1723,19 +1742,21 @@ def _prompt_toolset_checklist(
     }
 
     # Build a live status function that shows deduplicated total token cost.
-    status_fn = None
+    status_fn: Callable[[set[int]], str] | None = None
     if tool_tokens:
         ts_keys = [ts_key for ts_key, _, _ in effective]
 
-        def status_fn(chosen: set) -> str:
+        def _status_fn(chosen: set[int]) -> str:
             # Collect unique tool names across all selected toolsets
-            all_tools: set = set()
+            all_tools: set[str] = set()
             for idx in chosen:
                 all_tools.update(resolve_toolset(ts_keys[idx]))
             total = sum(tool_tokens.get(name, 0) for name in all_tools)
             if total >= 1000:
                 return f"Est. tool context: ~{total / 1000:.1f}k tokens"
             return f"Est. tool context: ~{total} tokens"
+
+        status_fn = _status_fn
 
     chosen = curses_checklist(
         f"Tools for {platform_label}",
@@ -1751,10 +1772,10 @@ def _prompt_toolset_checklist(
 
 def _configure_toolset(
     ts_key: str,
-    config: dict,
+    config: Config,
     *,
     force_fresh: bool = True,
-):
+) -> None:
     """Configure a toolset - provider selection + API keys.
     
     Uses TOOL_CATEGORIES for provider-aware config, falls back to simple
@@ -1769,7 +1790,7 @@ def _configure_toolset(
         _configure_simple_requirements(ts_key)
 
 
-def _plugin_image_gen_providers() -> list[dict]:
+def _plugin_image_gen_providers() -> list[ProviderConfig]:
     """Build picker-row dicts from plugin-registered image gen providers.
 
     Each returned dict looks like a regular ``TOOL_CATEGORIES`` provider
@@ -1788,7 +1809,7 @@ def _plugin_image_gen_providers() -> list[dict]:
     except Exception:
         return []
 
-    rows: list[dict] = []
+    rows: list[ProviderConfig] = []
     for provider in providers:
         try:
             schema = provider.get_setup_schema()
@@ -1809,7 +1830,7 @@ def _plugin_image_gen_providers() -> list[dict]:
     return rows
 
 
-def _plugin_video_gen_providers() -> list[dict]:
+def _plugin_video_gen_providers() -> list[ProviderConfig]:
     """Build picker-row dicts from plugin-registered video gen providers.
 
     Mirrors ``_plugin_image_gen_providers`` exactly — every video backend
@@ -1826,7 +1847,7 @@ def _plugin_video_gen_providers() -> list[dict]:
     except Exception:
         return []
 
-    rows: list[dict] = []
+    rows: list[ProviderConfig] = []
     for provider in providers:
         try:
             schema = provider.get_setup_schema()
@@ -1857,7 +1878,7 @@ def _plugin_video_gen_providers() -> list[dict]:
 # ("Nous Subscription" managed-gateway entry, "Firecrawl Self-Hosted")
 # remain in TOOL_CATEGORIES because they describe alternative *setup
 # flows* for the firecrawl backend rather than distinct providers.
-def _plugin_web_search_providers() -> list[dict]:
+def _plugin_web_search_providers() -> list[ProviderConfig]:
     """Build picker-row dicts from plugin-registered web search providers.
 
     Each returned dict is a regular ``TOOL_CATEGORIES`` provider row. It
@@ -1879,7 +1900,7 @@ def _plugin_web_search_providers() -> list[dict]:
     except Exception:
         return []
 
-    rows: list[dict] = []
+    rows: list[ProviderConfig] = []
     for provider in providers:
         name = getattr(provider, "name", None)
         if not name:
@@ -1913,7 +1934,7 @@ def _plugin_web_search_providers() -> list[dict]:
 # were deleted in the same PR; only non-provider UX setup-flow rows remain
 # ("Nous Subscription", "Local Browser", "Camofox") — see the comment block
 # in ``TOOL_CATEGORIES["browser"]`` for why each one stays hardcoded.
-def _plugin_browser_providers() -> list[dict]:
+def _plugin_browser_providers() -> list[ProviderConfig]:
     """Build picker-row dicts from plugin-registered cloud browser providers.
 
     Each returned dict mirrors the legacy ``TOOL_CATEGORIES["browser"]``
@@ -1934,7 +1955,7 @@ def _plugin_browser_providers() -> list[dict]:
     except Exception:
         return []
 
-    rows: list[dict] = []
+    rows: list[ProviderConfig] = []
     for provider in providers:
         name = getattr(provider, "name", None)
         if not name:
@@ -1960,7 +1981,7 @@ def _plugin_browser_providers() -> list[dict]:
     return rows
 
 
-def _plugin_tts_providers() -> list[dict]:
+def _plugin_tts_providers() -> list[ProviderConfig]:
     """Build picker-row dicts from plugin-registered TTS providers.
 
     Issue #30398 — the ``register_tts_provider()`` plugin hook
@@ -1985,7 +2006,7 @@ def _plugin_tts_providers() -> list[dict]:
     except Exception:
         return []
 
-    rows: list[dict] = []
+    rows: list[ProviderConfig] = []
     for provider in providers:
         name = getattr(provider, "name", None)
         if not name:
@@ -2017,11 +2038,11 @@ def _plugin_tts_providers() -> list[dict]:
 
 
 def _visible_providers(
-    cat: dict,
-    config: dict,
+    cat: ToolCategory,
+    config: Config,
     *,
     force_fresh: bool = False,
-) -> list[dict]:
+) -> list[ProviderConfig]:
     """Return provider entries visible for the current auth/config state.
 
     Nous-managed Tool Gateway rows (``managed_nous_feature``) are always
@@ -2101,8 +2122,8 @@ def _visible_providers(
 
 
 def _hidden_nous_gateway_message(
-    cat: dict,
-    config: dict,
+    cat: ToolCategory,
+    config: Config,
     capability: str,
     *,
     force_fresh: bool = False,
@@ -2119,7 +2140,7 @@ def _hidden_nous_gateway_message(
     return ""
 
 
-_POST_SETUP_INSTALLED: dict = {
+_POST_SETUP_INSTALLED: dict[str, InstallPredicate] = {
     # post_setup_key -> predicate(): True when the install side-effect
     # is already satisfied. Used by `_toolset_needs_configuration_prompt`
     # to force the provider-setup flow when a no-key provider still needs
@@ -2152,7 +2173,7 @@ def _post_setup_already_installed(post_setup_key: str) -> bool:
 
 def _toolset_needs_configuration_prompt(
     ts_key: str,
-    config: dict,
+    config: Config,
     *,
     force_fresh: bool = False,
 ) -> bool:
@@ -2221,11 +2242,11 @@ def _toolset_needs_configuration_prompt(
 
 def _configure_tool_category(
     ts_key: str,
-    cat: dict,
-    config: dict,
+    cat: ToolCategory,
+    config: Config,
     *,
     force_fresh: bool = True,
-):
+) -> None:
     """Configure a tool category with provider selection."""
     icon = cat.get("icon", "")
     name = cat["name"]
@@ -2334,8 +2355,8 @@ def _configure_tool_category(
 
 
 def _is_provider_active(
-    provider: dict,
-    config: dict,
+    provider: ProviderConfig,
+    config: Config,
     *,
     force_fresh: bool = False,
 ) -> bool:
@@ -2409,8 +2430,8 @@ def _is_provider_active(
 
 
 def _detect_active_provider_index(
-    providers: list,
-    config: dict,
+    providers: Sequence[ProviderConfig],
+    config: Config,
     *,
     force_fresh: bool = False,
 ) -> int:
@@ -2438,13 +2459,13 @@ def _detect_active_provider_index(
 # right catalog at picker time.
 
 
-def _fal_model_catalog():
+def _fal_model_catalog() -> ModelCatalogResult:
     """Lazy-load the FAL model catalog from the tool module."""
     from tools.image_generation_tool import FAL_MODELS, DEFAULT_MODEL
     return FAL_MODELS, DEFAULT_MODEL
 
 
-IMAGEGEN_BACKENDS = {
+IMAGEGEN_BACKENDS: dict[str, dict[str, Any]] = {
     "fal": {
         "display": "FAL.ai",
         "config_key": "image_gen",
@@ -2453,7 +2474,7 @@ IMAGEGEN_BACKENDS = {
 }
 
 
-def _format_imagegen_model_row(model_id: str, meta: dict, widths: dict) -> str:
+def _format_imagegen_model_row(model_id: str, meta: dict[str, Any], widths: dict[str, int]) -> str:
     """Format a single picker row with column-aligned speed / strengths / price."""
     return (
         f"{model_id:<{widths['model']}}  "
@@ -2463,7 +2484,7 @@ def _format_imagegen_model_row(model_id: str, meta: dict, widths: dict) -> str:
     )
 
 
-def _configure_imagegen_model(backend_name: str, config: dict) -> None:
+def _configure_imagegen_model(backend_name: str, config: Config) -> None:
     """Prompt the user to pick a model for the given imagegen backend.
 
     Writes selection to ``config[backend_config_key]["model"]``. Safe to
@@ -2483,7 +2504,7 @@ def _configure_imagegen_model(backend_name: str, config: dict) -> None:
     if not isinstance(cur_cfg, dict):
         cur_cfg = {}
         config[cfg_key] = cur_cfg
-    current_model = cur_cfg.get("model") or default_model
+    current_model: Any = cur_cfg.get("model") or default_model
     if current_model not in catalog:
         current_model = default_model
 
@@ -2525,7 +2546,7 @@ def _configure_imagegen_model(backend_name: str, config: dict) -> None:
     _print_success(f"  Model set to: {chosen}")
 
 
-def _plugin_image_gen_catalog(plugin_name: str):
+def _plugin_image_gen_catalog(plugin_name: str) -> ModelCatalogResult:
     """Return ``(catalog_dict, default_model_id)`` for a plugin provider.
 
     ``catalog_dict`` is shaped like the legacy ``FAL_MODELS`` table —
@@ -2552,7 +2573,7 @@ def _plugin_image_gen_catalog(plugin_name: str):
     return catalog, default
 
 
-def _configure_imagegen_model_for_plugin(plugin_name: str, config: dict) -> None:
+def _configure_imagegen_model_for_plugin(plugin_name: str, config: Config) -> None:
     """Prompt the user to pick a model for a plugin-registered backend.
 
     Writes selection to ``image_gen.model``. Mirrors
@@ -2567,7 +2588,7 @@ def _configure_imagegen_model_for_plugin(plugin_name: str, config: dict) -> None
     if not isinstance(cur_cfg, dict):
         cur_cfg = {}
         config["image_gen"] = cur_cfg
-    current_model = cur_cfg.get("model") or default_model
+    current_model: Any = cur_cfg.get("model") or default_model
     if current_model not in catalog:
         current_model = default_model
 
@@ -2607,7 +2628,7 @@ def _configure_imagegen_model_for_plugin(plugin_name: str, config: dict) -> None
     _print_success(f"  Model set to: {chosen}")
 
 
-def _select_plugin_image_gen_provider(plugin_name: str, config: dict) -> None:
+def _select_plugin_image_gen_provider(plugin_name: str, config: Config) -> None:
     """Persist a plugin-backed image generation provider selection."""
     img_cfg = config.setdefault("image_gen", {})
     if not isinstance(img_cfg, dict):
@@ -2622,7 +2643,7 @@ def _select_plugin_image_gen_provider(plugin_name: str, config: dict) -> None:
 # ─── Video Generation Model Pickers ───────────────────────────────────────────
 
 
-def _plugin_video_gen_catalog(plugin_name: str):
+def _plugin_video_gen_catalog(plugin_name: str) -> ModelCatalogResult:
     """Return ``(catalog_dict, default_model_id)`` for a video gen plugin.
 
     Mirrors :func:`_plugin_image_gen_catalog`. Returns ``({}, None)`` when
@@ -2647,7 +2668,7 @@ def _plugin_video_gen_catalog(plugin_name: str):
     return catalog, default
 
 
-def _configure_videogen_model_for_plugin(plugin_name: str, config: dict) -> None:
+def _configure_videogen_model_for_plugin(plugin_name: str, config: Config) -> None:
     """Prompt for a video gen model from a plugin's catalog.
 
     Mirrors :func:`_configure_imagegen_model_for_plugin`. Writes the
@@ -2661,7 +2682,7 @@ def _configure_videogen_model_for_plugin(plugin_name: str, config: dict) -> None
     if not isinstance(cur_cfg, dict):
         cur_cfg = {}
         config["video_gen"] = cur_cfg
-    current_model = cur_cfg.get("model") or default_model
+    current_model: Any = cur_cfg.get("model") or default_model
     if current_model not in catalog:
         current_model = default_model
 
@@ -2707,7 +2728,7 @@ def _configure_videogen_model_for_plugin(plugin_name: str, config: dict) -> None
     _print_success(f"  Model set to: {chosen}")
 
 
-def _select_plugin_video_gen_provider(plugin_name: str, config: dict, *, use_gateway: bool = False) -> None:
+def _select_plugin_video_gen_provider(plugin_name: str, config: Config, *, use_gateway: bool = False) -> None:
     """Persist a plugin-backed video generation provider selection."""
     vid_cfg = config.setdefault("video_gen", {})
     if not isinstance(vid_cfg, dict):
@@ -2719,7 +2740,7 @@ def _select_plugin_video_gen_provider(plugin_name: str, config: dict, *, use_gat
     _configure_videogen_model_for_plugin(plugin_name, config)
 
 
-def _write_provider_config(provider: dict, config: dict, *, managed_feature) -> None:
+def _write_provider_config(provider: ProviderConfig, config: Config, *, managed_feature: str | None) -> None:
     """Persist the provider/backend config keys for a selected provider.
 
     This is the pure, non-interactive core of :func:`_configure_provider` —
@@ -2764,7 +2785,7 @@ def _write_provider_config(provider: dict, config: dict, *, managed_feature) -> 
                 break
 
 
-def apply_provider_selection(ts_key: str, provider_name: str, config: dict) -> None:
+def apply_provider_selection(ts_key: str, provider_name: str, config: Config) -> None:
     """Non-interactively persist a provider selection for a toolset.
 
     Resolves ``provider_name`` within ``ts_key``'s category (matching the
@@ -2821,11 +2842,11 @@ def apply_provider_selection(ts_key: str, provider_name: str, config: dict) -> N
 
 
 def _configure_provider(
-    provider: dict,
-    config: dict,
+    provider: ProviderConfig,
+    config: Config,
     *,
     force_fresh: bool = True,
-):
+) -> None:
     """Configure a single provider - prompt for API keys and set config."""
     env_vars = provider.get("env_vars", [])
     managed_feature = provider.get("managed_nous_feature")
@@ -2997,7 +3018,7 @@ def _configure_provider(
                 img_cfg["provider"] = "fal"
 
 
-def _configure_simple_requirements(ts_key: str):
+def _configure_simple_requirements(ts_key: str) -> None:
     """Simple fallback for toolsets that just need env vars (no provider selection)."""
     if ts_key == "vision":
         if _toolset_has_keys("vision"):
@@ -3061,10 +3082,10 @@ def _configure_simple_requirements(ts_key: str):
 
 
 def _reconfigure_tool(
-    config: dict,
+    config: Config,
     *,
     force_fresh: bool = True,
-):
+) -> None:
     """Let user reconfigure an existing tool's provider or API key."""
     # Build list of configurable tools that are currently set up
     configurable = []
@@ -3106,7 +3127,7 @@ def _reconfigure_tool(
     save_config(config)
 
 
-def _toolset_enabled_for_reconfigure(ts_key: str, config: dict) -> bool:
+def _toolset_enabled_for_reconfigure(ts_key: str, config: Config) -> bool:
     """Return True if a configurable toolset is enabled anywhere.
 
     Reconfigure must include enabled-but-unconfigured categories so users can
@@ -3130,11 +3151,11 @@ def _toolset_enabled_for_reconfigure(ts_key: str, config: dict) -> bool:
 
 def _configure_tool_category_for_reconfig(
     ts_key: str,
-    cat: dict,
-    config: dict,
+    cat: ToolCategory,
+    config: Config,
     *,
     force_fresh: bool = True,
-):
+) -> None:
     """Reconfigure a tool category - provider selection + API key update."""
     icon = cat.get("icon", "")
     name = cat["name"]
@@ -3192,11 +3213,11 @@ def _configure_tool_category_for_reconfig(
 
 
 def _reconfigure_provider(
-    provider: dict,
-    config: dict,
+    provider: ProviderConfig,
+    config: Config,
     *,
     force_fresh: bool = True,
-):
+) -> None:
     """Reconfigure a provider - update API keys."""
     env_vars = provider.get("env_vars", [])
     managed_feature = provider.get("managed_nous_feature")
@@ -3339,7 +3360,7 @@ def _reconfigure_provider(
                 img_cfg["use_gateway"] = False
 
 
-def _reconfigure_simple_requirements(ts_key: str):
+def _reconfigure_simple_requirements(ts_key: str) -> None:
     """Reconfigure simple env var requirements."""
     requirements = TOOLSET_ENV_REQUIREMENTS.get(ts_key, [])
     if not requirements:
@@ -3365,7 +3386,11 @@ def _reconfigure_simple_requirements(ts_key: str):
 
 # ─── Main Entry Point ─────────────────────────────────────────────────────────
 
-def tools_command(args=None, first_install: bool = False, config: dict = None):
+def tools_command(
+    args: "argparse.Namespace | None" = None,
+    first_install: bool = False,
+    config: Config | None = None,
+) -> None:
     """Entry point for `hermes tools` and `hermes setup tools`.
 
     Args:
@@ -3636,7 +3661,7 @@ def tools_command(args=None, first_install: bool = False, config: dict = None):
 # ─── MCP Tools Interactive Configuration ─────────────────────────────────────
 
 
-def _configure_mcp_tools_interactive(config: dict):
+def _configure_mcp_tools_interactive(config: Config) -> None:
     """Probe MCP servers for available tools and let user toggle them on/off.
 
     Connects to each configured MCP server, discovers tools, then shows
@@ -3707,7 +3732,7 @@ def _configure_mcp_tools_interactive(config: dict):
                 labels.append(tool_name)
 
         # Determine which tools are currently enabled
-        pre_selected: Set[int] = set()
+        pre_selected: set[int] = set()
         tool_names = [t[0] for t in tools]
         for i, tool_name in enumerate(tool_names):
             if include_list:
@@ -3772,7 +3797,7 @@ def _configure_mcp_tools_interactive(config: dict):
 # ─── Non-interactive disable/enable ──────────────────────────────────────────
 
 
-def _apply_toolset_change(config: dict, platform: str, toolset_names: List[str], action: str):
+def _apply_toolset_change(config: Config, platform: str, toolset_names: list[str], action: str) -> None:
     """Add or remove built-in toolsets for a platform."""
     enabled = _get_platform_tools(config, platform, include_default_mcp_servers=False)
     if action == "disable":
@@ -3782,12 +3807,12 @@ def _apply_toolset_change(config: dict, platform: str, toolset_names: List[str],
     _save_platform_tools(config, platform, updated)
 
 
-def _apply_mcp_change(config: dict, targets: List[str], action: str) -> Set[str]:
+def _apply_mcp_change(config: Config, targets: list[str], action: str) -> set[str]:
     """Add or remove specific MCP tools from a server's exclude list.
 
     Returns the set of server names that were not found in config.
     """
-    failed_servers: Set[str] = set()
+    failed_servers: set[str] = set()
     mcp_servers = config.get("mcp_servers") or {}
 
     for target in targets:
@@ -3807,7 +3832,7 @@ def _apply_mcp_change(config: dict, targets: List[str], action: str) -> Set[str]
     return failed_servers
 
 
-def _print_tools_list(enabled_toolsets: set, mcp_servers: dict, platform: str = "cli"):
+def _print_tools_list(enabled_toolsets: set[str], mcp_servers: Config, platform: str = "cli") -> None:
     """Print a summary of enabled/disabled toolsets and MCP tool filters."""
     effective_all = _get_effective_configurable_toolsets()
     effective = [
@@ -3849,7 +3874,7 @@ def _print_tools_list(enabled_toolsets: set, mcp_servers: dict, platform: str = 
                 _print_info(f"{srv_name}  {color('all tools enabled', Colors.DIM)}")
 
 
-def tools_disable_enable_command(args):
+def tools_disable_enable_command(args: "argparse.Namespace") -> None:
     """Enable, disable, or list tools for a platform.
 
     Built-in toolsets use plain names (e.g. ``web``, ``memory``).
@@ -3868,7 +3893,7 @@ def tools_disable_enable_command(args):
                           config.get("mcp_servers") or {}, platform)
         return
 
-    targets: List[str] = args.names
+    targets: list[str] = args.names
     toolset_targets = [t for t in targets if ":" not in t]
     mcp_targets = [t for t in targets if ":" in t]
 
@@ -3896,7 +3921,7 @@ def tools_disable_enable_command(args):
     if toolset_targets:
         _apply_toolset_change(config, platform, toolset_targets, action)
 
-    failed_servers: Set[str] = set()
+    failed_servers: set[str] = set()
     if mcp_targets:
         failed_servers = _apply_mcp_change(config, mcp_targets, action)
         for srv in failed_servers:

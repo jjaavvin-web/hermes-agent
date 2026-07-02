@@ -215,6 +215,100 @@ def test_hook_install_is_idempotent_and_preserves_user_hook(monkeypatch, tmp_pat
     assert text.count(mgr.HOOK_MARKER_END) == 1
     assert (
         "/home/josep/.local/share/hermes-agent/venv/bin/python -m "
-        "hermes_cli.gitnexus_repo_manager --path \"$repo_root\""
+        "hermes_cli.gitnexus_repo_manager --on-commit --path \"$repo_root\""
     ) in text
     assert "flock -n -E 75 \"$lockfile\"" in text
+
+
+def test_post_analyze_waits_out_409_then_retries(monkeypatch):
+    import io
+    import urllib.error
+
+    posts = []
+
+    def fake_api(method, path, body=None):
+        if method == "POST":
+            posts.append(body)
+            if len(posts) == 1:
+                raise urllib.error.HTTPError(
+                    path,
+                    409,
+                    "Conflict",
+                    {},
+                    io.BytesIO(
+                        b'{"error":"Analysis already in progress '
+                        b'(job abc12345-d20c-4a38-8714-e5da30097449)"}'
+                    ),
+                )
+            return {"jobId": "newjob"}
+        raise AssertionError(f"unexpected GET {path}")
+
+    waited = []
+    monkeypatch.setattr(mgr, "_api", fake_api)
+    monkeypatch.setattr(
+        mgr, "_wait_for_job", lambda jid, label, timeout=600: waited.append(jid) or True
+    )
+
+    job = mgr._post_analyze(
+        "/data/gitnexus/repos/x", "x", deadline=mgr.time.time() + 60
+    )
+
+    assert job == {"jobId": "newjob"}
+    assert waited == ["abc12345-d20c-4a38-8714-e5da30097449"]  # waited on the busy job
+    assert len(posts) == 2  # retried after the busy job cleared
+
+
+def test_post_analyze_reraises_non_409(monkeypatch):
+    import io
+    import urllib.error
+
+    def fake_api(method, path, body=None):
+        raise urllib.error.HTTPError(path, 500, "Server Error", {}, io.BytesIO(b"boom"))
+
+    monkeypatch.setattr(mgr, "_api", fake_api)
+    with pytest.raises(urllib.error.HTTPError):
+        mgr._post_analyze("/data/gitnexus/repos/x", "x", deadline=mgr.time.time() + 60)
+
+
+def test_on_commit_skips_linked_worktree(monkeypatch, tmp_path):
+    main = tmp_path / "hermes-agent"
+    main.mkdir()
+    worktree = tmp_path / "wt" / "loki5-headers"
+    worktree.mkdir(parents=True)
+    # Linked worktrees share the main repo's .git common dir.
+    monkeypatch.setattr(mgr, "_git_common_dir", lambda p: main / ".git")
+    config = {"repos": [{"path": str(main), "label": "hermes-agent", "reindex_on_commit": True}]}
+
+    assert mgr._resolve_on_commit(config, str(worktree)) is None
+
+
+def test_on_commit_reindexes_main_configured_repo(monkeypatch, tmp_path):
+    main = tmp_path / "hermes-agent"
+    main.mkdir()
+    monkeypatch.setattr(mgr, "_git_common_dir", lambda p: main / ".git")
+    config = {"repos": [{"path": str(main), "label": "hermes-agent", "reindex_on_commit": True}]}
+
+    result = mgr._resolve_on_commit(config, str(main))
+
+    assert result is not None
+    path, label = result
+    assert mgr._resolved_path(path) == mgr._resolved_path(main)
+    assert label == "hermes-agent"
+
+
+def test_on_commit_skips_unconfigured_repo(monkeypatch, tmp_path):
+    other = tmp_path / "some-other-repo"
+    other.mkdir()
+    monkeypatch.setattr(mgr, "_git_common_dir", lambda p: other / ".git")
+    config = {"repos": [{"path": str(tmp_path / "hermes-agent"), "label": "hermes-agent", "reindex_on_commit": True}]}
+
+    assert mgr._resolve_on_commit(config, str(other)) is None
+
+
+def test_on_commit_skips_when_reindex_disabled(monkeypatch, tmp_path):
+    main = tmp_path / "repo"
+    main.mkdir()
+    monkeypatch.setattr(mgr, "_git_common_dir", lambda p: main / ".git")
+    config = {"repos": [{"path": str(main), "label": "repo", "reindex_on_commit": False}]}
+
+    assert mgr._resolve_on_commit(config, str(main)) is None

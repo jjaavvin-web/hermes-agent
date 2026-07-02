@@ -1,0 +1,478 @@
+- generic [ref=e3]:
+  - link "Skip to main content" [ref=e4] [cursor=pointer]:
+    - /url: "#main"
+  - banner [ref=e5]:
+    - button "Open navigation" [ref=e6] [cursor=pointer]:
+      - img [ref=e7]
+    - generic [ref=e8]: Hermes Agent
+  - generic [ref=e10]:
+    - complementary "Navigation" [ref=e11]:
+      - generic [ref=e12]:
+        - generic [ref=e13]:
+          - img [ref=e209]
+          - generic [ref=e14]:
+            - text: Hermes
+            - text: Agent
+        - button "Close navigation" [ref=e15] [cursor=pointer]:
+          - img [ref=e16]
+      - generic "Managing profile" [ref=e213]:
+        - img [ref=e214]
+        - combobox "Managing profile" [ref=e219]:
+          - option "this dashboard (default)" [selected]
+          - option "brain"
+          - option "cheapgrunt"
+          - option "claude-code-bridge"
+          - option "gptgrunt"
+          - option "h2architect"
+          - option "h2auditor"
+          - option "h2coder"
+          - option "h2dispatch"
+          - option "h2governor"
+          - option "h2librarian"
+          - option "h2patcher"
+          - option "h2research"
+          - option "h2reviewer"
+          - option "h2simple"
+          - option "hermes-opus-workflow"
+      - navigation "Navigation" [ref=e19]:
+        - list [ref=e20]:
+          - listitem [ref=e21]:
+            - link "Chat" [ref=e22] [cursor=pointer]:
+              - /url: /chat
+              - img [ref=e23]
+              - generic [ref=e25]: Chat
+          - listitem [ref=e26]:
+            - link "Life" [ref=e27] [cursor=pointer]:
+              - /url: /life
+              - img [ref=e28]
+              - generic [ref=e33]: Life
+          - listitem [ref=e34]:
+            - link "Sessions" [ref=e35] [cursor=pointer]:
+              - /url: /sessions
+              - img [ref=e36]
+              - generic [ref=e38]: Sessions
+          - listitem [ref=e39]:
+            - link "Files" [ref=e40] [cursor=pointer]:
+              - /url: /files
+              - img [ref=e41]
+              - generic [ref=e43]: Files
+          - listitem [ref=e44]:
+            - link "Cost" [ref=e45] [cursor=pointer]:
+              - /url: /cost
+              - img [ref=e46]
+              - generic [ref=e48]: Cost
+          - listitem [ref=e49]:
+            - link "Models" [ref=e50] [cursor=pointer]:
+              - /url: /models
+              - img [ref=e51]
+              - generic [ref=e54]: Models
+          - listitem [ref=e55]:
+            - link "Logs" [ref=e56] [cursor=pointer]:
+              - /url: /logs
+              - img [ref=e57]
+              - generic [ref=e60]: Logs
+          - listitem [ref=e61]:
+            - link "Cron" [ref=e62] [cursor=pointer]:
+              - /url: /cron
+              - img [ref=e63]
+              - generic [ref=e66]: Cron
+          - listitem [ref=e67]:
+            - link "Skills" [ref=e68] [cursor=pointer]:
+              - /url: /skills
+              - img [ref=e69]
+              - generic [ref=e73]: Skills
+          - listitem [ref=e74]:
+            - link "Explorer" [ref=e75] [cursor=pointer]:
+              - /url: /explorer
+              - img [ref=e76]
+              - generic [ref=e81]: Explorer
+          - listitem [ref=e82]:
+            - link "OS" [ref=e83] [cursor=pointer]:
+              - /url: /os
+              - img [ref=e84]
+              - generic [ref=e87]: OS
+          - listitem [ref=e88]:
+            - link "System Health" [ref=e89] [cursor=pointer]:
+              - /url: /nexus-health
+              - img [ref=e90]
+              - generic [ref=e92]: System Health
+          - listitem [ref=e93]:
+            - link "Learning" [ref=e94] [cursor=pointer]:
+              - /url: /learning
+              - img [ref=e95]
+              - generic [ref=e98]: Learning
+          - listitem [ref=e99]:
+            - link "Plugins" [ref=e100] [cursor=pointer]:
+              - /url: /plugins
+              - img [ref=e101]
+              - generic [ref=e103]: Plugins
+          - listitem [ref=e104]:
+            - link "MCP" [ref=e105] [cursor=pointer]:
+              - /url: /mcp
+              - img [ref=e106]
+              - generic [ref=e108]: MCP
+          - listitem [ref=e109]:
+            - link "Channels" [ref=e110] [cursor=pointer]:
+              - /url: /channels
+              - img [ref=e111]
+              - generic [ref=e117]: Channels
+          - listitem [ref=e118]:
+            - link "Webhooks" [ref=e119] [cursor=pointer]:
+              - /url: /webhooks
+              - img [ref=e120]
+              - generic [ref=e124]: Webhooks
+          - listitem [ref=e125]:
+            - link "Pairing" [ref=e126] [cursor=pointer]:
+              - /url: /pairing
+              - img [ref=e127]
+              - generic [ref=e130]: Pairing
+          - listitem [ref=e131]:
+            - link "Profiles" [ref=e132] [cursor=pointer]:
+              - /url: /profiles
+              - img [ref=e133]
+              - generic [ref=e138]: Profiles
+          - listitem [ref=e139]:
+            - link "Config" [ref=e140] [cursor=pointer]:
+              - /url: /config
+              - img [ref=e141]
+              - generic [ref=e144]: Config
+          - listitem [ref=e145]:
+            - link "Keys" [ref=e146] [cursor=pointer]:
+              - /url: /env
+              - img [ref=e147]
+              - generic [ref=e150]: Keys
+          - listitem [ref=e151]:
+            - link "System" [ref=e152] [cursor=pointer]:
+              - /url: /system
+              - img [ref=e153]
+              - generic [ref=e155]: System
+          - listitem [ref=e157]:
+            - link "Documentation" [ref=e158] [cursor=pointer]:
+              - /url: /docs
+              - img [ref=e159]
+              - generic [ref=e161]: Documentation
+        - group "Plugins" [ref=e220]:
+          - generic [ref=e221]: Plugins
+          - list [ref=e222]:
+            - listitem [ref=e223]:
+              - link "Kanban" [ref=e224] [cursor=pointer]:
+                - /url: /kanban
+                - img [ref=e225]
+                - generic [ref=e229]: Kanban
+            - listitem [ref=e230]:
+              - link "TRT Tracker" [ref=e231] [cursor=pointer]:
+                - /url: /trt-cypionate
+                - img [ref=e232]
+                - generic [ref=e234]: TRT Tracker
+            - listitem [ref=e235]:
+              - link "Achievements" [ref=e236] [cursor=pointer]:
+                - /url: /achievements
+                - img [ref=e237]
+                - generic [ref=e239]: Achievements
+      - generic [ref=e162]:
+        - generic [ref=e163]: System
+        - 'link "Gateway Status: Running Active Sessions: 0" [ref=e240] [cursor=pointer]':
+          - /url: /sessions
+          - generic [ref=e241]:
+            - paragraph [ref=e242]: "Gateway Status: Running"
+            - paragraph [ref=e243]: "Active Sessions: 0"
+        - list [ref=e167]:
+          - listitem [ref=e168]:
+            - button "Restart Gateway" [ref=e169] [cursor=pointer]:
+              - img [ref=e170]
+              - generic [ref=e173]: Restart Gateway
+          - listitem [ref=e244]:
+            - button "Update Hermes" [ref=e245] [cursor=pointer]:
+              - img [ref=e246]
+              - generic [ref=e249]: Update Hermes
+      - generic [ref=e175]:
+        - button "Switch theme" [ref=e178] [cursor=pointer]:
+          - generic [ref=e179]:
+            - img [ref=e180]
+            - generic [ref=e186]: Mono
+        - button "Switch language" [ref=e189] [cursor=pointer]:
+          - generic [ref=e191]: EN
+      - generic [ref=e194]:
+        - generic [ref=e195]: v0.17.0
+        - link "Nous Research" [ref=e196] [cursor=pointer]:
+          - /url: https://nousresearch.com
+    - generic [ref=e197]:
+      - banner [ref=e198]:
+        - heading "System" [level=1] [ref=e201]
+      - main [ref=e202]:
+        - main [ref=e203]:
+          - generic [ref=e206]:
+            - generic [ref=e250]:
+              - heading "Host" [level=2] [ref=e251]:
+                - img [ref=e252]
+                - text: Host
+              - generic [ref=e256]:
+                - generic [ref=e257]:
+                  - generic [ref=e258]:
+                    - generic [ref=e259]: OS
+                    - generic [ref=e260]: Linux 6.6.87.2-microsoft-standard-WSL2
+                  - generic [ref=e261]:
+                    - generic [ref=e262]: Arch
+                    - generic [ref=e263]: x86_64
+                  - generic [ref=e264]:
+                    - generic [ref=e265]: Host
+                    - generic [ref=e266]: FRESH
+                  - generic [ref=e267]:
+                    - generic [ref=e268]: Python
+                    - generic [ref=e269]: CPython 3.11.15
+                  - generic [ref=e270]:
+                    - generic [ref=e271]: Hermes
+                    - generic [ref=e272]:
+                      - generic [ref=e273]: v0.17.0
+                      - generic [ref=e274]: 821 behind
+                  - generic [ref=e275]:
+                    - generic [ref=e276]:
+                      - img [ref=e277]
+                      - text: CPU
+                    - generic [ref=e280]: 20 cores · 7%
+                  - generic [ref=e281]:
+                    - generic [ref=e282]: Memory
+                    - generic [ref=e283]: 6.1 GB / 31.2 GB (19.5%)
+                  - generic [ref=e284]:
+                    - generic [ref=e285]:
+                      - img [ref=e286]
+                      - text: Disk
+                    - generic [ref=e288]: 157.8 GB / 195.8 GB (84.9%)
+                  - generic [ref=e289]:
+                    - generic [ref=e290]: Uptime
+                    - generic [ref=e291]: 22h 2m
+                  - generic [ref=e292]:
+                    - generic [ref=e293]: Load avg
+                    - generic [ref=e294]: 1.82 / 9.43 / 12.38
+                - generic [ref=e295]:
+                  - button "Check for updates" [ref=e296] [cursor=pointer]:
+                    - img [ref=e298]
+                    - text: Check for updates
+                  - button "Update now" [ref=e301] [cursor=pointer]:
+                    - img [ref=e303]
+                    - text: Update now
+            - generic [ref=e306]:
+              - heading "Nous Portal" [level=2] [ref=e307]:
+                - img [ref=e308]
+                - text: Nous Portal
+              - generic [ref=e312]:
+                - generic [ref=e313]:
+                  - generic [ref=e314]: not logged in
+                  - generic [ref=e315]: "inference provider: openai-codex"
+                  - link "Manage subscription" [ref=e316] [cursor=pointer]:
+                    - /url: https://portal.nousresearch.com/manage-subscription
+                - generic [ref=e317]:
+                  - generic [ref=e318]: Tool Gateway routing
+                  - generic [ref=e319]:
+                    - generic [ref=e320]: Web tools
+                    - generic [ref=e321]: not configured
+                  - generic [ref=e322]:
+                    - generic [ref=e323]: Image generation
+                    - generic [ref=e324]: not configured
+                  - generic [ref=e325]:
+                    - generic [ref=e326]: Video generation
+                    - generic [ref=e327]: not configured
+                  - generic [ref=e328]:
+                    - generic [ref=e329]: OpenAI TTS
+                    - generic [ref=e330]: Edge TTS
+                  - generic [ref=e331]:
+                    - generic [ref=e332]: Speech-to-text
+                    - generic [ref=e333]: Local faster-whisper
+                  - generic [ref=e334]:
+                    - generic [ref=e335]: Browser automation
+                    - generic [ref=e336]: not configured
+                  - generic [ref=e337]:
+                    - generic [ref=e338]: Modal execution
+                    - generic [ref=e339]: local
+                - paragraph [ref=e340]: Log in with hermes portal.
+            - generic [ref=e341]:
+              - heading "Skill curator" [level=2] [ref=e342]:
+                - img [ref=e343]
+                - text: Skill curator
+              - generic [ref=e347]:
+                - generic [ref=e348]:
+                  - generic [ref=e349]: active
+                  - generic [ref=e350]: every 168h · last run 6/26/2026, 7:42:28 AM
+                - generic [ref=e351]:
+                  - button "Pause" [ref=e352] [cursor=pointer]
+                  - button "Run now" [ref=e353] [cursor=pointer]:
+                    - img [ref=e355]
+                    - text: Run now
+            - generic [ref=e357]:
+              - heading "Gateway" [level=2] [ref=e358]:
+                - img [ref=e359]
+                - text: Gateway
+              - generic [ref=e362]:
+                - generic [ref=e363]:
+                  - generic [ref=e364]: running
+                  - generic [ref=e365]: running · pid 318745
+                - generic [ref=e366]:
+                  - button "Start" [disabled]:
+                    - generic:
+                      - img
+                    - text: Start
+                  - button "Restart" [ref=e367] [cursor=pointer]:
+                    - img [ref=e369]
+                    - text: Restart
+                  - button "Stop" [ref=e372] [cursor=pointer]:
+                    - img [ref=e374]
+                    - text: Stop
+            - generic [ref=e376]:
+              - heading "Memory" [level=2] [ref=e377]:
+                - img [ref=e378]
+                - text: Memory
+              - generic [ref=e387]:
+                - generic [ref=e388]:
+                  - generic [ref=e389]: "External provider: honcho"
+                  - link "Change in Plugins →" [ref=e390] [cursor=pointer]:
+                    - /url: /plugins
+                  - generic [ref=e391]: "New credentials: hermes memory setup"
+                - generic [ref=e392]:
+                  - generic [ref=e393]: "Built-in files — MEMORY.md: 3.5 KB · USER.md: 2.1 KB"
+                  - generic [ref=e394]:
+                    - button "Reset MEMORY.md" [ref=e395] [cursor=pointer]
+                    - button "Reset USER.md" [ref=e396] [cursor=pointer]
+                    - button "Reset all" [ref=e397] [cursor=pointer]
+            - generic [ref=e398]:
+              - heading "Credential pool" [level=2] [ref=e399]:
+                - img [ref=e400]
+                - text: Credential pool
+              - generic [ref=e404]:
+                - generic [ref=e405]:
+                  - generic [ref=e406]:
+                    - generic [ref=e407]: Provider
+                    - textbox "Provider" [ref=e408]:
+                      - /placeholder: openrouter
+                      - text: openrouter
+                  - generic [ref=e409]:
+                    - generic [ref=e410]: API key
+                    - textbox "API key" [ref=e411]:
+                      - /placeholder: sk-…
+                  - generic [ref=e412]:
+                    - generic [ref=e413]: Label
+                    - textbox "Label" [ref=e414]:
+                      - /placeholder: optional
+                - button "Add key" [ref=e416] [cursor=pointer]: Add key
+                - generic [ref=e417]:
+                  - generic [ref=e418]: anthropic
+                  - generic [ref=e419]:
+                    - generic [ref=e420]: anthropic-oauth-1
+                    - generic [ref=e421]: sk-a...PgAA
+                    - generic [ref=e422]: oauth
+                    - generic [ref=e423]: exhausted
+                    - button "Remove credential" [ref=e424] [cursor=pointer]:
+                      - img [ref=e425]
+                  - generic [ref=e428]:
+                    - generic [ref=e429]: anthropic-native-20260611b
+                    - generic [ref=e430]: sk-a...FAAA
+                    - generic [ref=e431]: oauth
+                    - generic [ref=e432]: ok
+                    - button "Remove credential" [ref=e433] [cursor=pointer]:
+                      - img [ref=e434]
+                - generic [ref=e437]:
+                  - generic [ref=e438]: copilot
+                  - generic [ref=e439]:
+                    - generic [ref=e440]: gh auth token
+                    - generic [ref=e441]: gho_...RnB9
+                    - generic [ref=e442]: api_key
+                    - button "Remove credential" [ref=e443] [cursor=pointer]:
+                      - img [ref=e444]
+                - generic [ref=e447]:
+                  - generic [ref=e448]: google-gemini-cli
+                  - generic [ref=e449]:
+                    - generic [ref=e450]: jjaavvin@gmail.com
+                    - generic [ref=e451]: ya29...0211
+                    - generic [ref=e452]: oauth
+                    - generic [ref=e453]: ok
+                    - button "Remove credential" [ref=e454] [cursor=pointer]:
+                      - img [ref=e455]
+                - generic [ref=e458]:
+                  - generic [ref=e459]: openai-codex
+                  - generic [ref=e460]:
+                    - generic [ref=e461]: Codex-Max
+                    - generic [ref=e462]: eyJh..._Uhc
+                    - generic [ref=e463]: oauth
+                    - generic [ref=e464]: ok
+                    - button "Remove credential" [ref=e465] [cursor=pointer]:
+                      - img [ref=e466]
+                - generic [ref=e469]:
+                  - generic [ref=e470]: openrouter
+                  - generic [ref=e471]:
+                    - generic [ref=e472]: OPENROUTER_API_KEY
+                    - generic [ref=e473]: sk-o...2779
+                    - generic [ref=e474]: api_key
+                    - button "Remove credential" [ref=e475] [cursor=pointer]:
+                      - img [ref=e476]
+                - generic [ref=e479]:
+                  - generic [ref=e480]: xai-oauth
+                  - generic [ref=e481]:
+                    - generic [ref=e482]: loopback_pkce
+                    - generic [ref=e483]: eyJ0...RUrg
+                    - generic [ref=e484]: oauth
+                    - generic [ref=e485]: ok
+                    - button "Remove credential" [ref=e486] [cursor=pointer]:
+                      - img [ref=e487]
+            - generic [ref=e490]:
+              - heading "Operations" [level=2] [ref=e491]:
+                - img [ref=e492]
+                - text: Operations
+              - generic [ref=e495]:
+                - button "Run doctor" [ref=e496] [cursor=pointer]:
+                  - img [ref=e498]
+                  - text: Run doctor
+                - button "Security audit" [ref=e502] [cursor=pointer]:
+                  - img [ref=e504]
+                  - text: Security audit
+                - button "Create backup" [ref=e507] [cursor=pointer]:
+                  - img [ref=e509]
+                  - text: Create backup
+                - button "Update skills" [ref=e513] [cursor=pointer]:
+                  - img [ref=e515]
+                  - text: Update skills
+                - button "Prompt size" [ref=e518] [cursor=pointer]:
+                  - img [ref=e520]
+                  - text: Prompt size
+                - button "Support dump" [ref=e522] [cursor=pointer]:
+                  - img [ref=e524]
+                  - text: Support dump
+                - button "Migrate config" [ref=e528] [cursor=pointer]:
+                  - img [ref=e530]
+                  - text: Migrate config
+              - generic [ref=e534]:
+                - generic [ref=e535]:
+                  - generic [ref=e536]:
+                    - img [ref=e537]
+                    - generic [ref=e543]:
+                      - generic [ref=e544]: Share debug report
+                      - generic [ref=e545]: Uploads system info + logs to a public paste service and returns links to send the Hermes team. Pastes auto-delete after 6 hours.
+                  - button "Generate share link" [ref=e546] [cursor=pointer]:
+                    - img [ref=e548]
+                    - text: Generate share link
+                - generic [ref=e554]:
+                  - checkbox "Redact credential-shaped tokens before upload (recommended)" [checked] [ref=e555]
+                  - text: Redact credential-shaped tokens before upload (recommended)
+              - generic [ref=e557]:
+                - generic [ref=e558]:
+                  - generic [ref=e559]: Restore from backup archive
+                  - textbox "Restore from backup archive" [ref=e560]:
+                    - /placeholder: /path/to/hermes-backup.zip
+                - button "Import" [disabled]
+            - generic [ref=e561]:
+              - heading "Checkpoints" [level=2] [ref=e562]:
+                - img [ref=e563]
+                - text: Checkpoints
+              - generic [ref=e568]:
+                - generic [ref=e569]: 0 session(s) · 0 B
+                - button "Prune" [disabled]:
+                  - generic:
+                    - img
+                  - text: Prune
+            - generic [ref=e570]:
+              - generic [ref=e571]:
+                - heading "Shell hooks" [level=2] [ref=e572]:
+                  - img [ref=e573]
+                  - text: Shell hooks
+                - button "New hook" [ref=e575] [cursor=pointer]:
+                  - img [ref=e577]
+                  - text: New hook
+              - generic [ref=e579]: No shell hooks configured.

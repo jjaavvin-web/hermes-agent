@@ -55,6 +55,8 @@ from gateway.platforms.base import (
     MessageType,
     SendResult,
 )
+from hermes_cli.active_sessions import resolve_max_concurrent_agent_runs
+from tools.approval import CREDENTIAL_EXFIL_DENY_PATTERNS
 
 logger = logging.getLogger(__name__)
 
@@ -70,6 +72,26 @@ DEFAULT_PORT = 8644
 _INSECURE_NO_AUTH = "INSECURE_NO_AUTH"
 _DYNAMIC_ROUTES_FILENAME = "webhook_subscriptions.json"
 
+# Server-side terminal-command denial applied to EVERY webhook/relay-dispatched
+# agent session (loki lanes, relay workers). These run autonomously with no human
+# present to answer an approval prompt, so push / PR / merge must be physically
+# impossible at the approval layer — prompt-only guards are insufficient and were
+# the deep-infra-audit P0 (a dispatched agent could push or merge if its prompt
+# guard was stripped). Enforced unconditionally in approval.check_all_command_guards
+# (before the yolo/mode=off bypass). Routes may ADD patterns via a
+# "deny_terminal_patterns" list in webhook_subscriptions.json.
+DEFAULT_WEBHOOK_DENY_PATTERNS = [
+    *CREDENTIAL_EXFIL_DENY_PATTERNS,
+    r"\bgit\s+(?:-\S+\s+\S*\s*)*push\b",       # git push, git -C <dir> push, git push --force
+    r"\bgit\s+(?:-\S+\s+\S*\s*)*(?:checkout|switch|branch|reset|restore)\b",  # ref-mutation: webhook lanes must NOT flap the operator HEAD / main checkout (t_0113eacc)
+    r"\bgh\s+pr\s+(?:create|merge|ready)\b",   # open / merge / mark-ready a PR
+    r"\bgh\s+workflow\s+run\b",                # trigger a CI workflow (can push/merge/deploy)
+    r"\bgh\s+run\s+(?:rerun|cancel|delete)\b", # re-run / cancel / delete a CI run (list/view/watch stay allowed)
+    r"\bgh\s+release\s+(?:create|delete|upload)\b",  # cut / delete / upload a release asset
+    r"\bgh\s+repo\s+(?:create|delete|fork)\b", # create / delete / fork a repo
+    r"\bhub\s+(?:pull-request|merge|push)\b",  # legacy hub CLI equivalents
+]
+
 # Hostnames/IP literals that only serve connections originating on the same
 # machine. Anything else is treated as a public bind for safety-rail purposes.
 _LOOPBACK_HOSTS = frozenset({
@@ -79,6 +101,21 @@ _LOOPBACK_HOSTS = frozenset({
     "ip6-localhost",
     "ip6-loopback",
 })
+
+_AGENT_RUN_SEMAPHORE: Optional[asyncio.Semaphore] = None
+_AGENT_RUN_SEMAPHORE_CAP: Optional[int] = None
+
+
+def _get_agent_run_semaphore(max_concurrent_agent_runs: int) -> asyncio.Semaphore:
+    """Return the process-global inbound agent-run semaphore for webhook runs."""
+    global _AGENT_RUN_SEMAPHORE, _AGENT_RUN_SEMAPHORE_CAP
+    if (
+        _AGENT_RUN_SEMAPHORE is None
+        or _AGENT_RUN_SEMAPHORE_CAP != max_concurrent_agent_runs
+    ):
+        _AGENT_RUN_SEMAPHORE = asyncio.Semaphore(max_concurrent_agent_runs)
+        _AGENT_RUN_SEMAPHORE_CAP = max_concurrent_agent_runs
+    return _AGENT_RUN_SEMAPHORE
 
 
 def _is_loopback_host(host: str) -> bool:
@@ -136,6 +173,14 @@ class WebhookAdapter(BasePlatformAdapter):
         # Rate limiting: per-route timestamps in a fixed window.
         self._rate_counts: Dict[str, List[float]] = {}
         self._rate_limit: int = int(config.extra.get("rate_limit", 30))  # per minute
+
+        # Agent-run backpressure: global in-process cap across all webhook
+        # routes. This limits concurrent in-flight agent tasks, not request
+        # arrival rate, and fails fast with HTTP 429 when saturated.
+        self._max_concurrent_agent_runs: int = resolve_max_concurrent_agent_runs(
+            {"gateway": {"max_concurrent_agent_runs": config.extra.get("max_concurrent_agent_runs")}}
+        )
+        self._agent_run_semaphore = _get_agent_run_semaphore(self._max_concurrent_agent_runs)
 
         # Body size limit (auth-before-body pattern)
         self._max_body_bytes: int = int(
@@ -393,14 +438,14 @@ class WebhookAdapter(BasePlatformAdapter):
             ref_check = subprocess.run(
                 ["git", "-C", repo_root, "rev-parse", "--verify", "--quiet",
                  f"refs/heads/{self._wt_branch}"],
-                capture_output=True, text=True,
+                capture_output=True, text=True, timeout=25,
             )
             add_cmd = ["git", "-C", repo_root, "worktree", "add", str(wt_dir)]
             if ref_check.returncode == 0:
                 add_cmd.append(self._wt_branch)
             else:
                 add_cmd += ["-b", self._wt_branch, self._wt_base_branch]
-            res = subprocess.run(add_cmd, capture_output=True, text=True)
+            res = subprocess.run(add_cmd, capture_output=True, text=True, timeout=25)
             if res.returncode != 0 or not wt_dir.is_dir():
                 logger.error(
                     "[webhook] relay worktree add failed rc=%s: %s",
@@ -674,6 +719,52 @@ class WebhookAdapter(BasePlatformAdapter):
             user_id=f"webhook:{route_name}",
             user_name=route_name,
         )
+
+        # Register server-side push/PR/merge denial for THIS dispatched session.
+        # The key is computed with the SAME build_session_key call the dispatcher
+        # uses (gateway/platforms/base.py), so the approval contextvar key at
+        # tool-exec time matches this registration and the deny actually fires.
+        # Cleared at end-of-run in the agent-task finally block below.
+        _approval_key: Optional[str] = None
+        try:
+            from gateway.session import build_session_key
+            from tools.approval import register_session_deny_patterns
+            _deny_patterns = list(DEFAULT_WEBHOOK_DENY_PATTERNS)
+            _route_deny = route_config.get("deny_terminal_patterns")
+            if isinstance(_route_deny, list):
+                _deny_patterns.extend(str(p) for p in _route_deny)
+            _extra = getattr(self.config, "extra", {}) or {}
+            _approval_key = build_session_key(
+                source,
+                group_sessions_per_user=_extra.get("group_sessions_per_user", True),
+                thread_sessions_per_user=_extra.get("thread_sessions_per_user", False),
+            )
+            register_session_deny_patterns(_approval_key, _deny_patterns)
+        except Exception:
+            # Fail loud but do not crash the dispatch — prompt-level guards remain
+            # as defense-in-depth if server-side registration somehow fails.
+            logger.exception(
+                "[webhook] failed to register deny_terminal_patterns for route=%s",
+                route_name,
+            )
+
+        # DISP-5: arm the unconditional push/PR/workflow floor for THIS dispatch.
+        # mark_autonomous_dispatch() sets a contextvar that asyncio.create_task()
+        # (below) copies into the run task, and _run_in_executor_with_context
+        # preserves it across the executor-thread hop into tool-exec time. So the
+        # floor in check_session_deny_patterns fails CLOSED on git push / gh pr /
+        # gh workflow run even if the deny-list registration above was skipped or
+        # the session key mismatched. Interactive Discord/Telegram sessions enter
+        # via a different handler and never reach here, so they are unaffected.
+        try:
+            from tools.approval import mark_autonomous_dispatch
+            mark_autonomous_dispatch(True)
+        except Exception:
+            logger.exception(
+                "[webhook] failed to arm autonomous-dispatch floor route=%s",
+                route_name,
+            )
+
         event = MessageEvent(
             text=prompt,
             message_type=MessageType.TEXT,
@@ -692,12 +783,74 @@ class WebhookAdapter(BasePlatformAdapter):
         )
 
         # Non-blocking — return 202 Accepted immediately.
-        # Phase 3: when HERMES_WEBHOOK_WORKTREE is on, bind the run to the relay
-        # git worktree so it works on a branch, not the live tree. If a worktree
-        # can't be guaranteed, REFUSE (503) — NEVER fall through to the live cwd.
+        # Acquire capacity BEFORE spawning the background task. A saturated
+        # semaphore means the gateway is already at its configured in-flight
+        # agent-run ceiling, so reject with Retry-After instead of creating an
+        # unbounded task that can starve the async event loop.
+        if self._agent_run_semaphore.locked():
+            retry_after = "30"
+            logger.warning(
+                "[webhook] rejecting run: max_concurrent_agent_runs reached (%d) route=%s delivery=%s",
+                self._max_concurrent_agent_runs,
+                route_name,
+                delivery_id,
+            )
+            self._seen_deliveries.pop(delivery_id, None)
+            return web.json_response(
+                {
+                    "status": "rate_limited",
+                    "error": "max_concurrent_agent_runs_exhausted",
+                    "retry_after": int(retry_after),
+                    "delivery_id": delivery_id,
+                },
+                status=429,
+                headers={"Retry-After": retry_after},
+            )
+        await self._agent_run_semaphore.acquire()
+
+        async def _run_with_backpressure() -> None:
+            try:
+                # Phase 3: when HERMES_WEBHOOK_WORKTREE is on, bind the run to the relay
+                # git worktree so it works on a branch, not the live tree. If a worktree
+                # can't be guaranteed, REFUSE (503) — NEVER fall through to the live cwd.
+                if self._wt_enabled:
+                    from agent.codex_session_context import (
+                        set_active_worktree, reset_active_worktree,
+                    )
+                    _tok = set_active_worktree(_wt_for_run)
+                    try:
+                        await self.handle_message(event)
+                    finally:
+                        reset_active_worktree(_tok)
+                else:
+                    await self.handle_message(event)
+            finally:
+                try:
+                    from tools.approval import (
+                        clear_session,
+                        clear_session_credential_taint,
+                    )
+                    if _approval_key:
+                        clear_session(_approval_key)
+                        # Drop any two-step credential-stage taint accrued during
+                        # this dispatch so it cannot bleed into a reused key.
+                        clear_session_credential_taint(_approval_key)
+                except Exception:
+                    logger.debug(
+                        "[webhook] failed to clear deny_terminal_patterns for route=%s",
+                        route_name,
+                        exc_info=True,
+                    )
+                self._agent_run_semaphore.release()
+
+        # Phase 3 worktree preflight must happen after capacity acquisition but
+        # before task creation; release the slot if setup refuses the run.
+        _wt_for_run: Optional[str] = None
         if self._wt_enabled:
-            _wt_for_run = self._ensure_relay_worktree()
+            _wt_for_run = await asyncio.to_thread(self._ensure_relay_worktree)
             if _wt_for_run is None:
+                self._agent_run_semaphore.release()
+                self._seen_deliveries.pop(delivery_id, None)
                 logger.error(
                     "[webhook] relay worktree unavailable; refusing run route=%s delivery=%s",
                     route_name, delivery_id,
@@ -708,19 +861,7 @@ class WebhookAdapter(BasePlatformAdapter):
                     status=503,
                 )
 
-            async def _run_bound():
-                from agent.codex_session_context import (
-                    set_active_worktree, reset_active_worktree,
-                )
-                _tok = set_active_worktree(_wt_for_run)
-                try:
-                    await self.handle_message(event)
-                finally:
-                    reset_active_worktree(_tok)
-
-            task = asyncio.create_task(_run_bound())
-        else:
-            task = asyncio.create_task(self.handle_message(event))
+        task = asyncio.create_task(_run_with_backpressure())
         self._background_tasks.add(task)
         task.add_done_callback(self._background_tasks.discard)
 

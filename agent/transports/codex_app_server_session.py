@@ -38,6 +38,7 @@ from agent.transports.codex_app_server import (
     CodexAppServerError,
 )
 from agent.transports.codex_event_projector import CodexEventProjector
+from tools import approval
 
 logger = logging.getLogger(__name__)
 
@@ -72,6 +73,9 @@ class TurnResult:
     error: Optional[str] = None  # Set if turn ended in a non-recoverable error
     turn_id: Optional[str] = None
     thread_id: Optional[str] = None
+    token_usage_last: Optional[dict[str, Any]] = None
+    token_usage_total: Optional[dict[str, Any]] = None
+    model_context_window: Optional[int] = None
     # Hint to the caller that the underlying codex subprocess is likely
     # wedged (turn-level timeout fired, post-tool watchdog tripped, or
     # token-refresh failure killed the child). The caller should retire
@@ -501,6 +505,7 @@ class CodexAppServerSession:
                     pending = self._client.take_notification(timeout=0)
                     if pending is None:
                         break
+                    _apply_token_usage_notification(result, pending)
                     self._track_pending_file_change(pending)
                     proj = projector.project(pending)
                     if proj.messages:
@@ -535,6 +540,8 @@ class CodexAppServerSession:
                     self._on_event(note)
                 except Exception:  # pragma: no cover - display callback
                     logger.debug("on_event callback raised", exc_info=True)
+
+            _apply_token_usage_notification(result, note)
 
             # Track in-progress fileChange items so the approval bridge
             # can surface a real change summary when codex requests
@@ -688,10 +695,56 @@ class CodexAppServerSession:
                 rid, code=-32601, message=f"Unsupported method: {method}"
             )
 
+    def _command_guard_blocks(self, command_label: str, ctx: str) -> bool:
+        """Run the full command-guard floor; True = BLOCK (caller declines).
+
+        Wrapped so an unexpected guard error fails CLOSED rather than crashing
+        the turn (#1b review). A missing/None "approved" key also fails closed."""
+        try:
+            guard = approval.check_all_command_guards(command_label, "local")
+        except Exception:
+            logger.exception(
+                "command guard raised for codex %s; failing closed", ctx
+            )
+            return True
+        if not guard.get("approved", False):
+            logger.warning(
+                "codex %s refused by command guard: %s", ctx, guard.get("message")
+            )
+            return True
+        return False
+
+    def _hardline_blocks(self, command: str) -> bool:
+        """True if command is on the unconditional hardline blocklist.
+
+        Wrapped to fail CLOSED on any unexpected detection error (#1b review)."""
+        try:
+            blocked, hardline_desc = approval.detect_hardline_command(command)
+        except Exception:
+            logger.exception("hardline detection raised; failing closed")
+            return True
+        if blocked:
+            logger.warning(
+                "codex exec refused by hardline floor before callback: %s",
+                hardline_desc,
+            )
+            return True
+        return False
+
     def _decide_exec_approval(self, params: dict) -> str:
-        if self._routing.auto_approve_exec:
-            return "accept"
         command = params.get("command") or ""
+        # KEYSTONE (#1b): route codex-native exec through the SAME guard floor as
+        # the terminal tool so codex's approval surface can't bypass the
+        # deny/hardline/exfil spine. The LIVE exposure this closes is the
+        # CALLBACK path below (a prompt-injected hardline command must never be
+        # surfaced to a human approver). The auto-approve branch is
+        # forward-looking defense-in-depth — no production call site sets
+        # auto_approve_exec=True today (codex_runtime.py defaults it False); if
+        # one ever does, the floor is already enforced.
+        if self._routing.auto_approve_exec:
+            if self._command_guard_blocks(command, "exec auto-approve"):
+                return "decline"
+            return "accept"
         # Codex's CommandExecutionRequestApprovalParams has cwd as Optional —
         # fall back to the session's cwd when codex doesn't include it so the
         # approval prompt is never empty (quirk #10 fix).
@@ -701,6 +754,10 @@ class CodexAppServerSession:
         if reason:
             description += f" — {reason}"
         if self._approval_callback is not None:
+            # KEYSTONE (#1b): never even prompt for a hardline command — the
+            # unconditional blocklist applies before the human/callback sees it.
+            if self._hardline_blocks(command):
+                return "decline"
             try:
                 choice = self._approval_callback(
                     command, description, allow_permanent=False
@@ -712,7 +769,14 @@ class CodexAppServerSession:
         return "decline"  # fail-closed when no callback wired
 
     def _decide_apply_patch_approval(self, params: dict) -> str:
+        # KEYSTONE (#1b): apply_patch is a filesystem write; route it through the
+        # command-guard floor too. apply_patch is NOT a shell command, so the
+        # guard is a coarse floor (it does not inspect patch CONTENT) — we pass
+        # the FIXED label "apply_patch", never the attacker-controllable reason
+        # string, so a crafted reason can't trip a deny pattern (#1b review).
         if self._routing.auto_approve_apply_patch:
+            if self._command_guard_blocks("apply_patch", "apply_patch auto-approve"):
+                return "decline"
             return "accept"
         if self._approval_callback is not None:
             # FileChangeRequestApprovalParams gives us reason + grantRoot.
@@ -740,6 +804,12 @@ class CodexAppServerSession:
                 else f"apply_patch: {reason}" if reason
                 else "apply_patch"
             )
+            # KEYSTONE (#1b): clear the guard floor before the callback sees it.
+            # Guard on the FIXED "apply_patch" label (not the reason-laden
+            # command_label) to avoid a reason-injection DoS; command_label is
+            # still shown to the human callback below for context.
+            if self._command_guard_blocks("apply_patch", "apply_patch"):
+                return "decline"
             try:
                 choice = self._approval_callback(
                     command_label,
@@ -800,6 +870,30 @@ class CodexAppServerSession:
         if not cached:
             return None
         return cached
+
+
+def _apply_token_usage_notification(result: TurnResult, note: dict) -> None:
+    """Capture Codex app-server token usage updates for caller accounting.
+
+    Codex does not put token usage on turn/completed. It emits a separate
+    thread/tokenUsage/updated notification containing cumulative totals and
+    the latest turn breakdown.
+    """
+    if not isinstance(note, dict) or note.get("method") != "thread/tokenUsage/updated":
+        return
+    params = note.get("params") or {}
+    token_usage = params.get("tokenUsage") or {}
+    if not isinstance(token_usage, dict):
+        return
+    last = token_usage.get("last")
+    total = token_usage.get("total")
+    if isinstance(last, dict):
+        result.token_usage_last = dict(last)
+    if isinstance(total, dict):
+        result.token_usage_total = dict(total)
+    window = token_usage.get("modelContextWindow")
+    if isinstance(window, int) and window > 0:
+        result.model_context_window = window
 
 
 def _approval_choice_to_codex_decision(choice: str) -> str:

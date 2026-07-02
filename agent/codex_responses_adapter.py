@@ -16,7 +16,7 @@ import logging
 import re
 import uuid
 from types import SimpleNamespace
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, NamedTuple, Optional
 
 from agent.prompt_builder import DEFAULT_AGENT_IDENTITY
 
@@ -127,14 +127,21 @@ def _chat_content_to_responses_parts(content: Any, *, role: str = "user") -> Lis
     return converted
 
 
-def _summarize_user_message_for_log(content: Any) -> str:
-    """Return a short text summary of a user message for logging/trajectory.
+def _summarize_user_message_for_log(content: Any, *, sep: str = " ") -> str:
+    """Flatten message content to a plain-text summary.
 
     Multimodal messages arrive as a list of ``{type:"text"|"image_url", ...}``
-    parts from the API server.  Logging, spinner previews, and trajectory
-    files all want a plain string — this helper extracts the first chunk of
-    text and notes any attached images.  Returns an empty string for empty
-    lists and ``str(content)`` for unexpected scalar types.
+    parts from the API server.  Several consumers want a plain string:
+
+    - Logging, spinner previews, and trajectory files (the default ``sep=" "``).
+    - External memory providers, which feed the text to regexes
+      (``sanitize_context``) and text APIs — a raw list crashes the sync with
+      ``expected string or bytes-like object, got 'list'`` (use ``sep="\\n"``).
+
+    Text parts are joined with ``sep``; images become a ``[N image(s)]`` marker
+    so the turn isn't recorded as if the attachment never existed.  Returns an
+    empty string for empty lists and ``str(content)`` for unexpected scalar
+    types.
     """
     if content is None:
         return ""
@@ -157,7 +164,7 @@ def _summarize_user_message_for_log(content: Any) -> str:
                     text_bits.append(text)
             elif ptype in {"image_url", "input_image"}:
                 image_count += 1
-        summary = " ".join(text_bits).strip()
+        summary = sep.join(text_bits).strip()
         if image_count:
             note = f"[{image_count} image{'s' if image_count != 1 else ''}]"
             summary = f"{note} {summary}" if summary else note
@@ -234,6 +241,233 @@ def _derive_responses_function_call_id(
 # Schema conversion
 # ---------------------------------------------------------------------------
 
+# JSON-Schema keywords the ChatGPT ``backend-api/codex`` function-schema
+# validator rejects (or that are advisory-only and safe to drop).  MCP tool
+# schemas (Context7, MVMS, …) routinely emit ``$ref``/``$defs``/``oneOf``/
+# ``anyOf``/``format``/``const``; forwarding them verbatim makes Codex reject
+# the WHOLE request with a generic ``HTTP 400 {'detail': 'Unsupported content
+# type'}``, which is non-retryable and — because it stays in conversation
+# history — re-fires every turn until the agent dies.  See the 2026-06-23
+# request dumps under ~/.hermes/sessions/.  ``$ref``/``$defs``/``oneOf``/
+# ``anyOf``/``allOf``/``const`` are handled structurally below; these are the
+# leftover advisory keywords we drop.
+_CODEX_DROP_SCHEMA_KEYWORDS = frozenset({
+    "$schema", "$id", "$comment", "$anchor", "examples", "format", "pattern",
+    "contentEncoding", "contentMediaType", "discriminator",
+})
+_CODEX_SCHEMA_DEFS_KEYS = ("$defs", "definitions")
+
+
+def _sanitize_tool_schema_for_codex(schema: Any, _defs: Optional[Dict[str, Any]] = None,
+                                    _depth: int = 0) -> Any:
+    """Flatten a JSON-Schema to the restricted subset the Codex backend accepts.
+
+    Inlines ``$ref``/``$defs``, collapses ``oneOf``/``anyOf``/``allOf``,
+    converts ``const`` -> single-value ``enum``, normalizes list-form ``type``,
+    and drops advisory keywords Codex rejects.  Property names, ``required``,
+    descriptions and the property tree are preserved so tool semantics are
+    unchanged.  Validated against the real 69-tool failing requests.
+    """
+    if not isinstance(schema, dict):
+        return schema
+    if _depth > 16:
+        return {"type": "string"}
+    defs = dict(_defs or {})
+    for _k in _CODEX_SCHEMA_DEFS_KEYS:
+        _d = schema.get(_k)
+        if isinstance(_d, dict):
+            defs.update(_d)
+
+    ref = schema.get("$ref")
+    if isinstance(ref, str):
+        target = defs.get(ref.split("/")[-1])
+        if isinstance(target, dict):
+            merged = _sanitize_tool_schema_for_codex(target, defs, _depth + 1)
+            if isinstance(merged, dict) and "description" in schema and "description" not in merged:
+                merged["description"] = schema["description"]
+            return merged
+        return {"type": "object", "properties": {}, "additionalProperties": True}
+
+    for _uk in ("oneOf", "anyOf"):
+        variants = schema.get(_uk)
+        if isinstance(variants, list) and variants:
+            cand = [v for v in variants if isinstance(v, dict)]
+            chosen = next((v for v in cand if v.get("type") != "null"), cand[0] if cand else {})
+            merged = _sanitize_tool_schema_for_codex(chosen, defs, _depth + 1)
+            if isinstance(merged, dict):
+                for carry in ("description", "title"):
+                    if carry in schema and carry not in merged:
+                        merged[carry] = schema[carry]
+            return merged
+
+    out: Dict[str, Any] = {}
+    if isinstance(schema.get("allOf"), list):
+        for sub in schema["allOf"]:
+            s = _sanitize_tool_schema_for_codex(sub, defs, _depth + 1)
+            if isinstance(s, dict):
+                for k, v in s.items():
+                    if k == "properties" and isinstance(v, dict):
+                        out.setdefault("properties", {}).update(v)
+                    elif k == "required" and isinstance(v, list):
+                        out["required"] = sorted(set(out.get("required", [])) | set(v))
+                    else:
+                        out.setdefault(k, v)
+    if "const" in schema:
+        out["enum"] = [schema["const"]]
+
+    for k, v in schema.items():
+        if k in ("$ref", "oneOf", "anyOf", "allOf", "const") or k in _CODEX_SCHEMA_DEFS_KEYS \
+                or k in _CODEX_DROP_SCHEMA_KEYWORDS:
+            continue
+        if k == "type" and isinstance(v, list):
+            non_null = [t for t in v if t != "null"]
+            out["type"] = non_null[0] if non_null else (v[0] if v else "string")
+        elif k == "properties" and isinstance(v, dict):
+            out["properties"] = {pk: _sanitize_tool_schema_for_codex(pv, defs, _depth + 1)
+                                 for pk, pv in v.items()}
+        elif k == "items":
+            out["items"] = ([_sanitize_tool_schema_for_codex(x, defs, _depth + 1) for x in v]
+                            if isinstance(v, list)
+                            else _sanitize_tool_schema_for_codex(v, defs, _depth + 1))
+        elif isinstance(v, dict):
+            out[k] = _sanitize_tool_schema_for_codex(v, defs, _depth + 1)
+        elif isinstance(v, list):
+            out[k] = [_sanitize_tool_schema_for_codex(x, defs, _depth + 1) if isinstance(x, dict) else x
+                      for x in v]
+        else:
+            out[k] = v
+    return out
+
+
+def _force_strict_additional_properties_false(schema: Any) -> Any:
+    """Enforce Responses strict-mode object closure recursively.
+
+    OpenAI Responses strict JSON Schema rejects object schemas unless every
+    object node has ``additionalProperties: false``.  MCP/Pydantic schemas often
+    omit it on nested objects, so strict tools need a final pass after the
+    Codex schema flattening step.
+    """
+    if isinstance(schema, list):
+        return [_force_strict_additional_properties_false(item) for item in schema]
+    if not isinstance(schema, dict):
+        return schema
+
+    out: Dict[str, Any] = {}
+    is_object = schema.get("type") == "object" or isinstance(schema.get("properties"), dict)
+    for key, value in schema.items():
+        if key == "additionalProperties" and is_object:
+            out[key] = False
+        elif key in {"properties", "$defs", "definitions"} and isinstance(value, dict):
+            out[key] = {
+                prop_name: _force_strict_additional_properties_false(prop_schema)
+                for prop_name, prop_schema in value.items()
+            }
+        elif key in {"items", "anyOf", "oneOf", "allOf"}:
+            out[key] = _force_strict_additional_properties_false(value)
+        elif isinstance(value, dict):
+            out[key] = _force_strict_additional_properties_false(value)
+        elif isinstance(value, list):
+            out[key] = _force_strict_additional_properties_false(value)
+        else:
+            out[key] = value
+    if is_object:
+        out["additionalProperties"] = False
+    return out
+
+
+# Tool families pruned from Codex requests.  The ChatGPT backend-api/codex
+# endpoint rejects large/complex tool payloads with a generic HTTP 400
+# "Unsupported content type"; ~34 of the ~69 enabled tools were rarely-used MCP
+# tools (Notion, Context7) plus MCP-protocol boilerplate (list_prompts etc.).
+# Drop those for the Codex path only (other providers keep the full set); keep
+# MVMS data tools + all core tools.  Reversible — adjust these lists as needed.
+_CODEX_PRUNE_TOOL_PREFIXES = ("mcp_notion_", "mcp_context7_")
+_CODEX_PRUNE_TOOL_SUFFIXES = ("_get_prompt", "_list_prompts", "_list_resources", "_read_resource")
+_CODEX_CORE_MCP_TOOL_PREFIXES = ("mcp_mvms_",)
+
+
+class _CodexToolPolicy(NamedTuple):
+    """Config-driven least-privilege MCP allowlist for Codex tools.
+
+    Audit rec #3: route/profile-aware workers should only receive the MCP server
+    families their role needs.  An absent route entry intentionally means
+    "legacy 400-safe behavior" so new/unknown platforms keep the exact current
+    fail-safe prune path instead of widening access.
+    """
+
+    allowed_mcp_prefixes: tuple[str, ...]
+    allowed_boilerplate_suffixes: tuple[str, ...] = ()
+
+
+# Present behavior expressed as reversible route policy data.  Discord
+# MOTHERSHIP keeps Notion/Context7 data tools; webhook/loki lanes keep only core
+# MCP data families such as MVMS.  Boilerplate suffixes remain pruned globally.
+_CODEX_TOOL_POLICIES: dict[str, _CodexToolPolicy] = {
+    "discord": _CodexToolPolicy(
+        allowed_mcp_prefixes=(*_CODEX_CORE_MCP_TOOL_PREFIXES, *_CODEX_PRUNE_TOOL_PREFIXES),
+    ),
+    "webhook": _CodexToolPolicy(
+        allowed_mcp_prefixes=_CODEX_CORE_MCP_TOOL_PREFIXES,
+    ),
+}
+
+
+def _codex_tool_policy(route: str, profile: str = "") -> _CodexToolPolicy | None:
+    """Resolve the Codex least-privilege tool policy for a route/profile.
+
+    ``profile`` is a forward-compat hook for future per-profile policy keys; the
+    adapter does not read a profile contextvar today.  ``None`` means no explicit
+    entry exists, so callers must fall back to the legacy Codex 400-safe prune
+    behavior unchanged.
+    """
+
+    if profile:
+        profile_policy = _CODEX_TOOL_POLICIES.get(f"{route}:{profile}")
+        if profile_policy is not None:
+            return profile_policy
+    return _CODEX_TOOL_POLICIES.get(route)
+
+
+def _mcp_tool_prefix(name: Any) -> str | None:
+    """Return the MCP server-family prefix for a tool name, if it has one."""
+
+    if not isinstance(name, str) or not name.startswith("mcp_"):
+        return None
+    parts = name.split("_", 2)
+    if len(parts) < 3:
+        return name
+    return f"{parts[0]}_{parts[1]}_"
+
+
+def _should_prune_codex_tool_boilerplate(name: Any) -> bool:
+    """MCP-protocol boilerplate (list_prompts/get_prompt/read_resource/…) — unused
+    on ALL platforms; always pruned from Codex requests to keep them smaller."""
+    return isinstance(name, str) and name.endswith(_CODEX_PRUNE_TOOL_SUFFIXES)
+
+
+def _should_prune_codex_mcp_prefix(name: Any) -> bool:
+    """Notion / Context7 tools — pruned for loki/webhook lanes (which never use
+    them and risk the backend 400), but KEPT for the Discord MOTHERSHIP."""
+    return isinstance(name, str) and name.startswith(_CODEX_PRUNE_TOOL_PREFIXES)
+
+
+def _codex_keep_mcp_prefix_tools() -> bool:
+    """True only for an explicit Discord (MOTHERSHIP) turn → keep Notion/Context7.
+
+    Gated on ``== "discord"`` so EVERY other platform value (webhook/loki, relay,
+    "", unknown, cli, tests) and any error falls through to False → prune.  This
+    fail-safe direction means loki can never accidentally ship the full tool set
+    and re-trigger the ``Unsupported content type`` 400; the only way MOTHERSHIP
+    loses Notion is the platform contextvar being absent at adapter time — the
+    same one prompt_builder relies on every turn, so reliable in practice.
+    """
+    try:
+        from gateway.session_context import get_session_env
+        return get_session_env("HERMES_SESSION_PLATFORM", "") == "discord"
+    except Exception:
+        return False  # fail-safe: prune
+
+
 def _responses_tools(tools: Optional[List[Dict[str, Any]]] = None) -> Optional[List[Dict[str, Any]]]:
     """Convert chat-completions tool schemas to Responses function-tool schemas."""
     if not tools:
@@ -253,6 +487,26 @@ def _responses_tools(tools: Optional[List[Dict[str, Any]]] = None) -> Optional[L
             "parameters": fn.get("parameters", {"type": "object", "properties": {}}),
         })
     return converted or None
+
+
+# Provider-executed built-in tool *declaration* types accepted on the
+# Responses ``tools`` array.  These are declared by ``type`` alone (no
+# client-side name/parameters schema) and run server-side — the provider
+# owns the implementation and reports progress via the matching ``*_call``
+# output items.  Hermes injects xAI's native ``web_search`` for the xAI
+# transport (see agent/transports/codex.py); the rest are listed so the
+# preflight validator passes them through rather than rejecting them as
+# "unsupported type".  Mirrors the ``*_call`` item-type set used in
+# _normalize_codex_response.
+_RESPONSES_BUILTIN_TOOL_TYPES = {
+    "web_search",
+    "web_search_preview",
+    "file_search",
+    "code_interpreter",
+    "image_generation",
+    "computer_use_preview",
+    "local_shell",
+}
 
 
 # ---------------------------------------------------------------------------
@@ -319,6 +573,10 @@ def _chat_messages_to_responses_input(
     """
     items: List[Dict[str, Any]] = []
     seen_item_ids: set = set()
+    seen_function_call_ids: set[str] = set()
+
+    if not isinstance(messages, list):
+        return items
 
     for msg in messages:
         if not isinstance(msg, dict):
@@ -499,6 +757,7 @@ def _chat_messages_to_responses_input(
                             "name": fn_name,
                             "arguments": arguments,
                         })
+                        seen_function_call_ids.add(call_id)
                 continue
 
             # Non-assistant (user) role: emit multimodal parts when present,
@@ -516,6 +775,8 @@ def _chat_messages_to_responses_input(
                 if isinstance(raw_tool_call_id, str) and raw_tool_call_id.strip():
                     call_id = raw_tool_call_id.strip()
             if not isinstance(call_id, str) or not call_id.strip():
+                continue
+            if call_id not in seen_function_call_ids:
                 continue
 
             # Multimodal tool result: convert OpenAI-style content list into
@@ -792,10 +1053,47 @@ def _preflight_codex_api_kwargs(
         if not isinstance(tools, list):
             raise ValueError("Codex Responses request 'tools' must be a list when provided.")
         normalized_tools = []
+        # Boilerplate MCP tools are pruned for ALL codex turns; explicit route
+        # policies can narrow MCP server-family prefixes further.  If a route is
+        # absent from the policy table, fall back to the legacy 400-safe
+        # Discord-vs-everything-else behavior verbatim.
+        try:
+            from gateway.session_context import get_session_env
+            _codex_route = get_session_env("HERMES_SESSION_PLATFORM", "")
+        except Exception:
+            _codex_route = ""
+        _tool_policy = _codex_tool_policy(_codex_route)
+        _keep_mcp_prefix = _codex_keep_mcp_prefix_tools()
         for idx, tool in enumerate(tools):
             if not isinstance(tool, dict):
                 raise ValueError(f"Codex Responses tools[{idx}] must be an object.")
-            if tool.get("type") != "function":
+
+            _tool_name = tool.get("name")
+            if _should_prune_codex_tool_boilerplate(_tool_name):
+                continue
+            if _tool_policy is None:
+                if not _keep_mcp_prefix and _should_prune_codex_mcp_prefix(_tool_name):
+                    continue
+            else:
+                _tool_prefix = _mcp_tool_prefix(_tool_name)
+                if _tool_prefix is not None and _tool_prefix not in _tool_policy.allowed_mcp_prefixes:
+                    continue
+
+            tool_type = tool.get("type")
+
+            # Provider-executed built-in tools (xAI native web_search, code
+            # interpreter, etc.) are declared by ``type`` alone and carry no
+            # ``name``/``parameters`` schema — the provider owns the
+            # implementation.  Pass them through verbatim instead of forcing
+            # them through the function-tool validation below (which would
+            # otherwise reject them with "unsupported type").  See
+            # agent/transports/codex.py for where xAI's native web_search is
+            # injected.
+            if tool_type in _RESPONSES_BUILTIN_TOOL_TYPES:
+                normalized_tools.append(dict(tool))
+                continue
+
+            if tool_type != "function":
                 raise ValueError(f"Codex Responses tools[{idx}] has unsupported type {tool.get('type')!r}.")
 
             name = tool.get("name")
@@ -815,13 +1113,20 @@ def _preflight_codex_api_kwargs(
             if not isinstance(strict, bool):
                 strict = bool(strict)
 
+            sanitized_parameters = _sanitize_tool_schema_for_codex(parameters)
+            if strict:
+                sanitized_parameters = _force_strict_additional_properties_false(sanitized_parameters)
+
             normalized_tools.append(
                 {
                     "type": "function",
                     "name": name.strip(),
                     "description": description,
                     "strict": strict,
-                    "parameters": parameters,
+                    # Flatten MCP/rich JSON-Schema to the subset Codex accepts —
+                    # forwarding $ref/oneOf/anyOf/format/const triggers a generic
+                    # HTTP 400 "Unsupported content type" that kills the agent.
+                    "parameters": sanitized_parameters,
                 }
             )
 
@@ -1109,9 +1414,37 @@ def _normalize_codex_response(
     message_items_raw: List[Dict[str, Any]] = []
     tool_calls: List[Any] = []
     has_incomplete_items = response_status in {"queued", "in_progress", "incomplete"}
+    saw_streaming_or_item_incomplete = response_status in {"queued", "in_progress"}
     saw_commentary_phase = False
     saw_final_answer_phase = False
     saw_reasoning_item = False
+
+    # Server-side built-in tool calls (xAI's native web_search, code
+    # interpreter, etc.) are executed by the provider and reported as
+    # discrete ``*_call`` output items.  xAI's /v1/responses surface
+    # (e.g. grok-composer-2.5-fast on SuperGrok OAuth) routinely leaves
+    # these items at ``status="in_progress"`` even when the overall
+    # ``response.status == "completed"`` — the search ran to completion
+    # server-side, the per-item status simply isn't reconciled.  These
+    # are NOT a signal that the model's turn is unfinished, so they must
+    # not flip ``has_incomplete_items``.  Only the response-level status
+    # and genuine model output items (message/reasoning/function_call)
+    # govern the incomplete verdict.  Without this guard, any turn where
+    # grok-composer invokes server-side search is misclassified as
+    # ``finish_reason="incomplete"`` and burns 3 fruitless continuation
+    # retries before failing with "Codex response remained incomplete
+    # after 3 continuation attempts".  client-side function/custom tool
+    # calls keep their own in_progress handling below (they are skipped,
+    # not awaited).
+    _SERVER_SIDE_TOOL_CALL_TYPES = {
+        "web_search_call",
+        "file_search_call",
+        "code_interpreter_call",
+        "image_generation_call",
+        "computer_call",
+        "local_shell_call",
+        "mcp_call",
+    }
 
     for item in output:
         item_type = getattr(item, "type", None)
@@ -1121,8 +1454,12 @@ def _normalize_codex_response(
         else:
             item_status = None
 
-        if item_status in {"queued", "in_progress", "incomplete"}:
+        if (
+            item_status in {"queued", "in_progress", "incomplete"}
+            and item_type not in _SERVER_SIDE_TOOL_CALL_TYPES
+        ):
             has_incomplete_items = True
+            saw_streaming_or_item_incomplete = True
 
         if item_type == "message":
             item_phase = getattr(item, "phase", None)
@@ -1280,7 +1617,9 @@ def _normalize_codex_response(
         finish_reason = "tool_calls"
     elif leaked_tool_call_text:
         finish_reason = "incomplete"
-    elif has_incomplete_items or (saw_commentary_phase and not saw_final_answer_phase):
+    elif saw_streaming_or_item_incomplete:
+        finish_reason = "incomplete"
+    elif (has_incomplete_items or saw_commentary_phase) and not saw_final_answer_phase:
         finish_reason = "incomplete"
     elif (reasoning_items_raw or reasoning_parts or saw_reasoning_item) and not final_text:
         # Response contains only reasoning (encrypted thinking state and/or

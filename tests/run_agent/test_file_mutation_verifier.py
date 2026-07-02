@@ -20,9 +20,11 @@ list of files that did NOT change.
 from __future__ import annotations
 
 import json
+from types import SimpleNamespace
 
 import pytest
 
+from agent.turn_finalizer import finalize_turn
 from run_agent import (
     AIAgent,
     _FILE_MUTATING_TOOLS,
@@ -350,6 +352,159 @@ class TestFormatFooter:
         finally:
             import shutil
             shutil.rmtree(tmp, ignore_errors=True)
+
+
+# ---------------------------------------------------------------------------
+# turn finalizer — failed mutations become hard failures
+# ---------------------------------------------------------------------------
+
+
+def _finalizer_agent(*, failed_mutations=None, verifier_enabled=True):
+    agent = SimpleNamespace()
+    agent.max_iterations = 90
+    agent.iteration_budget = SimpleNamespace(remaining=89, used=1, max_total=90)
+    agent.quiet_mode = True
+    agent.model = "test-model"
+    agent.provider = "test-provider"
+    agent.base_url = None
+    agent.session_id = "test-session"
+    agent._turn_failed_file_mutations = failed_mutations or {}
+    agent._interrupt_message = None
+    agent._stream_callback = None
+    agent._skill_nudge_interval = 0
+    agent._iters_since_skill = 0
+    agent.valid_tool_names = []
+    agent._response_was_previewed = False
+    agent._tool_guardrail_halt_decision = None
+    agent.session_input_tokens = 0
+    agent.session_output_tokens = 0
+    agent.session_cache_read_tokens = 0
+    agent.session_cache_write_tokens = 0
+    agent.session_reasoning_tokens = 0
+    agent.session_prompt_tokens = 0
+    agent.session_completion_tokens = 0
+    agent.session_total_tokens = 0
+    agent.session_estimated_cost_usd = 0.0
+    agent.session_cost_status = "unknown"
+    agent.session_cost_source = "none"
+    agent.context_compressor = SimpleNamespace(last_prompt_tokens=0)
+
+    agent._save_trajectory = lambda *args, **kwargs: None
+    agent._cleanup_task_resources = lambda *args, **kwargs: None
+    agent._drop_trailing_empty_response_scaffolding = lambda *args, **kwargs: None
+    agent._persist_session = lambda *args, **kwargs: None
+    agent._file_mutation_verifier_enabled = lambda: verifier_enabled
+    agent._format_file_mutation_failure_footer = AIAgent._format_file_mutation_failure_footer
+    agent._turn_completion_explainer_enabled = lambda: False
+    agent._drain_pending_steer = lambda: None
+    agent.clear_interrupt = lambda: None
+    agent._sync_external_memory_for_turn = lambda *args, **kwargs: None
+    agent._spawn_background_review = lambda *args, **kwargs: None
+    return agent
+
+
+def _run_finalizer(agent, *, final_response="OK LOKI-5 DONE: shipped"):
+    messages = [
+        {"role": "user", "content": "do it"},
+        {"role": "assistant", "content": final_response},
+    ]
+    return finalize_turn(
+        agent,
+        final_response=final_response,
+        api_call_count=1,
+        interrupted=False,
+        failed=False,
+        messages=messages,
+        conversation_history=[],
+        effective_task_id=None,
+        turn_id="turn-1",
+        user_message="do it",
+        original_user_message="do it",
+        _should_review_memory=False,
+        _turn_exit_reason="text_response",
+    )
+
+
+class TestTurnFinalizerFileMutationHardFailure:
+    def test_failed_expected_mutation_converts_success_to_blocked_failure(self, monkeypatch):
+        import hermes_cli.plugins as plugins
+
+        monkeypatch.setattr(plugins, "invoke_hook", lambda *args, **kwargs: [])
+        agent = _finalizer_agent(
+            failed_mutations={
+                "/tmp/denied.md": {
+                    "tool": "patch",
+                    "error_preview": "sandbox denied write",
+                },
+            },
+            verifier_enabled=True,
+        )
+
+        result = _run_finalizer(agent)
+
+        assert result["completed"] is False
+        assert result["failed"] is True
+        assert result["turn_exit_reason"] == "file_mutation_verifier_failed"
+        assert result["failure_reason"] == "file_mutation_verifier_failed"
+        assert result["error"].startswith("File-mutation verifier blocked success")
+        assert result["final_response"].startswith("BLOCKED: File-mutation verifier blocked success")
+        assert "OK LOKI-5 DONE: shipped" in result["final_response"]
+        assert "1 file(s) were NOT modified" in result["final_response"]
+        assert "`/tmp/denied.md`" in result["final_response"]
+
+    def test_clean_turn_without_failed_mutations_stays_success(self, monkeypatch):
+        import hermes_cli.plugins as plugins
+
+        monkeypatch.setattr(plugins, "invoke_hook", lambda *args, **kwargs: [])
+        agent = _finalizer_agent(failed_mutations={}, verifier_enabled=True)
+
+        result = _run_finalizer(agent, final_response="OK LOKI-5 DONE: clean")
+
+        assert result["completed"] is True
+        assert result["failed"] is False
+        assert result["turn_exit_reason"] == "text_response"
+        assert result["final_response"] == "OK LOKI-5 DONE: clean"
+        assert "error" not in result
+        assert "failure_reason" not in result
+
+    def test_failed_mutation_stays_advisory_when_verifier_disabled(self, monkeypatch):
+        import hermes_cli.plugins as plugins
+
+        monkeypatch.setattr(plugins, "invoke_hook", lambda *args, **kwargs: [])
+        agent = _finalizer_agent(
+            failed_mutations={
+                "/tmp/denied.md": {"tool": "patch", "error_preview": "denied"},
+            },
+            verifier_enabled=False,
+        )
+
+        result = _run_finalizer(agent)
+
+        assert result["completed"] is True
+        assert result["failed"] is False
+        assert result["turn_exit_reason"] == "text_response"
+        assert result["final_response"] == "OK LOKI-5 DONE: shipped"
+
+
+    def test_failed_mutation_hard_fails_even_without_model_response(self, monkeypatch):
+        import hermes_cli.plugins as plugins
+
+        monkeypatch.setattr(plugins, "invoke_hook", lambda *args, **kwargs: [])
+        agent = _finalizer_agent(
+            failed_mutations={
+                "/tmp/denied.md": {"tool": "patch", "error_preview": "denied"},
+            },
+            verifier_enabled=True,
+        )
+
+        result = _run_finalizer(agent, final_response=None)
+
+        assert result["completed"] is False
+        assert result["failed"] is True
+        assert result["turn_exit_reason"] == "file_mutation_verifier_failed"
+        assert result["failure_reason"] == "file_mutation_verifier_failed"
+        assert result["final_response"].startswith("BLOCKED: File-mutation verifier blocked success")
+        assert "1 file(s) were NOT modified" in result["final_response"]
 
 
 # ---------------------------------------------------------------------------

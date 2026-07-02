@@ -46,9 +46,7 @@ _SNAPSHOT_CACHE: tuple[dict, float] | None = None
 _SNAPSHOT_TTL = 30.0
 _SPEND_CACHE: dict[str, tuple[dict, float]] = {}
 _SPEND_TTL = 60.0
-# Nexus Health graph snapshot + infrastructure probe caches (30 s cadence).
-_NEXUS_CACHE: tuple[dict, float] | None = None
-_NEXUS_TTL = 30.0
+# Infrastructure probe cache (30 s cadence).
 _INFRA_CACHE: tuple[dict, float] | None = None
 _INFRA_TTL = 30.0
 # Hives snapshot cache (15 s cadence — matches the frontend poll interval).
@@ -57,7 +55,6 @@ _HIVES_TTL = 15.0
 
 # Single-flight locks — prevent cache stampedes on cold start.
 _SNAPSHOT_LOCK = threading.Lock()
-_NEXUS_LOCK = threading.Lock()
 _INFRA_LOCK = threading.Lock()
 _HIVES_LOCK = threading.Lock()
 
@@ -119,20 +116,20 @@ def _probe_claude_code() -> dict:
 
 
 def _probe_ruflo() -> dict:
-    try:
-        t0 = time.monotonic()
-        result = subprocess.run(
-            ["ruflo", "status"],
-            capture_output=True, timeout=3
-        )
-        latency = round((time.monotonic() - t0) * 1000, 1)
-        status = "online" if result.returncode == 0 else "degraded"
-    except FileNotFoundError:
-        status, latency = "offline", None
-    except Exception:
-        status, latency = "unknown", None
-    return {"name": "ruflo", "label": "Ruflo", "status": status,
-            "latencyMs": latency, "lastChecked": _now()}
+    """Return an honest retired marker for the former Ruflo runtime.
+
+    Ruflo is no longer a live scheduler source.  Do not shell out to
+    the old CLI or turn stale workdirs into a runtime chip.
+    """
+    return {
+        "name": "ruflo",
+        "label": "Ruflo (retired)",
+        "status": "retired",
+        "active": False,
+        "latencyMs": None,
+        "lastChecked": _now(),
+        "detail": "Ruflo is retired; no live runtime probe is available.",
+    }
 
 
 def _probe_hermes() -> dict:
@@ -438,10 +435,25 @@ def _get_infra_snapshot() -> dict:
 
 
 # ---------------------------------------------------------------------------
-# Hives snapshot — Ruflo hive run discovery and status
+# Hives snapshot — retired Ruflo hive surface
 # ---------------------------------------------------------------------------
 
 RUFLO_WORK_DIR = HERMES_HOME / "ruflo-work"
+
+
+def _retired_hives_snapshot(scanned_at: str | None = None) -> dict:
+    """Honest no-data envelope for retired Ruflo hive surfaces."""
+    return {
+        "hives": [],
+        "scanned_at": scanned_at or _now(),
+        "active_count": 0,
+        "completed_count": 0,
+        "stale_count": 0,
+        "status": "retired",
+        "active": False,
+        "source": "ruflo-retired",
+        "message": "Ruflo hive runs are retired; stale ruflo-work artifacts are not a live hive source.",
+    }
 
 
 def _tmux_sessions() -> set[str]:
@@ -621,11 +633,9 @@ def _is_valid_hive_dir(workdir: Path) -> bool:
     return has_launch or has_objective or has_status
 
 
-def _build_hives_snapshot() -> dict:
-    """Scan ~/.hermes/ruflo-work for hive runs. Read-only. Thread-safe."""
+def _scan_hive_artifacts_snapshot(scanned_at: str) -> dict:
+    """Build an artifact-only hive snapshot for non-canonical injected paths."""
     from itertools import groupby as _groupby
-
-    scanned_at = _now()
 
     if not RUFLO_WORK_DIR.exists():
         return {
@@ -637,8 +647,6 @@ def _build_hives_snapshot() -> dict:
         }
 
     workdirs = [d for d in RUFLO_WORK_DIR.iterdir() if d.is_dir() and _is_valid_hive_dir(d)]
-
-    # Fan-out: get tmux sessions once (shared) then probe each hive in the pool.
     tmux_sessions = _tmux_sessions()
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
@@ -653,9 +661,7 @@ def _build_hives_snapshot() -> dict:
     def _rank(h: dict) -> int:
         return {"running": 0, "completed": 1, "blocked": 1, "stale": 2}.get(h["status"], 2)
 
-    # Sort all by rank asc, then within rank by updated_at/started_at desc.
     hives.sort(key=lambda h: (_rank(h), ""))
-
     sorted_hives: list[dict] = []
     for _, group in _groupby(hives, key=_rank):
         bucket = sorted(
@@ -665,21 +671,37 @@ def _build_hives_snapshot() -> dict:
         )
         sorted_hives.extend(bucket)
 
-    active_count = sum(1 for h in sorted_hives if h["status"] == "running")
-    completed_count = sum(1 for h in sorted_hives if h["status"] in {"completed", "blocked"})
-    stale_count = sum(1 for h in sorted_hives if h["status"] == "stale")
+    running_total = sum(1 for h in sorted_hives if h["status"] == "running")
+    finished_total = sum(1 for h in sorted_hives if h["status"] in {"completed", "blocked"})
+    stale_total = sum(1 for h in sorted_hives if h["status"] == "stale")
 
     return {
         "hives": sorted_hives,
         "scanned_at": scanned_at,
-        "active_count": active_count,
-        "completed_count": completed_count,
-        "stale_count": stale_count,
+        "active_count": running_total,
+        "completed_count": finished_total,
+        "stale_count": stale_total,
+        "source": "ruflo-artifacts",
+        "active": False,
     }
 
 
+def _build_hives_snapshot() -> dict:
+    """Return honest no-data for canonical retired Ruflo hive runs.
+
+    The live dashboard's retired source is ``HERMES_HOME / "ruflo-work"``.
+    Those artifacts are stale: nothing writes them as a live scheduler source,
+    so canonical dashboard calls must not synthesize active/completed/stale rows.
+    Non-canonical injected paths remain artifact-only for narrow unit coverage.
+    """
+    scanned_at = _now()
+    if RUFLO_WORK_DIR == HERMES_HOME / "ruflo-work":
+        return _retired_hives_snapshot(scanned_at)
+    return _scan_hive_artifacts_snapshot(scanned_at)
+
+
 def _get_hives_snapshot() -> dict:
-    """15 s-cached hive runs snapshot. Thread-safe."""
+    """15 s-cached retired hive no-data snapshot. Thread-safe."""
     global _HIVES_CACHE
     now = time.monotonic()
     if _HIVES_CACHE and now < _HIVES_CACHE[1]:
@@ -1026,7 +1048,7 @@ def _get_next_cron() -> Optional[dict]:
 def _get_all_cron_jobs() -> list[dict]:
     try:
         jobs_path = HERMES_HOME / "cron" / "jobs.json"
-        data = json.loads(jobs_path.read_text())
+        data = json.loads(jobs_path.read_text(encoding="utf-8"))
         jobs = data.get("jobs", [])
         result = []
         for j in jobs:
@@ -1045,7 +1067,7 @@ def _get_all_cron_jobs() -> list[dict]:
         # Check for staged dream-reflect
         staged_path = HERMES_HOME / "cron.d" / "dream-reflect.cron"
         if staged_path.exists():
-            content = staged_path.read_text()
+            content = staged_path.read_text(encoding="utf-8")
             for line in content.splitlines():
                 stripped = line.strip()
                 if stripped.startswith("#") and "dream-reflect" in stripped.lower():
@@ -1069,6 +1091,75 @@ def _get_all_cron_jobs() -> list[dict]:
         return result
     except Exception:
         return []
+
+
+# Tail bound for the pull-side ledger read — only the most recent N records are
+# needed to render the fleet board (latest-per-cron + miss streak). Matches the
+# tail convention in cron.cron_result (hard_floor_breaches uses 2000).
+_CONTRACT_LEDGER_TAIL = 2000
+
+
+def _get_cron_contracts() -> dict:
+    """Aggregate the self-reporting cron-contracts ledger for the fleet board.
+
+    Reads HERMES_HOME/observability/cron-contracts.jsonl (the SEPARATE ledger the
+    scheduler appends to for jobs with ``contract: true`` — NOT slo-timeseries.jsonl)
+    and returns the latest contract per cron plus its consecutive-miss streak and
+    hard-floor flag. Read-only; pull-side only — no Discord/alerting here.
+
+    The streak + hard-floor threshold are delegated to ``cron.cron_result`` so the
+    dashboard never drifts from the scheduler/push-gate definition, and the ledger
+    is read tail-bounded (last ``_CONTRACT_LEDGER_TAIL`` records) so an unbounded
+    append-only file never blocks the endpoint. A single malformed record (e.g. a
+    non-numeric ``achieved``) is coerced to 0 rather than 500-ing the request.
+    """
+    from cron import cron_result
+
+    generated_at = datetime.now(timezone.utc).isoformat()
+    ledger = HERMES_HOME / "observability" / "cron-contracts.jsonl"
+    if not ledger.exists():
+        return {"contracts": [], "count": 0, "generated_at": generated_at}
+
+    # Tail-bounded read + corrupt-line skipping, matching cron_result's convention.
+    records = [
+        rec
+        for rec in cron_result._iter_ledger_records(ledger, tail=_CONTRACT_LEDGER_TAIL)
+        if rec.get("name")
+    ]
+
+    # The ledger is append-only and chronological, so the last record for a name
+    # is its current state.
+    latest: dict[str, dict] = {}
+    for rec in records:
+        latest[rec["name"]] = rec
+
+    contracts = []
+    for name, rec in sorted(latest.items()):
+        # Reuse the shared streak helper + threshold so the pull-side chip stays
+        # in lockstep with cron_result (no re-derived streak, no duplicated const).
+        streak = cron_result.consecutive_misses(name, ledger, tail=_CONTRACT_LEDGER_TAIL)
+        try:
+            achieved = int(rec.get("achieved", 0) or 0)
+        except (TypeError, ValueError):
+            achieved = 0
+        try:
+            retries = int(rec.get("retries", 0) or 0)
+        except (TypeError, ValueError):
+            retries = 0
+        hard_floor = achieved == 0 or streak >= cron_result.DEFAULT_FLOOR_MISSES
+        contracts.append({
+            "name": name,
+            "quota": rec.get("quota"),
+            "achieved": achieved,
+            "gaps": rec.get("gaps") or [],
+            "retries": retries,
+            "status": rec.get("status", "ok"),
+            "missStreak": streak,
+            "hardFloor": hard_floor,
+            "lastRun": rec.get("generated_at"),
+        })
+
+    return {"contracts": contracts, "count": len(contracts), "generated_at": generated_at}
 
 
 # ---------------------------------------------------------------------------
@@ -1109,22 +1200,6 @@ def _get_swarm_status() -> Optional[dict]:
     except Exception:
         pass
 
-    # Fall back to hive process scan — look for hive-* working dirs
-    try:
-        hive_dirs = list((HERMES_HOME / "ruflo-work").glob("*hive*")) if (HERMES_HOME / "ruflo-work").exists() else []
-        active = [d for d in hive_dirs if d.is_dir()]
-        if active:
-            return {
-                "id": "hive-local",
-                "name": "Hive Mind Swarm",
-                "topology": "hierarchical-mesh",
-                "workerCount": len(active),
-                "activeWorkers": 0,
-                "queueDepth": 0,
-                "lastActivity": _now(),
-            }
-    except Exception:
-        pass
     return None
 
 
@@ -1299,16 +1374,45 @@ def _build_nexus_sectors(
         pulse_summary += f" Last completion: {last_completion.get('slug')}."
 
     hive_rows = hives.get("hives", []) if isinstance(hives.get("hives"), list) else []
+    hives_retired = hives.get("status") == "retired" or hives.get("source") == "ruflo-retired"
     active_hives = int(hives.get("active_count") or 0)
     completed_hives = int(hives.get("completed_count") or 0)
     stale_hives = int(hives.get("stale_count") or 0)
     blocked_hives = sum(1 for hive in hive_rows if hive.get("status") == "blocked")
-    if hives.get("_error") or blocked_hives > 0:
+    if hives_retired:
+        hives_status = "unknown"
+        hives_summary = "Ruflo hives are retired; no live hive data is available."
+        hives_metrics = [
+            _metric("Status", "retired"),
+            _metric("Live source", "no data"),
+        ]
+    elif hives.get("_error") or blocked_hives > 0:
         hives_status = "error"
+        hives_summary = f"{active_hives} active, {completed_hives} complete/blocked, {stale_hives} stale hive run(s)."
+        hives_metrics = [
+            _metric("Active", active_hives),
+            _metric("Completed/blocked", completed_hives),
+            _metric("Stale", stale_hives),
+            _metric("Total", len(hive_rows)),
+        ]
     elif stale_hives > 0:
         hives_status = "warn"
+        hives_summary = f"{active_hives} active, {completed_hives} complete/blocked, {stale_hives} stale hive run(s)."
+        hives_metrics = [
+            _metric("Active", active_hives),
+            _metric("Completed/blocked", completed_hives),
+            _metric("Stale", stale_hives),
+            _metric("Total", len(hive_rows)),
+        ]
     else:
         hives_status = "ok" if hive_rows or active_hives or completed_hives else "unknown"
+        hives_summary = f"{active_hives} active, {completed_hives} complete/blocked, {stale_hives} stale hive run(s)."
+        hives_metrics = [
+            _metric("Active", active_hives),
+            _metric("Completed/blocked", completed_hives),
+            _metric("Stale", stale_hives),
+            _metric("Total", len(hive_rows)),
+        ]
 
     codex_rows = codex.get("sessions", []) if isinstance(codex.get("sessions"), list) else []
     codex_counts = codex.get("counts", {}) if isinstance(codex.get("counts"), dict) else {}
@@ -1347,18 +1451,13 @@ def _build_nexus_sectors(
         },
         {
             "id": "hives",
-            "label": "Hives",
+            "label": "Hives (retired)",
             "kind": "read_only_drilldown",
             "status": hives_status,
-            "summary": f"{active_hives} active, {completed_hives} complete/blocked, {stale_hives} stale hive run(s).",
+            "summary": hives_summary,
             "href": "/hives",
-            "metrics": [
-                _metric("Active", active_hives),
-                _metric("Completed/blocked", completed_hives),
-                _metric("Stale", stale_hives),
-                _metric("Total", len(hive_rows)),
-            ],
-            "guardrail": "Read-only drilldown. No Ruflo launch, tmux control, or worktree mutation controls.",
+            "metrics": hives_metrics,
+            "guardrail": "Read-only drilldown. No Ruflo launch, tmux control, or worktree mutation controls; Ruflo is retired.",
         },
         {
             "id": "codex",
@@ -1380,652 +1479,15 @@ def _build_nexus_sectors(
     ]
 
 
-def _build_nexus_health() -> dict:
-    """Compose the read-only infrastructure health graph.
-
-    Covers the Hermes core, the messaging gateway, the control plane
-    (kanban / cron / agent lanes), every ``systemctl --user`` hermes-* unit,
-    the MVMS Supabase container stack, curated listening ports, and each
-    individual MCP server. Every input comes from a read-only probe.
-    """
-    generated_at = _now()
-    # Fan-out the five independent snapshot builders concurrently so cold time ≈
-    # max(single-group latency) rather than the sum of all groups.
-    with concurrent.futures.ThreadPoolExecutor(max_workers=5) as pool:
-        fut_mission  = pool.submit(_get_snapshot)
-        fut_topology = pool.submit(_get_gitnexus_runtime_snapshot)
-        fut_infra    = pool.submit(_get_infra_snapshot)
-        fut_hives    = pool.submit(_get_hives_snapshot)
-        fut_codex    = pool.submit(_get_codex_sessions_snapshot)
-        mission  = fut_mission.result()
-        topology = fut_topology.result()
-        infra    = fut_infra.result()
-        hives_snapshot = fut_hives.result()
-        codex_snapshot = fut_codex.result()
-    pulse_snapshot = _get_pulse_kpis_snapshot()
-    sectors = _build_nexus_sectors(
-        pulse=pulse_snapshot,
-        hives=hives_snapshot,
-        codex=codex_snapshot,
-    )
-    runtimes = _runtime_by_name(mission)
-
-    hermes_rt = runtimes.get("hermes", {})
-    kanban_rt = runtimes.get("kanban", {})
-    cron_rt = runtimes.get("cron", {})
-    codex_rt = runtimes.get("codex", {})
-    ruflo_rt = runtimes.get("ruflo", {})
-    claude_rt = runtimes.get("claude-code", {})
-
-    gateways = topology.get("gateways", []) if isinstance(topology, dict) else []
-    agents = topology.get("agents", []) if isinstance(topology, dict) else []
-    mcp = topology.get("mcp", []) if isinstance(topology, dict) else []
-    cron = topology.get("cron", []) if isinstance(topology, dict) else []
-    hives = topology.get("hives", []) if isinstance(topology, dict) else []
-
-    services = infra.get("services", []) if isinstance(infra, dict) else []
-    containers = infra.get("containers", []) if isinstance(infra, dict) else []
-    ports = infra.get("ports", []) if isinstance(infra, dict) else []
-
-    source_root = Path(__file__).resolve().parents[1]
-
-    gateway_status = _nexus_status(
-        gateways[0].get("status") if gateways else hermes_rt.get("status")
-    )
-    kanban_status = _nexus_status(kanban_rt.get("status"))
-    cron_status = _nexus_status(cron_rt.get("status"))
-    agent_lane_statuses = [
-        _nexus_status(codex_rt.get("status")),
-        _nexus_status(ruflo_rt.get("status")),
-        _nexus_status(claude_rt.get("status")),
-    ]
-    if "error" in agent_lane_statuses:
-        lane_status = "error"
-    elif "warn" in agent_lane_statuses or "unknown" in agent_lane_statuses:
-        lane_status = "warn"
-    else:
-        lane_status = "ok"
-
-    nodes: list[dict] = []
-    edges: list[dict] = []
-
-    # --- Core spine: dashboard -> hermes -> gateway ----------------------
-    nodes.append(_nexus_node(
-        node_id="dashboard", label="Dashboard", kind="dashboard", group="core",
-        status="ok",
-        summary="Dashboard API is serving this read-only health map.",
-        details="Reached through the dashboard FastAPI router; the System Health "
-                "tab renders this document.",
-        metrics={"port": 9119, "endpoint": "/api/dashboard/nexus-health"},
-        provenance=_provenance("dashboard-health", "GET /api/dashboard/nexus-health returned this document."),
-        safe_next_check="Refresh this page or open the browser console for fetch errors.",
-    ))
-    nodes.append(_nexus_node(
-        node_id="hermes", label="Hermes Core", kind="runtime", group="core",
-        status=_nexus_status(hermes_rt.get("status")),
-        summary=hermes_rt.get("label") or "Core agent runtime",
-        details=hermes_rt.get("detail") or "Mission Control runtime probe for the Hermes core.",
-        metrics={
-            "model": mission.get("model"),
-            "recent_sessions": len(mission.get("recentSessions", [])),
-            "latency_ms": hermes_rt.get("latencyMs"),
-            "spend_today_usd": mission.get("spendToday"),
-            "spend_week_usd": mission.get("spendWeek"),
-            "streak_days": mission.get("streakDays"),
-        },
-        provenance=_provenance("mission-control", "Runtime probe from /api/dashboard/mission."),
-        safe_next_check="Open logs or read the Mission Control runtime chip.",
-    ))
-    nodes.append(_nexus_node(
-        node_id="gateway", label="Gateway", kind="gateway", group="core",
-        status=gateway_status,
-        summary="Messaging gateway state from runtime topology.",
-        details=f"{len(gateways)} gateway record(s); platforms: "
-                f"{', '.join(gateways[0].get('platforms', [])) if gateways else 'unknown'}.",
-        metrics={
-            "gateways": len(gateways),
-            "platforms": gateways[0].get("platforms", []) if gateways else [],
-            "active_agents": gateways[0].get("active_agents") if gateways else None,
-        },
-        provenance=_provenance("gitnexus-runtime-collector", "Read gateway_state.json without mutating indexes."),
-        safe_next_check="Read gateway logs or gateway_state.json; do not restart from this page.",
-        needs_joseph=gateway_status in {"error", "auth_gated"},
-    ))
-    edges.append(_nexus_edge("dashboard->hermes", "dashboard", "hermes", "mission api", "ok", "Mission Control snapshot feeds core runtime claims.", _provenance("dashboard-health", "Composed from _get_snapshot().")))
-    edges.append(_nexus_edge("hermes->gateway", "hermes", "gateway", "gateway_state.json", gateway_status, "Hermes core drives the messaging platform adapters.", _provenance("gitnexus-runtime-collector", "Gateway records.")))
-
-    # --- Control plane: kanban / cron / agent lanes ----------------------
-    nodes.append(_nexus_node(
-        node_id="kanban", label="Kanban", kind="kanban", group="control",
-        status=kanban_status,
-        summary="Dispatcher and board state visibility.",
-        details=kanban_rt.get("detail") or "Kanban runtime probe is unknown or unavailable.",
-        metrics={
-            "active_tasks": kanban_rt.get("active_tasks"),
-            "queue_port": kanban_rt.get("port"),
-            "latency_ms": kanban_rt.get("latencyMs"),
-        },
-        provenance=_provenance("mission-control", "Kanban probe uses status endpoint or read-only DB fallback."),
-        safe_next_check="Open the Kanban board status; do not dispatch or reclaim here.",
-        needs_joseph=kanban_status == "error",
-    ))
-    next_cron = mission.get("nextCron")
-    nodes.append(_nexus_node(
-        node_id="cron-watchdogs", label="Cron / Watchdogs", kind="control-plane", group="control",
-        status=cron_status,
-        summary="Scheduled jobs and watchdog posture.",
-        details=cron_rt.get("detail") or "Cron job state is unknown.",
-        metrics={
-            "collector_jobs": len(cron),
-            "next_cron": next_cron.get("name") if isinstance(next_cron, dict) else next_cron,
-        },
-        provenance=_provenance("mission-control", "Cron probe and read-only runtime collector cron list."),
-        safe_next_check="Read cron job listings and last run status before changing schedules.",
-    ))
-    nodes.append(_nexus_node(
-        node_id="agent-lanes", label="Codex / Ruflo / Claude Lanes", kind="agent-lane", group="control",
-        status=lane_status,
-        summary="Implementation lane readiness across local agent surfaces.",
-        details=(f"Codex={codex_rt.get('status', 'unknown')}, "
-                 f"Ruflo={ruflo_rt.get('status', 'unknown')}, "
-                 f"Claude={claude_rt.get('status', 'unknown')}."),
-        metrics={
-            "collector_agents": len(agents),
-            "codex": codex_rt.get("status"),
-            "ruflo": ruflo_rt.get("status"),
-            "claude_code": claude_rt.get("status"),
-            "spend_today_usd": mission.get("spendToday"),
-        },
-        provenance=_provenance("mission-control", "Process probes for codex, ruflo, and claude-code."),
-        safe_next_check="Read lane status and logs; do not launch workers from this page.",
-    ))
-    edges.append(_nexus_edge("hermes->kanban", "hermes", "kanban", "task queue", kanban_status, "Hermes uses Kanban for work coordination.", _provenance("mission-control", "Kanban runtime probe.")))
-    edges.append(_nexus_edge("cron->hermes", "cron-watchdogs", "hermes", "scheduled prompts", cron_status, "Cron and watchdog jobs invoke Hermes workflows.", _provenance("mission-control", "Cron runtime probe.")))
-    edges.append(_nexus_edge("hermes->agent-lanes", "hermes", "agent-lanes", "dispatch", lane_status, "Hermes dispatches work to the agent lanes.", _provenance("mission-control", "Lane process probes.")))
-
-    # --- systemd --user hermes-* units -----------------------------------
-    svc_hub_status = _rollup_status([s.get("status") for s in services])
-    nodes.append(_nexus_node(
-        node_id="systemd-units", label="systemd --user", kind="service-group", group="services",
-        status=svc_hub_status,
-        summary=f"{len(services)} hermes-* user unit(s) under systemd.",
-        details=("Enumerated via `systemctl --user list-units hermes-*`."
-                 if services else
-                 "No hermes-* user units found, or systemctl is unavailable."),
-        metrics={
-            "units": len(services),
-            "failed": sum(1 for s in services if s.get("status") == "error"),
-            "active": sum(1 for s in services if s.get("status") == "ok"),
-        },
-        provenance=_provenance("systemd", "systemctl --user list-units hermes-* (read-only)."),
-        safe_next_check="Inspect a unit with journalctl --user -u <unit>.",
-    ))
-    edges.append(_nexus_edge("hermes->systemd", "hermes", "systemd-units", "process supervision", svc_hub_status, "Hermes runs as a set of systemd --user units.", _provenance("systemd", "list-units")))
-    for svc in services:
-        unit = str(svc.get("name", ""))
-        if not unit:
-            continue
-        node_id = f"svc:{unit}"
-        st = svc.get("status", "unknown")
-        short = unit.replace("hermes-", "").replace(".service", "").replace(".timer", "")
-        nodes.append(_nexus_node(
-            node_id=node_id,
-            label=short + (" (timer)" if unit.endswith(".timer") else ""),
-            kind="service", group="services", status=st,
-            summary=svc.get("description") or unit,
-            details=f"active={svc.get('active', '?')}, sub={svc.get('sub', '?')}, "
-                    f"load={svc.get('load', '?')}.",
-            metrics={
-                "unit": unit, "active": svc.get("active"),
-                "sub": svc.get("sub"), "load": svc.get("load"),
-            },
-            provenance=_provenance("systemd", f"systemctl --user list-units row for {unit}."),
-            safe_next_check=f"journalctl --user -u {unit} -n 80 --no-pager",
-        ))
-        edges.append(_nexus_edge(f"systemd->{node_id}", "systemd-units", node_id, "unit", st, short, _provenance("systemd", "list-units")))
-        if "dashboard" in unit:
-            edges.append(_nexus_edge(f"{node_id}->dashboard", node_id, "dashboard", "serves", st, "This unit runs the dashboard process.", _provenance("systemd", unit)))
-        elif "gateway" in unit:
-            edges.append(_nexus_edge(f"{node_id}->gateway", node_id, "gateway", "serves", st, "This unit runs the gateway process.", _provenance("systemd", unit)))
-        elif "gitnexus" in unit:
-            edges.append(_nexus_edge(f"{node_id}->gitnexus-explorer", node_id, "gitnexus-explorer", "serves", st, "This unit feeds GitNexus topology.", _provenance("systemd", unit)))
-
-    # --- Curated listening ports -----------------------------------------
-    port_hub_status = _rollup_status([p.get("status") for p in ports])
-    nodes.append(_nexus_node(
-        node_id="ports", label="Listening Ports", kind="network-group", group="network",
-        status=port_hub_status,
-        summary=f"{len(ports)} infrastructure port(s) probed over TCP.",
-        details="Each port is checked with a localhost TCP connect; no payload is sent.",
-        metrics={
-            "probed": len(ports),
-            "online": sum(1 for p in ports if p.get("online")),
-            "offline": sum(1 for p in ports if not p.get("online")),
-        },
-        provenance=_provenance("tcp-probe", "socket.create_connection to 127.0.0.1:<port>."),
-        safe_next_check="Confirm the owning process is listening before changing config.",
-    ))
-    edges.append(_nexus_edge("hermes->ports", "hermes", "ports", "tcp surface", port_hub_status, "Infrastructure services expose localhost ports.", _provenance("tcp-probe", "create_connection")))
-    for p in ports:
-        port_num = p.get("port")
-        node_id = f"port:{port_num}"
-        st = p.get("status", "unknown")
-        latency = p.get("latencyMs")
-        nodes.append(_nexus_node(
-            node_id=node_id, label=f"{p.get('label', 'port')} :{port_num}",
-            kind="port", group="network", status=st,
-            summary=p.get("description") or f"TCP port {port_num}",
-            details=(f"Listening — TCP connect succeeded in {latency} ms."
-                     if p.get("online") else
-                     f"Not listening — TCP connect to 127.0.0.1:{port_num} failed."),
-            metrics={"port": port_num, "latency_ms": latency, "online": p.get("online")},
-            provenance=_provenance("tcp-probe", f"socket.create_connection(127.0.0.1, {port_num})."),
-            safe_next_check=f"ss -tlnp | grep :{port_num}",
-        ))
-        edges.append(_nexus_edge(f"ports->{node_id}", "ports", node_id, "probe", st, p.get("label", ""), _provenance("tcp-probe", "create_connection")))
-        if port_num == 9119:
-            edges.append(_nexus_edge("port9119->dashboard", node_id, "dashboard", "binds", st, "The dashboard listens on :9119.", _provenance("tcp-probe", "9119")))
-        elif port_num == 4747:
-            edges.append(_nexus_edge("port4747->gitnexus-explorer", node_id, "gitnexus-explorer", "binds", st, "The GitNexus API listens on :4747.", _provenance("tcp-probe", "4747")))
-
-    # --- MVMS Supabase container stack -----------------------------------
-    ctr_hub_status = _rollup_status([c.get("status") for c in containers])
-    nodes.append(_nexus_node(
-        node_id="containers", label="MVMS Containers", kind="container-group", group="containers",
-        status=ctr_hub_status,
-        summary=f"{len(containers)} MVMS Supabase container(s).",
-        details=("Enumerated via `docker ps -a`, filtered to supabase_* names."
-                 if containers else
-                 "No supabase_* containers found, or docker is unavailable."),
-        metrics={
-            "containers": len(containers),
-            "running": sum(1 for c in containers if c.get("status") == "ok"),
-            "down": sum(1 for c in containers if c.get("status") == "error"),
-        },
-        provenance=_provenance("docker", "docker ps -a (read-only)."),
-        safe_next_check="docker inspect <name> for container detail.",
-    ))
-    for c in containers:
-        cname = str(c.get("name", ""))
-        if not cname:
-            continue
-        node_id = f"ctr:{cname}"
-        st = c.get("status", "unknown")
-        short = cname.replace("supabase_", "").replace("_goattrade-system", "")
-        nodes.append(_nexus_node(
-            node_id=node_id, label=short, kind="container", group="containers", status=st,
-            summary=c.get("status_text") or cname,
-            details=f"image={c.get('image', '?')}; docker state={c.get('state', '?')}.",
-            metrics={
-                "container": cname, "state": c.get("state"),
-                "image": c.get("image"), "ports": c.get("ports"),
-            },
-            provenance=_provenance("docker", f"docker ps -a row for {cname}."),
-            safe_next_check=f"docker logs --tail 80 {cname}",
-        ))
-        edges.append(_nexus_edge(f"containers->{node_id}", "containers", node_id, "container", st, short, _provenance("docker", "ps")))
-
-    # --- Integrations: GitNexus + MCP servers ----------------------------
-    nodes.append(_nexus_node(
-        node_id="gitnexus-explorer", label="GitNexus / Explorer", kind="gitnexus", group="integrations",
-        status="warn" if topology.get("_error") else "ok",
-        summary="Topology collector available without index ingestion.",
-        details=topology.get("_error") or "Read-only collector returned runtime graph ingredients.",
-        metrics={"agents": len(agents), "mcp_servers": len(mcp), "hives": len(hives)},
-        provenance=_provenance("gitnexus-runtime-collector", "Used snapshot(); ingest/index mutation path is not imported."),
-        safe_next_check="Open Explorer read-only; avoid any ingest or rebuild operation.",
-    ))
-    mcp_statuses = [_nexus_status(m.get("status")) for m in mcp if isinstance(m, dict)]
-    mcp_hub_status = _rollup_status(mcp_statuses) if mcp else "unknown"
-    has_auth_gated_mcp = any(s == "auth_gated" for s in mcp_statuses)
-    nodes.append(_nexus_node(
-        node_id="mcp-memory", label="MCP / Memory", kind="memory", group="integrations",
-        status=mcp_hub_status,
-        summary="MCP and memory-adjacent tool surface.",
-        details=f"{len(mcp)} MCP server record(s) visible to the collector.",
-        metrics={"servers": len(mcp)},
-        provenance=_provenance("gitnexus-runtime-collector", "Parsed hermes mcp list or ~/.hermes/mcp directory names."),
-        safe_next_check="Read MCP server list and auth status; do not change provider config here.",
-        needs_joseph=has_auth_gated_mcp,
-    ))
-    edges.append(_nexus_edge("hermes->gitnexus-explorer", "hermes", "gitnexus-explorer", "topology", "warn" if topology.get("_error") else "ok", "Hermes feeds the read-only topology collector.", _provenance("gitnexus-runtime-collector", "snapshot()")))
-    edges.append(_nexus_edge("hermes->mcp-memory", "hermes", "mcp-memory", "tool context", mcp_hub_status, "MCP and memory providers extend runtime context.", _provenance("gitnexus-runtime-collector", "MCP server list.")))
-    edges.append(_nexus_edge("mcp-memory->containers", "mcp-memory", "containers", "MVMS backend", ctr_hub_status, "MVMS memory is backed by the Supabase container stack.", _provenance("docker", "ps")))
-    for m in mcp:
-        if not isinstance(m, dict):
-            continue
-        mname = str(m.get("name") or m.get("id") or "")
-        if not mname:
-            continue
-        node_id = f"mcp:{mname}"
-        st = _nexus_status(m.get("status"))
-        nodes.append(_nexus_node(
-            node_id=node_id, label=mname, kind="mcp", group="integrations", status=st,
-            summary=f"MCP server '{mname}'.",
-            details=f"Collector status: {m.get('status', 'unknown')}.",
-            metrics={"server": mname, "raw_status": m.get("status")},
-            provenance=_provenance("gitnexus-runtime-collector", "hermes mcp list row."),
-            safe_next_check="hermes mcp list to confirm tools and auth state.",
-            needs_joseph=st == "auth_gated",
-        ))
-        edges.append(_nexus_edge(f"mcp->{node_id}", "mcp-memory", node_id, "mcp server", st, mname, _provenance("gitnexus-runtime-collector", "mcp list")))
-
-    # --- Data plane: source tree + audit store ---------------------------
-    nodes.append(_nexus_node(
-        node_id="source-tree", label="Source Tree", kind="source", group="data",
-        status="ok" if source_root.exists() else "unknown",
-        summary="Hermes source tree is available for read-only inspection.",
-        details=str(source_root),
-        metrics={"path": str(source_root)},
-        provenance=_provenance("filesystem", "Resolved from hermes_cli/dashboard_health.py."),
-        safe_next_check="Use local tests and static inspection before changing shared runtime state.",
-    ))
-    nodes.append(_nexus_node(
-        node_id="audit-store", label="Audit Store", kind="audit", group="data",
-        status="ok" if source_root.exists() else "unknown",
-        summary="Current audit worktree is readable.",
-        details=str(source_root),
-        metrics={"path": str(source_root)},
-        provenance=_provenance("filesystem", "Resolved current dashboard_health.py repository root."),
-        safe_next_check="Read files in this worktree only.",
-    ))
-    edges.append(_nexus_edge("agent-lanes->source-tree", "agent-lanes", "source-tree", "workspace", lane_status, "Agent lanes operate on the source worktree.", _provenance("mission-control", "Lane process probes.")))
-    edges.append(_nexus_edge("source-tree->audit-store", "source-tree", "audit-store", "verification trail", "ok", "Local tests and artifacts stay in the audit worktree.", _provenance("filesystem", str(source_root))))
-
-    # --- Posture, gating, summary ----------------------------------------
-    needs_joseph = [
-        {
-            "id": node["id"],
-            "label": node["label"],
-            "reason": node["summary"],
-            "gate": "Human review required before state-changing recovery.",
-        }
-        for node in nodes
-        if node["needs_joseph"]
-    ]
-
-    safe_actions = [
-        {"id": "copy-summary", "label": "Copy health summary", "kind": "copy",
-         "payload": "Hermes System Health is read-only; inspect degraded nodes before changing runtime state."},
-        {"id": "open-explorer", "label": "Open Explorer", "kind": "open", "payload": "/explorer"},
-        {"id": "open-logs", "label": "Read logs", "kind": "open", "payload": "/logs"},
-        {"id": "open-cron", "label": "Open Cron", "kind": "open", "payload": "/cron"},
-    ]
-    locked_actions = [
-        {"id": "restart-gateway", "label": "Restart gateway", "gate": "disabled", "reason": "State-changing service control is intentionally unavailable here."},
-        {"id": "kanban-dispatch", "label": "Dispatch / reclaim Kanban work", "gate": "copy-only", "reason": "Requires explicit operator intent outside System Health."},
-        {"id": "gitnexus-ingest", "label": "Rebuild GitNexus indexes", "gate": "disabled", "reason": "This endpoint only uses the read-only runtime collector."},
-        {"id": "provider-auth", "label": "Change provider or MCP auth", "gate": "disabled", "reason": "Auth and billing configuration stay outside this page."},
-    ]
-
-    counts = {
-        st: sum(1 for node in nodes if node["status"] == st)
-        for st in ("ok", "warn", "error", "unknown", "auth_gated")
-    }
-    node_statuses = {node["status"] for node in nodes}
-    if needs_joseph:
-        posture = "stop"
-    elif node_statuses & {"warn", "error", "unknown", "auth_gated"}:
-        posture = "caution"
-    else:
-        posture = "safe"
-
-    degraded = [node["label"] for node in nodes
-                if node["status"] in {"warn", "error", "unknown", "auth_gated"}]
-    if posture == "safe":
-        summary = "All observed systems are safe for read-only inspection."
-    elif posture == "stop":
-        summary = (f"{len(needs_joseph)} node(s) need Joseph: "
-                   f"{', '.join(g['label'] for g in needs_joseph[:4])}.")
-    else:
-        shown = ", ".join(degraded[:4])
-        more = len(degraded) - 4
-        summary = f"{len(degraded)} of {len(nodes)} node(s) need attention: {shown}"
-        if more > 0:
-            summary = f"{summary}; +{more} more attention target(s) shown as chips."
-        else:
-            summary = f"{summary}."
-
-    evidence = [
-        {"source": "mission-control", "detail": "Runtime probes feed core status."},
-        {"source": "gitnexus-runtime-collector", "detail": "Read-only topology snapshot; no ingest or index rebuild."},
-        {"source": "systemd", "detail": "systemctl --user list-units hermes-* (read-only)."},
-        {"source": "docker", "detail": "docker ps -a for MVMS Supabase containers (read-only)."},
-        {"source": "tcp-probe", "detail": "localhost TCP connects to infrastructure ports."},
-        {"source": "filesystem", "detail": "Source and audit paths resolved from this worktree."},
-    ]
-
-    return {
-        "generated_at": generated_at,
-        "posture": posture,
-        "summary": summary,
-        "counts": counts,
-        "nodes": nodes,
-        "edges": edges,
-        "sectors": sectors,
-        "needs_joseph": needs_joseph,
-        "safe_actions": safe_actions,
-        "locked_actions": locked_actions,
-        "evidence": evidence,
-    }
-
-
-def _get_nexus_health() -> dict:
-    """30 s-cached System Health graph (matches the mission snapshot cadence)."""
-    global _NEXUS_CACHE
-    now = time.monotonic()
-    if _NEXUS_CACHE and now < _NEXUS_CACHE[1]:
-        return _NEXUS_CACHE[0]
-    with _NEXUS_LOCK:
-        # Re-check after acquiring lock (another thread may have rebuilt it).
-        now = time.monotonic()
-        if _NEXUS_CACHE and now < _NEXUS_CACHE[1]:
-            return _NEXUS_CACHE[0]
-        data = _build_nexus_health()
-        _NEXUS_CACHE = (data, now + _NEXUS_TTL)
-    return data
-
-
-# ---------------------------------------------------------------------------
-# Per-node detail: metric cards, history sparklines, recommendations
-# ---------------------------------------------------------------------------
-
-def _node_metric_cards(node: dict) -> list[dict]:
-    """Format a node's raw metrics dict into display-ready cards."""
-    cards: list[dict] = []
-    for key, value in (node.get("metrics") or {}).items():
-        if value is None or value == "" or value == []:
-            continue
-        label = key.replace("_", " ").replace("usd", "USD").strip().title()
-        if isinstance(value, bool):
-            display = "yes" if value else "no"
-        elif isinstance(value, float):
-            display = f"{value:.2f}"
-        elif isinstance(value, list):
-            display = ", ".join(str(v) for v in value[:4]) or "—"
-        else:
-            display = str(value)
-        cards.append({"label": label, "value": display})
-    return cards
-
-
-def _node_history(node: dict) -> list[dict]:
-    """Attach real time-series history where it exists for this node."""
-    history: list[dict] = []
-    node_id = node["id"]
-    if node_id == "kanban":
-        queue = _get_queue_depth("7d")
-        if queue.get("points"):
-            history.append({
-                "label": "Tasks created / day (7d)", "kind": "queue",
-                "openNow": queue.get("openNow", 0), "points": queue["points"],
-            })
-    if node_id in {"agent-lanes", "hermes"}:
-        spend = _get_spend("7d")
-        if spend.get("points"):
-            history.append({
-                "label": "Spend / day (7d, est. USD)", "kind": "spend",
-                "points": spend["points"],
-            })
-    return history
-
-
-def _node_recommendations(node: dict) -> list[dict]:
-    """Concrete fix (unhealthy) or optimization (healthy) recommendations."""
-    status = node["status"]
-    kind = node["kind"]
-    healthy = status == "ok"
-    metrics = node.get("metrics") or {}
-    recs: list[dict] = []
-
-    def fix(title: str, detail: str, command: Optional[str] = None) -> None:
-        recs.append({"kind": "fix", "title": title, "detail": detail, "command": command})
-
-    def opt(title: str, detail: str, command: Optional[str] = None) -> None:
-        recs.append({"kind": "optimization", "title": title, "detail": detail, "command": command})
-
-    if not healthy:
-        if kind == "service":
-            unit = metrics.get("unit", node["label"])
-            fix("Inspect the unit journal",
-                "Read recent logs to find why the unit is not active. This is read-only.",
-                f"journalctl --user -u {unit} -n 120 --no-pager")
-            fix("Recover only after diagnosis",
-                "Once the cause is understood the operator can recover the unit; "
-                "System Health never controls services itself.",
-                f"systemctl --user status {unit}")
-        elif kind == "container":
-            cname = metrics.get("container", node["label"])
-            fix("Inspect container logs",
-                "Check the container's recent output for a crash or failed health probe.",
-                f"docker logs --tail 120 {cname}")
-            fix("Confirm intended state",
-                "Verify the MVMS Supabase stack is meant to be running before any recovery.",
-                f"docker inspect {cname}")
-        elif kind == "port":
-            port = metrics.get("port")
-            fix("Find the owning process",
-                f"Nothing is accepting TCP connections on port {port}; the owning "
-                "service is likely down.",
-                f"ss -tlnp | grep :{port}")
-        elif kind == "gateway":
-            fix("Read gateway state",
-                "Inspect gateway_state.json and gateway logs to find which platform adapter degraded.")
-        elif kind == "kanban":
-            fix("Check the dispatcher",
-                "The Kanban probe failed. Confirm the board DB is reachable; do not reclaim work here.")
-        elif kind in {"mcp", "memory"}:
-            fix("Re-check MCP auth",
-                "An MCP server is offline or auth-gated. Confirm tokens and selection.",
-                "hermes mcp list")
-        elif kind.endswith("-group"):
-            fix("Open a degraded child node",
-                "One or more members of this group need attention — click a red or "
-                "amber child node for its specific fix.")
-        else:
-            fix("Inspect logs for this node",
-                "Open the related logs to understand the degraded state before any change.")
-        if node.get("needs_joseph"):
-            fix("Human gate is active",
-                "Recovery for this node changes runtime state and requires Joseph's explicit review.")
-    else:
-        if kind == "service":
-            opt("Healthy — keep it observable",
-                "Unit is active. Review journald rate-limits if it logs heavily.")
-        elif kind == "container":
-            opt("Healthy — watch resource headroom",
-                "Container is up. Spot-check memory use on the Supabase stack.",
-                f"docker stats --no-stream {metrics.get('container', '')}".rstrip())
-        elif kind == "port":
-            latency = metrics.get("latency_ms") or 0
-            opt("Reachable — latency is healthy" if latency < 50 else "Reachable — latency is elevated",
-                f"TCP connect succeeded in {metrics.get('latency_ms')} ms. "
-                "Sub-50 ms localhost latency is healthy.")
-        elif kind == "kanban":
-            opt("Drain the backlog steadily",
-                "Dispatcher is healthy — keep the open-task count trending down.")
-        elif kind in {"mcp", "memory"}:
-            opt("Tool surface healthy",
-                "All MCP servers are reachable. Prune unused servers to cut context overhead.")
-        elif kind in {"runtime", "agent-lane"}:
-            opt("Runtime healthy — watch spend",
-                "Lanes are ready. Track daily spend so cost stays predictable.")
-        elif kind == "gateway":
-            opt("Gateway healthy",
-                "All platform adapters are connected. Keep an eye on per-platform latency.")
-        elif kind.endswith("-group"):
-            opt("Group healthy",
-                "Every member of this group is reporting OK — no action needed.")
-        else:
-            opt("Healthy — no action needed",
-                "This node is operating normally; keep it under periodic observation.")
-    return recs
-
-
-def _build_node_detail(node_id: str) -> Optional[dict]:
-    """Return summary + metrics + history + recommendations for one node."""
-    health = _get_nexus_health()
-    node = next((n for n in health["nodes"] if n["id"] == node_id), None)
-    if node is None:
-        return None
-    detail = dict(node)
-    detail["generated_at"] = health["generated_at"]
-    detail["metric_cards"] = _node_metric_cards(node)
-    detail["history"] = _node_history(node)
-    detail["recommendations"] = _node_recommendations(node)
-    detail["connections"] = [
-        {
-            "id": edge["id"],
-            "label": edge["label"],
-            "status": edge["status"],
-            "direction": "out" if edge["source"] == node_id else "in",
-            "peer": edge["target"] if edge["source"] == node_id else edge["source"],
-        }
-        for edge in health["edges"]
-        if edge["source"] == node_id or edge["target"] == node_id
-    ]
-    return detail
-
-
 # ---------------------------------------------------------------------------
 # Endpoints
 # ---------------------------------------------------------------------------
-
-# Hard timeout (seconds) for the nexus-health cold-build path.
-_NEXUS_HEALTH_TIMEOUT = 12.0
 
 
 @router.get("/mission", summary="Mission Control snapshot")
 async def get_mission_snapshot() -> dict:
     """Combined MissionSnapshot with real live data. 30 s server-side cache."""
     return await asyncio.get_running_loop().run_in_executor(None, _get_snapshot)
-
-
-@router.get("/nexus-health", summary="System Health read-only graph")
-async def get_nexus_health() -> dict:
-    """Read-only command-center health map for the whole Hermes infrastructure."""
-    try:
-        return await asyncio.wait_for(
-            asyncio.get_running_loop().run_in_executor(None, _get_nexus_health),
-            timeout=_NEXUS_HEALTH_TIMEOUT,
-        )
-    except asyncio.TimeoutError:
-        raise HTTPException(
-            status_code=503,
-            detail="System Health build timed out — try again in a moment.",
-        )
-
-
-@router.get("/nexus-health/node/{node_id}", summary="Per-node System Health detail")
-async def get_nexus_health_node(node_id: str) -> dict:
-    """Summary, metrics, history sparklines and fix/optimization recommendations
-    for a single node in the System Health graph. Read-only."""
-    detail = await asyncio.get_running_loop().run_in_executor(
-        None, _build_node_detail, node_id
-    )
-    if detail is None:
-        raise HTTPException(status_code=404, detail=f"Unknown System Health node: {node_id}")
-    return detail
 
 
 @router.get("/health/runtime/{name}", summary="Single runtime health probe")
@@ -2102,6 +1564,16 @@ async def get_cron() -> dict:
     return {"jobs": jobs, "count": len(jobs)}
 
 
+@router.get("/cron-contracts", summary="Self-reporting cron contracts — quota/gap/miss-streak per cron")
+async def get_cron_contracts() -> dict:
+    """Latest self-reported contract per cron + miss-streak + hard-floor flag.
+
+    Pull-side aggregate of the cron-contracts ledger (jobs with ``contract: true``).
+    Read-only — no Discord/alerting here; push stays opt-in elsewhere.
+    """
+    return await asyncio.get_running_loop().run_in_executor(None, _get_cron_contracts)
+
+
 @router.get("/dreams/latest", summary="Last overnight reflection brief")
 async def get_latest_dream() -> dict:
     """Return the most recent dream-reflect brief from ~/.hermes/dreams/."""
@@ -2161,19 +1633,15 @@ async def stream_health() -> StreamingResponse:
 
 
 # ---------------------------------------------------------------------------
-# Hives endpoints — read-only observability for Ruflo hive runs
+# Hives endpoints — retired Ruflo hive no-data surface
 # ---------------------------------------------------------------------------
 
 _HIVES_TIMEOUT = 10.0
 
 
-@router.get("/hives", summary="Read-only snapshot of all Ruflo hive runs")
+@router.get("/hives", summary="Retired Ruflo hives — honest no-data snapshot")
 async def get_hives_snapshot() -> dict:
-    """Scans ~/.hermes/ruflo-work for hive run directories.
-
-    Returns a cached (15 s TTL) snapshot sorted active-first.  Strictly
-    read-only — no subprocess that mutates state.
-    """
+    """Return cached (15 s TTL) retired/no-data hive status."""
     try:
         return await asyncio.wait_for(
             asyncio.get_running_loop().run_in_executor(None, _get_hives_snapshot),
