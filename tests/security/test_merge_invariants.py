@@ -8,13 +8,109 @@ red check, never a diff. Mirrors the inspect.getsource technique already used in
 tests/hermes_cli/test_config_drift.py.
 """
 
+import asyncio
 from pathlib import Path
+
+import pytest
+from aiohttp import web
+from aiohttp.test_utils import TestClient, TestServer
+
+from gateway.config import PlatformConfig
+from gateway.platforms import webhook as webhook_module
+from gateway.platforms.webhook import WebhookAdapter, _INSECURE_NO_AUTH
+from tools import approval as approval_module
+from tools.approval import get_session_deny_pattern_strings, is_session_credential_tainted
 
 REPO = Path(__file__).resolve().parents[2]
 
 
 def _read(rel: str) -> str:
     return (REPO / rel).read_text(encoding="utf-8")
+
+
+def _reset_webhook_refusal_state() -> None:
+    webhook_module._AGENT_RUN_SEMAPHORE = None
+    webhook_module._AGENT_RUN_SEMAPHORE_CAP = None
+    approval_module._session_deny_patterns.clear()
+    approval_module._session_credential_taint.clear()
+
+
+@pytest.fixture
+def _clean_webhook_refusal_state():
+    _reset_webhook_refusal_state()
+    yield
+    _reset_webhook_refusal_state()
+
+
+def _make_webhook_refusal_adapter(*, cap: int = 1) -> WebhookAdapter:
+    adapter = WebhookAdapter(
+        PlatformConfig(
+            enabled=True,
+            extra={
+                "host": "127.0.0.1",
+                "port": 0,
+                "max_concurrent_agent_runs": cap,
+                "routes": {
+                    "loki1": {
+                        "secret": _INSECURE_NO_AUTH,
+                        "prompt": "{message}",
+                        "deliver": "log",
+                    }
+                },
+            },
+        )
+    )
+    # Keep invariant tests focused on approval-rail ordering, not relay-worktree setup.
+    adapter._wt_enabled = False
+    return adapter
+
+
+def _create_webhook_refusal_app(adapter: WebhookAdapter) -> web.Application:
+    app = web.Application()
+    app.router.add_post("/webhooks/{route_name}", adapter._handle_webhook)
+    return app
+
+
+async def _post_webhook_refusal(cli: TestClient, delivery_id: str):
+    return await cli.post(
+        "/webhooks/loki1",
+        json={"message": "OBJECTIVE: hold lane open"},
+        headers={"X-Request-ID": delivery_id},
+    )
+
+
+def _session_key_for_webhook_delivery(adapter: WebhookAdapter, delivery_id: str) -> str:
+    source = adapter.build_source(
+        chat_id=f"webhook:loki1:{delivery_id}",
+        chat_name="webhook/loki1",
+        chat_type="webhook",
+        user_id="webhook:loki1",
+        user_name="loki1",
+    )
+    return adapter._build_session_key(source)
+
+
+async def _start_slow_webhook_run(adapter: WebhookAdapter, cli: TestClient, delivery_id: str):
+    started = asyncio.Event()
+    release = asyncio.Event()
+    finished = asyncio.Event()
+
+    async def slow_handler(_event):
+        started.set()
+        try:
+            await release.wait()
+        finally:
+            finished.set()
+        return None
+
+    # Exercise BasePlatformAdapter.handle_message() instead of stubbing handle_message directly.
+    adapter.set_message_handler(slow_handler)
+    response = await _post_webhook_refusal(cli, delivery_id)
+    body = await response.json()
+    assert response.status == 202, body
+    await asyncio.wait_for(started.wait(), timeout=2.0)
+    await asyncio.sleep(0.05)
+    return release, finished
 
 
 def test_dispatch_in_gateway_defaults_fail_closed():
@@ -132,6 +228,60 @@ def test_restart_resume_rearms_disp5_floor():
         "SessionEntry.autonomous_dispatch field dropped"
     assert "approval_key" in session, \
         "SessionEntry.approval_key dropped — resume can't re-register under the dispatch key"
+
+
+@pytest.mark.asyncio
+async def test_refused_saturated_webhook_registers_no_approval_rails_after_refusal(
+    _clean_webhook_refusal_state,
+):
+    """429 refusal must happen before approval-rail registration/taint can bind.
+
+    P1a-rev2 fixed the ordering so a rejected over-cap delivery never registers
+    deny patterns or credential taint under its would-be session key. This is a
+    behavioral merge invariant: an upstream merge can rewrite the webhook flow
+    without changing obvious lexical markers, but the refused key must remain clean.
+    """
+    adapter = _make_webhook_refusal_adapter(cap=1)
+
+    async with TestClient(TestServer(_create_webhook_refusal_app(adapter))) as cli:
+        release, finished = await _start_slow_webhook_run(adapter, cli, "held")
+        refused_key = _session_key_for_webhook_delivery(adapter, "refused-429")
+
+        refused = await _post_webhook_refusal(cli, "refused-429")
+        refused_body = await refused.json()
+        assert refused.status == 429, refused_body
+        assert refused_body["error"] == "max_concurrent_agent_runs_exhausted"
+
+        assert get_session_deny_pattern_strings(refused_key) == []
+        assert is_session_credential_tainted(refused_key) is False
+        assert "refused-429" not in adapter._seen_deliveries
+
+        release.set()
+        await asyncio.wait_for(finished.wait(), timeout=2.0)
+        if adapter._background_tasks:
+            await asyncio.gather(*adapter._background_tasks, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_refused_worktree_webhook_registers_no_approval_rails_after_refusal(
+    _clean_webhook_refusal_state,
+):
+    """503 worktree refusal must happen before approval-rail registration/taint can bind."""
+    adapter = _make_webhook_refusal_adapter(cap=1)
+    adapter._wt_enabled = True
+    adapter._ensure_relay_worktree = lambda: None
+    refused_key = _session_key_for_webhook_delivery(adapter, "refused-503")
+
+    async with TestClient(TestServer(_create_webhook_refusal_app(adapter))) as cli:
+        response = await _post_webhook_refusal(cli, "refused-503")
+        body = await response.json()
+
+    assert response.status == 503, body
+    assert body["error"] == "worktree_unavailable"
+    assert get_session_deny_pattern_strings(refused_key) == []
+    assert is_session_credential_tainted(refused_key) is False
+    assert adapter._run_finalizers == {}
+    assert "refused-503" not in adapter._seen_deliveries
 
 
 def test_webhook_deny_patterns_cover_ci_and_push():
