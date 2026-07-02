@@ -6,8 +6,8 @@ This is intentionally small and operational: 6 SLOs, every one tied to a concret
 |---|---:|---:|---|---|
 | Gateway turn p95 latency | `<= 120000 ms` over rolling 24h | `>= 90000 ms` | `~/.hermes/state.db` table `turn_usage.latency_ms`, opened as `file:...state.db?mode=ro` | Measures end-to-end model/tool turn runtime as currently recorded by Hermes. |
 | Turn error rate | `<= 5%` over rolling 24h | `>= 2%` | `journalctl --user -u hermes-gateway.service` error/failure/traceback/timeout/crash lines divided by `turn_usage` turn count | Journald is the current error source of truth; no app code path is modified. |
-| Fallback-trigger rate | `<= 10%` over rolling 24h | `>= 5%` | Gateway journald fallback lines plus `turn_usage.retry_count > 0`, divided by `turn_usage` turn count | Retry count is included because provider fallback/retry pressure is operationally the same early-warning class. |
-| Recall hit-rate | `>= 80%` over rolling 24h | `< 80%` | `~/.hermes/state/recall-events.jsonl` when present | Current audit says this file is missing; exporter reports `no_data` instead of fake-green. |
+| Fallback-trigger rate | `<= 10%` over rolling 24h | `>= 5%` | Real provider/model fallback lines from `journalctl --user -u hermes-gateway.service`, divided by `turn_usage` turn count | Ordinary retries and auxiliary title-generation fail-closed fallback-chain messages are tracked separately and do not page this SLO. |
+| Recall hit-rate | `>= 80%` over rolling 24h | `< 80%` | `~/.hermes/state/learning-index/recall-canary.jsonl` when present | Uses the recall-quality canary target-in-top-k result plus discrimination-gap floor; reports `no_data` instead of fake-green when missing. |
 | Watchdog restart count | `0 / 24h` | `>= 1` | `journalctl --user -u hermes-gateway-watchdog.service` start/restart/failure markers | Captures watchdog churn, not gateway business logic. |
 | Cost-burn rate | `<= $10 / 24h` | `>= $5 / 24h` | `~/.hermes/state.db` table `turn_usage.estimated_cost_usd`, rolling 24h sum | Current Claude/Max-included flows often record `$0`; this catches metered leakage if it appears. |
 

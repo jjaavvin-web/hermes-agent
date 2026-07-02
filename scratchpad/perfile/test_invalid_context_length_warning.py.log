@@ -1,0 +1,8 @@
+.....                                                                    [100%]
+=============================== warnings summary ===============================
+tests/run_agent/test_invalid_context_length_warning.py::test_valid_integer_context_length_no_warning
+  /home/josep/.local/share/hermes-agent/venv/lib/python3.11/site-packages/discord/player.py:30: DeprecationWarning: 'audioop' is deprecated and slated for removal in Python 3.13
+    import audioop
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+5 passed, 1 warning in 1.94s

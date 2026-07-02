@@ -198,3 +198,35 @@ async def test_underscored_alias_not_flagged_unknown(monkeypatch):
     result = await runner._handle_message(_make_event("/reload_skills"))
     if result is not None:
         assert "Unknown command" not in result
+
+
+@pytest.mark.asyncio
+async def test_dispatcher_routes_learn_to_agent_prompt(monkeypatch):
+    """``/learn`` must rewrite to the learn prompt and fall through to the agent."""
+    import gateway.run as gateway_run
+
+    runner = _make_runner()
+    runner._thread_metadata_for_source = lambda *_a, **_kw: None
+    captured = {}
+
+    async def fake_inner(event, source, quick_key, generation):
+        captured["text"] = event.text
+        captured["quick_key"] = quick_key
+        captured["generation"] = generation
+        return "agent handled learn"
+
+    runner._handle_message_with_agent = fake_inner  # type: ignore[attr-defined]
+    monkeypatch.setattr(
+        gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"}
+    )
+
+    result = await runner._handle_message(_make_event("/learn the release checklist"))
+
+    assert result == "agent handled learn"
+    assert "[/learn]" in captured["text"]
+    assert "WHAT TO LEARN FROM:\nthe release checklist" in captured["text"]
+    assert "skill_manage" in captured["text"]
+    adapter = runner.adapters[Platform.TELEGRAM]
+    adapter.send.assert_awaited_once()
+    assert "Learning a skill from what you described" in adapter.send.await_args.args[1]
+    runner.session_store.append_to_transcript.assert_not_called()

@@ -1,0 +1,158 @@
+- generic [ref=e3]:
+  - link "Skip to main content" [ref=e4] [cursor=pointer]:
+    - /url: "#main"
+  - banner [ref=e5]:
+    - button "Open navigation" [ref=e6] [cursor=pointer]:
+      - img [ref=e7]
+    - generic [ref=e8]: Hermes Agent
+  - generic [ref=e10]:
+    - complementary "Navigation" [ref=e11]:
+      - generic [ref=e12]:
+        - generic [ref=e14]:
+          - text: Hermes
+          - text: Agent
+        - button "Close navigation" [ref=e15] [cursor=pointer]:
+          - img [ref=e16]
+      - navigation "Navigation" [ref=e19]:
+        - list [ref=e20]:
+          - listitem [ref=e21]:
+            - link "Chat" [ref=e22] [cursor=pointer]:
+              - /url: /chat
+              - img [ref=e23]
+              - generic [ref=e25]: Chat
+          - listitem [ref=e26]:
+            - link "Life" [ref=e27] [cursor=pointer]:
+              - /url: /life
+              - img [ref=e28]
+              - generic [ref=e33]: Life
+          - listitem [ref=e34]:
+            - link "Sessions" [ref=e35] [cursor=pointer]:
+              - /url: /sessions
+              - img [ref=e36]
+              - generic [ref=e38]: Sessions
+          - listitem [ref=e39]:
+            - link "Files" [ref=e40] [cursor=pointer]:
+              - /url: /files
+              - img [ref=e41]
+              - generic [ref=e43]: Files
+          - listitem [ref=e44]:
+            - link "Cost" [ref=e45] [cursor=pointer]:
+              - /url: /cost
+              - img [ref=e46]
+              - generic [ref=e48]: Cost
+          - listitem [ref=e49]:
+            - link "Models" [ref=e50] [cursor=pointer]:
+              - /url: /models
+              - img [ref=e51]
+              - generic [ref=e54]: Models
+          - listitem [ref=e55]:
+            - link "Logs" [ref=e56] [cursor=pointer]:
+              - /url: /logs
+              - img [ref=e57]
+              - generic [ref=e60]: Logs
+          - listitem [ref=e61]:
+            - link "Cron" [ref=e62] [cursor=pointer]:
+              - /url: /cron
+              - img [ref=e63]
+              - generic [ref=e66]: Cron
+          - listitem [ref=e67]:
+            - link "Skills" [ref=e68] [cursor=pointer]:
+              - /url: /skills
+              - img [ref=e69]
+              - generic [ref=e73]: Skills
+          - listitem [ref=e74]:
+            - link "Explorer" [ref=e75] [cursor=pointer]:
+              - /url: /explorer
+              - img [ref=e76]
+              - generic [ref=e81]: Explorer
+          - listitem [ref=e82]:
+            - link "OS" [ref=e83] [cursor=pointer]:
+              - /url: /os
+              - img [ref=e84]
+              - generic [ref=e87]: OS
+          - listitem [ref=e88]:
+            - link "System Health" [ref=e89] [cursor=pointer]:
+              - /url: /nexus-health
+              - img [ref=e90]
+              - generic [ref=e92]: System Health
+          - listitem [ref=e93]:
+            - link "Learning" [ref=e94] [cursor=pointer]:
+              - /url: /learning
+              - img [ref=e95]
+              - generic [ref=e98]: Learning
+          - listitem [ref=e99]:
+            - link "Plugins" [ref=e100] [cursor=pointer]:
+              - /url: /plugins
+              - img [ref=e101]
+              - generic [ref=e103]: Plugins
+          - listitem [ref=e104]:
+            - link "MCP" [ref=e105] [cursor=pointer]:
+              - /url: /mcp
+              - img [ref=e106]
+              - generic [ref=e108]: MCP
+          - listitem [ref=e109]:
+            - link "Channels" [ref=e110] [cursor=pointer]:
+              - /url: /channels
+              - img [ref=e111]
+              - generic [ref=e117]: Channels
+          - listitem [ref=e118]:
+            - link "Webhooks" [ref=e119] [cursor=pointer]:
+              - /url: /webhooks
+              - img [ref=e120]
+              - generic [ref=e124]: Webhooks
+          - listitem [ref=e125]:
+            - link "Pairing" [ref=e126] [cursor=pointer]:
+              - /url: /pairing
+              - img [ref=e127]
+              - generic [ref=e130]: Pairing
+          - listitem [ref=e131]:
+            - link "Profiles" [ref=e132] [cursor=pointer]:
+              - /url: /profiles
+              - img [ref=e133]
+              - generic [ref=e138]: Profiles
+          - listitem [ref=e139]:
+            - link "Config" [ref=e140] [cursor=pointer]:
+              - /url: /config
+              - img [ref=e141]
+              - generic [ref=e144]: Config
+          - listitem [ref=e145]:
+            - link "Keys" [ref=e146] [cursor=pointer]:
+              - /url: /env
+              - img [ref=e147]
+              - generic [ref=e150]: Keys
+          - listitem [ref=e151]:
+            - link "System" [ref=e152] [cursor=pointer]:
+              - /url: /system
+              - img [ref=e153]
+              - generic [ref=e155]: System
+          - listitem [ref=e157]:
+            - link "Documentation" [ref=e158] [cursor=pointer]:
+              - /url: /docs
+              - img [ref=e159]
+              - generic [ref=e161]: Documentation
+      - generic [ref=e162]:
+        - generic [ref=e163]: System
+        - list [ref=e167]:
+          - listitem [ref=e168]:
+            - button "Restart Gateway" [ref=e169] [cursor=pointer]:
+              - img [ref=e170]
+              - generic [ref=e173]: Restart Gateway
+      - generic [ref=e175]:
+        - button "Switch theme" [ref=e178] [cursor=pointer]:
+          - generic [ref=e179]:
+            - img [ref=e180]
+            - generic [ref=e186]: Mono
+        - button "Switch language" [ref=e189] [cursor=pointer]:
+          - generic [ref=e191]: EN
+      - generic [ref=e192]:
+        - generic [ref=e193]: …
+        - generic [ref=e194]:
+          - generic [ref=e195]: —
+          - link "Nous Research" [ref=e196] [cursor=pointer]:
+            - /url: https://nousresearch.com
+    - generic [ref=e197]:
+      - banner [ref=e198]:
+        - heading "System" [level=1] [ref=e201]
+      - main [ref=e202]:
+        - main [ref=e203]:
+          - generic [ref=e207]: ⠋

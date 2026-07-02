@@ -73,7 +73,7 @@ SLO_DEFINITIONS: dict[str, dict[str, Any]] = {
         "warn": 0.05,
         "critical": 0.10,
         "unit": "ratio",
-        "source": "gateway journald fallback lines plus turn_usage.retry_count>0 divided by turn_usage turns",
+        "source": "gateway journald real provider/model fallback lines divided by turn_usage turns; ordinary retries and auxiliary title-generation fail-closed noise are tracked separately",
     },
     "recall_hit_rate": {
         "target": ">=0.80",
@@ -128,6 +128,13 @@ _TOOL_BACKEND_ERROR_RE = re.compile(
     re.I,
 )
 _FALLBACK_RE = re.compile(r"\bfallback|fallback-trigger|provider fallback|model fallback\b", re.I)
+# Auxiliary helpers can log fail-closed fallback-chain messages while preserving the
+# primary turn. Those are useful diagnostics, but counting them as provider/model
+# fallback pages made the SLO noisy during 2026-06-30 title-generation failures.
+_AUXILIARY_FALLBACK_RE = re.compile(
+    r"title[_ -]?generation|auxiliary.*fallback|fallback.*auxiliary",
+    re.I,
+)
 _WATCHDOG_RE = re.compile(r"\b(started|starting|restart|failed|failure|watchdog)\b", re.I)
 _TS_PREFIX_RE = re.compile(r"^(?P<ts>\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(?P<tz>Z|[+-]\d{2}:?\d{2})?")
 
@@ -139,6 +146,7 @@ class JournalCounts:
     watchdog_restart_events: int = 0
     tool_config_error_events: int = 0
     tool_backend_error_events: int = 0
+    auxiliary_fallback_events: int = 0
 
 
 def utc_iso(ts: float | None = None) -> str:
@@ -203,8 +211,13 @@ def _is_counted_gateway_error(line: str) -> bool:
     )
 
 
+def _is_counted_fallback(line: str) -> bool:
+    """True for real provider/model fallback events that should page fallback SLO."""
+    return bool(_FALLBACK_RE.search(line) and not _AUXILIARY_FALLBACK_RE.search(line))
+
+
 def parse_journal_counts(gateway_lines: Iterable[str], watchdog_lines: Iterable[str] = ()) -> JournalCounts:
-    errors = fallbacks = watchdogs = tool_config_errors = tool_backend_errors = 0
+    errors = fallbacks = watchdogs = tool_config_errors = tool_backend_errors = auxiliary_fallbacks = 0
     for line in gateway_lines:
         if _TOOL_CONFIG_ERROR_RE.search(line):
             tool_config_errors += 1
@@ -212,7 +225,9 @@ def parse_journal_counts(gateway_lines: Iterable[str], watchdog_lines: Iterable[
             tool_backend_errors += 1
         if _is_counted_gateway_error(line):
             errors += 1
-        if _FALLBACK_RE.search(line):
+        if _FALLBACK_RE.search(line) and _AUXILIARY_FALLBACK_RE.search(line):
+            auxiliary_fallbacks += 1
+        if _is_counted_fallback(line):
             fallbacks += 1
     for line in watchdog_lines:
         text = line.lower()
@@ -225,7 +240,7 @@ def parse_journal_counts(gateway_lines: Iterable[str], watchdog_lines: Iterable[
             continue
         if "restarted" in text or "restarting" in text or "scheduled restart" in text:
             watchdogs += 1
-    return JournalCounts(errors, fallbacks, watchdogs, tool_config_errors, tool_backend_errors)
+    return JournalCounts(errors, fallbacks, watchdogs, tool_config_errors, tool_backend_errors, auxiliary_fallbacks)
 
 
 def _line_epoch(line: str) -> float | None:
@@ -257,6 +272,7 @@ def build_bucket_series(rows: list[dict[str, Any]], gateway_lines: Iterable[str]
         "fallback_events": 0,
         "tool_config_error_events": 0,
         "tool_backend_error_events": 0,
+        "auxiliary_fallback_events": 0,
     })
     for row in rows:
         bucket = _bucket_start(float(row["ts"]), bucket_seconds)
@@ -278,7 +294,9 @@ def build_bucket_series(rows: list[dict[str, Any]], gateway_lines: Iterable[str]
             buckets[bucket]["tool_backend_error_events"] += 1
         if _is_counted_gateway_error(line):
             buckets[bucket]["error_events"] += 1
-        if _FALLBACK_RE.search(line):
+        if _FALLBACK_RE.search(line) and _AUXILIARY_FALLBACK_RE.search(line):
+            buckets[bucket]["auxiliary_fallback_events"] += 1
+        if _is_counted_fallback(line):
             buckets[bucket]["fallback_events"] += 1
     series = []
     for bucket in sorted(buckets):
@@ -297,6 +315,7 @@ def build_bucket_series(rows: list[dict[str, Any]], gateway_lines: Iterable[str]
             "fallback_events": fallback_events,
             "tool_config_error_events": item["tool_config_error_events"],
             "tool_backend_error_events": item["tool_backend_error_events"],
+            "auxiliary_fallback_events": item["auxiliary_fallback_events"],
         })
     return series
 

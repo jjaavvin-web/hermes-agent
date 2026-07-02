@@ -1,0 +1,8 @@
+[     298ms] [ERROR] EventSource's response has a MIME type ("text/html") that is not "text/event-stream". Aborting the connection. @ http://127.0.0.1:8800/life:0
+[    1300ms] [ERROR] EventSource's response has a MIME type ("text/html") that is not "text/event-stream". Aborting the connection. @ http://127.0.0.1:8800/life:0
+[    3302ms] [ERROR] EventSource's response has a MIME type ("text/html") that is not "text/event-stream". Aborting the connection. @ http://127.0.0.1:8800/life:0
+[    7305ms] [ERROR] EventSource's response has a MIME type ("text/html") that is not "text/event-stream". Aborting the connection. @ http://127.0.0.1:8800/life:0
+[   16360ms] [ERROR] EventSource's response has a MIME type ("text/html") that is not "text/event-stream". Aborting the connection. @ http://127.0.0.1:8800/life:0
+[   32362ms] [ERROR] EventSource's response has a MIME type ("text/html") that is not "text/event-stream". Aborting the connection. @ http://127.0.0.1:8800/life:0
+[   63220ms] [ERROR] EventSource's response has a MIME type ("text/html") that is not "text/event-stream". Aborting the connection. @ http://127.0.0.1:8800/life:0
+[   93907ms] [ERROR] EventSource's response has a MIME type ("text/html") that is not "text/event-stream". Aborting the connection. @ http://127.0.0.1:8800/life:0

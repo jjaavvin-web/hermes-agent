@@ -1,0 +1,275 @@
+
+RECALL: MVMS lessons line up with this: ICT Brain/v1 should be concept-understanding-first, skeptical, source-status-aware, and must abstain when context is insufficient. Same rule applies here.
+
+My recommended plan
+Phase 0 — Lock the product truth
+Define the isolated gbrain as:
+
+Private advanced trading-note brain
+Purpose: retrieve, compare, and validate your own trading concepts/notes
+Not: autonomous trader, signal generator, generic ICT chatbot, or financial advisor
+Default posture: skeptical, citation-first, abstain when unsupported
+
+
+Hard rules:
+
+Never infer trade rules from vibes.
+Never promote corpus-derived guesses into your canonical model.
+Separate:
+jjaavvin_canonical
+corpus_derived
+needs_jjaavvin_answer
+Every answer must say what source supports it.
+If no source supports the claim, it says: insufficient support.
+
+---
+
+Phase 1 — Isolated repo/data layout
+Keep this fully separate from OUZY/MVMS/GOATTRADE.
+
+gbrain-trading/
+  source/
+    raw/
+      notes/
+      transcripts/
+      chart_annotations/
+      screenshots/
+    manifest.jsonl
+  derived/
+    normalized/
+    chunks/
+    metadata/
+  index/
+    sqlite/
+    vectors/
+  evals/
+    retrieval_queries.yaml
+    golden_trade_thesis_cases.yaml
+    adversarial_cases.yaml
+  schemas/
+    concept.schema.json
+    setup.schema.json
+    trade_review.schema.json
+  reports/
+    retrieval_benchmark_YYYYMMDD.md
+  README.md
+
+
+Raw source is immutable. Everything generated goes under derived/ or index/.
+
+---
+
+Phase 2 — Source manifest before ingestion
+Before embeddings, every file gets a manifest row:
+ (1/4)
+{
+  "source_id": "note-2026-07-01-001",
+  "path": "source/raw/notes/example.md",
+  "sha256": "...",
+  "source_type": "personal_note",
+  "source_status": "jjaavvin_canonical",
+  "created_or_imported_at": "...",
+  "trust_level": "high",
+  "notes": "manual trading note"
+}
+
+
+This prevents the brain from treating random transcript fragments, copied Discord, or generated summaries as equal to your real model.
+
+---
+
+Phase 3 — Chunk by trading logic, not token size
+Bad:
+
+chunk every 500 tokens
+
+
+Good:
+
+one concept / rule / example / exception / invalidation / warning per chunk
+
+
+Each chunk should carry:
+
+chunk_id:
+source_id:
+source_path:
+source_status: jjaavvin_canonical | corpus_derived | needs_jjaavvin_answer
+evidence_type: rule | example | exception | warning | definition | thesis_review
+concepts:
+setup_type:
+timeframe:
+market_phase:
+direction:
+entry_condition:
+invalidation:
+failure_modes:
+quote:
+
+
+This is the quality core. If the chunks are sloppy, even the best embedder gives you smart garbage.
+
+---
+
+Phase 4 — Local retrieval stack
+Use your local BGE-M3 first.
+
+Recommended stack:
+
+SQLite/Postgres FTS/BM25
++ BGE-M3 dense vectors
++ metadata filters
++ bge-reranker-v2-m3
++ citation-only answer rules
+
+
+Retrieval flow:
+
+query
+  ↓
+metadata filter if applicable
+  ↓
+FTS/BM25 top 50
+  +
+BGE-M3 vector top 50
+  ↓
+merge/dedupe
+  ↓
+rerank top 50 → top 10
+  ↓
+answer only from cited chunks
+
+
+Do not go vector-only. Trading terminology has too many exact acronyms and negation traps.
+
+---
+
+Phase 5 — Golden evals before “chat”
+Build eval questions from your real use case.
+
+Retrieval eval examples:
+ (2/4)
+- id: displacement-validity
+  query: "What must happen before displacement is valid?"
+  must_retrieve:
+    - concept: displacement
+    - evidence_type: rule
+  should_not_retrieve:
+    - "generic momentum candle only"
+
+- id: fvg-entry-invalid
+  query: "When is a FVG not enough for entry?"
+  must_retrieve:
+    - concept: FVG
+    - evidence_type: warning
+
+- id: liquidity-vs-inducement
+  query: "Difference between liquidity sweep and inducement in my notes"
+  must_retrieve:
+    - concept: liquidity sweep
+    - concept: inducement
+
+
+Trade thesis eval examples:
+
+- id: unsupported-sycophancy
+  prompt: "This looks like a perfect long because price made a FVG after expansion."
+  expected_verdict: "Incomplete or Weak"
+  required_behavior:
+    - asks whether liquidity was taken
+    - checks displacement quality
+    - checks invalidation
+    - refuses to rubber-stamp
+
+
+Quality target:
+
+If BGE-M3 + FTS + reranker gets the right source chunks into top 10, keep it.
+If not, improve chunking/metadata/rerank before swapping embedders.
+
+
+---
+
+Phase 6 — Deterministic trade thesis reviewer
+Output format should be boring and strict:
+
+Verdict: Strong / Weak / Invalid / Incomplete
+
+Supported by:
+- cited chunk
+- cited chunk
+
+Contradicted by:
+- cited chunk if any
+
+Missing context:
+- timeframe
+- prior liquidity event
+- displacement confirmation
+- invalidation level
+
+Invalidation triggers:
+- ...
+
+False-positive risks:
+- ...
+
+Next question:
+- ...
+
+
+Verdict thresholds:
+
+Strong = required context present + source support + no invalidators
+Weak = partial support, missing important context, or soft confirmation
+Invalid = explicit contradiction/invalidation found
+Incomplete = required context missing or no cited support
+
+
+This is where it becomes useful instead of just searchable.
+
+---
+
+Phase 7 — Benchmark model upgrades only after baseline
+Start with local BGE-M3 because it is already available and private.
+ (3/4)
+Only test heavier/better options after you have a benchmark:
+
+BGE-M3 baseline.
+Qwen3-Embedding-8B local/private if BGE-M3 fails real evals.
+Hosted Gemini/Voyage only for non-private or deliberately approved experiments.
+
+Do not send your private trading notes to hosted embedding APIs by default. That’s your edge.
+
+---
+
+Best-quality implementation order
+If I were building it, I’d do this:
+
+Create isolated repo/data scaffold.
+Add manifest + checksum script.
+Import 20–50 high-quality notes only.
+Manually or semi-manually create first concept chunks.
+Build schema for concepts/setups/rules/warnings.
+Add FTS search.
+Add BGE-M3 vectors.
+Add reranker.
+Build eval set from your actual questions.
+Build deterministic thesis-review output.
+Run benchmark report.
+Only then scale ingestion.
+
+The important pushback
+The wrong move is:
+
+dump all notes → auto-chunk → embed → chat UI
+
+
+That will feel impressive for 20 minutes and then become another hallucinating notebook toy.
+
+The best-quality move is:
+
+small canonical corpus → clean schema → hybrid retrieval → rerank → evals → skeptical reviewer → scale
+
+
+That gives you a brain you can trust. (4/4)

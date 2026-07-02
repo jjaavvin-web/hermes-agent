@@ -1,0 +1,8 @@
+..                                                                       [100%]
+=============================== warnings summary ===============================
+tests/run_agent/test_exit_cleanup_interrupt.py::TestCronJobCleanup::test_keyboard_interrupt_in_end_session_does_not_skip_close
+  /home/josep/.local/share/hermes-agent/venv/lib/python3.11/site-packages/discord/player.py:30: DeprecationWarning: 'audioop' is deprecated and slated for removal in Python 3.13
+    import audioop
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+2 passed, 1 warning in 2.06s

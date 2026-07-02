@@ -8529,6 +8529,7 @@ _PENDING_INPUT_COMMANDS: frozenset[str] = frozenset(
         "steer",
         "plan",
         "goal",
+        "learn",
         "undo",
     }
 )
@@ -8916,6 +8917,17 @@ def _(rid, params: dict) -> dict:
             rid,
             {"type": "send", "notice": notice, "message": state.goal},
         )
+
+    if name == "learn":
+        from agent.learn_prompt import build_learn_prompt
+
+        message = build_learn_prompt(arg)
+        notice = (
+            "⚡ Learning a skill from what you described..."
+            if arg.strip()
+            else "⚡ Learning a skill from this conversation..."
+        )
+        return _ok(rid, {"type": "send", "notice": notice, "message": message})
 
     if name == "undo":
         # /undo [N]: back up N user turns (default 1), soft-delete the

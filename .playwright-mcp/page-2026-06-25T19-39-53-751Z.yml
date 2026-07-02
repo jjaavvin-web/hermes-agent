@@ -1,0 +1,152 @@
+- generic [ref=e3]:
+  - link "Skip to main content" [ref=e4] [cursor=pointer]:
+    - /url: "#main"
+  - banner [ref=e5]:
+    - button "Open navigation" [ref=e6] [cursor=pointer]:
+      - img [ref=e7]
+    - generic [ref=e8]: Hermes Agent
+  - generic [ref=e10]:
+    - complementary "Navigation" [ref=e11]:
+      - generic [ref=e12]:
+        - generic [ref=e14]:
+          - text: Hermes
+          - text: Agent
+        - button "Close navigation" [ref=e15] [cursor=pointer]:
+          - img [ref=e16]
+      - navigation "Navigation" [ref=e19]:
+        - list [ref=e20]:
+          - listitem [ref=e21]:
+            - link "Chat" [ref=e22] [cursor=pointer]:
+              - /url: /chat
+              - img [ref=e23]
+              - generic [ref=e25]: Chat
+          - listitem [ref=e26]:
+            - link "Sessions" [ref=e27] [cursor=pointer]:
+              - /url: /sessions
+              - img [ref=e28]
+              - generic [ref=e30]: Sessions
+          - listitem [ref=e31]:
+            - link "Files" [ref=e32] [cursor=pointer]:
+              - /url: /files
+              - img [ref=e33]
+              - generic [ref=e35]: Files
+          - listitem [ref=e36]:
+            - link "Cost" [ref=e37] [cursor=pointer]:
+              - /url: /cost
+              - img [ref=e38]
+              - generic [ref=e40]: Cost
+          - listitem [ref=e41]:
+            - link "Models" [ref=e42] [cursor=pointer]:
+              - /url: /models
+              - img [ref=e43]
+              - generic [ref=e46]: Models
+          - listitem [ref=e47]:
+            - link "Logs" [ref=e48] [cursor=pointer]:
+              - /url: /logs
+              - img [ref=e49]
+              - generic [ref=e52]: Logs
+          - listitem [ref=e53]:
+            - link "Cron" [ref=e54] [cursor=pointer]:
+              - /url: /cron
+              - img [ref=e55]
+              - generic [ref=e58]: Cron
+          - listitem [ref=e59]:
+            - link "Skills" [ref=e60] [cursor=pointer]:
+              - /url: /skills
+              - img [ref=e61]
+              - generic [ref=e65]: Skills
+          - listitem [ref=e66]:
+            - link "Explorer" [ref=e67] [cursor=pointer]:
+              - /url: /explorer
+              - img [ref=e68]
+              - generic [ref=e73]: Explorer
+          - listitem [ref=e74]:
+            - link "OS" [ref=e75] [cursor=pointer]:
+              - /url: /os
+              - img [ref=e76]
+              - generic [ref=e79]: OS
+          - listitem [ref=e80]:
+            - link "System Health" [ref=e81] [cursor=pointer]:
+              - /url: /nexus-health
+              - img [ref=e82]
+              - generic [ref=e84]: System Health
+          - listitem [ref=e85]:
+            - link "Learning" [ref=e86] [cursor=pointer]:
+              - /url: /learning
+              - img [ref=e87]
+              - generic [ref=e90]: Learning
+          - listitem [ref=e91]:
+            - link "Plugins" [ref=e92] [cursor=pointer]:
+              - /url: /plugins
+              - img [ref=e93]
+              - generic [ref=e95]: Plugins
+          - listitem [ref=e96]:
+            - link "MCP" [ref=e97] [cursor=pointer]:
+              - /url: /mcp
+              - img [ref=e98]
+              - generic [ref=e100]: MCP
+          - listitem [ref=e101]:
+            - link "Channels" [ref=e102] [cursor=pointer]:
+              - /url: /channels
+              - img [ref=e103]
+              - generic [ref=e109]: Channels
+          - listitem [ref=e110]:
+            - link "Webhooks" [ref=e111] [cursor=pointer]:
+              - /url: /webhooks
+              - img [ref=e112]
+              - generic [ref=e116]: Webhooks
+          - listitem [ref=e117]:
+            - link "Pairing" [ref=e118] [cursor=pointer]:
+              - /url: /pairing
+              - img [ref=e119]
+              - generic [ref=e122]: Pairing
+          - listitem [ref=e123]:
+            - link "Profiles" [ref=e124] [cursor=pointer]:
+              - /url: /profiles
+              - img [ref=e125]
+              - generic [ref=e130]: Profiles
+          - listitem [ref=e131]:
+            - link "Config" [ref=e132] [cursor=pointer]:
+              - /url: /config
+              - img [ref=e133]
+              - generic [ref=e136]: Config
+          - listitem [ref=e137]:
+            - link "Keys" [ref=e138] [cursor=pointer]:
+              - /url: /env
+              - img [ref=e139]
+              - generic [ref=e142]: Keys
+          - listitem [ref=e143]:
+            - link "System" [ref=e144] [cursor=pointer]:
+              - /url: /system
+              - img [ref=e145]
+              - generic [ref=e147]: System
+          - listitem [ref=e148]:
+            - link "Documentation" [ref=e149] [cursor=pointer]:
+              - /url: /docs
+              - img [ref=e150]
+              - generic [ref=e152]: Documentation
+      - generic [ref=e153]:
+        - generic [ref=e154]: System
+        - list [ref=e158]:
+          - listitem [ref=e159]:
+            - button "Restart Gateway" [ref=e160] [cursor=pointer]:
+              - img [ref=e161]
+              - generic [ref=e164]: Restart Gateway
+      - generic [ref=e166]:
+        - button "Switch theme" [ref=e169] [cursor=pointer]:
+          - generic [ref=e170]:
+            - img [ref=e171]
+            - generic [ref=e177]: Mono
+        - button "Switch language" [ref=e180] [cursor=pointer]:
+          - generic [ref=e182]: EN
+      - generic [ref=e183]:
+        - generic [ref=e184]: …
+        - generic [ref=e185]:
+          - generic [ref=e186]: —
+          - link "Nous Research" [ref=e187] [cursor=pointer]:
+            - /url: https://nousresearch.com
+    - generic [ref=e188]:
+      - banner [ref=e189]:
+        - heading "Sessions" [level=1] [ref=e192]
+      - main [ref=e193]:
+        - main [ref=e194]

@@ -91,6 +91,37 @@ def test_exporter_reads_state_db_mode_ro_and_journal_counts(tmp_path: Path):
     assert snapshot["recall"]["hit_rate"] == 0.5
 
 
+def test_auxiliary_title_generation_fallback_noise_is_separate_from_provider_fallback(tmp_path: Path):
+    db = tmp_path / "state.db"
+    make_state_db(db)
+    canary = tmp_path / "recall-canary.jsonl"
+    canary.write_text('{"ts": 1015, "target_hit": 1}\n', encoding="utf-8")
+    service = tmp_path / "recall-events.jsonl"
+
+    gateway_lines = [
+        "1970-01-01T00:16:50+00:00 host python[1]: title_generation fallback-chain fail-closed",
+        "1970-01-01T00:16:51+00:00 host python[1]: auxiliary fallback kept primary turn alive",
+        "1970-01-01T00:16:52+00:00 host python[1]: provider fallback triggered for openai-codex",
+    ]
+    snapshot = slo.build_slo_snapshot(
+        state_db=db,
+        output_dir=tmp_path,
+        now=1100.0,
+        window_seconds=500,
+        gateway_lines=gateway_lines,
+        watchdog_lines=[],
+        recall_canary_path=canary,
+        recall_service_path=service,
+    )
+
+    assert snapshot["turn_count"] == 3
+    assert snapshot["journal_counts"]["auxiliary_fallback_events"] == 2
+    assert snapshot["journal_counts"]["fallback_events"] == 1
+    assert snapshot["metrics"]["fallback_trigger_rate"] == 1 / 3
+    assert sum(bucket["auxiliary_fallback_events"] for bucket in snapshot["series"]) == 2
+    assert sum(bucket["fallback_events"] for bucket in snapshot["series"]) == 1
+
+
 def test_firecrawl_config_noise_excluded_real_500_still_counted(tmp_path: Path):
     # 2026-06-26: ~88% of the live 24h error numerator was repeating Firecrawl
     # plugin-init ERROR lines + "web tools are not configured" fragments — web-tool

@@ -1,0 +1,8 @@
+...                                                                      [100%]
+=============================== warnings summary ===============================
+tests/run_agent/test_background_review_toolset_restriction.py::test_background_review_matches_parent_toolset_config
+  /home/josep/.local/share/hermes-agent/venv/lib/python3.11/site-packages/discord/player.py:30: DeprecationWarning: 'audioop' is deprecated and slated for removal in Python 3.13
+    import audioop
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+3 passed, 1 warning in 1.12s

@@ -1,0 +1,186 @@
+........................................................................ [  0%]
+........................................................................ [  0%]
+........................................................................ [  1%]
+........................................................................ [  1%]
+........................................................................ [  2%]
+........................................................................ [  2%]
+........................................................................ [  3%]
+........................................................................ [  3%]
+........................................................................ [  4%]
+........................................................................ [  4%]
+........................................................................ [  5%]
+........................................................................ [  5%]
+........................................................................ [  6%]
+.............................F.......................................... [  6%]
+...................F.................................................... [  7%]
+........................................................................ [  7%]
+........................................................................ [  8%]
+........................................................................ [  8%]
+................................................................ss...s.. [  9%]
+........................................................................ [  9%]
+........................................................................ [ 10%]
+........................................................................ [ 10%]
+........................................................................ [ 11%]
+........................................................................ [ 11%]
+........................................................................ [ 12%]
+........................................................................ [ 12%]
+........................................................................ [ 13%]
+........................................................................ [ 13%]
+........................................................................ [ 14%]
+........................................................................ [ 14%]
+........................................................................ [ 15%]
+........................................................................ [ 15%]
+.....................................+++++++++++++++++++++++++++++++++++ Timeout ++++++++++++++++++++++++++++++++++++
+~~~~~~~~~~~~~~~~ Stack of AnyIO worker thread (126539240818368) ~~~~~~~~~~~~~~~~
+  File "/home/josep/.local/share/uv/python/cpython-3.11.15-linux-x86_64-gnu/lib/python3.11/threading.py", line 1002, in _bootstrap
+    self._bootstrap_inner()
+  File "/home/josep/.local/share/uv/python/cpython-3.11.15-linux-x86_64-gnu/lib/python3.11/threading.py", line 1045, in _bootstrap_inner
+    self.run()
+  File "/home/josep/.local/share/hermes-agent/venv/lib/python3.11/site-packages/anyio/_backends/_asyncio.py", line 1002, in run
+    result = context.run(func, *args)
+  File "/home/josep/.local/share/hermes-agent/hermes_cli/dashboard_codex_sessions.py", line 374, in git_graph
+    snap = _build_git_graph()
+  File "/home/josep/.local/share/hermes-agent/hermes_cli/dashboard_codex_sessions.py", line 517, in _build_git_graph
+    lane = _lane_for(wt, slug, "codex", s)
+  File "/home/josep/.local/share/hermes-agent/hermes_cli/dashboard_codex_sessions.py", line 439, in _lane_for
+    branch = _git(wt, "rev-parse", "--abbrev-ref", "HEAD") or "?"
+  File "/home/josep/.local/share/hermes-agent/hermes_cli/dashboard_codex_sessions.py", line 400, in _git
+    r = _sp.run(["git", "-C", wt, *args], capture_output=True, text=True, timeout=15)
+  File "/home/josep/.local/share/hermes-agent/tests/conftest.py", line 804, in _guarded
+    return real(cmd, *args, **kwargs)
+  File "/home/josep/.local/share/uv/python/cpython-3.11.15-linux-x86_64-gnu/lib/python3.11/subprocess.py", line 550, in run
+    stdout, stderr = process.communicate(input, timeout=timeout)
+  File "/home/josep/.local/share/uv/python/cpython-3.11.15-linux-x86_64-gnu/lib/python3.11/subprocess.py", line 1209, in communicate
+    stdout, stderr = self._communicate(input, endtime, timeout)
+  File "/home/josep/.local/share/uv/python/cpython-3.11.15-linux-x86_64-gnu/lib/python3.11/subprocess.py", line 2141, in _communicate
+    self.wait(timeout=self._remaining_time(endtime))
+  File "/home/josep/.local/share/uv/python/cpython-3.11.15-linux-x86_64-gnu/lib/python3.11/subprocess.py", line 1264, in wait
+    return self._wait(timeout=timeout)
+  File "/home/josep/.local/share/uv/python/cpython-3.11.15-linux-x86_64-gnu/lib/python3.11/subprocess.py", line 2047, in _wait
+    time.sleep(delay)
+~~~~~~~~~~~~~~~~~~~~~ Stack of asyncio_0 (126537913263808) ~~~~~~~~~~~~~~~~~~~~~
+  File "/home/josep/.local/share/uv/python/cpython-3.11.15-linux-x86_64-gnu/lib/python3.11/threading.py", line 1002, in _bootstrap
+    self._bootstrap_inner()
+  File "/home/josep/.local/share/uv/python/cpython-3.11.15-linux-x86_64-gnu/lib/python3.11/threading.py", line 1045, in _bootstrap_inner
+    self.run()
+  File "/home/josep/.local/share/uv/python/cpython-3.11.15-linux-x86_64-gnu/lib/python3.11/threading.py", line 982, in run
+    self._target(*self._args, **self._kwargs)
+  File "/home/josep/.local/share/uv/python/cpython-3.11.15-linux-x86_64-gnu/lib/python3.11/concurrent/futures/thread.py", line 81, in _worker
+    work_item = work_queue.get(block=True)
+~~~~~~~~~~~~ Stack of asyncio-portal-7316341ccad0 (126537904871104) ~~~~~~~~~~~~
+  File "/home/josep/.local/share/uv/python/cpython-3.11.15-linux-x86_64-gnu/lib/python3.11/threading.py", line 1002, in _bootstrap
+    self._bootstrap_inner()
+  File "/home/josep/.local/share/uv/python/cpython-3.11.15-linux-x86_64-gnu/lib/python3.11/threading.py", line 1045, in _bootstrap_inner
+    self.run()
+  File "/home/josep/.local/share/uv/python/cpython-3.11.15-linux-x86_64-gnu/lib/python3.11/threading.py", line 982, in run
+    self._target(*self._args, **self._kwargs)
+  File "/home/josep/.local/share/hermes-agent/venv/lib/python3.11/site-packages/anyio/from_thread.py", line 532, in run_blocking_portal
+    run_eventloop(
+  File "/home/josep/.local/share/hermes-agent/venv/lib/python3.11/site-packages/anyio/_core/_eventloop.py", line 77, in run
+    return async_backend.run(func, args, {}, backend_options)
+  File "/home/josep/.local/share/hermes-agent/venv/lib/python3.11/site-packages/anyio/_backends/_asyncio.py", line 2358, in run
+    return runner.run(wrapper())
+  File "/home/josep/.local/share/uv/python/cpython-3.11.15-linux-x86_64-gnu/lib/python3.11/asyncio/runners.py", line 118, in run
+    return self._loop.run_until_complete(task)
+  File "/home/josep/.local/share/uv/python/cpython-3.11.15-linux-x86_64-gnu/lib/python3.11/asyncio/base_events.py", line 641, in run_until_complete
+    self.run_forever()
+  File "/home/josep/.local/share/uv/python/cpython-3.11.15-linux-x86_64-gnu/lib/python3.11/asyncio/base_events.py", line 608, in run_forever
+    self._run_once()
+  File "/home/josep/.local/share/uv/python/cpython-3.11.15-linux-x86_64-gnu/lib/python3.11/asyncio/base_events.py", line 1898, in _run_once
+    event_list = self._selector.select(timeout)
+  File "/home/josep/.local/share/uv/python/cpython-3.11.15-linux-x86_64-gnu/lib/python3.11/selectors.py", line 468, in select
+    fd_event_list = self._selector.poll(timeout, max_ev)
+~~~~~~~~~~~~~~~~~~~~ Stack of MainThread (126539725961024) ~~~~~~~~~~~~~~~~~~~~~
+  File "<frozen runpy>", line 198, in _run_module_as_main
+  File "<frozen runpy>", line 88, in _run_code
+  File "/home/josep/.local/share/hermes-agent/venv/lib/python3.11/site-packages/pytest/__main__.py", line 9, in <module>
+    raise SystemExit(pytest.console_main())
+  File "/home/josep/.local/share/hermes-agent/venv/lib/python3.11/site-packages/_pytest/config/__init__.py", line 223, in console_main
+    code = main()
+  File "/home/josep/.local/share/hermes-agent/venv/lib/python3.11/site-packages/_pytest/config/__init__.py", line 199, in main
+    ret: ExitCode | int = config.hook.pytest_cmdline_main(config=config)
+  File "/home/josep/.local/share/hermes-agent/venv/lib/python3.11/site-packages/pluggy/_hooks.py", line 512, in __call__
+    return self._hookexec(self.name, self._hookimpls.copy(), kwargs, firstresult)
+  File "/home/josep/.local/share/hermes-agent/venv/lib/python3.11/site-packages/pluggy/_manager.py", line 120, in _hookexec
+    return self._inner_hookexec(hook_name, methods, kwargs, firstresult)
+  File "/home/josep/.local/share/hermes-agent/venv/lib/python3.11/site-packages/pluggy/_callers.py", line 121, in _multicall
+    res = hook_impl.function(*args)
+  File "/home/josep/.local/share/hermes-agent/venv/lib/python3.11/site-packages/_pytest/main.py", line 365, in pytest_cmdline_main
+    return wrap_session(config, _main)
+  File "/home/josep/.local/share/hermes-agent/venv/lib/python3.11/site-packages/_pytest/main.py", line 318, in wrap_session
+    session.exitstatus = doit(config, session) or 0
+  File "/home/josep/.local/share/hermes-agent/venv/lib/python3.11/site-packages/_pytest/main.py", line 372, in _main
+    config.hook.pytest_runtestloop(session=session)
+  File "/home/josep/.local/share/hermes-agent/venv/lib/python3.11/site-packages/pluggy/_hooks.py", line 512, in __call__
+    return self._hookexec(self.name, self._hookimpls.copy(), kwargs, firstresult)
+  File "/home/josep/.local/share/hermes-agent/venv/lib/python3.11/site-packages/pluggy/_manager.py", line 120, in _hookexec
+    return self._inner_hookexec(hook_name, methods, kwargs, firstresult)
+  File "/home/josep/.local/share/hermes-agent/venv/lib/python3.11/site-packages/pluggy/_callers.py", line 121, in _multicall
+    res = hook_impl.function(*args)
+  File "/home/josep/.local/share/hermes-agent/venv/lib/python3.11/site-packages/_pytest/main.py", line 396, in pytest_runtestloop
+    item.config.hook.pytest_runtest_protocol(item=item, nextitem=nextitem)
+  File "/home/josep/.local/share/hermes-agent/venv/lib/python3.11/site-packages/pluggy/_hooks.py", line 512, in __call__
+    return self._hookexec(self.name, self._hookimpls.copy(), kwargs, firstresult)
+  File "/home/josep/.local/share/hermes-agent/venv/lib/python3.11/site-packages/pluggy/_manager.py", line 120, in _hookexec
+    return self._inner_hookexec(hook_name, methods, kwargs, firstresult)
+  File "/home/josep/.local/share/hermes-agent/venv/lib/python3.11/site-packages/pluggy/_callers.py", line 121, in _multicall
+    res = hook_impl.function(*args)
+  File "/home/josep/.local/share/hermes-agent/venv/lib/python3.11/site-packages/_pytest/runner.py", line 118, in pytest_runtest_protocol
+    runtestprotocol(item, nextitem=nextitem)
+  File "/home/josep/.local/share/hermes-agent/venv/lib/python3.11/site-packages/_pytest/runner.py", line 137, in runtestprotocol
+    reports.append(call_and_report(item, "call", log))
+  File "/home/josep/.local/share/hermes-agent/venv/lib/python3.11/site-packages/_pytest/runner.py", line 244, in call_and_report
+    call = CallInfo.from_call(
+  File "/home/josep/.local/share/hermes-agent/venv/lib/python3.11/site-packages/_pytest/runner.py", line 353, in from_call
+    result: TResult | None = func()
+  File "/home/josep/.local/share/hermes-agent/venv/lib/python3.11/site-packages/_pytest/runner.py", line 245, in <lambda>
+    lambda: runtest_hook(item=item, **kwds),
+  File "/home/josep/.local/share/hermes-agent/venv/lib/python3.11/site-packages/pluggy/_hooks.py", line 512, in __call__
+    return self._hookexec(self.name, self._hookimpls.copy(), kwargs, firstresult)
+  File "/home/josep/.local/share/hermes-agent/venv/lib/python3.11/site-packages/pluggy/_manager.py", line 120, in _hookexec
+    return self._inner_hookexec(hook_name, methods, kwargs, firstresult)
+  File "/home/josep/.local/share/hermes-agent/venv/lib/python3.11/site-packages/pluggy/_callers.py", line 121, in _multicall
+    res = hook_impl.function(*args)
+  File "/home/josep/.local/share/hermes-agent/venv/lib/python3.11/site-packages/_pytest/runner.py", line 179, in pytest_runtest_call
+    item.runtest()
+  File "/home/josep/.local/share/hermes-agent/venv/lib/python3.11/site-packages/_pytest/python.py", line 1720, in runtest
+    self.ihook.pytest_pyfunc_call(pyfuncitem=self)
+  File "/home/josep/.local/share/hermes-agent/venv/lib/python3.11/site-packages/pluggy/_hooks.py", line 512, in __call__
+    return self._hookexec(self.name, self._hookimpls.copy(), kwargs, firstresult)
+  File "/home/josep/.local/share/hermes-agent/venv/lib/python3.11/site-packages/pluggy/_manager.py", line 120, in _hookexec
+    return self._inner_hookexec(hook_name, methods, kwargs, firstresult)
+  File "/home/josep/.local/share/hermes-agent/venv/lib/python3.11/site-packages/pluggy/_callers.py", line 121, in _multicall
+    res = hook_impl.function(*args)
+  File "/home/josep/.local/share/hermes-agent/venv/lib/python3.11/site-packages/_pytest/python.py", line 166, in pytest_pyfunc_call
+    result = testfunction(**testargs)
+  File "/home/josep/.local/share/hermes-agent/tests/hermes_cli/test_dashboard_smoke.py", line 135, in test_dashboard_smoke_enumerates_full_app_and_probes_all_api_get_routes
+    report = dashboard_smoke.run_dashboard_smoke(
+  File "/home/josep/.local/share/hermes-agent/hermes_cli/dashboard_smoke.py", line 797, in run_dashboard_smoke
+    probe = probe_get_route(client, route, path=path, headers=headers)
+  File "/home/josep/.local/share/hermes-agent/hermes_cli/dashboard_smoke.py", line 650, in probe_get_route
+    response = client.get(path, headers=dict(headers))
+  File "/home/josep/.local/share/hermes-agent/venv/lib/python3.11/site-packages/starlette/testclient.py", line 482, in get
+    return super().get(
+  File "/home/josep/.local/share/hermes-agent/venv/lib/python3.11/site-packages/httpx/_client.py", line 1053, in get
+    return self.request(
+  File "/home/josep/.local/share/hermes-agent/venv/lib/python3.11/site-packages/starlette/testclient.py", line 454, in request
+    return super().request(
+  File "/home/josep/.local/share/hermes-agent/venv/lib/python3.11/site-packages/httpx/_client.py", line 825, in request
+    return self.send(request, auth=auth, follow_redirects=follow_redirects)
+  File "/home/josep/.local/share/hermes-agent/venv/lib/python3.11/site-packages/httpx/_client.py", line 914, in send
+    response = self._send_handling_auth(
+  File "/home/josep/.local/share/hermes-agent/venv/lib/python3.11/site-packages/httpx/_client.py", line 942, in _send_handling_auth
+    response = self._send_handling_redirects(
+  File "/home/josep/.local/share/hermes-agent/venv/lib/python3.11/site-packages/httpx/_client.py", line 979, in _send_handling_redirects
+    response = self._send_single_request(request)
+  File "/home/josep/.local/share/hermes-agent/venv/lib/python3.11/site-packages/httpx/_client.py", line 1014, in _send_single_request
+    response = transport.handle_request(request)
+  File "/home/josep/.local/share/hermes-agent/venv/lib/python3.11/site-packages/starlette/testclient.py", line 353, in handle_request
+    portal.call(self.app, scope, receive, send)
+  File "/home/josep/.local/share/hermes-agent/venv/lib/python3.11/site-packages/anyio/from_thread.py", line 334, in call
+    return cast(T_Retval, self.start_task_soon(func, *args).result())
+  File "/home/josep/.local/share/uv/python/cpython-3.11.15-linux-x86_64-gnu/lib/python3.11/concurrent/futures/_base.py", line 451, in result
+    self._condition.wait(timeout)
+  File "/home/josep/.local/share/uv/python/cpython-3.11.15-linux-x86_64-gnu/lib/python3.11/threading.py", line 327, in wait
+    waiter.acquire()
++++++++++++++++++++++++++++++++++++ Timeout ++++++++++++++++++++++++++++++++++++
