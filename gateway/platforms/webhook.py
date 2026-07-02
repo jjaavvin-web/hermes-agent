@@ -38,7 +38,7 @@ import re
 import subprocess
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 try:
     from aiohttp import web
@@ -181,6 +181,7 @@ class WebhookAdapter(BasePlatformAdapter):
             {"gateway": {"max_concurrent_agent_runs": config.extra.get("max_concurrent_agent_runs")}}
         )
         self._agent_run_semaphore = _get_agent_run_semaphore(self._max_concurrent_agent_runs)
+        self._run_finalizers: Dict[str, Callable[[], None]] = {}
 
         # Body size limit (auth-before-body pattern)
         self._max_body_bytes: int = int(
@@ -199,6 +200,66 @@ class WebhookAdapter(BasePlatformAdapter):
         self._wt_branch: str = "relay/work"
         self._wt_path: Optional[str] = None   # set lazily by _ensure_relay_worktree()
         self._wt_init_failed: bool = False    # latched so we refuse, not retry-spam
+
+    def _build_session_key(self, source) -> str:
+        """Return the webhook run/session correlation key for a source."""
+        from gateway.session import build_session_key
+
+        extra = getattr(self.config, "extra", {}) or {}
+        return build_session_key(
+            source,
+            group_sessions_per_user=extra.get("group_sessions_per_user", True),
+            thread_sessions_per_user=extra.get("thread_sessions_per_user", False),
+        )
+
+    def _run_finalizer_key(self, event: MessageEvent) -> str:
+        """Return the key used to register and complete a webhook agent run."""
+        return self._build_session_key(event.source)
+
+    def _register_run_finalizer(self, event: MessageEvent, approval_key: Optional[str]) -> str:
+        """Register once-only run cleanup keyed by the event's session key."""
+        key = self._run_finalizer_key(event)
+
+        def _finalizer() -> None:
+            try:
+                from tools.approval import (
+                    clear_session,
+                    clear_session_credential_taint,
+                )
+                if approval_key:
+                    clear_session(approval_key)
+                    # Drop any two-step credential-stage taint accrued during
+                    # this dispatch so it cannot bleed into a reused key.
+                    clear_session_credential_taint(approval_key)
+            except Exception:
+                logger.debug(
+                    "[webhook] failed to clear deny_terminal_patterns for key=%s",
+                    key,
+                    exc_info=True,
+                )
+            finally:
+                if self._agent_run_semaphore._value < self._max_concurrent_agent_runs:
+                    self._agent_run_semaphore.release()
+                else:
+                    logger.warning(
+                        "[webhook] skipped over-release for finalized run key=%s",
+                        key,
+                    )
+
+        self._run_finalizers[key] = _finalizer
+        return key
+
+    def _finalize_run(self, key: str) -> None:
+        """Run and remove a registered webhook finalizer exactly once."""
+        finalizer = self._run_finalizers.pop(key, None)
+        if finalizer is None:
+            return
+        finalizer()
+
+    async def on_processing_complete(self, event: MessageEvent, outcome: Any) -> None:
+        """Release webhook run backpressure after the spawned agent task ends."""
+        self._finalize_run(self._run_finalizer_key(event))
+        await super().on_processing_complete(event, outcome)
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -724,21 +785,15 @@ class WebhookAdapter(BasePlatformAdapter):
         # The key is computed with the SAME build_session_key call the dispatcher
         # uses (gateway/platforms/base.py), so the approval contextvar key at
         # tool-exec time matches this registration and the deny actually fires.
-        # Cleared at end-of-run in the agent-task finally block below.
+        # Cleared at end-of-run from on_processing_complete.
         _approval_key: Optional[str] = None
         try:
-            from gateway.session import build_session_key
             from tools.approval import register_session_deny_patterns
             _deny_patterns = list(DEFAULT_WEBHOOK_DENY_PATTERNS)
             _route_deny = route_config.get("deny_terminal_patterns")
             if isinstance(_route_deny, list):
                 _deny_patterns.extend(str(p) for p in _route_deny)
-            _extra = getattr(self.config, "extra", {}) or {}
-            _approval_key = build_session_key(
-                source,
-                group_sessions_per_user=_extra.get("group_sessions_per_user", True),
-                thread_sessions_per_user=_extra.get("thread_sessions_per_user", False),
-            )
+            _approval_key = self._build_session_key(source)
             register_session_deny_patterns(_approval_key, _deny_patterns)
         except Exception:
             # Fail loud but do not crash the dispatch — prompt-level guards remain
@@ -809,6 +864,7 @@ class WebhookAdapter(BasePlatformAdapter):
         await self._agent_run_semaphore.acquire()
 
         async def _run_with_backpressure() -> None:
+            _finalizer_key = self._register_run_finalizer(event, _approval_key)
             try:
                 # Phase 3: when HERMES_WEBHOOK_WORKTREE is on, bind the run to the relay
                 # git worktree so it works on a branch, not the live tree. If a worktree
@@ -824,24 +880,13 @@ class WebhookAdapter(BasePlatformAdapter):
                         reset_active_worktree(_tok)
                 else:
                     await self.handle_message(event)
+            except Exception:
+                self._finalize_run(_finalizer_key)
+                raise
             finally:
-                try:
-                    from tools.approval import (
-                        clear_session,
-                        clear_session_credential_taint,
-                    )
-                    if _approval_key:
-                        clear_session(_approval_key)
-                        # Drop any two-step credential-stage taint accrued during
-                        # this dispatch so it cannot bleed into a reused key.
-                        clear_session_credential_taint(_approval_key)
-                except Exception:
-                    logger.debug(
-                        "[webhook] failed to clear deny_terminal_patterns for route=%s",
-                        route_name,
-                        exc_info=True,
-                    )
-                self._agent_run_semaphore.release()
+                # handle_message returns at spawn; run-end finalization is owned by on_processing_complete.
+                if _finalizer_key in self._run_finalizers and _finalizer_key not in self._session_tasks:
+                    self._finalize_run(_finalizer_key)
 
         # Phase 3 worktree preflight must happen after capacity acquisition but
         # before task creation; release the slot if setup refuses the run.
