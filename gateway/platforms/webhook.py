@@ -781,27 +781,29 @@ class WebhookAdapter(BasePlatformAdapter):
             user_name=route_name,
         )
 
-        # Register server-side push/PR/merge denial for THIS dispatched session.
-        # The key is computed with the SAME build_session_key call the dispatcher
-        # uses (gateway/platforms/base.py), so the approval contextvar key at
-        # tool-exec time matches this registration and the deny actually fires.
-        # Cleared at end-of-run from on_processing_complete.
-        _approval_key: Optional[str] = None
-        try:
-            from tools.approval import register_session_deny_patterns
-            _deny_patterns = list(DEFAULT_WEBHOOK_DENY_PATTERNS)
-            _route_deny = route_config.get("deny_terminal_patterns")
-            if isinstance(_route_deny, list):
-                _deny_patterns.extend(str(p) for p in _route_deny)
-            _approval_key = self._build_session_key(source)
-            register_session_deny_patterns(_approval_key, _deny_patterns)
-        except Exception:
-            # Fail loud but do not crash the dispatch — prompt-level guards remain
-            # as defense-in-depth if server-side registration somehow fails.
-            logger.exception(
-                "[webhook] failed to register deny_terminal_patterns for route=%s",
-                route_name,
-            )
+        def _register_approval_rails() -> Optional[str]:
+            """Register push/PR/merge denial only for runs accepted for spawn."""
+            # The key is computed with the SAME build_session_key call the dispatcher
+            # uses (gateway/platforms/base.py), so the approval contextvar key at
+            # tool-exec time matches this registration and the deny actually fires.
+            # Cleared at true end-of-run from on_processing_complete.
+            try:
+                from tools.approval import register_session_deny_patterns
+                _deny_patterns = list(DEFAULT_WEBHOOK_DENY_PATTERNS)
+                _route_deny = route_config.get("deny_terminal_patterns")
+                if isinstance(_route_deny, list):
+                    _deny_patterns.extend(str(p) for p in _route_deny)
+                _approval_key = self._build_session_key(source)
+                register_session_deny_patterns(_approval_key, _deny_patterns)
+                return _approval_key
+            except Exception:
+                # Fail loud but do not crash the dispatch — prompt-level guards remain
+                # as defense-in-depth if server-side registration somehow fails.
+                logger.exception(
+                    "[webhook] failed to register deny_terminal_patterns for route=%s",
+                    route_name,
+                )
+                return None
 
         # DISP-5: arm the unconditional push/PR/workflow floor for THIS dispatch.
         # mark_autonomous_dispatch() sets a contextvar that asyncio.create_task()
@@ -863,7 +865,28 @@ class WebhookAdapter(BasePlatformAdapter):
             )
         await self._agent_run_semaphore.acquire()
 
+        # Phase 3 worktree preflight must happen after capacity acquisition but
+        # before task creation; release the slot if setup refuses the run.
+        _wt_for_run: Optional[str] = None
+        if self._wt_enabled:
+            _wt_for_run = await asyncio.to_thread(self._ensure_relay_worktree)
+            if _wt_for_run is None:
+                self._agent_run_semaphore.release()
+                self._seen_deliveries.pop(delivery_id, None)
+                logger.error(
+                    "[webhook] relay worktree unavailable; refusing run route=%s delivery=%s",
+                    route_name, delivery_id,
+                )
+                return web.json_response(
+                    {"status": "error", "error": "worktree_unavailable",
+                     "delivery_id": delivery_id},
+                    status=503,
+                )
+
         async def _run_with_backpressure() -> None:
+            # All pre-spawn refusal gates have passed; only now bind approval
+            # rails to this accepted run, using the same key finalization clears.
+            _approval_key = _register_approval_rails()
             _finalizer_key = self._register_run_finalizer(event, _approval_key)
             try:
                 # Phase 3: when HERMES_WEBHOOK_WORKTREE is on, bind the run to the relay
@@ -887,24 +910,6 @@ class WebhookAdapter(BasePlatformAdapter):
                 # handle_message returns at spawn; run-end finalization is owned by on_processing_complete.
                 if _finalizer_key in self._run_finalizers and _finalizer_key not in self._session_tasks:
                     self._finalize_run(_finalizer_key)
-
-        # Phase 3 worktree preflight must happen after capacity acquisition but
-        # before task creation; release the slot if setup refuses the run.
-        _wt_for_run: Optional[str] = None
-        if self._wt_enabled:
-            _wt_for_run = await asyncio.to_thread(self._ensure_relay_worktree)
-            if _wt_for_run is None:
-                self._agent_run_semaphore.release()
-                self._seen_deliveries.pop(delivery_id, None)
-                logger.error(
-                    "[webhook] relay worktree unavailable; refusing run route=%s delivery=%s",
-                    route_name, delivery_id,
-                )
-                return web.json_response(
-                    {"status": "error", "error": "worktree_unavailable",
-                     "delivery_id": delivery_id},
-                    status=503,
-                )
 
         task = asyncio.create_task(_run_with_backpressure())
         self._background_tasks.add(task)
