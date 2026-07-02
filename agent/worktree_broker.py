@@ -56,6 +56,7 @@ _LOCK_TYPE_FILES = [
 
 _SLUG_INVALID_RE = re.compile(r"[^a-z0-9-]+")
 _SLUG_REPEAT_DASH_RE = re.compile(r"-+")
+_IDENTITY_PATH_INVALID_RE = re.compile(r"[^A-Za-z0-9._-]+")
 
 
 def slugify_ref(value: str, *, fallback: str = "task", max_len: int = 40) -> str:
@@ -80,6 +81,7 @@ class Worktree:
     created_at: datetime
     lock_type: str | None = field(default=None)  # pnpm | npm | yarn | None
     base_sha: str | None = None
+    identity: str | None = None
 
 
 @dataclass
@@ -155,10 +157,14 @@ class WorktreeBroker:
                     wt_path = Path(str(entry.get("path", self._wt_root / sid)))
                     branch = str(entry.get("branch") or f"{self.branch_prefix}/{sid}/unknown")
                     base_sha = entry.get("base_sha") or entry.get("base")
+                    identity = entry.get("identity")
                 else:
                     wt_path = Path(entry)
                     branch = f"{self.branch_prefix}/{sid}/unknown"
                     base_sha = None
+                    identity = None
+                if identity is None:
+                    identity = self._read_identity(session_id=sid)
                 self._registry[sid] = Worktree(
                     session_id=sid,
                     path=wt_path,
@@ -166,6 +172,7 @@ class WorktreeBroker:
                     port=None,
                     created_at=datetime.now(timezone.utc),
                     base_sha=str(base_sha) if base_sha else None,
+                    identity=str(identity) if identity is not None else None,
                 )
 
         # Ensure the worktree root exists (no-op if already present).
@@ -190,6 +197,7 @@ class WorktreeBroker:
         base_branch: str = "origin/main",
         branch_name: str | None = None,
         base_sha: str | None = None,
+        identity: str | None = None,
     ) -> Worktree:
         """Create a git worktree and claim a port for the given session."""
         # Step 1: disk-pressure check
@@ -208,7 +216,13 @@ class WorktreeBroker:
 
         # Step 2: idempotency check
         if session_id in self._registry:
-            return self._registry[session_id]
+            wt = self._registry[session_id]
+            if identity is not None and wt.identity != identity:
+                raise BranchCollisionError(
+                    f"Session {session_id} already has a lease for a different identity. "
+                    "Refusing to share a worktree."
+                )
+            return wt
 
         if (
             self.max_active_leases is not None
@@ -225,6 +239,12 @@ class WorktreeBroker:
         branch = branch_name or f"{self.branch_prefix}/{session_id}/{isa_slug}"
         wt_path = self._wt_root / session_id
         if wt_path.is_dir():
+            stored_identity = self._read_identity(session_id=session_id)
+            if identity is not None and stored_identity != identity:
+                raise BranchCollisionError(
+                    f"Worktree {wt_path} already exists for a different or unknown identity. "
+                    "Refusing to share a worktree."
+                )
             wt = Worktree(
                 session_id=session_id,
                 path=wt_path,
@@ -233,6 +253,7 @@ class WorktreeBroker:
                 created_at=datetime.now(timezone.utc),
                 lock_type=self._detect_lock_type(wt_path),
                 base_sha=base_sha,
+                identity=stored_identity if stored_identity is not None else identity,
             )
             self._registry[session_id] = wt
             return wt
@@ -296,8 +317,10 @@ class WorktreeBroker:
             created_at=datetime.now(timezone.utc),
             lock_type=lock_type,
             base_sha=base_sha,
+            identity=identity,
         )
         self._registry[session_id] = wt
+        self._write_identity(session_id=session_id, identity=identity)
         return wt
 
     def release(self, session_id: str) -> None:
@@ -355,6 +378,7 @@ class WorktreeBroker:
         # Step 4: free port
         if self.ports_enabled:
             self._free_port(session_id)
+        self._remove_identity(session_id=session_id)
 
         # Step 5: remove from registry (if it was there)
         self._registry.pop(session_id, None)
@@ -390,6 +414,7 @@ class WorktreeBroker:
 
         if self.ports_enabled:
             self._free_port(session_id)
+        self._remove_identity(session_id=session_id)
         self._registry.pop(session_id, None)
         return outcome
 
@@ -529,6 +554,34 @@ class WorktreeBroker:
             ["git", "-C", str(self.repo_root), *args],
             capture_output=True, text=True, check=False,
         )
+
+    def _identity_path(self, *, session_id: str) -> Path:
+        safe_sid = _IDENTITY_PATH_INVALID_RE.sub("_", session_id).strip("._") or "session"
+        return self.hermes_home / "state" / "worktree-broker-identities" / f"{safe_sid}.json"
+
+    def _read_identity(self, *, session_id: str) -> str | None:
+        path = self._identity_path(session_id=session_id)
+        if not path.exists():
+            return None
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return None
+        identity = data.get("identity") if isinstance(data, dict) else None
+        return str(identity) if identity is not None else None
+
+    def _write_identity(self, *, session_id: str, identity: str | None) -> None:
+        if identity is None:
+            return
+        path = self._identity_path(session_id=session_id)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({"identity": identity}, sort_keys=True), encoding="utf-8")
+
+    def _remove_identity(self, *, session_id: str) -> None:
+        try:
+            self._identity_path(session_id=session_id).unlink(missing_ok=True)
+        except OSError:
+            log.debug("failed to remove worktree identity for %s", session_id, exc_info=True)
 
     def _disk_free_bytes(self) -> int:
         """df -P hermes_home; parse 'Available' column; return bytes."""
