@@ -608,3 +608,27 @@ def test_hydrate_per_delivery_sessions_keeps_wh_and_loki_double_filter():
     block = src[start:end]
     assert 'child.name.startswith("wh-")' in block, "hydration lost wh-* path filter"
     assert 'branch.startswith("loki/")' in block, "hydration lost loki/* branch filter"
+
+
+def test_f4_fail_closed_binding_guards_survive_merge():
+    """F4 merge invariant: rail-review remediation guards must not silently revert."""
+    src = _read("gateway/platforms/webhook.py")
+    assert "def _refuse_worktree_lease" in src, "refused lease helper dropped"
+    assert "def _lookup_live_session_entry" in src, "live-session lookup guard dropped"
+    assert "def _live_session_entries" in src, "live-session scan helper dropped"
+    assert "_LIVE_SESSION_SCAN_FAILED" in src, "live-session scan fail-closed marker dropped"
+    assert "F1 fail-closed marker" in src, "live-session scan fail-closed source marker dropped"
+    assert "_alternate_profile_session_keys" in src, "dual-key profile namespace lookup dropped"
+    assert "self._verify_per_delivery_adoption(" in src, "adoption verification call site dropped"
+    assert "asyncio.create_task(_run_with_backpressure())" in src, "webhook create_task call site changed"
+    verify_at = src.find("self._verify_per_delivery_adoption(")
+    create_task_at = src.find("asyncio.create_task(_run_with_backpressure())")
+    assert verify_at != -1 and create_task_at != -1 and verify_at < create_task_at, \
+        "per-delivery adoption guard must run before create_task"
+    for reason in (
+        "adoption_mismatch",
+        "hydrate_live_binding_mismatch",
+        "hydrate_scan_failure",
+        "post_allocation_exception",
+    ):
+        assert reason in src, f"F4 refused reason dropped: {reason}"
