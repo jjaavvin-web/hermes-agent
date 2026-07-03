@@ -6,6 +6,7 @@ outside this API's scope.
 """
 from __future__ import annotations
 
+import re
 import threading
 import time
 from datetime import datetime, timezone
@@ -106,13 +107,13 @@ SYSTEM_SOURCE_MAP: dict[str, tuple[str, str]] = {
     "system:providers/chatgpt": ("os", "providers/codex_pipeline_load"),
     "system:providers/claude-max": ("os", "providers/claude_cli"),
     "system:providers/openrouter": ("os", "providers/openrouter_key"),
-    "system:ingest/ict-brain": ("os", "memory_stores/mvms_observations"),
-    "system:ingest/opus-extractor": ("os", "providers/claude_cli"),
-    "system:ingest/x_search": ("os", "providers/openrouter_key"),
+    "system:ingest/ict-brain": ("os", "graph/ict-brain"),
+    "system:ingest/opus-extractor": ("os", "graph/opus_extractor"),
+    "system:ingest/x_search": ("os", "graph/x_search"),
     "system:protection/nightly-backup": ("os", "backups/mvms-canonical-*.sql.gz"),
     "system:protection/backups-dir": ("os", "backups/hermes-app-state-*.tar.gz"),
     "system:protection/veracrypt": ("os", "backups/veracrypt_weekly"),
-    "system:protection/compactor": ("os", "systemd/timers_disabled_by_design"),
+    "system:protection/compactor": ("os", "graph/mvms-compactor"),
     "system:protection/offbox": ("os", "backups/mvms-backup-gap-offbox"),
     "system:learning/learning-verify": ("os", "infra/evals"),
     "system:learning/distiller": ("os", "memory_stores/mvms_observations"),
@@ -124,8 +125,6 @@ SYSTEM_SOURCE_MAP: dict[str, tuple[str, str]] = {
     "system:git/lane-runs": ("connectome", "lanes"),
     "system:host/wsl": ("os", "host/wsl_uptime"),
 }
-
-NON_DONOR_DEGRADED_REASONS: list[str] = []
 
 HONESTY_CAPS: dict[str, tuple[str, str]] = {
     "system:providers/claude-max": ("cap", "manual"),
@@ -241,6 +240,14 @@ def _unknown_truth(object_id: str, generated_at: str, reason: str) -> dict[str, 
 
 
 def _resolve_selector(snapshot: dict[str, Any], donor: str, path: str) -> dict[str, Any] | None:
+    if path.startswith("graph/"):
+        node_id = path.split("/", 1)[1]
+        node_sets = [snapshot.get("nodes", []), (snapshot.get("graph") or {}).get("nodes", [])]
+        for nodes in node_sets:
+            found = next((node for node in nodes if node.get("id") == node_id), None)
+            if found is not None:
+                return found
+        return None
     if donor == "os":
         section_id, item_name = path.split("/", 1)
         for section in snapshot.get("sections", []):
@@ -254,9 +261,9 @@ def _resolve_selector(snapshot: dict[str, Any], donor: str, path: str) -> dict[s
 
 def _status_to_state(donor: str, status: str) -> tuple[str, str | None]:
     if donor == "os":
-        mapping = {"green": "live", "amber": "stale", "red": "broken", "unknown": "unknown", "info": "unknown"}
+        mapping = {"green": "live", "amber": "stale", "red": "broken", "unknown": "unknown"}
     else:
-        mapping = {"ok": "live", "active": "live", "degraded": "stale", "blocked": "broken", "source unreachable": "broken", "unknown": "unknown", "not-serving": "stale", "completed": "live", "serving": "live"}
+        mapping = {"ok": "live", "active": "live", "degraded": "stale", "blocked": "broken", "source unreachable": "broken", "unknown": "unknown"}
     if status in mapping:
         return mapping[status], None
     return "unknown", f"unmapped-status:{status}"
@@ -277,12 +284,82 @@ def _donor_evidence(donor: str, path: str, selector: dict[str, Any]) -> list[str
     return [f"donor:os:{path}:{_detail_from_selector(selector)}"]
 
 
-def _freshness_from_selector(selector: dict[str, Any]) -> float:
+def _parse_iso_datetime(value: Any) -> datetime | None:
+    if not isinstance(value, str) or not value.strip():
+        return None
+    text = value.strip()
+    if text.endswith("Z"):
+        text = f"{text[:-1]}+00:00"
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = datetime.combine(parsed.date(), parsed.time(), tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _age_from_datetime(value: Any, generated_at: str) -> float | None:
+    parsed = _parse_iso_datetime(value)
+    generated = _parse_iso_datetime(generated_at)
+    if parsed is None or generated is None:
+        return None
+    return round(max(0.0, (generated - parsed).total_seconds()), 3)
+
+
+def _duration_to_seconds(text: str) -> float | None:
+    match = re.search(r"(?i)(?:age\s*=\s*)?(\d+(?:\.\d+)?)\s*(seconds?|secs?|s|minutes?|mins?|m|hours?|hrs?|h|days?|d)\b", text)
+    if not match:
+        return None
+    value = float(match.group(1))
+    unit = match.group(2).lower()
+    if unit in {"s", "sec", "secs", "second", "seconds"}:
+        factor = 1.0
+    elif unit in {"m", "min", "mins", "minute", "minutes"}:
+        factor = 60.0
+    elif unit in {"h", "hr", "hrs", "hour", "hours"}:
+        factor = 3600.0
+    else:
+        factor = 86400.0
+    return round(value * factor, 3)
+
+
+def _freshness_from_selector(selector: dict[str, Any], generated_at: str, snapshot_generated_at: str | None = None) -> float:
     metric = selector.get("metric")
     if isinstance(metric, dict):
         for key in ("age_s", "age_seconds"):
             if isinstance(metric.get(key), int | float):
                 return round(float(metric[key]), 3)
+        for key in ("lastSeen", "last_seen", "generated_at", "timestamp", "ts", "scanned_at", "indexedAt"):
+            age = _age_from_datetime(metric.get(key), generated_at)
+            if age is not None:
+                return age
+    elif isinstance(metric, str):
+        age = _duration_to_seconds(metric)
+        if age is not None:
+            return age
+        parsed_age = _age_from_datetime(metric, generated_at)
+        if parsed_age is not None:
+            return parsed_age
+    for key in ("detail", "reason", "label"):
+        value = selector.get(key)
+        if isinstance(value, str):
+            age = _duration_to_seconds(value)
+            if age is not None:
+                return age
+            parsed_age = _age_from_datetime(value, generated_at)
+            if parsed_age is not None:
+                return parsed_age
+    prov_obj = selector.get("provenance")
+    prov = prov_obj if isinstance(prov_obj, dict) else {}
+    for key in ("lastSeen", "last_seen", "generated_at", "timestamp", "ts", "scanned_at", "indexedAt"):
+        age = _age_from_datetime(prov.get(key), generated_at)
+        if age is not None:
+            return age
+    if snapshot_generated_at:
+        age = _age_from_datetime(snapshot_generated_at, generated_at)
+        if age is not None:
+            return age
     return 0.0
 
 
@@ -325,10 +402,11 @@ def _system_truth(system_id: str, generated_at: str, os_snapshot: dict[str, Any]
     refs = _donor_evidence(donor, path, selector)
     if unmapped:
         refs.append(unmapped)
+    snapshot_generated_at = str(os_snapshot.get("generated_at") or generated_at) if donor == "os" else str((connectome_snapshot.get("meta") or {}).get("generated_at") or generated_at)
     truth = {
         "id": system_id,
         "probe_state": state,
-        "freshness_age_s": _freshness_from_selector(selector),
+        "freshness_age_s": _freshness_from_selector(selector, generated_at, snapshot_generated_at),
         "confidence": "single-probe",
         "evidence_refs": refs,
         "last_checked": generated_at,
@@ -400,7 +478,7 @@ def _bridge_edge_truth(generated_at: str, connectome_snapshot: dict[str, Any]) -
         {
             "id": "edge:kanban-db->mvms--bridge",
             "probe_state": "live",
-            "freshness_age_s": 0.0,
+            "freshness_age_s": _freshness_from_selector(entry, generated_at, str((connectome_snapshot.get("meta") or {}).get("generated_at") or generated_at)),
             "confidence": "single-probe",
             "evidence_refs": refs,
             "last_checked": generated_at,
@@ -413,20 +491,20 @@ def _bridge_edge_truth(generated_at: str, connectome_snapshot: dict[str, Any]) -
     )
 
 
-def _backup_edge_truth(generated_at: str) -> dict[str, Any]:
+def _backup_edge_truth(generated_at: str) -> tuple[dict[str, Any], str | None]:
     try:
         payload = dashboard_nexus_slice.backup_offbox_slice()
-        return validate_truth_object(payload, BACKUP_OFFBOX_EDGE_ID)
+        return validate_truth_object(payload, BACKUP_OFFBOX_EDGE_ID), None
     except Exception as exc:
         reason = f"exception:{type(exc).__name__}:{exc}"
-        NON_DONOR_DEGRADED_REASONS.append(reason)
-        return validate_truth_object(_unknown_truth(BACKUP_OFFBOX_EDGE_ID, generated_at, reason), BACKUP_OFFBOX_EDGE_ID)
+        return validate_truth_object(_unknown_truth(BACKUP_OFFBOX_EDGE_ID, generated_at, reason), BACKUP_OFFBOX_EDGE_ID), reason
 
 
-def _build_edges(generated_at: str, connectome_snapshot: dict[str, Any]) -> list[dict[str, Any]]:
+def _build_edges(generated_at: str, connectome_snapshot: dict[str, Any]) -> tuple[list[dict[str, Any]], list[str]]:
+    backup_truth, backup_error = _backup_edge_truth(generated_at)
     edges = [
         {"id": "edge:kanban-db->mvms--bridge", "label": "kanban-db → mvms (bridge)", "source": "territory:memory", "target": "territory:protection", "kind": "probed", "truth": _bridge_edge_truth(generated_at, connectome_snapshot)},
-        {"id": BACKUP_OFFBOX_EDGE_ID, "label": "nightly-backup → off-box", "source": "territory:protection", "target": "territory:memory", "kind": "probed", "truth": _backup_edge_truth(generated_at)},
+        {"id": BACKUP_OFFBOX_EDGE_ID, "label": "nightly-backup → off-box", "source": "territory:protection", "target": "territory:memory", "kind": "probed", "truth": backup_truth},
     ]
     for edge_id, source, target, label, line in MANUAL_EDGES:
         edges.append({"id": edge_id, "label": label, "source": source, "target": target, "kind": "manual", "truth": validate_truth_object(_manual_truth(edge_id, generated_at, line=line), edge_id)})
@@ -434,7 +512,9 @@ def _build_edges(generated_at: str, connectome_snapshot: dict[str, Any]) -> list
         edge_id = f"edge:manual-reserved-{n}"
         label = f"reserved claimed dependency #{n} — V6 copy asserts 36 claimed edges but JS does not enumerate this edge"
         edges.append({"id": edge_id, "label": label, "source": None, "target": None, "kind": "manual", "truth": validate_truth_object(_manual_truth(edge_id, generated_at, line="158"), edge_id)})
-    return edges
+    if backup_error:
+        return edges, [backup_error]
+    return edges, []
 
 
 def _coverage(territories: list[dict[str, Any]], systems: list[dict[str, Any]], edges: list[dict[str, Any]]) -> dict[str, int]:
@@ -462,7 +542,6 @@ def build_envelope() -> dict[str, Any]:
     generated_at = _iso_now()
     status = "ok"
     donor_errors: list[str] = []
-    NON_DONOR_DEGRADED_REASONS.clear()
     try:
         os_snapshot = dashboard_os.get_os_snapshot()
     except Exception as exc:
@@ -475,9 +554,10 @@ def build_envelope() -> dict[str, Any]:
         connectome_snapshot = {"nodes": [], "edges": [], "meta": {"generated_at": generated_at}}
         status = "degraded"
         donor_errors.append(f"exception:{type(exc).__name__}:{exc}")
+    generated_at = _iso_now()
     systems, territories = _build_systems_and_territories(generated_at, os_snapshot, connectome_snapshot)
-    edges = _build_edges(generated_at, connectome_snapshot)
-    if NON_DONOR_DEGRADED_REASONS:
+    edges, non_donor_errors = _build_edges(generated_at, connectome_snapshot)
+    if non_donor_errors:
         status = "degraded"
     if donor_errors:
         for wrapper in [*systems, *edges]:
@@ -508,7 +588,7 @@ def get_cached_envelope() -> dict[str, Any]:
             os_snapshot = {"sections": [], "generated_at": generated_at}
             connectome_snapshot = {"nodes": [], "edges": [], "meta": {"generated_at": generated_at}}
             systems, territories = _build_systems_and_territories(generated_at, os_snapshot, connectome_snapshot)
-            edges = _build_edges(generated_at, connectome_snapshot)
+            edges, _non_donor_errors = _build_edges(generated_at, connectome_snapshot)
             for wrapper in [*systems, *edges]:
                 wrapper["truth"] = validate_truth_object(_unknown_truth(wrapper["id"], generated_at, f"exception:{type(exc).__name__}:{exc}"), wrapper["id"])
             envelope = {"generated_at": generated_at, "cache_ttl_seconds": int(_TTL_S), "status": "degraded", "territories": territories, "systems": systems, "edges": edges, "coverage": _coverage(territories, systems, edges), "diagnostics": []}

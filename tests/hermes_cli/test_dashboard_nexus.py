@@ -10,6 +10,7 @@ import subprocess
 import sys
 import textwrap
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -24,7 +25,9 @@ ALL_TRUTH_KEYS = set(slice_mod.TRUTH_KEYS)
 
 
 def _fixture() -> dict[str, Any]:
-    return json.loads((Path(__file__).with_name("nexus_donor_fixture.json")).read_text(encoding="utf-8"))
+    fixture = json.loads((Path(__file__).with_name("nexus_donor_fixture.json")).read_text(encoding="utf-8"))
+    fixture["os"].setdefault("graph", nexus.dashboard_os._build_os_graph(fixture["os"]["sections"]))
+    return fixture
 
 
 def _patch_donors(monkeypatch: pytest.MonkeyPatch, fixture: dict[str, Any] | None = None) -> None:
@@ -331,3 +334,62 @@ def test_honesty_caps_locked(monkeypatch: pytest.MonkeyPatch) -> None:
     env = _envelope(monkeypatch, fixture)
     by_id = {s["id"]: s["truth"] for s in env["systems"]}
     assert by_id["system:providers/claude-max"]["probe_state"] == "broken"
+
+
+def test_real_freshness_parsed_from_donor_age_and_provenance(monkeypatch: pytest.MonkeyPatch) -> None:
+    env = _envelope(monkeypatch)
+    systems = {system["id"]: system["truth"] for system in env["systems"]}
+
+    backup = systems["system:protection/nightly-backup"]
+    assert backup["freshness_age_s"] == pytest.approx(22.3 * 3600, rel=0.001)
+
+    state_db = systems["system:memory/state-db"]
+    assert state_db["freshness_age_s"] == pytest.approx(0.0, abs=1.0)
+
+    veracrypt = systems["system:protection/veracrypt"]
+    assert veracrypt["freshness_age_s"] == pytest.approx(3.5 * 86400, rel=0.001)
+
+    bridge = next(edge["truth"] for edge in env["edges"] if edge["id"] == "edge:kanban-db->mvms--bridge")
+    last_seen = "2026-07-03T07:53:30.983074+00:00"
+    expected = (
+        datetime.fromisoformat(env["generated_at"]) - datetime.fromisoformat(last_seen)
+    ).total_seconds()
+    assert bridge["freshness_age_s"] == pytest.approx(expected, abs=2.0)
+    assert bridge["freshness_age_s"] > 0
+
+
+def test_unlocked_connectome_status_falls_through_to_unknown(monkeypatch: pytest.MonkeyPatch) -> None:
+    env = _envelope(monkeypatch)
+    deploy = next(system["truth"] for system in env["systems"] if system["id"] == "system:git/deploy-div")
+    assert deploy["probe_state"] == "unknown"
+    assert "unmapped-status:not-serving" in deploy["evidence_refs"]
+
+
+@pytest.mark.parametrize("donor,status", [("os", "mystery-os"), ("connectome", "mystery-connectome")])
+def test_any_unrecognized_donor_status_maps_unknown_with_unmapped_tag(donor: str, status: str) -> None:
+    state, evidence = nexus._status_to_state(donor, status)
+    assert state == "unknown"
+    assert evidence == f"unmapped-status:{status}"
+
+
+@pytest.mark.parametrize(
+    ("system_id", "selector"),
+    [
+        ("system:ingest/ict-brain", "graph/ict-brain"),
+        ("system:ingest/opus-extractor", "graph/opus_extractor"),
+        ("system:ingest/x_search", "graph/x_search"),
+        ("system:protection/compactor", "graph/mvms-compactor"),
+    ],
+)
+def test_honesty_cap_selectors_resolve_real_graph_nodes(monkeypatch: pytest.MonkeyPatch, system_id: str, selector: str) -> None:
+    fixture = _fixture()
+    donor, path = nexus.SYSTEM_SOURCE_MAP[system_id]
+    assert donor == "os"
+    assert path == selector
+    selected = nexus._resolve_selector(fixture["os"], donor, path)
+    assert selected is not None
+    assert selected["id"] == selector.split("/", 1)[1]
+
+    env = _envelope(monkeypatch, fixture)
+    truth = next(system["truth"] for system in env["systems"] if system["id"] == system_id)
+    assert any(f"donor:os:{selector}" in ref for ref in truth["evidence_refs"])
