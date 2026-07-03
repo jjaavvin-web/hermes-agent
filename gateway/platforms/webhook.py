@@ -104,6 +104,7 @@ _LOOPBACK_HOSTS = frozenset({
 
 _AGENT_RUN_SEMAPHORE: Optional[asyncio.Semaphore] = None
 _AGENT_RUN_SEMAPHORE_CAP: Optional[int] = None
+_LIVE_SESSION_SCAN_FAILED = object()
 
 
 def _get_agent_run_semaphore(max_concurrent_agent_runs: int) -> asyncio.Semaphore:
@@ -588,6 +589,21 @@ class WebhookAdapter(BasePlatformAdapter):
                 exc_info=True,
             )
 
+    @staticmethod
+    def _alternate_profile_session_keys(session_key: str, entries: dict) -> list[str]:
+        """Return profile-namespace alternates for a dispatch/session key."""
+        parts = session_key.split(":", 2)
+        if len(parts) != 3 or parts[0] != "agent":
+            return []
+        suffix = parts[2]
+        return [
+            key for key in entries
+            if isinstance(key, str)
+            and key != session_key
+            and key.startswith("agent:")
+            and key.split(":", 2)[-1] == suffix
+        ]
+
     def _lookup_live_session_entry(self, session_key: str) -> Any | None:
         """Return the live SessionStore entry for ``session_key`` without creating one."""
         store = getattr(self, "_session_store", None)
@@ -599,7 +615,21 @@ class WebhookAdapter(BasePlatformAdapter):
                 ensure_loaded()
             entries = getattr(store, "_entries", None)
             if isinstance(entries, dict):
-                return entries.get(session_key)
+                entry = entries.get(session_key)
+                if entry is not None:
+                    return entry
+                # F2: mirror the gateway/run.py dual-key defensive read. The
+                # webhook dispatch key is built in the legacy ``agent:main``
+                # namespace, while a multiplexed gateway can store the live
+                # SessionEntry under ``agent:<profile>``. Any live entry for
+                # the same platform/chat suffix is authoritative for refusal;
+                # treating it as fresh would silently miss a stale/mismatched
+                # binding.
+                for alternate_key in self._alternate_profile_session_keys(session_key, entries):
+                    entry = entries.get(alternate_key)
+                    if entry is not None:
+                        return entry
+                return None
             get_entry = getattr(store, "get", None)
             if callable(get_entry):
                 return get_entry(session_key)
@@ -611,8 +641,12 @@ class WebhookAdapter(BasePlatformAdapter):
             return object()
         return None
 
-    def _live_session_entries(self) -> list[Any] | None:
-        """Return live SessionStore entries, or None when no live store is installed."""
+    def _live_session_entries(self) -> list[Any] | None | object:
+        """Return live SessionStore entries, a fail-closed sentinel, or None.
+
+        F1 fail-closed marker: scan exceptions return _LIVE_SESSION_SCAN_FAILED;
+        hydration must refuse every candidate with reason hydrate_scan_failure.
+        """
         store = getattr(self, "_session_store", None)
         if store is None:
             return None
@@ -625,7 +659,7 @@ class WebhookAdapter(BasePlatformAdapter):
                 return list(entries.values())
         except Exception:
             logger.exception("[webhook] live session scan failed during per-delivery hydration")
-            return []
+            return _LIVE_SESSION_SCAN_FAILED
         return []
 
     @staticmethod
@@ -722,6 +756,7 @@ class WebhookAdapter(BasePlatformAdapter):
             elif line.startswith("HEAD "):
                 current["base_sha"] = line.removeprefix("HEAD ")
         adopted: dict[str, dict] = {}
+        live_entries = self._live_session_entries()
         for child in root.iterdir():
             if not child.is_dir() or not child.name.startswith("wh-"):
                 continue
@@ -729,7 +764,20 @@ class WebhookAdapter(BasePlatformAdapter):
             branch = (meta or {}).get("branch", "")
             if not branch.startswith("loki/"):
                 continue
-            live_entries = self._live_session_entries()
+            if live_entries is _LIVE_SESSION_SCAN_FAILED:
+                self._append_lease_ledger(
+                    "refused",
+                    {
+                        "sid": child.name,
+                        "delivery_id": child.name,
+                        "route": "hydrate",
+                        "path": str(child),
+                        "branch": branch,
+                        "base": (meta or {}).get("base_sha"),
+                        "reason": "hydrate_scan_failure",
+                    },
+                )
+                continue
             if live_entries is not None:
                 matching = [
                     entry for entry in live_entries
@@ -1232,6 +1280,11 @@ class WebhookAdapter(BasePlatformAdapter):
                             },
                             status=429,
                             headers={"Retry-After": retry_after},
+                        )
+                    if _lease_info is not None:
+                        self._refuse_worktree_lease(
+                            _lease_info,
+                            reason="post_allocation_exception",
                         )
                     logger.error(
                         "[webhook] per-delivery worktree unavailable; refusing run route=%s delivery=%s: %s",

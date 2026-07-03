@@ -345,7 +345,65 @@ def test_lease_ledger_uses_immutable_40_char_base_sha_and_clean_compare_receives
     assert all(row["base"] == base_sha for row in rows)
 
 
+@pytest.mark.asyncio
+async def test_exception_after_successful_lease_allocation_refuses_releases_and_restores_slot(tmp_path):
+    adapter = _make_adapter(cap=1)
+    leased_path = Path(os.environ["HERMES_HOME"]) / "relay-wt" / "deliveries" / "wh-loki1-post-alloc"
+    leased_path.mkdir(parents=True)
+    lease = {
+        "sid": "wh-loki1-post-alloc",
+        "delivery_id": "post-alloc-crash",
+        "route": "loki1",
+        "path": str(leased_path),
+        "branch": "loki/loki1/post-alloc",
+        "base": "9" * 40,
+    }
+    adapter._allocate_per_delivery_worktree = lambda _route, _delivery: lease  # type: ignore[method-assign]
+    released: list[str] = []
+    completed: list[str] = []
 
+    class FakeBroker:
+        def release(self, sid: str) -> None:
+            released.append(sid)
+
+        def complete_lease(self, sid: str, *, base_sha: str | None = None) -> str:
+            completed.append(sid)
+            return "removed"
+
+    adapter._wt_broker = FakeBroker()  # type: ignore[assignment]
+
+    def crashing_same_worktree(_left: str | None, _right: str | None) -> bool:
+        raise TypeError("path type exploded after lease allocation")
+
+    adapter._same_worktree_path = crashing_same_worktree  # type: ignore[method-assign]
+    adapter.set_session_store(
+        SimpleNamespace(_entries={"agent:main:webhook:webhook:webhook:loki1:post-alloc-crash:webhook:loki1": SimpleNamespace(worktree_path=str(tmp_path / "old"))})
+    )
+    handled: list[str] = []
+
+    async def handler(event) -> None:
+        handled.append(event.message_id)
+
+    adapter.handle_message = handler  # type: ignore[method-assign]
+
+    async with TestClient(TestServer(_create_app(adapter))) as cli:
+        response = await _post(cli, "post-alloc-crash")
+        body = await response.json()
+        await asyncio.gather(*adapter._background_tasks, return_exceptions=True)
+
+    assert response.status == 503, body
+    assert body["error"] == "worktree_unavailable"
+    assert handled == []
+    assert released == ["wh-loki1-post-alloc"]
+    assert completed == []
+    assert adapter._agent_run_semaphore._value == 1
+    assert "post-alloc-crash" not in adapter._seen_deliveries
+    assert adapter._run_finalizers == {}
+    assert adapter._lease_by_finalizer == {}
+    ledger = Path(os.environ["HERMES_HOME"]) / "state" / "loki" / "worktree-leases.jsonl"
+    rows = [json.loads(line) for line in ledger.read_text(encoding="utf-8").splitlines()]
+    assert [row["event"] for row in rows] == ["refused"]
+    assert rows[0]["reason"] == "post_allocation_exception"
 
 
 @pytest.mark.asyncio

@@ -166,3 +166,64 @@ def test_never_adopted_lease_records_refused_not_clean_completed(tmp_path):
     assert [row["event"] for row in rows] == ["refused"]
     assert "completed" not in {row["event"] for row in rows}
     assert "removed" not in {row["event"] for row in rows}
+
+
+def test_hydration_live_session_scan_failure_refuses_every_candidate_without_adoption(tmp_path, monkeypatch):
+    home = Path(os.environ["HERMES_HOME"])
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    candidates = [
+        home / "relay-wt" / "deliveries" / "wh-loki1-scan-a",
+        home / "relay-wt" / "deliveries" / "wh-loki1-scan-b",
+    ]
+    for candidate in candidates:
+        candidate.mkdir(parents=True)
+
+    def fake_run(args, **_kwargs):
+        assert args[:4] == ["git", "-C", str(repo), "worktree"]
+        stdout = "".join(
+            f"worktree {candidate}\nHEAD {'e' * 40}\nbranch refs/heads/loki/loki1/{candidate.name}\n\n"
+            for candidate in candidates
+        )
+        return webhook_module.subprocess.CompletedProcess(args, 0, stdout=stdout, stderr="")
+
+    monkeypatch.setattr(webhook_module.subprocess, "run", fake_run)
+    adapter = _make_adapter(cap=1)
+
+    class RaisingStore:
+        def _ensure_loaded(self) -> None:
+            raise RuntimeError("session store scan exploded")
+
+    adapter.set_session_store(RaisingStore())
+
+    assert adapter._hydrate_per_delivery_sessions(hermes_home=home, repo_root=repo) == {}
+    ledger = home / "state" / "loki" / "worktree-leases.jsonl"
+    rows = [json.loads(line) for line in ledger.read_text(encoding="utf-8").splitlines()]
+    assert [row["event"] for row in rows] == ["refused", "refused"]
+    assert {row["reason"] for row in rows} == {"hydrate_scan_failure"}
+    assert {row["sid"] for row in rows} == {candidate.name for candidate in candidates}
+
+
+def test_adoption_lookup_finds_profile_namespaced_live_entry_under_alternate_key(tmp_path):
+    adapter = _make_adapter(cap=1)
+    source = adapter.build_source(
+        chat_id="webhook:loki1:profile-delivery",
+        chat_name="webhook/loki1",
+        chat_type="webhook",
+        user_id="webhook:loki1",
+        user_name="loki1",
+    )
+    dispatch_key = adapter._build_session_key(source)
+    namespaced_key = dispatch_key.replace("agent:main:", "agent:brain:", 1)
+    assert namespaced_key != dispatch_key
+    leased_path = tmp_path / "lease"
+    stale_path = tmp_path / "other-profile-bound-tree"
+    adapter.set_session_store(
+        SimpleNamespace(_entries={namespaced_key: SimpleNamespace(worktree_path=str(stale_path))})
+    )
+
+    assert adapter._lookup_live_session_entry(dispatch_key) is not None
+    assert adapter._verify_per_delivery_adoption(
+        session_key=dispatch_key,
+        worktree_path=str(leased_path),
+    ) is False
