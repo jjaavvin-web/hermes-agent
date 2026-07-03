@@ -654,13 +654,19 @@ class WebhookAdapter(BasePlatformAdapter):
             ensure_loaded = getattr(store, "_ensure_loaded", None)
             if callable(ensure_loaded):
                 ensure_loaded()
-            entries = getattr(store, "_entries", None)
+            if not hasattr(store, "_entries"):
+                return []
+            entries = getattr(store, "_entries")
             if isinstance(entries, dict):
                 return list(entries.values())
+            logger.error(
+                "[webhook] live session scan found untrusted entries type %s during per-delivery hydration; refusing adoption",
+                type(entries).__name__,
+            )
+            return _LIVE_SESSION_SCAN_FAILED
         except Exception:
             logger.exception("[webhook] live session scan failed during per-delivery hydration")
             return _LIVE_SESSION_SCAN_FAILED
-        return []
 
     @staticmethod
     def _same_worktree_path(left: str | None, right: str | None) -> bool:
