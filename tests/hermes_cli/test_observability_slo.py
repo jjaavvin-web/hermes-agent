@@ -175,6 +175,42 @@ def test_firecrawl_config_noise_excluded_real_500_still_counted(tmp_path: Path):
     assert bucket_backend == 2
 
 
+def test_disabled_image_generation_and_guardrail_denials_are_diagnostic_only(tmp_path: Path):
+    db = tmp_path / "state.db"
+    make_state_db(db)
+    canary = tmp_path / "recall-canary.jsonl"
+    canary.write_text('{"ts": 1015, "target_hit": 1}\n', encoding="utf-8")
+    service = tmp_path / "recall-events.jsonl"
+
+    gateway_lines = [
+        "1970-01-01T00:16:50+00:00 host python[1]: ERROR tools.image_generation_tool: "
+        "Error generating image: Image generation is unavailable in this environment.",
+        "1970-01-01T00:16:51+00:00 host python[1]: ValueError: Image generation is unavailable in this environment.",
+        "1970-01-01T00:16:52+00:00 host python[1]: ERROR FAL_KEY environment variable is not set",
+        "1970-01-01T00:16:53+00:00 host python[1]: WARNING agent.tool_executor: Tool terminal returned error: "
+        "WORKTREE_CONFINEMENT: command cwd target is inside protected code root",
+        "1970-01-01T00:16:54+00:00 host python[1]: ERROR upstream returned 500 server error",
+    ]
+    snapshot = slo.build_slo_snapshot(
+        state_db=db,
+        output_dir=tmp_path,
+        now=1100.0,
+        window_seconds=500,
+        gateway_lines=gateway_lines,
+        watchdog_lines=[],
+        recall_canary_path=canary,
+        recall_service_path=service,
+    )
+
+    assert snapshot["turn_count"] == 3
+    assert snapshot["metrics"]["turn_error_rate"] == 1 / 3
+    assert snapshot["journal_counts"]["tool_config_error_events"] == 3
+    assert snapshot["journal_counts"]["tool_guardrail_denial_events"] == 1
+    assert sum(bucket["error_events"] for bucket in snapshot["series"]) == 1
+    assert sum(bucket["tool_config_error_events"] for bucket in snapshot["series"]) == 3
+    assert sum(bucket["tool_guardrail_denial_events"] for bucket in snapshot["series"]) == 1
+
+
 def test_write_snapshot_and_dashboard_panel_render(tmp_path: Path, monkeypatch):
     payload = {
         "generated_at": "2026-06-24T00:00:00+00:00",
