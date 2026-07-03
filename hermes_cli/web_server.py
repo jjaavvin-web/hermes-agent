@@ -13281,9 +13281,11 @@ except Exception as _exc:
 try:
     from hermes_cli.dashboard_os import router as _os_router
     from hermes_cli.dashboard_connectome import router as _connectome_router
+    from hermes_cli.dashboard_nexus import router as _nexus_router
     from hermes_cli.dashboard_nexus_slice import router as _nexus_slice_router
     app.include_router(_os_router)
     app.include_router(_connectome_router)
+    app.include_router(_nexus_router)
     app.include_router(_nexus_slice_router)
     _log.info("Mounted OS tab dashboard API routes at /api/dashboard/os and /api/dashboard/nexus")
 except Exception as _exc:
