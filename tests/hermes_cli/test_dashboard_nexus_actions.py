@@ -297,7 +297,8 @@ def test_t8c_t8d_chokepoint_argv_and_artifacts_before_launch(monkeypatch: pytest
         seen["kwargs"] = kwargs
         return type("Completed", (), {"returncode": 0, "stdout": "", "stderr": ""})()
 
-    monkeypatch.setattr(subprocess, "run", fake_run)
+    monkeypatch.setattr(actions, "_ALLOW_REAL_DISPATCH_FOR_INTEGRATION", True)
+    monkeypatch.setattr(actions.subprocess, "run", fake_run)
     cap = _preflight(client)
     assert _dispatch(client, cap).status_code == 200
     assert seen["argv"][:6] == [sys.executable, "/home/josep/.hermes/scripts/loki_send.py", "--require-template", "--require-kanban-task", "--kanban-task", "t_30c5cdd7"]
@@ -553,6 +554,43 @@ def test_fix3_horizon_regression_run_created_survives_event_tail_volume(client: 
     assert response_single.status_code == 429
     assert response_single.json()["status"] == "lane_budget_exhausted"
 
+
+def test_w3_chokepoint_refuses_nonprod_root_before_subprocess(monkeypatch: pytest.MonkeyPatch, client: TestClient, isolated_home: Path):
+    _arm(isolated_home, "live")
+    calls: list[list[str]] = []
+
+    def fake_run(argv: list[str], **_kwargs: Any) -> Any:
+        calls.append(argv)
+        return type("Completed", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+    monkeypatch.setattr(actions.subprocess, "run", fake_run)
+    cap = _preflight(client, "act-cron-deadman-triage", "cron-deadman")
+    response = _dispatch(client, cap)
+
+    assert response.status_code == 502
+    assert response.json()["status"] == "chokepoint_refused_nonprod"
+    assert calls == []
+    events = actions._read_jsonl(actions._events_path())
+    assert any(row["event"] == "chokepoint_refused_nonprod" for row in events)
+
+
+@pytest.mark.real_dispatch_integration
+def test_w3_chokepoint_integration_marker_can_override_prod_root_refusal(monkeypatch: pytest.MonkeyPatch, client: TestClient, isolated_home: Path):
+    _arm(isolated_home, "live")
+    calls: list[list[str]] = []
+
+    def fake_run(argv: list[str], **_kwargs: Any) -> Any:
+        calls.append(argv)
+        return type("Completed", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+    monkeypatch.setattr(actions, "_ALLOW_REAL_DISPATCH_FOR_INTEGRATION", True)
+    monkeypatch.setattr(actions.subprocess, "run", fake_run)
+    cap = _preflight(client, "act-cron-deadman-triage", "cron-deadman")
+    response = _dispatch(client, cap)
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "accepted"
+    assert len(calls) == 1
 
 def test_f3_csrf_rejects_referer_substring_bypass(client: TestClient, isolated_home: Path):
     _arm(isolated_home, "dry-run")

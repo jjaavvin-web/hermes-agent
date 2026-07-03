@@ -2,7 +2,15 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+from typing import Any
+
+import subprocess
+
 import pytest
+
+_ORIGINAL_ACTIONS_SUBPROCESS_RUN = subprocess.run
+_ORIGINAL_ACTIONS_SUBPROCESS_POPEN = subprocess.Popen
 
 
 @pytest.fixture
@@ -54,3 +62,42 @@ def _suppress_concurrent_hermes_gate(request, monkeypatch):
         lambda *_a, **_k: [],
         raising=False,
     )
+
+
+def pytest_configure(config):
+    config.addinivalue_line("markers", "real_dispatch_integration: allow dashboard Nexus action tests to reach the real loki_send.py subprocess boundary")
+
+
+@pytest.fixture(autouse=True)
+def _guard_dashboard_nexus_actions_loki_send(request, monkeypatch):
+    """Fail loudly if nexus-action tests hit loki_send.py without an explicit mock/marker."""
+    if request.node.get_closest_marker("real_dispatch_integration"):
+        return
+    test_path = Path(str(request.node.fspath))
+    if test_path.name != "test_dashboard_nexus_actions.py":
+        return
+    try:
+        from hermes_cli import dashboard_nexus_actions as actions
+    except Exception:
+        return
+
+    def blocked_run(argv: Any, *args: Any, **kwargs: Any) -> Any:
+        command = " ".join(str(part) for part in argv) if isinstance(argv, (list, tuple)) else str(argv)
+        if "loki_send.py" in command:
+            raise AssertionError(
+                "unmocked loki_send.py subprocess blocked by tests/hermes_cli/conftest.py; "
+                "mock dashboard_nexus_actions.subprocess.run or mark real_dispatch_integration"
+            )
+        return _ORIGINAL_ACTIONS_SUBPROCESS_RUN(argv, *args, **kwargs)
+
+    def blocked_popen(argv: Any, *args: Any, **kwargs: Any) -> Any:
+        command = " ".join(str(part) for part in argv) if isinstance(argv, (list, tuple)) else str(argv)
+        if "loki_send.py" in command:
+            raise AssertionError(
+                "unmocked loki_send.py Popen blocked by tests/hermes_cli/conftest.py; "
+                "mock dashboard_nexus_actions.subprocess.Popen or mark real_dispatch_integration"
+            )
+        return _ORIGINAL_ACTIONS_SUBPROCESS_POPEN(argv, *args, **kwargs)
+
+    monkeypatch.setattr(actions.subprocess, "run", blocked_run)
+    monkeypatch.setattr(actions.subprocess, "Popen", blocked_popen)

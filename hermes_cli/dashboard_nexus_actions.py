@@ -17,6 +17,7 @@ import os
 import re
 import secrets
 import shutil
+import subprocess
 import sys
 import threading
 import time
@@ -635,7 +636,22 @@ def dispatch(
     if invoke is None:
         raise AssertionError("dispatch invocation state missing")
     lane, packet_path, common, run_id, audit_dir_text = invoke
-    result = _invoke_chokepoint(lane, packet_path)
+    try:
+        result = _invoke_chokepoint(lane, packet_path)
+    except RuntimeError as exc:
+        if "chokepoint_refused_nonprod" not in str(exc):
+            raise
+        _append_event(
+            "chokepoint_refused_nonprod",
+            request_id=request_id,
+            decision="chokepoint_refused_nonprod",
+            http_status=502,
+            lane=lane,
+            run_id=run_id,
+            audit_dir=audit_dir_text,
+            **common,
+        )
+        return JSONResponse({"status": "chokepoint_refused_nonprod", "run_id": run_id, "audit_dir": audit_dir_text}, status_code=502)
     if result["returncode"] != 0:
         _append_event("dispatch_failed", request_id=request_id, decision="dispatch_failed", http_status=502, lane=lane, run_id=run_id, audit_dir=audit_dir_text, **common)
         return JSONResponse({"status": "dispatch_failed", "run_id": run_id, "audit_dir": audit_dir_text}, status_code=502)
@@ -762,8 +778,22 @@ def _held_lanes() -> set[int]:
     return held
 
 
+def _active_store_root() -> Path:
+    return _events_path().resolve().parents[2]
+
+
+def _production_store_root() -> Path:
+    return (Path.home() / ".hermes").resolve()
+
+
+_ALLOW_REAL_DISPATCH_FOR_INTEGRATION = False
+
+
 def _invoke_chokepoint(lane: int, packet_path: Path) -> dict[str, Any]:
-    import subprocess
+    active_root = _active_store_root()
+    production_root = _production_store_root()
+    if not _ALLOW_REAL_DISPATCH_FOR_INTEGRATION and active_root != production_root:
+        raise RuntimeError(f"chokepoint_refused_nonprod: active_store_root={active_root} production_store_root={production_root}")
 
     completed = subprocess.run(
         [
