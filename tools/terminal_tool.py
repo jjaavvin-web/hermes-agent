@@ -301,10 +301,13 @@ def _active_terminal_worktree() -> str | None:
     try:
         from agent.codex_session_context import get_active_worktree  # noqa: PLC0415
 
-        wt = get_active_worktree()
-        if wt and os.path.isdir(wt):
-            return os.path.realpath(os.path.expanduser(wt))
-    except (ImportError, OSError, ValueError):
+        path = get_active_worktree()
+        if not path:
+            return None
+        candidate = os.path.realpath(os.path.abspath(os.path.expanduser(path)))
+        if os.path.isdir(candidate):
+            return candidate
+    except (ImportError, OSError, RuntimeError, ValueError):
         return None
     return None
 
@@ -315,7 +318,7 @@ def _terminal_confinement_required() -> bool:
         from agent.codex_session_context import is_worktree_confinement_required  # noqa: PLC0415
 
         return is_worktree_confinement_required()
-    except (ImportError, OSError, ValueError):
+    except (ImportError, OSError, RuntimeError, ValueError):
         return False
 
 
@@ -1899,21 +1902,34 @@ def _resolve_command_cwd(
     env: Any,
     default_cwd: str,
 ) -> str:
-    """Return the cwd for a command, preferring the live session cwd.
+    """Return the cwd for a command, preferring live session cwd.
 
-    ``terminal_tool`` historically re-sent the init-time/config cwd on every
-    call. That broke session-local ``cd`` state: the environment tracked the
-    new directory in ``env.cwd``, but foreground/background calls kept forcing
-    the old cwd back through ``env.execute(..., cwd=...)``. Explicit
-    ``workdir=`` must still override everything.
+    Under required worktree confinement this delegates to the shared fail-closed
+    resolver. Outside confinement it preserves terminal_tool's historical
+    prefer-binding-then-workdir-then-live-cwd-then-default behavior.
     """
+    try:
+        from agent.codex_session_context import (
+            is_worktree_confinement_required,
+            record_runtime_execution_cwd,
+            resolve_confined_cwd,
+        )  # noqa: PLC0415
+    except ImportError:
+        is_worktree_confinement_required = lambda: False  # type: ignore[assignment]
+        record_runtime_execution_cwd = lambda _cwd: None  # type: ignore[assignment]
+        resolve_confined_cwd = lambda candidate: candidate  # type: ignore[assignment]
+
+    if is_worktree_confinement_required():
+        try:
+            resolved = resolve_confined_cwd(workdir)
+        except Exception as exc:
+            raise _WorktreeConfinementError(
+                f"{exc}; refusing to run against the live tree"
+            ) from exc
+        record_runtime_execution_cwd(resolved)
+        return resolved
+
     wt_real = _active_terminal_worktree()
-    if not wt_real and _terminal_confinement_required():
-        raise _WorktreeConfinementError(
-            "WORKTREE_CONFINEMENT: command cwd denied — this turn requires an "
-            "active worktree but none is bound (isolation lost on resume); "
-            "refusing to run against the live tree (foreground + background + PTY)."
-        )
     if wt_real:
         if workdir:
             expanded = os.path.expanduser(workdir)
@@ -1926,16 +1942,21 @@ def _resolve_command_cwd(
             error = _worktree_confinement_error(candidate_real, wt_real)
             if error:
                 raise _WorktreeConfinementError(error)
+            record_runtime_execution_cwd(candidate_real)
             return candidate_real
+        record_runtime_execution_cwd(wt_real)
         return wt_real
 
     if workdir:
+        record_runtime_execution_cwd(workdir)
         return workdir
 
     live_cwd = getattr(env, "cwd", None)
     if isinstance(live_cwd, str) and live_cwd.strip():
+        record_runtime_execution_cwd(live_cwd)
         return live_cwd
 
+    record_runtime_execution_cwd(default_cwd)
     return default_cwd
 
 

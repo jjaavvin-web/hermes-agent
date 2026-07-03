@@ -36,6 +36,7 @@ import logging
 import os
 import re
 import subprocess
+import threading
 import time
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
@@ -215,7 +216,9 @@ class WebhookAdapter(BasePlatformAdapter):
         self._wt_path: Optional[str] = None   # set lazily by _ensure_relay_worktree()
         self._wt_init_failed: bool = False    # latched so we refuse, not retry-spam
         self._wt_broker = None
+        self._wt_broker_lock = threading.Lock()
         self._lease_by_finalizer: Dict[str, dict] = {}
+        self._runtime_cwds_by_finalizer: Dict[str, Any] = {}
 
     def _build_session_key(self, source) -> str:
         """Return the webhook run/session correlation key for a source."""
@@ -265,17 +268,45 @@ class WebhookAdapter(BasePlatformAdapter):
         self._run_finalizers[key] = _finalizer
         if lease_info:
             self._lease_by_finalizer[key] = lease_info
+        self._runtime_cwds_by_finalizer[key] = ()
         return key
+
+    def _record_run_execution_cwds(self, key: str, cwds: Any) -> None:
+        """Persist runtime-boundary cwd observations for finalize-time adoption audit."""
+        if key not in self._run_finalizers:
+            return
+        self._runtime_cwds_by_finalizer[key] = cwds
+
+    def _runtime_cwds_match_lease(self, lease_info: dict, cwds: tuple[str, ...]) -> bool:
+        """True when every recorded subprocess cwd equals the lease path."""
+        if not cwds:
+            return True
+        lease_path = str(lease_info.get("path") or "")
+        if not lease_path:
+            return False
+        try:
+            lease_real = Path(lease_path).expanduser().resolve()
+        except (OSError, RuntimeError):
+            return False
+        for cwd in cwds:
+            try:
+                cwd_real = Path(cwd).expanduser().resolve()
+            except (OSError, RuntimeError):
+                return False
+            if cwd_real != lease_real:
+                return False
+        return True
 
     def _finalize_run(self, key: str) -> None:
         """Run and remove a registered webhook finalizer exactly once."""
         finalizer = self._run_finalizers.pop(key, None)
         lease_info = self._lease_by_finalizer.pop(key, None)
+        runtime_cwds = tuple(self._runtime_cwds_by_finalizer.pop(key, ()))
         if finalizer is None:
             return
         try:
             if lease_info:
-                self._complete_worktree_lease(lease_info)
+                self._complete_worktree_lease(lease_info, runtime_cwds=runtime_cwds)
         finally:
             finalizer()
 
@@ -717,22 +748,24 @@ class WebhookAdapter(BasePlatformAdapter):
     def _get_per_delivery_broker(self):
         if self._wt_broker is not None:
             return self._wt_broker
-        from agent.worktree_broker import WorktreeBroker
-        from hermes_constants import get_hermes_home
-        hermes_home = Path(get_hermes_home())
-        repo_root = Path(os.environ.get(
-            "HERMES_REPO_ROOT", str(Path(__file__).resolve().parents[2])
-        ))
-        existing = self._hydrate_per_delivery_sessions(hermes_home=hermes_home, repo_root=repo_root)
-        self._wt_broker = WorktreeBroker(
-            repo_root=repo_root,
-            hermes_home=hermes_home,
-            existing_sessions=existing,
-            wt_dir_name="relay-wt/deliveries",
-            branch_prefix="loki",
-            ports_enabled=False,
-            max_active_leases=self._max_concurrent_agent_runs,
-        )
+        with self._wt_broker_lock:  # F4 broker-singleton lock marker
+            if self._wt_broker is None:
+                from agent.worktree_broker import WorktreeBroker
+                from hermes_constants import get_hermes_home
+                hermes_home = Path(get_hermes_home())
+                repo_root = Path(os.environ.get(
+                    "HERMES_REPO_ROOT", str(Path(__file__).resolve().parents[2])
+                ))
+                existing = self._hydrate_per_delivery_sessions(hermes_home=hermes_home, repo_root=repo_root)
+                self._wt_broker = WorktreeBroker(
+                    repo_root=repo_root,
+                    hermes_home=hermes_home,
+                    existing_sessions=existing,
+                    wt_dir_name="relay-wt/deliveries",
+                    branch_prefix="loki",
+                    ports_enabled=False,
+                    max_active_leases=self._max_concurrent_agent_runs,
+                )
         return self._wt_broker
 
     def _hydrate_per_delivery_sessions(self, *, hermes_home: Path, repo_root: Path) -> dict[str, dict]:
@@ -880,12 +913,21 @@ class WebhookAdapter(BasePlatformAdapter):
                     )
             raise
 
-    def _complete_worktree_lease(self, lease_info: dict) -> None:
+    def _complete_worktree_lease(self, lease_info: dict, *, runtime_cwds: tuple[str, ...] = ()) -> None:
         broker = self._wt_broker
         if broker is None:
             return
         sid = str(lease_info.get("sid") or "")
         if not sid:
+            return
+        if not self._runtime_cwds_match_lease(lease_info, runtime_cwds):
+            failed = dict(lease_info)
+            failed["reason"] = "adoption_failed_runtime_cwd_mismatch"
+            try:
+                broker._registry.pop(sid, None)
+            except Exception:
+                logger.debug("[webhook] failed to drop mismatched lease registry sid=%s", sid, exc_info=True)
+            self._append_lease_ledger("adoption_failed", failed)
             return
         result = broker.complete_lease(sid, base_sha=lease_info.get("base"))
         try:
@@ -1321,6 +1363,13 @@ class WebhookAdapter(BasePlatformAdapter):
             # rails to this accepted run, using the same key finalization clears.
             _approval_key = _register_approval_rails()
             _finalizer_key = self._register_run_finalizer(event, _approval_key, _lease_info)
+            from agent.codex_session_context import (
+                get_runtime_execution_cwd_recorder,
+                reset_runtime_execution_cwds,
+                restore_runtime_execution_cwds,
+            )
+            _cwd_audit_token = reset_runtime_execution_cwds()
+            self._record_run_execution_cwds(_finalizer_key, get_runtime_execution_cwd_recorder())
             try:
                 # Phase 3: when HERMES_WEBHOOK_WORKTREE is on, bind the run to the relay
                 # git worktree so it works on a branch, not the live tree. If a worktree
@@ -1343,6 +1392,7 @@ class WebhookAdapter(BasePlatformAdapter):
                 self._finalize_run(_finalizer_key)
                 raise
             finally:
+                restore_runtime_execution_cwds(_cwd_audit_token)
                 # handle_message returns at spawn; run-end finalization is owned by on_processing_complete.
                 if _finalizer_key in self._run_finalizers and _finalizer_key not in self._session_tasks:
                     self._finalize_run(_finalizer_key)

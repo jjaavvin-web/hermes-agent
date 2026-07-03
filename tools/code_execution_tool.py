@@ -47,6 +47,7 @@ _IS_WINDOWS = platform.system() == "Windows"
 from typing import Any, Dict, List, Optional
 
 from tools.thread_context import propagate_context_to_thread
+from agent.codex_session_context import record_runtime_execution_cwd, resolve_confined_cwd
 
 # Availability gate.  On Windows we fall back to loopback TCP for the
 # sandbox RPC transport (AF_UNIX is unreliable on Windows Python) — see
@@ -1281,6 +1282,7 @@ def execute_code(
         _mode = _get_execution_mode()
         _child_python = _resolve_child_python(_mode)
         _child_cwd = _resolve_child_cwd(_mode, tmpdir)
+        record_runtime_execution_cwd(_child_cwd)
         _script_path = os.path.join(tmpdir, "script.py")
 
         proc = subprocess.Popen(
@@ -1687,23 +1689,24 @@ def _resolve_child_python(mode: str) -> str:
 def _resolve_child_cwd(mode: str, staging_dir: str) -> str:
     """Resolve the working directory for the execute_code subprocess.
 
-    - ``strict``: the staging tmpdir (today's behavior).
-    - ``project``: the session's TERMINAL_CWD (same as the terminal tool), or
-      ``os.getcwd()`` if TERMINAL_CWD is unset or doesn't point at a real dir.
-      Falls back to the staging tmpdir as a last resort so we never invoke
-      Popen with a nonexistent cwd.
+    If worktree confinement is required, the shared resolver fails closed to the
+    active valid worktree and never falls back to TERMINAL_CWD, os.getcwd(), or
+    staging. Otherwise this preserves the existing strict/project behavior.
     """
+    candidate: str
     if mode != "project":
-        return staging_dir
-    raw = os.environ.get("TERMINAL_CWD", "").strip()
-    if raw:
-        expanded = os.path.expanduser(raw)
-        if os.path.isdir(expanded):
-            return expanded
-    here = os.getcwd()
-    if os.path.isdir(here):
-        return here
-    return staging_dir
+        candidate = staging_dir
+    else:
+        raw = os.environ.get("TERMINAL_CWD", "").strip()
+        if raw:
+            expanded = os.path.expanduser(raw)
+            if os.path.isdir(expanded):
+                return resolve_confined_cwd(expanded)
+        here = os.getcwd()
+        if os.path.isdir(here):
+            return resolve_confined_cwd(here)
+        candidate = staging_dir
+    return resolve_confined_cwd(candidate)
 
 
 # ---------------------------------------------------------------------------

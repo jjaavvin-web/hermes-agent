@@ -104,7 +104,8 @@ def _make_broker(tmp_path: Path, *, cap: int = 2) -> WorktreeBroker:
         if args[:2] == ("worktree", "add"):
             Path(args[2]).mkdir(parents=True, exist_ok=True)
         if args[:2] == ("worktree", "remove"):
-            Path(args[-1]).rmdir()
+            import shutil
+            shutil.rmtree(Path(args[-1]), ignore_errors=True)
         return DummyResult()
 
     broker._git = fake_git  # type: ignore[method-assign]
@@ -470,6 +471,116 @@ def test_completion_ledger_failure_completes_lease_first_and_logs_loudly(tmp_pat
     assert broker._registry == {}
     assert "lease ledger append failed" in caplog.text
 
+
+
+def test_broker_singleton_first_call_is_locked(tmp_path, monkeypatch):
+    adapter = _make_adapter(cap=2)
+    home = Path(os.environ["HERMES_HOME"])
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    monkeypatch.setenv("HERMES_REPO_ROOT", str(repo))
+    monkeypatch.setattr("hermes_constants.get_hermes_home", lambda: str(home))
+    adapter._hydrate_per_delivery_sessions = lambda hermes_home, repo_root: {}  # type: ignore[method-assign]
+
+    import threading
+    import time
+    import agent.worktree_broker as broker_module
+
+    constructed: list[object] = []
+
+    class FakeBroker:
+        def __init__(self, **_kwargs):
+            time.sleep(0.05)
+            constructed.append(self)
+
+    monkeypatch.setattr(broker_module, "WorktreeBroker", FakeBroker)
+    results: list[object] = []
+
+    def call() -> None:
+        results.append(adapter._get_per_delivery_broker())
+
+    threads = [threading.Thread(target=call), threading.Thread(target=call)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=2.0)
+
+    assert len(results) == 2
+    assert len(constructed) == 1
+    assert results[0] is results[1] is adapter._wt_broker
+
+
+
+@pytest.mark.asyncio
+async def test_runtime_recorded_cwd_from_spawned_task_drives_finalize_adoption_audit(tmp_path):
+    adapter = _make_adapter(cap=1)
+    broker = _make_broker(tmp_path, cap=1)
+    adapter._wt_broker = broker
+    observed_key: list[str] = []
+
+    async def handler(event) -> None:
+        key = adapter._build_session_key(event.source)
+        observed_key.append(key)
+        from agent.codex_session_context import record_runtime_execution_cwd
+
+        record_runtime_execution_cwd(str(tmp_path / "bare-workspace"))
+        adapter._session_tasks[key] = object()
+
+    adapter.handle_message = handler  # type: ignore[method-assign]
+
+    async with TestClient(TestServer(_create_app(adapter))) as cli:
+        response = await _post(cli, "spawned-runtime-mismatch")
+        assert response.status == 202, await response.json()
+        await asyncio.gather(*adapter._background_tasks, return_exceptions=True)
+
+    assert observed_key
+    key = observed_key[0]
+    lease = adapter._lease_by_finalizer[key]
+    lease_path = Path(lease["path"])
+    assert lease_path.exists()
+
+    adapter.on_processing_complete_sync = getattr(adapter, "on_processing_complete_sync", None)
+    adapter._finalize_run(key)
+
+    assert lease_path.exists()
+    ledger = Path(os.environ["HERMES_HOME"]) / "state" / "loki" / "worktree-leases.jsonl"
+    rows = [json.loads(line) for line in ledger.read_text(encoding="utf-8").splitlines()]
+    assert rows[-1]["event"] == "adoption_failed"
+    assert rows[-1]["reason"] == "adoption_failed_runtime_cwd_mismatch"
+
+def test_completion_runtime_cwd_mismatch_records_adoption_failed_and_retains_tree(tmp_path):
+    adapter = _make_adapter(cap=1)
+    broker = _make_broker(tmp_path, cap=1)
+    adapter._wt_broker = broker
+    lease = adapter._allocate_per_delivery_worktree("loki1", "runtime-mismatch")
+    lease_path = Path(lease["path"])
+    (lease_path / "evidence.txt").write_text("keep me", encoding="utf-8")
+
+    adapter._complete_worktree_lease(lease, runtime_cwds=(str(tmp_path / "wrong-cwd"),))
+
+    assert lease_path.exists()
+    assert (lease_path / "evidence.txt").read_text(encoding="utf-8") == "keep me"
+    assert lease["sid"] not in broker._registry
+    ledger = Path(os.environ["HERMES_HOME"]) / "state" / "loki" / "worktree-leases.jsonl"
+    rows = [json.loads(line) for line in ledger.read_text(encoding="utf-8").splitlines()]
+    assert [row["event"] for row in rows] == ["leased", "adoption_failed"]
+    assert rows[-1]["reason"] == "adoption_failed_runtime_cwd_mismatch"
+
+
+def test_completion_zero_recorded_runtime_executions_may_clean_remove(tmp_path):
+    adapter = _make_adapter(cap=1)
+    broker = _make_broker(tmp_path, cap=1)
+    adapter._wt_broker = broker
+    lease = adapter._allocate_per_delivery_worktree("loki1", "zero-runtime")
+    lease_path = Path(lease["path"])
+    broker._worktree_is_clean_for_removal = lambda _path, _base: True  # type: ignore[method-assign]
+
+    adapter._complete_worktree_lease(lease, runtime_cwds=())
+
+    assert not lease_path.exists()
+    ledger = Path(os.environ["HERMES_HOME"]) / "state" / "loki" / "worktree-leases.jsonl"
+    rows = [json.loads(line) for line in ledger.read_text(encoding="utf-8").splitlines()]
+    assert [row["event"] for row in rows] == ["leased", "completed", "removed"]
 
 def test_switch_off_zero_side_effect_pin(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_WEBHOOK_WORKTREE", "1")
