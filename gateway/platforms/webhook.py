@@ -572,6 +572,8 @@ class WebhookAdapter(BasePlatformAdapter):
         }
         if lease_info.get("base_ref"):
             record["base_ref"] = lease_info.get("base_ref")
+        if lease_info.get("reason"):
+            record["reason"] = lease_info.get("reason")
         try:
             path = self._lease_ledger_path()
             path.parent.mkdir(parents=True, exist_ok=True)
@@ -585,6 +587,80 @@ class WebhookAdapter(BasePlatformAdapter):
                 lease_info.get("delivery_id"),
                 exc_info=True,
             )
+
+    def _lookup_live_session_entry(self, session_key: str) -> Any | None:
+        """Return the live SessionStore entry for ``session_key`` without creating one."""
+        store = getattr(self, "_session_store", None)
+        if store is None or not session_key:
+            return None
+        try:
+            ensure_loaded = getattr(store, "_ensure_loaded", None)
+            if callable(ensure_loaded):
+                ensure_loaded()
+            entries = getattr(store, "_entries", None)
+            if isinstance(entries, dict):
+                return entries.get(session_key)
+            get_entry = getattr(store, "get", None)
+            if callable(get_entry):
+                return get_entry(session_key)
+        except Exception:
+            logger.exception(
+                "[webhook] live session lookup failed for %s; refusing per-delivery adoption",
+                session_key,
+            )
+            return object()
+        return None
+
+    def _live_session_entries(self) -> list[Any] | None:
+        """Return live SessionStore entries, or None when no live store is installed."""
+        store = getattr(self, "_session_store", None)
+        if store is None:
+            return None
+        try:
+            ensure_loaded = getattr(store, "_ensure_loaded", None)
+            if callable(ensure_loaded):
+                ensure_loaded()
+            entries = getattr(store, "_entries", None)
+            if isinstance(entries, dict):
+                return list(entries.values())
+        except Exception:
+            logger.exception("[webhook] live session scan failed during per-delivery hydration")
+            return []
+        return []
+
+    @staticmethod
+    def _same_worktree_path(left: str | None, right: str | None) -> bool:
+        if not left or not right:
+            return False
+        try:
+            return Path(left).expanduser().resolve() == Path(right).expanduser().resolve()
+        except (OSError, RuntimeError):
+            return os.path.abspath(left) == os.path.abspath(right)
+
+    def _verify_per_delivery_adoption(self, *, session_key: str, worktree_path: str) -> bool:
+        """True when target session is fresh or already bound to this exact worktree."""
+        entry = self._lookup_live_session_entry(session_key)
+        if entry is None:
+            return True
+        existing_worktree = getattr(entry, "worktree_path", None)
+        return self._same_worktree_path(existing_worktree, worktree_path)
+
+    def _refuse_worktree_lease(self, lease_info: dict, *, reason: str) -> None:
+        """Release a lease as refused and record distinct ledger evidence."""
+        refused = dict(lease_info)
+        refused["reason"] = reason
+        broker = self._wt_broker
+        sid = str(refused.get("sid") or "")
+        if broker is not None and sid:
+            try:
+                broker.release(sid)
+            except Exception:
+                logger.exception(
+                    "[webhook] failed to release refused per-delivery lease sid=%s delivery=%s",
+                    sid,
+                    refused.get("delivery_id"),
+                )
+        self._append_lease_ledger("refused", refused)
 
     def _resolve_worktree_base_sha(self) -> str:
         repo_root = os.environ.get(
@@ -653,6 +729,33 @@ class WebhookAdapter(BasePlatformAdapter):
             branch = (meta or {}).get("branch", "")
             if not branch.startswith("loki/"):
                 continue
+            live_entries = self._live_session_entries()
+            if live_entries is not None:
+                matching = [
+                    entry for entry in live_entries
+                    if self._same_worktree_path(getattr(entry, "worktree_path", None), str(child))
+                ]
+                mismatched = [
+                    entry for entry in live_entries
+                    if str(getattr(entry, "worktree_path", "") or "") and not self._same_worktree_path(
+                        getattr(entry, "worktree_path", None),
+                        str(child),
+                    )
+                ]
+                if not matching and mismatched:
+                    self._append_lease_ledger(
+                        "refused",
+                        {
+                            "sid": child.name,
+                            "delivery_id": child.name,
+                            "route": "hydrate",
+                            "path": str(child),
+                            "branch": branch,
+                            "base": (meta or {}).get("base_sha"),
+                            "reason": "hydrate_live_binding_mismatch",
+                        },
+                    )
+                    continue
             adopted[child.name] = {
                 "path": str(child),
                 "branch": branch,
@@ -1090,7 +1193,30 @@ class WebhookAdapter(BasePlatformAdapter):
                     _lease_info = await asyncio.to_thread(
                         self._allocate_per_delivery_worktree, route_name, delivery_id
                     )
-                    _wt_for_run = _lease_info["path"]
+                    _wt_for_run = str(_lease_info["path"])
+                    _session_key = self._build_session_key(source)
+                    if not self._verify_per_delivery_adoption(
+                        session_key=_session_key,
+                        worktree_path=_wt_for_run,
+                    ):
+                        self._agent_run_semaphore.release()
+                        self._seen_deliveries.pop(delivery_id, None)
+                        self._refuse_worktree_lease(
+                            _lease_info,
+                            reason="adoption_mismatch",
+                        )
+                        logger.error(
+                            "[webhook] per-delivery worktree adoption mismatch; refusing run route=%s delivery=%s session=%s worktree=%s",
+                            route_name,
+                            delivery_id,
+                            _session_key,
+                            _wt_for_run,
+                        )
+                        return web.json_response(
+                            {"status": "error", "error": "worktree_unavailable",
+                             "delivery_id": delivery_id},
+                            status=503,
+                        )
                 except Exception as exc:
                     self._agent_run_semaphore.release()
                     self._seen_deliveries.pop(delivery_id, None)
@@ -1141,6 +1267,9 @@ class WebhookAdapter(BasePlatformAdapter):
                 # git worktree so it works on a branch, not the live tree. If a worktree
                 # can't be guaranteed, REFUSE (503) — NEVER fall through to the live cwd.
                 if self._wt_enabled:
+                    if self._per_delivery_wt_enabled and _wt_for_run is None:
+                        self._seen_deliveries.pop(delivery_id, None)
+                        raise RuntimeError("per-delivery worktree binding missing after verified preflight")
                     from agent.codex_session_context import (
                         set_active_worktree, reset_active_worktree,
                     )

@@ -8,6 +8,7 @@ import os
 import subprocess
 import threading
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from aiohttp import web
@@ -229,9 +230,34 @@ def test_resume_hydrates_existing_per_delivery_worktree_and_fail_closes_when_gon
 
     monkeypatch.setattr(webhook_module.subprocess, "run", fake_run)
     adapter = _make_adapter(cap=1)
+    adapter.set_session_store(
+        SimpleNamespace(
+            _entries={"wh-loki1-existing": SimpleNamespace(worktree_path=str(existing))}
+        )
+    )
     adopted = adapter._hydrate_per_delivery_sessions(hermes_home=home, repo_root=repo)
 
     assert adopted == {
+        "wh-loki1-existing": {
+            "path": str(existing),
+            "branch": "loki/loki1/existing",
+            "base_sha": "a" * 40,
+        }
+    }
+
+    adapter.set_session_store(
+        SimpleNamespace(
+            _entries={"wh-loki1-existing": SimpleNamespace(worktree_path=str(repo / "wrong-tree"))}
+        )
+    )
+    assert adapter._hydrate_per_delivery_sessions(hermes_home=home, repo_root=repo) == {}
+    ledger = home / "state" / "loki" / "worktree-leases.jsonl"
+    rows = [json.loads(line) for line in ledger.read_text(encoding="utf-8").splitlines()]
+    assert [row["event"] for row in rows] == ["refused"]
+    assert rows[0]["reason"] == "hydrate_live_binding_mismatch"
+
+    adapter.set_session_store(SimpleNamespace(_entries={}))
+    assert adapter._hydrate_per_delivery_sessions(hermes_home=home, repo_root=repo) == {
         "wh-loki1-existing": {
             "path": str(existing),
             "branch": "loki/loki1/existing",
