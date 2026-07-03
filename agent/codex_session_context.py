@@ -60,12 +60,14 @@ def set_active_worktree(path: Optional[str]):
     undo the change. Typically used at the boundary where a gateway message
     handler kicks off the agent turn.
 
-    A truthy ``path`` marks this turn as requiring worktree confinement. The
-    actual runtime/tool cwd resolver then validates the path at execution time
-    and fails closed if it has disappeared or no longer points at a directory.
+    A currently-existing ``path`` marks this turn as requiring worktree
+    confinement. Legacy consumers intentionally treat stale/missing worktree
+    values as inert/fail-open; execution-time wired resolvers revalidate and
+    fail closed when a previously-valid binding later disappears.
     """
+    confinement_required = bool(path and os.path.isdir(path))
     active_token = _active_worktree_var.set(path)
-    confinement_token = _confinement_required_var.set(bool(path))
+    confinement_token = _confinement_required_var.set(confinement_required)
     return _WorktreeContextToken(active_token, confinement_token)
 
 
@@ -129,20 +131,22 @@ def reset_lane_executor(token) -> None:
 def resolve_confined_cwd(candidate_cwd: Optional[str]) -> str:
     """Resolve a subprocess cwd through the active worktree confinement boundary.
 
-    When confinement is not required, this intentionally returns ``candidate_cwd``
-    unchanged to preserve singleton/live behavior. When confinement is required,
-    the active worktree must exist and every subprocess cwd is forced to that
-    exact worktree. There is no fallback to TERMINAL_CWD, ``os.getcwd()``, or
-    temporary staging directories.
+    Legacy callers still see stale/missing worktree bindings as inert because
+    ``set_active_worktree`` only arms confinement for directories that exist at
+    bind time.  The execution-time callers wired through this helper revalidate
+    an armed binding on every subprocess spawn: missing bindings fail closed,
+    missing bound directories fail closed, candidates inside the bound tree are
+    allowed, and candidates outside the bound tree are denied.
     """
-    if not is_worktree_confinement_required():
-        return candidate_cwd  # type: ignore[return-value]
-
     active = get_active_worktree()
     if not active:
-        raise WorktreeConfinementError(
-            "WORKTREE_CONFINEMENT: runtime cwd denied — confinement required but no active worktree is bound"
-        )
+        if is_worktree_confinement_required():
+            raise WorktreeConfinementError(
+                "WORKTREE_CONFINEMENT: command execution denied — this turn requires "
+                "an active worktree but none is bound (isolation lost on resume)"
+            )
+        return candidate_cwd  # type: ignore[return-value]
+
     try:
         active_path = Path(active).expanduser().resolve()
     except (OSError, RuntimeError) as exc:
@@ -153,7 +157,24 @@ def resolve_confined_cwd(candidate_cwd: Optional[str]) -> str:
         raise WorktreeConfinementError(
             f"WORKTREE_CONFINEMENT: runtime cwd denied — active worktree {str(active_path)!r} is missing"
         )
-    return str(active_path)
+
+    if not candidate_cwd:
+        return str(active_path)
+    candidate_path = Path(candidate_cwd).expanduser()
+    if not candidate_path.is_absolute():
+        candidate_path = active_path / candidate_path
+    try:
+        candidate_resolved = candidate_path.resolve()
+    except (OSError, RuntimeError) as exc:
+        raise WorktreeConfinementError(
+            f"WORKTREE_CONFINEMENT: runtime cwd denied — candidate cwd {candidate_cwd!r} is invalid"
+        ) from exc
+    if candidate_resolved == active_path or active_path in candidate_resolved.parents:
+        return str(candidate_resolved)
+    raise WorktreeConfinementError(
+        f"WORKTREE_CONFINEMENT: runtime cwd denied — candidate cwd {str(candidate_resolved)!r} "
+        f"is outside active worktree {str(active_path)!r}"
+    )
 
 
 def record_runtime_execution_cwd(cwd: str) -> None:

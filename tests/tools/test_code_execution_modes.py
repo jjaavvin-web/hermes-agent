@@ -228,13 +228,31 @@ class TestResolveChildCwd(unittest.TestCase):
         with patch.dict(os.environ, {"TERMINAL_CWD": "~"}):
             self.assertEqual(_resolve_child_cwd("project", "/tmp/staging"), home)
 
-    def test_confinement_required_prefers_active_worktree_over_hostile_terminal_cwd(self):
+    def test_confinement_required_rejects_hostile_terminal_cwd(self):
         import tempfile
         with tempfile.TemporaryDirectory() as wt, tempfile.TemporaryDirectory() as hostile:
             token = set_active_worktree(wt)
             try:
                 with patch.dict(os.environ, {"TERMINAL_CWD": hostile}):
-                    self.assertEqual(os.path.realpath(_resolve_child_cwd("project", "/tmp/staging")), os.path.realpath(wt))
+                    with self.assertRaisesRegex(RuntimeError, "WORKTREE_CONFINEMENT"):
+                        _resolve_child_cwd("project", "/tmp/staging")
+            finally:
+                reset_active_worktree(token)
+
+    def test_confinement_required_allows_in_tree_terminal_cwd(self):
+        import tempfile
+        from pathlib import Path
+
+        with tempfile.TemporaryDirectory() as wt:
+            subdir = Path(wt) / "sub" / "dir"
+            subdir.mkdir(parents=True)
+            token = set_active_worktree(wt)
+            try:
+                with patch.dict(os.environ, {"TERMINAL_CWD": str(subdir)}):
+                    self.assertEqual(
+                        os.path.realpath(_resolve_child_cwd("project", "/tmp/staging")),
+                        os.path.realpath(subdir),
+                    )
             finally:
                 reset_active_worktree(token)
 
@@ -353,7 +371,7 @@ class TestExecuteCodeModeIntegration(unittest.TestCase):
                 os.path.realpath(td),
             )
 
-    def test_project_mode_under_confinement_runs_in_bound_worktree_and_records_cwd(self):
+    def test_project_mode_under_confinement_rejects_hostile_terminal_cwd(self):
         import tempfile
         with tempfile.TemporaryDirectory() as wt, tempfile.TemporaryDirectory() as hostile:
             active_token = set_active_worktree(wt)
@@ -364,9 +382,31 @@ class TestExecuteCodeModeIntegration(unittest.TestCase):
                     mode="project",
                     extra_env={"TERMINAL_CWD": hostile},
                 )
+                self.assertEqual(result["status"], "error")
+                self.assertIn("WORKTREE_CONFINEMENT", result["error"])
+                self.assertEqual(get_runtime_execution_cwds(), ())
+            finally:
+                restore_runtime_execution_cwds(audit_token)
+                reset_active_worktree(active_token)
+
+    def test_project_mode_under_confinement_runs_in_tree_cwd_and_records_cwd(self):
+        import tempfile
+        from pathlib import Path
+
+        with tempfile.TemporaryDirectory() as wt:
+            subdir = Path(wt) / "sub" / "dir"
+            subdir.mkdir(parents=True)
+            active_token = set_active_worktree(wt)
+            audit_token = reset_runtime_execution_cwds()
+            try:
+                result = self._run(
+                    "import os; print(os.getcwd())",
+                    mode="project",
+                    extra_env={"TERMINAL_CWD": str(subdir)},
+                )
                 self.assertEqual(result["status"], "success")
-                self.assertEqual(os.path.realpath(result["output"].strip()), os.path.realpath(wt))
-                self.assertEqual(tuple(os.path.realpath(p) for p in get_runtime_execution_cwds()), (os.path.realpath(wt),))
+                self.assertEqual(os.path.realpath(result["output"].strip()), os.path.realpath(subdir))
+                self.assertEqual(tuple(os.path.realpath(p) for p in get_runtime_execution_cwds()), (os.path.realpath(subdir),))
             finally:
                 restore_runtime_execution_cwds(audit_token)
                 reset_active_worktree(active_token)

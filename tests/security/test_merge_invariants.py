@@ -645,6 +645,9 @@ def test_f4_runtime_confinement_and_adoption_audit_pins():
     code_exec = _read("tools/code_execution_tool.py")
     assert "resolve_confined_cwd" in code_exec, "execute_code cwd resolver no longer uses shared confinement resolver"
     assert "record_runtime_execution_cwd(_child_cwd)" in code_exec, "execute_code no longer records actual runtime cwd"
+    terminal = _read("tools/terminal_tool.py")
+    assert "resolve_confined_cwd(workdir)" in terminal, "terminal_tool command cwd resolver no longer uses shared confinement resolver"
+    assert "record_runtime_execution_cwd(resolved)" in terminal, "terminal_tool no longer records actual runtime cwd"
     webhook = _read("gateway/platforms/webhook.py")
     assert "adoption_failed_runtime_cwd_mismatch" in webhook, "finalize adoption_failed reason string dropped"
     assert "_runtime_cwds_match_lease" in webhook, "webhook finalize audit no longer compares runtime-recorded cwd"

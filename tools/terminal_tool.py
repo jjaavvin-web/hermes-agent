@@ -299,11 +299,17 @@ class _WorktreeConfinementError(ValueError):
 def _active_terminal_worktree() -> str | None:
     """Return the active bound worktree if the current turn has one."""
     try:
-        from agent.codex_session_context import resolve_confined_cwd  # noqa: PLC0415
+        from agent.codex_session_context import get_active_worktree  # noqa: PLC0415
 
-        return resolve_confined_cwd(None)
+        path = get_active_worktree()
+        if not path:
+            return None
+        candidate = os.path.realpath(os.path.abspath(os.path.expanduser(path)))
+        if os.path.isdir(candidate):
+            return candidate
     except (ImportError, OSError, RuntimeError, ValueError):
         return None
+    return None
 
 
 def _terminal_confinement_required() -> bool:
@@ -1915,7 +1921,7 @@ def _resolve_command_cwd(
 
     if is_worktree_confinement_required():
         try:
-            resolved = resolve_confined_cwd(workdir or default_cwd)
+            resolved = resolve_confined_cwd(workdir)
         except Exception as exc:
             raise _WorktreeConfinementError(
                 f"{exc}; refusing to run against the live tree"
