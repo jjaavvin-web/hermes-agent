@@ -9,12 +9,20 @@ import subprocess
 import threading
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
 from agent.codex_session_context import get_active_worktree
+from agent.codex_session_context import (
+    get_runtime_execution_cwds,
+    reset_active_worktree,
+    reset_runtime_execution_cwds,
+    restore_runtime_execution_cwds,
+    set_active_worktree,
+)
 from agent.worktree_broker import RepoStateError, Worktree, WorktreeBroker
 from gateway.config import PlatformConfig
 from gateway.platforms import webhook as webhook_module
@@ -548,6 +556,56 @@ async def test_runtime_recorded_cwd_from_spawned_task_drives_finalize_adoption_a
     assert rows[-1]["event"] == "adoption_failed"
     assert rows[-1]["reason"] == "adoption_failed_runtime_cwd_mismatch"
 
+def test_refused_execute_code_records_no_rejected_candidate_runtime_cwd(tmp_path):
+    from tools.code_execution_tool import execute_code
+
+    adapter = _make_adapter(cap=1)
+    lease_path = tmp_path / "lease-root"
+    hostile = tmp_path / "outside-workspace"
+    lease_path.mkdir()
+    hostile.mkdir()
+    active_token = set_active_worktree(str(lease_path))
+    audit_token = reset_runtime_execution_cwds()
+    try:
+        with patch.dict(os.environ, {"TERMINAL_CWD": str(hostile)}):
+            raw = execute_code(
+                code="print('must not run')",
+                task_id="refused-execute-code",
+                enabled_tools=[],
+            )
+        result = json.loads(raw)
+        assert result["status"] == "error"
+        assert "WORKTREE_CONFINEMENT" in result["error"]
+        assert get_runtime_execution_cwds() == ()
+        assert adapter._runtime_cwds_match_lease(
+            {"path": str(lease_path)},
+            get_runtime_execution_cwds(),
+        ) is True
+    finally:
+        restore_runtime_execution_cwds(audit_token)
+        reset_active_worktree(active_token)
+
+
+def test_completion_runtime_cwd_inside_lease_subdirectory_finalizes_cleanly(tmp_path):
+    adapter = _make_adapter(cap=1)
+    broker = _make_broker(tmp_path, cap=1)
+    adapter._wt_broker = broker
+    lease = adapter._allocate_per_delivery_worktree("loki1", "runtime-subdir")
+    lease_path = Path(lease["path"])
+    subdir = lease_path / "canary-sub"
+    subdir.mkdir(parents=True)
+    broker._worktree_is_clean_for_removal = lambda _path, _base: True  # type: ignore[method-assign]
+
+    adapter._complete_worktree_lease(lease, runtime_cwds=(str(subdir),))
+
+    assert not lease_path.exists()
+    assert lease["sid"] not in broker._registry
+    ledger = Path(os.environ["HERMES_HOME"]) / "state" / "loki" / "worktree-leases.jsonl"
+    rows = [json.loads(line) for line in ledger.read_text(encoding="utf-8").splitlines()]
+    assert [row["event"] for row in rows] == ["leased", "completed", "removed"]
+    assert "adoption_failed" not in {row["event"] for row in rows}
+
+
 def test_completion_runtime_cwd_mismatch_records_adoption_failed_and_retains_tree(tmp_path):
     adapter = _make_adapter(cap=1)
     broker = _make_broker(tmp_path, cap=1)
@@ -567,6 +625,41 @@ def test_completion_runtime_cwd_mismatch_records_adoption_failed_and_retains_tre
     assert rows[-1]["reason"] == "adoption_failed_runtime_cwd_mismatch"
 
 
+def test_completion_invalid_runtime_cwd_fails_closed_and_retains_tree(tmp_path):
+    adapter = _make_adapter(cap=1)
+    broker = _make_broker(tmp_path, cap=1)
+    adapter._wt_broker = broker
+    lease = adapter._allocate_per_delivery_worktree("loki1", "runtime-invalid")
+    lease_path = Path(lease["path"])
+    broker._worktree_is_clean_for_removal = lambda _path, _base: True  # type: ignore[method-assign]
+
+    with patch.object(Path, "resolve", side_effect=[Path(lease["path"]), OSError("vanished cwd")]):
+        adapter._complete_worktree_lease(lease, runtime_cwds=(str(lease_path / "vanished"),))
+
+    assert lease_path.exists()
+    assert lease["sid"] not in broker._registry
+    ledger = Path(os.environ["HERMES_HOME"]) / "state" / "loki" / "worktree-leases.jsonl"
+    rows = [json.loads(line) for line in ledger.read_text(encoding="utf-8").splitlines()]
+    assert [row["event"] for row in rows] == ["leased", "adoption_failed"]
+    assert rows[-1]["reason"] == "adoption_failed_runtime_cwd_mismatch"
+
+
+def test_completion_equal_lease_root_finalizes_cleanly(tmp_path):
+    adapter = _make_adapter(cap=1)
+    broker = _make_broker(tmp_path, cap=1)
+    adapter._wt_broker = broker
+    lease = adapter._allocate_per_delivery_worktree("loki1", "runtime-equal-root")
+    lease_path = Path(lease["path"])
+    broker._worktree_is_clean_for_removal = lambda _path, _base: True  # type: ignore[method-assign]
+
+    adapter._complete_worktree_lease(lease, runtime_cwds=(str(lease_path),))
+
+    assert not lease_path.exists()
+    ledger = Path(os.environ["HERMES_HOME"]) / "state" / "loki" / "worktree-leases.jsonl"
+    rows = [json.loads(line) for line in ledger.read_text(encoding="utf-8").splitlines()]
+    assert [row["event"] for row in rows] == ["leased", "completed", "removed"]
+
+
 def test_completion_zero_recorded_runtime_executions_may_clean_remove(tmp_path):
     adapter = _make_adapter(cap=1)
     broker = _make_broker(tmp_path, cap=1)
@@ -581,6 +674,7 @@ def test_completion_zero_recorded_runtime_executions_may_clean_remove(tmp_path):
     ledger = Path(os.environ["HERMES_HOME"]) / "state" / "loki" / "worktree-leases.jsonl"
     rows = [json.loads(line) for line in ledger.read_text(encoding="utf-8").splitlines()]
     assert [row["event"] for row in rows] == ["leased", "completed", "removed"]
+
 
 def test_switch_off_zero_side_effect_pin(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_WEBHOOK_WORKTREE", "1")

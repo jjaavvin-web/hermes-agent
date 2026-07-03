@@ -278,7 +278,7 @@ class WebhookAdapter(BasePlatformAdapter):
         self._runtime_cwds_by_finalizer[key] = cwds
 
     def _runtime_cwds_match_lease(self, lease_info: dict, cwds: tuple[str, ...]) -> bool:
-        """True when every recorded subprocess cwd equals the lease path."""
+        """True when every recorded subprocess cwd is inside/equal to the lease path."""
         if not cwds:
             return True
         lease_path = str(lease_info.get("path") or "")
@@ -293,7 +293,7 @@ class WebhookAdapter(BasePlatformAdapter):
                 cwd_real = Path(cwd).expanduser().resolve()
             except (OSError, RuntimeError):
                 return False
-            if cwd_real != lease_real:
+            if not (cwd_real == lease_real or lease_real in cwd_real.parents):
                 return False
         return True
 
