@@ -8,6 +8,7 @@ import os
 import subprocess
 import sys
 import textwrap
+import threading
 from datetime import timedelta
 from pathlib import Path
 from typing import Any
@@ -434,9 +435,171 @@ def test_t14_csrf_nonce_and_origin(client: TestClient, isolated_home: Path):
 def test_t15_isolated_worktree_refused(monkeypatch: pytest.MonkeyPatch, client: TestClient, isolated_home: Path):
     _arm(isolated_home, "dry-run")
     cap = _preflight(client)
-    ticket = actions._TICKET_BY_ID[cap["capability_id"] and "act-cron-deadman-triage"]
+    ticket = actions._TICKET_BY_ID["act-cron-deadman-triage"]
     monkeypatch.setitem(ticket["scope_lock"], "workspace_mode", "isolated-worktree")
     assert _dispatch(client, cap).status_code == 403
+
+
+def test_f2_preflight_not_blocked_by_in_flight_subprocess(monkeypatch: pytest.MonkeyPatch, client: TestClient, isolated_home: Path):
+    _arm(isolated_home, "live")
+    started = threading.Event()
+    release = threading.Event()
+
+    def slow_chokepoint(*_args: Any) -> dict[str, Any]:
+        started.set()
+        assert release.wait(timeout=5)
+        return {"returncode": 0}
+
+    monkeypatch.setattr(actions, "_invoke_chokepoint", slow_chokepoint)
+    cap = _preflight(client)
+    result: dict[str, Any] = {}
+
+    def dispatch_in_thread() -> None:
+        result["response"] = _dispatch(client, cap)
+
+    worker = threading.Thread(target=dispatch_in_thread, daemon=True)
+    worker.start()
+    assert started.wait(timeout=5)
+    response = client.post(
+        "/api/dashboard/nexus/actions/preflight",
+        json={"action_id": "act-recall-repair-plan", "finding_id": "recall-repair", "snapshot_id": "s"},
+        headers=_token_headers(),
+    )
+    release.set()
+    worker.join(timeout=5)
+    assert result.get("response") is not None
+    assert result["response"].status_code == 200
+    assert response.status_code == 200
+
+
+def test_f3_csrf_rejects_referer_substring_bypass(client: TestClient, isolated_home: Path):
+    _arm(isolated_home, "dry-run")
+    cap = _preflight(client)
+    response = _dispatch(client, cap, {"host": "hermes.local", "Referer": "https://evil.example/?h=hermes.local"})
+    assert response.status_code == 403
+
+
+def test_f4_rejection_event_writes_are_bounded(client: TestClient, isolated_home: Path):
+    _arm(isolated_home, "dry-run")
+    for idx in range(50):
+        client.post(
+            "/api/dashboard/nexus/actions/preflight",
+            json={"action_id": f"act-nope-{idx}", "finding_id": "x", "snapshot_id": "s"},
+            headers=_token_headers(),
+        )
+    events = actions._read_jsonl(actions._events_path())
+    assert len(events) <= 12
+    assert any(row.get("event") == "rejection_dropped" and row.get("decision") == "unknown_ticket" for row in events)
+
+
+def test_f5_tail_reads_bounded_and_fail_closed(monkeypatch: pytest.MonkeyPatch, client: TestClient, isolated_home: Path):
+    _arm(isolated_home, "dry-run")
+    old_cap = _preflight(client)
+    filler = "x" * (actions._TAIL_READ_BYTES + 256)
+    actions._append_capability({"capability_id": "capnex-filler", "issued_at": actions._iso_now(), "expires_at": (actions._now() + timedelta(seconds=60)).isoformat(), "status": "minted", "padding": filler})
+    assert actions._find_capability(old_cap["capability_id"]) is None
+    fresh_cap = _preflight(client, action_id="act-recall-repair-plan", finding_id="recall-repair")
+    assert actions._find_capability(fresh_cap["capability_id"])["capability_id"] == fresh_cap["capability_id"]
+    read_sizes: list[int] = []
+    original_open = Path.open
+
+    def measuring_open(self: Path, mode: str = "r", *args: Any, **kwargs: Any) -> Any:
+        handle = original_open(self, mode, *args, **kwargs)
+        if self == actions._events_path() and "r" in mode:
+            original_read = handle.read
+
+            def read(size: int = -1) -> Any:
+                read_sizes.append(size)
+                return original_read(size)
+
+            handle.read = read  # type: ignore[method-assign]
+        return handle
+
+    monkeypatch.setattr(Path, "open", measuring_open)
+    client.get("/api/dashboard/nexus/actions/runs/runnex-" + "1" * 24)
+    assert read_sizes
+    assert all(0 <= size <= actions._TAIL_READ_BYTES + 1 for size in read_sizes)
+
+
+def test_f5_old_run_status_fails_closed_and_fresh_tail_run_resolves(client: TestClient, isolated_home: Path):
+    run_id_old = "runnex-" + "2" * 24
+    audit_old = isolated_home / "audits" / "os-nexus-actions" / "act-cron-deadman-triage" / "old"
+    actions._append_event("run_created", request_id="rid", run_id=run_id_old, audit_dir=str(audit_old), action_id="act-cron-deadman-triage", session_hash="s", capability_id="c-old", gate_class="agent-drainable", execution_mode="audit", decision="run_created", http_status=200)
+    actions._append_event("filler", request_id="rid", decision="x" * (actions._TAIL_READ_BYTES + 256), http_status=200)
+    assert client.get(f"/api/dashboard/nexus/actions/runs/{run_id_old}").status_code == 404
+    run_id_fresh = "runnex-" + "3" * 24
+    audit_fresh = isolated_home / "audits" / "os-nexus-actions" / "act-cron-deadman-triage" / "fresh"
+    actions._append_event("run_created", request_id="rid", run_id=run_id_fresh, audit_dir=str(audit_fresh), action_id="act-cron-deadman-triage", session_hash="s", capability_id="c-fresh", gate_class="agent-drainable", execution_mode="audit", decision="run_created", http_status=200)
+    assert client.get(f"/api/dashboard/nexus/actions/runs/{run_id_fresh}").json()["status"] == "unknown"
+
+
+def test_f6_execution_arming_lattice_and_unreachable_off_row():
+    expected = {
+        ("dry-run-only", "dry-run"): "dry-run-only",
+        ("approval-packet", "dry-run"): "dry-run-only",
+        ("audit", "dry-run"): "dry-run-only",
+        ("dry-run-only", "live"): "dry-run-only",
+        ("approval-packet", "live"): "approval-packet",
+        ("audit", "live"): "audit",
+    }
+    for registry_mode in ["dry-run-only", "approval-packet", "audit"]:
+        for armed_mode in ["off", "dry-run", "live"]:
+            if armed_mode == "off":
+                with pytest.raises(AssertionError):
+                    actions._execution_min(registry_mode, armed_mode)  # type: ignore[arg-type]
+            else:
+                assert actions._execution_min(registry_mode, armed_mode) == expected[(registry_mode, armed_mode)]  # type: ignore[arg-type]
+
+
+def test_f6_store_lock_is_module_global():
+    assert actions._STORE_LOCK is actions.dispatch.__globals__["_STORE_LOCK"]
+    assert actions._STORE_LOCK is actions.preflight.__globals__["_STORE_LOCK"]
+
+
+def test_f7_rejection_event_names_distinguish_non_consumption(client: TestClient, isolated_home: Path):
+    _arm(isolated_home, "dry-run")
+    cap = _preflight(client)
+    forged = dict(cap)
+    forged["capability_id"] = "capnex-" + "a" * 32
+    assert _dispatch(client, forged).status_code == 404
+    wrong = dict(cap)
+    wrong["idempotency_key"] = "bad"
+    assert _dispatch(client, wrong).status_code == 400
+    names = [row["event"] for row in actions._read_jsonl(actions._events_path())]
+    assert "capability_id_unknown" in names
+    assert "idempotency_key_mismatch" in names
+
+
+def test_f8_gated_session_identity_binds_preflight_to_dispatch(monkeypatch: pytest.MonkeyPatch, isolated_home: Path):
+    from hermes_cli import web_server
+
+    app = FastAPI()
+    app.state.auth_required = True
+
+    @app.middleware("http")
+    async def fake_gate(request: Any, call_next: Any) -> Any:
+        request.state.session = "gated-user-A"
+        return await call_next(request)
+
+    app.include_router(actions.router)
+    client = TestClient(app)
+    _arm(isolated_home, "live")
+    monkeypatch.setattr(actions, "_invoke_chokepoint", lambda *args: {"returncode": 0})
+    response = client.post(
+        "/api/dashboard/nexus/actions/preflight",
+        json={"action_id": "act-cron-deadman-triage", "finding_id": "cron-deadman", "snapshot_id": "s"},
+        headers={web_server._SESSION_HEADER_NAME: "ignored-loopback-token"},
+    )
+    assert response.status_code == 200
+    cap = response.json()
+    stored = actions._find_capability(cap["capability_id"])
+    assert stored["session_hash"] == actions.hashlib.sha256(b"gated-user-A").hexdigest()[:32]
+    dispatch_response = client.post(
+        "/api/dashboard/nexus/actions/dispatch",
+        json={"capability_id": cap["capability_id"], "idempotency_key": cap["idempotency_key"]},
+        headers={"X-Nexus-Actions-Nonce": cap["csrf_nonce"]},
+    )
+    assert dispatch_response.status_code == 200
 
 
 def test_t16_go_artifact_validation_and_consume(isolated_home: Path):

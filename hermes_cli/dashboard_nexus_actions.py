@@ -24,6 +24,7 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Literal
+from urllib.parse import urlparse
 
 from fastapi import APIRouter, Header, HTTPException, Request
 from fastapi.responses import JSONResponse
@@ -54,6 +55,8 @@ _TICKET_BY_ID = {ticket["id"]: ticket for ticket in _TICKETS}
 _CAPABILITY_TTL_SECONDS = 300
 _MINT_LIMIT_PER_600S = 10
 _DISPATCH_LIMIT_PER_600S = 3
+_TAIL_READ_BYTES = 256 * 1024
+_REJECTION_WRITE_LIMIT_PER_600S = 10
 _RUN_ID_RE = re.compile(r"^runnex-[0-9a-f]{24}$")
 _CORRELATOR_RE = re.compile(r"^[A-Za-z0-9._:\->]{1,160}$")
 _REQUIRED_TEMPLATE_SECTIONS = (
@@ -132,15 +135,24 @@ def _ensure_private_file(path: Path) -> None:
 
 
 def _read_jsonl(path: Path) -> list[dict[str, Any]]:
+    return list(_iter_jsonl_tail(path))
+
+
+def _iter_jsonl_tail(path: Path, max_bytes: int = _TAIL_READ_BYTES) -> list[dict[str, Any]]:
     if not path.exists():
         return []
-    rows: list[dict[str, Any]] = []
+    size = path.stat().st_size
     with path.open("r", encoding="utf-8") as handle:
-        for line in handle:
-            stripped = line.strip()
-            if not stripped:
-                continue
-            rows.append(json.loads(stripped))
+        if size > max_bytes:
+            handle.seek(size - max_bytes)
+            handle.readline()
+        chunk = handle.read(max_bytes + 1)
+    rows: list[dict[str, Any]] = []
+    for line in chunk.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        rows.append(json.loads(stripped))
     return rows
 
 
@@ -332,6 +344,7 @@ def _parse_dt(value: str) -> datetime:
 def _terminal_event_for_capability(capability_id: str) -> dict[str, Any] | None:
     run: dict[str, Any] | None = None
     terminal: dict[str, Any] | None = None
+    failed = False
     for row in _read_jsonl(_events_path()):
         if row.get("capability_id") != capability_id:
             continue
@@ -339,8 +352,14 @@ def _terminal_event_for_capability(capability_id: str) -> dict[str, Any] | None:
             run = row
         if row.get("event") in {"dispatch_accepted", "dry_run_preview"}:
             terminal = row
+        if row.get("event") == "dispatch_failed":
+            failed = True
+    if failed:
+        return None
     if run and terminal:
         return {**run, **{k: v for k, v in terminal.items() if v is not None}}
+    if run:
+        return run
     return None
 
 
@@ -378,8 +397,20 @@ def _registry_response() -> dict[str, Any]:
 
 
 def _reject(status_code: int, status: str, *, request_id: str, event: str, **kwargs: Any) -> JSONResponse:
-    _append_event(event, request_id=request_id, decision=status, http_status=status_code, **kwargs)
+    _append_rejection_event(event, request_id=request_id, decision=status, http_status=status_code, **kwargs)
     return JSONResponse({"status": status, "request_id": request_id}, status_code=status_code)
+
+
+def _append_rejection_event(event: str, *, request_id: str, session_hash: str | None = None, decision: str, http_status: int, **kwargs: Any) -> None:
+    if _recent_event_count(event, session_hash or "", 600) < _REJECTION_WRITE_LIMIT_PER_600S:
+        _append_event(event, request_id=request_id, session_hash=session_hash, decision=decision, http_status=http_status, **kwargs)
+        return
+    existing_drop = any(
+        row.get("event") == "rejection_dropped" and row.get("session_hash") == session_hash and row.get("decision") == decision
+        for row in _read_jsonl(_events_path())
+    )
+    if not existing_drop:
+        _append_event("rejection_dropped", request_id=request_id, session_hash=session_hash, decision=decision, http_status=http_status, **kwargs)
 
 
 def _ensure_registry_valid() -> JSONResponse | None:
@@ -485,9 +516,19 @@ def _check_csrf(request: Request, capability: dict[str, Any], nonce: str | None)
         value = request.headers.get(header)
         if not value:
             continue
-        if host and host not in value:
+        if host and _origin_hostport(value) != host.lower():
             return False
     return True
+
+
+def _origin_hostport(value: str) -> str:
+    parsed = urlparse(value)
+    if not parsed.hostname:
+        return ""
+    hostname = parsed.hostname.lower()
+    if parsed.port is None:
+        return hostname
+    return f"{hostname}:{parsed.port}"
 
 
 @router.post("/dispatch")
@@ -501,10 +542,11 @@ def dispatch(
         return invalid
     request_id = str(uuid.uuid4())
     session_hash = _session_hash(request)
+    invoke: tuple[int, Path, dict[str, Any], str, str] | None = None
     with _STORE_LOCK:
         capability = _find_capability(body.capability_id)
         if capability is None:
-            return _reject(404, "not_found", request_id=request_id, event="capability_consumed", session_hash=session_hash)
+            return _reject(404, "not_found", request_id=request_id, event="capability_id_unknown", session_hash=session_hash)
         ticket = _TICKET_BY_ID[str(capability["action_id"])]
         common = {
             "session_hash": session_hash,
@@ -536,7 +578,7 @@ def dispatch(
                 return JSONResponse({"status": "duplicate", "run_id": terminal.get("run_id"), "audit_dir": terminal.get("audit_dir")})
             return _reject(409, "capability_consumed", request_id=request_id, event="capability_consumed", **common)
         if not hmac.compare_digest(str(capability["idempotency_key"]), body.idempotency_key):
-            return _reject(400, "bad_idempotency_key", request_id=request_id, event="capability_consumed", **common)
+            return _reject(400, "bad_idempotency_key", request_id=request_id, event="idempotency_key_mismatch", **common)
         if _stop_active():
             return _reject(423, "stop_switch", request_id=request_id, event="stop_switch", **common)
         armed = _armed_mode()
@@ -577,12 +619,16 @@ def dispatch(
             return JSONResponse({"status": "dry-run-preview", "run_id": run_id, "audit_dir": str(audit_dir), "packet_sha256": packet_sha256})
         if _stop_active():
             return _reject(423, "stop_switch", request_id=request_id, event="stop_switch", **common)
-        result = _invoke_chokepoint(lane, packet_path)
-        if result["returncode"] != 0:
-            _append_event("dispatch_failed", request_id=request_id, decision="dispatch_failed", http_status=502, lane=lane, run_id=run_id, audit_dir=str(audit_dir), **common)
-            return JSONResponse({"status": "dispatch_failed", "run_id": run_id, "audit_dir": str(audit_dir)}, status_code=502)
-        _append_event("dispatch_accepted", request_id=request_id, decision="accepted", http_status=200, lane=lane, run_id=run_id, audit_dir=str(audit_dir), **common)
-        return JSONResponse({"status": "accepted", "run_id": run_id, "lane": lane, "audit_dir": str(audit_dir), "request_id": request_id})
+        invoke = (lane, packet_path, common, run_id, str(audit_dir))
+    if invoke is None:
+        raise AssertionError("dispatch invocation state missing")
+    lane, packet_path, common, run_id, audit_dir_text = invoke
+    result = _invoke_chokepoint(lane, packet_path)
+    if result["returncode"] != 0:
+        _append_event("dispatch_failed", request_id=request_id, decision="dispatch_failed", http_status=502, lane=lane, run_id=run_id, audit_dir=audit_dir_text, **common)
+        return JSONResponse({"status": "dispatch_failed", "run_id": run_id, "audit_dir": audit_dir_text}, status_code=502)
+    _append_event("dispatch_accepted", request_id=request_id, decision="accepted", http_status=200, lane=lane, run_id=run_id, audit_dir=audit_dir_text, **common)
+    return JSONResponse({"status": "accepted", "run_id": run_id, "lane": lane, "audit_dir": audit_dir_text, "request_id": request_id})
 
 
 def _new_audit_dir(action_id: str) -> Path:
