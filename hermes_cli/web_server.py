@@ -13342,10 +13342,25 @@ try:
 except Exception as _exc:
     _log.warning("Failed to load dashboard_artifacts routes: %s", _exc)
 # ---------------------------------------------------------------------------
-# Nexus slice demo page — static HTML with the same session-token stamping
-# pattern as the SPA.  Registered before the catch-all mount.
+# Nexus pages — locked Wave 2 V6 truth surface plus the W2A slice demo.  These
+# routes stamp the loopback session token only when the page is not running in
+# gated auth mode; the API endpoints remain header-authenticated.
 # ---------------------------------------------------------------------------
 _NEXUS_SLICE_HTML = Path(__file__).parent / "nexus_slice_assets" / "backup_offbox.html"
+_NEXUS_PAGE_HTML = Path(__file__).parent / "nexus_slice_assets" / "nexus.html"
+
+
+def _stamp_nexus_html(html: str, request: Request) -> str:
+    nonce = getattr(request.state, "csp_nonce", "")
+    auth_required = bool(getattr(app.state, "auth_required", False))
+    html = html.replace("__HERMES_CSP_NONCE__", nonce)
+    token_line = 'window.__HERMES_SESSION_TOKEN__="__HERMES_SESSION_TOKEN__";'
+    if auth_required:
+        html = html.replace(token_line, "")
+        html = html.replace("window.__HERMES_AUTH_REQUIRED__=false;", "window.__HERMES_AUTH_REQUIRED__=true;")
+    else:
+        html = html.replace(token_line, f'window.__HERMES_SESSION_TOKEN__="{_SESSION_TOKEN}";', 1)
+    return html
 
 
 @app.get("/nexus-slice")
@@ -13353,16 +13368,19 @@ async def _nexus_slice_page(request: Request):
     if not _NEXUS_SLICE_HTML.is_file():
         return JSONResponse({"error": "nexus slice asset missing"}, status_code=404)
     html = _NEXUS_SLICE_HTML.read_text(encoding="utf-8")
-    nonce = getattr(request.state, "csp_nonce", "")
-    token_script = (
-        f'<script nonce="{nonce}">window.__HERMES_SESSION_TOKEN__="{_SESSION_TOKEN}";</script>'
+    html = _stamp_nexus_html(html, request)
+    return HTMLResponse(
+        html,
+        headers={"Cache-Control": "no-store, no-cache, must-revalidate"},
     )
-    html = html.replace(
-        '<script>window.__HERMES_SESSION_TOKEN__="__HERMES_SESSION_TOKEN__";</script>',
-        token_script,
-        1,
-    )
-    html = html.replace("__HERMES_CSP_NONCE__", nonce)
+
+
+@app.get("/nexus")
+async def _nexus_page(request: Request):
+    if not _NEXUS_PAGE_HTML.is_file():
+        return JSONResponse({"error": "nexus page asset missing"}, status_code=404)
+    html = _NEXUS_PAGE_HTML.read_text(encoding="utf-8")
+    html = _stamp_nexus_html(html, request)
     return HTMLResponse(
         html,
         headers={"Cache-Control": "no-store, no-cache, must-revalidate"},
