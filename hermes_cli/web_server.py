@@ -13281,9 +13281,11 @@ except Exception as _exc:
 try:
     from hermes_cli.dashboard_os import router as _os_router
     from hermes_cli.dashboard_connectome import router as _connectome_router
+    from hermes_cli.dashboard_nexus_slice import router as _nexus_slice_router
     app.include_router(_os_router)
     app.include_router(_connectome_router)
-    _log.info("Mounted OS tab dashboard API routes at /api/dashboard/os")
+    app.include_router(_nexus_slice_router)
+    _log.info("Mounted OS tab dashboard API routes at /api/dashboard/os and /api/dashboard/nexus")
 except Exception as _exc:
     _log.warning("Failed to load dashboard_os routes: %s", _exc)
 try:
@@ -13335,6 +13337,34 @@ try:
     _log.info("Mounted Artifacts dashboard API routes at /api/dashboard/artifacts")
 except Exception as _exc:
     _log.warning("Failed to load dashboard_artifacts routes: %s", _exc)
+# ---------------------------------------------------------------------------
+# Nexus slice demo page — static HTML with the same session-token stamping
+# pattern as the SPA.  Registered before the catch-all mount.
+# ---------------------------------------------------------------------------
+_NEXUS_SLICE_HTML = Path(__file__).parent / "nexus_slice_assets" / "backup_offbox.html"
+
+
+@app.get("/nexus-slice")
+async def _nexus_slice_page(request: Request):
+    if not _NEXUS_SLICE_HTML.is_file():
+        return JSONResponse({"error": "nexus slice asset missing"}, status_code=404)
+    html = _NEXUS_SLICE_HTML.read_text(encoding="utf-8")
+    nonce = getattr(request.state, "csp_nonce", "")
+    token_script = (
+        f'<script nonce="{nonce}">window.__HERMES_SESSION_TOKEN__="{_SESSION_TOKEN}";</script>'
+    )
+    html = html.replace(
+        '<script>window.__HERMES_SESSION_TOKEN__="__HERMES_SESSION_TOKEN__";</script>',
+        token_script,
+        1,
+    )
+    html = html.replace("__HERMES_CSP_NONCE__", nonce)
+    return HTMLResponse(
+        html,
+        headers={"Cache-Control": "no-store, no-cache, must-revalidate"},
+    )
+
+
 # ---------------------------------------------------------------------------
 # GitNexus Explorer — serve the production web UI under /_gitnexus-app/.
 # Mounted at a non-React path so the dashboard React route `/explorer`
