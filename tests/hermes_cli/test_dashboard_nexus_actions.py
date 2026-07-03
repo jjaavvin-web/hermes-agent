@@ -520,6 +520,40 @@ def test_f10_concurrent_live_dispatches_cannot_double_book_lane(monkeypatch: pyt
     assert single_lane[4] == [11]
 
 
+def test_fix3_horizon_regression_run_created_survives_event_tail_volume(client: TestClient, isolated_home: Path, monkeypatch: pytest.MonkeyPatch):
+    _arm(isolated_home, "live")
+    run_id = "runnex-" + "b" * 24
+    audit_dir = isolated_home / "audits" / "os-nexus-actions" / "act-cron-deadman-triage" / "fix3-horizon"
+    actions._append_event(
+        "run_created",
+        request_id="rid-fix3",
+        run_id=run_id,
+        audit_dir=str(audit_dir),
+        action_id="act-cron-deadman-triage",
+        session_hash="s",
+        capability_id="c-fix3",
+        gate_class="agent-drainable",
+        execution_mode="audit",
+        decision="run_created",
+        http_status=200,
+        lane=11,
+    )
+    actions._append_event("filler", request_id="rid-fix3", decision="x" * (actions._TAIL_READ_BYTES + 256), http_status=200)
+
+    monkeypatch.setattr(actions, "_invoke_chokepoint", lambda _lane, _packet_path: {"returncode": 0})
+    monkeypatch.setattr(actions, "NEXUS_ACTION_LANES", (11, 12))
+    cap = _preflight(client, "act-recall-repair-plan", "recall-repair")
+    response = _dispatch(client, cap)
+    assert response.status_code == 200
+    assert response.json()["lane"] == 12
+
+    monkeypatch.setattr(actions, "NEXUS_ACTION_LANES", (11,))
+    cap_single = _preflight(client, "act-authority-drift-audit", "authority-drift")
+    response_single = _dispatch(client, cap_single)
+    assert response_single.status_code == 429
+    assert response_single.json()["status"] == "lane_budget_exhausted"
+
+
 def test_f3_csrf_rejects_referer_substring_bypass(client: TestClient, isolated_home: Path):
     _arm(isolated_home, "dry-run")
     cap = _preflight(client)

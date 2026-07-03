@@ -138,6 +138,18 @@ def _read_jsonl(path: Path) -> list[dict[str, Any]]:
     return list(_iter_jsonl_tail(path))
 
 
+def _read_jsonl_full(path: Path) -> list[dict[str, Any]]:
+    if not path.exists():
+        return []
+    rows: list[dict[str, Any]] = []
+    with path.open("r", encoding="utf-8") as handle:
+        for line in handle:
+            stripped = line.strip()
+            if stripped:
+                rows.append(json.loads(stripped))
+    return rows
+
+
 def _iter_jsonl_tail(path: Path, max_bytes: int = _TAIL_READ_BYTES) -> list[dict[str, Any]]:
     if not path.exists():
         return []
@@ -713,7 +725,10 @@ def _held_lanes() -> set[int]:
     held: set[int] = set()
     runs: dict[str, dict[str, Any]] = {}
     released: set[str] = set()
-    for row in _read_jsonl(_events_path()):
+    # Lease accounting runs only on the dispatch path (rate-limited 3/600s),
+    # so a full scan is bounded by real usage. Correct lane leasing beats the
+    # F5 per-request-cost concern here; hot status/capability paths keep tails.
+    for row in _read_jsonl_full(_events_path()):
         run_id = row.get("run_id")
         if not run_id:
             continue
