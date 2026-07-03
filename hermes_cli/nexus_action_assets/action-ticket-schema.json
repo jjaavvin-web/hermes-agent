@@ -1,0 +1,113 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hermes.local/schemas/nexus-action-ticket.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "id": {"type": "string", "pattern": "^act-[a-z0-9]+(?:-[a-z0-9]+)*$"},
+    "title": {"type": "string", "minLength": 8},
+    "trigger_source": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "finding_id": {"type": "string"},
+        "finding_label": {"type": "string"},
+        "severity": {"type": "string", "enum": ["red", "amber", "stale", "watch"]},
+        "source_surface": {"type": "string"},
+        "evidence_refs": {"type": "array", "items": {"type": "string"}, "minItems": 1}
+      },
+      "required": ["finding_id", "finding_label", "severity", "source_surface", "evidence_refs"]
+    },
+    "gate_class": {"type": "string", "enum": ["agent-drainable", "josep-gated"]},
+    "action_verb": {"type": "string", "enum": ["Summon Hermes Audit", "Audit Git Drift", "Prepare Safe Repair", "Draft Approval Packet", "Open Investigation Lane"]},
+    "bounded_workflow": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "lane_profile": {"type": "string"},
+        "phases": {"type": "array", "items": {"type": "string"}, "minItems": 1},
+        "allowed_actions": {"type": "array", "items": {"type": "string"}, "minItems": 1},
+        "forbidden_actions": {"type": "array", "items": {"type": "string"}, "minItems": 1},
+        "success_condition": {"type": "string"},
+        "stop_conditions": {"type": "array", "items": {"type": "string"}, "minItems": 1}
+      },
+      "required": ["lane_profile", "phases", "allowed_actions", "forbidden_actions", "success_condition", "stop_conditions"]
+    },
+    "scope_lock": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "workspace_mode": {"type": "string", "enum": ["audit-dir-only", "isolated-worktree", "read-only", "approval-packet-only"]},
+        "write_allowlist": {"type": "array", "items": {"type": "string"}, "minItems": 1},
+        "read_allowlist": {"type": "array", "items": {"type": "string"}},
+        "requires_worktree_isolation": {"type": "boolean"},
+        "budget": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "wall_clock_minutes": {"type": "integer", "minimum": 1},
+            "max_tool_calls": {"type": "integer", "minimum": 1},
+            "max_retries": {"type": "integer", "minimum": 0}
+          },
+          "required": ["wall_clock_minutes", "max_tool_calls", "max_retries"]
+        }
+      },
+      "required": ["workspace_mode", "write_allowlist", "read_allowlist", "requires_worktree_isolation", "budget"]
+    },
+    "evidence_output": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "audit_dir_template": {"type": "string"},
+        "required_files": {"type": "array", "items": {"type": "string"}, "minItems": 1},
+        "kanban_comment": {"type": "string"},
+        "mvms_record": {"type": "boolean"}
+      },
+      "required": ["audit_dir_template", "required_files", "kanban_comment", "mvms_record"]
+    },
+    "rollback": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "strategy": {"type": "string"},
+        "pre_state_capture": {"type": "array", "items": {"type": "string"}},
+        "revert_steps": {"type": "array", "items": {"type": "string"}}
+      },
+      "required": ["strategy", "pre_state_capture", "revert_steps"]
+    },
+    "dispatch": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "chokepoint": {"type": "string", "const": "loki_send.py"},
+        "idempotency_key": {"type": "string"},
+        "audit_event": {"type": "string"},
+        "requires_explicit_go": {"type": "boolean"}
+      },
+      "required": ["chokepoint", "idempotency_key", "audit_event", "requires_explicit_go"]
+    },
+    "execution_mode": {"type": "string", "enum": ["audit", "approval-packet", "dry-run-only"]},
+    "effect_tags": {
+      "type": "array",
+      "items": {"type": "string", "enum": ["read-only", "audit-dir-write", "kanban-comment", "worktree-patch", "process-signal", "service-restart", "cron-mutation", "config-change", "provider-change", "auth-change", "credential-touch", "deploy", "destructive-cleanup", "gbrain", "mvms-writeback"]},
+      "minItems": 1
+    }
+  },
+  "required": ["id", "title", "trigger_source", "gate_class", "action_verb", "bounded_workflow", "scope_lock", "evidence_output", "rollback", "dispatch", "execution_mode", "effect_tags"],
+  "allOf": [
+    {
+      "if": {"properties": {"gate_class": {"const": "josep-gated"}}},
+      "then": {
+        "properties": {
+          "scope_lock": {"properties": {"workspace_mode": {"enum": ["audit-dir-only", "read-only", "approval-packet-only"]}}},
+          "dispatch": {"properties": {"requires_explicit_go": {"const": true}}},
+          "execution_mode": {"enum": ["audit", "approval-packet", "dry-run-only"]}
+        }
+      }
+    },
+    {
+      "if": {"properties": {"scope_lock": {"properties": {"workspace_mode": {"const": "isolated-worktree"}}}}},
+      "then": {"properties": {"scope_lock": {"properties": {"requires_worktree_isolation": {"const": true}}}}}
+    }
+  ]
+}

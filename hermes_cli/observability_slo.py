@@ -113,18 +113,29 @@ _ERROR_RE = re.compile(r"\b(error|exception|traceback|failed|failure|timeout|cra
 # logged under firecrawl.provider; the repeating init line (the ~88% noise) is still
 # excluded via its message text, so noise reduction is preserved while real fetch
 # failures still count toward turn_error_rate.
+# 2026-07-03: expected disabled-tool/config failures (image generation without a
+# backend, web tools without Firecrawl/managed auth) and tool guardrail denials
+# are diagnostic events, not gateway/process health failures. Keep them visible
+# in journal_counts, but do not let them page turn_error_rate.
 _ERROR_EXCLUDE_RE = re.compile(
     r"returned error|tool_executor|title[_ ]generat|memory would be at"
     r"|Traceback \(most recent call last\):",
     re.I,
 )
 _TOOL_CONFIG_ERROR_RE = re.compile(
-    r"firecrawl client initialization failed|web tools are not config",
+    r"firecrawl client initialization failed|web tools are not config"
+    r"|image generation is unavailable in this environment"
+    r"|error generating image: image generation is unavailable"
+    r"|fal_key environment variable is not set",
     re.I,
 )
 _TOOL_BACKEND_ERROR_RE = re.compile(
     r"x_search failed: 429 Client Error: Too Many Requests"
     r"|requests\.exceptions\.HTTPError: 429 Client Error: Too Many Requests for url: https://api\.x\.ai/",
+    re.I,
+)
+_TOOL_GUARDRAIL_DENIAL_RE = re.compile(
+    r"WORKTREE_CONFINEMENT|route policy|approval denied|blocked by approval|blocked \(route policy\)",
     re.I,
 )
 _FALLBACK_RE = re.compile(r"\bfallback|fallback-trigger|provider fallback|model fallback\b", re.I)
@@ -146,6 +157,7 @@ class JournalCounts:
     watchdog_restart_events: int = 0
     tool_config_error_events: int = 0
     tool_backend_error_events: int = 0
+    tool_guardrail_denial_events: int = 0
     auxiliary_fallback_events: int = 0
 
 
@@ -208,6 +220,7 @@ def _is_counted_gateway_error(line: str) -> bool:
         and not _ERROR_EXCLUDE_RE.search(line)
         and not _TOOL_CONFIG_ERROR_RE.search(line)
         and not _TOOL_BACKEND_ERROR_RE.search(line)
+        and not _TOOL_GUARDRAIL_DENIAL_RE.search(line)
     )
 
 
@@ -217,12 +230,14 @@ def _is_counted_fallback(line: str) -> bool:
 
 
 def parse_journal_counts(gateway_lines: Iterable[str], watchdog_lines: Iterable[str] = ()) -> JournalCounts:
-    errors = fallbacks = watchdogs = tool_config_errors = tool_backend_errors = auxiliary_fallbacks = 0
+    errors = fallbacks = watchdogs = tool_config_errors = tool_backend_errors = tool_guardrail_denials = auxiliary_fallbacks = 0
     for line in gateway_lines:
         if _TOOL_CONFIG_ERROR_RE.search(line):
             tool_config_errors += 1
         if _TOOL_BACKEND_ERROR_RE.search(line):
             tool_backend_errors += 1
+        if _TOOL_GUARDRAIL_DENIAL_RE.search(line):
+            tool_guardrail_denials += 1
         if _is_counted_gateway_error(line):
             errors += 1
         if _FALLBACK_RE.search(line) and _AUXILIARY_FALLBACK_RE.search(line):
@@ -240,7 +255,7 @@ def parse_journal_counts(gateway_lines: Iterable[str], watchdog_lines: Iterable[
             continue
         if "restarted" in text or "restarting" in text or "scheduled restart" in text:
             watchdogs += 1
-    return JournalCounts(errors, fallbacks, watchdogs, tool_config_errors, tool_backend_errors, auxiliary_fallbacks)
+    return JournalCounts(errors, fallbacks, watchdogs, tool_config_errors, tool_backend_errors, tool_guardrail_denials, auxiliary_fallbacks)
 
 
 def _line_epoch(line: str) -> float | None:
@@ -272,6 +287,7 @@ def build_bucket_series(rows: list[dict[str, Any]], gateway_lines: Iterable[str]
         "fallback_events": 0,
         "tool_config_error_events": 0,
         "tool_backend_error_events": 0,
+        "tool_guardrail_denial_events": 0,
         "auxiliary_fallback_events": 0,
     })
     for row in rows:
@@ -292,6 +308,8 @@ def build_bucket_series(rows: list[dict[str, Any]], gateway_lines: Iterable[str]
             buckets[bucket]["tool_config_error_events"] += 1
         if _TOOL_BACKEND_ERROR_RE.search(line):
             buckets[bucket]["tool_backend_error_events"] += 1
+        if _TOOL_GUARDRAIL_DENIAL_RE.search(line):
+            buckets[bucket]["tool_guardrail_denial_events"] += 1
         if _is_counted_gateway_error(line):
             buckets[bucket]["error_events"] += 1
         if _FALLBACK_RE.search(line) and _AUXILIARY_FALLBACK_RE.search(line):
@@ -315,6 +333,7 @@ def build_bucket_series(rows: list[dict[str, Any]], gateway_lines: Iterable[str]
             "fallback_events": fallback_events,
             "tool_config_error_events": item["tool_config_error_events"],
             "tool_backend_error_events": item["tool_backend_error_events"],
+            "tool_guardrail_denial_events": item["tool_guardrail_denial_events"],
             "auxiliary_fallback_events": item["auxiliary_fallback_events"],
         })
     return series
