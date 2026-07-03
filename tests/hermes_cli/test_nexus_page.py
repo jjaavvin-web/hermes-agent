@@ -215,6 +215,40 @@ def test_route_table_get_only_and_slice_untouched(tmp_path: Path) -> None:
     )
 
 
+def test_nexus_slice_token_bootstrap_keeps_csp_nonce(tmp_path: Path) -> None:
+    _run_script(
+        tmp_path,
+        """
+        import re
+        from fastapi.testclient import TestClient
+        from hermes_cli import web_server
+        from hermes_cli.web_server import _SESSION_TOKEN
+
+        client = TestClient(web_server.app)
+        response = client.get('/nexus-slice')
+        body = response.text
+        assert response.status_code == 200
+        match = re.search(r'<script nonce="([^"]+)">window\.__HERMES_SESSION_TOKEN__="([^"]+)";</script>', body)
+        assert match, body[body.find('HERMES_SESSION_TOKEN')-80:body.find('HERMES_SESSION_TOKEN')+120]
+        assert match.group(1)
+        assert match.group(2) == _SESSION_TOKEN
+        assert '<script>window.__HERMES_SESSION_TOKEN__=' not in body
+        assert '__HERMES_CSP_NONCE__' not in body
+        """,
+    )
+
+
+def test_deploy_artery_has_healthy_green_branch() -> None:
+    text = ASSET.read_text(encoding="utf-8")
+    start = text.index("function drawDeployArtery")
+    end = text.index("function scheduleDraw", start)
+    hunk = text[start:end]
+    assert "head_equals_serving===true" in hunk
+    assert "rgba(67,224,154" in hunk or "#43E09A" in hunk
+    assert "HEAD=serving" in hunk
+    assert "head_equals_serving!==false" not in hunk
+
+
 def test_page_anti_wedge_both_modes(tmp_path: Path) -> None:
     _run_script(
         tmp_path,
