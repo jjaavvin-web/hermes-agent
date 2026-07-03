@@ -712,20 +712,28 @@ def _select_lane() -> int | None:
 def _held_lanes() -> set[int]:
     held: set[int] = set()
     runs: dict[str, dict[str, Any]] = {}
-    accepted: dict[str, dict[str, Any]] = {}
+    released: set[str] = set()
     for row in _read_jsonl(_events_path()):
         run_id = row.get("run_id")
         if not run_id:
             continue
-        if row.get("event") == "run_created":
-            runs[str(run_id)] = row
-        if row.get("event") == "dispatch_accepted":
-            accepted[str(run_id)] = row
-    for run_id, row in accepted.items():
-        created = runs.get(run_id, row)
-        audit_dir = Path(str(created.get("audit_dir", "")))
-        if (audit_dir / "REPORT.md").exists():
+        run_key = str(run_id)
+        event = row.get("event")
+        if event == "run_created":
+            runs[run_key] = row
+        if event in {"dispatch_failed", "dry_run_preview"}:
+            released.add(run_key)
+    for run_id, row in runs.items():
+        if run_id in released:
             continue
+        audit_dir = Path(str(row.get("audit_dir", "")))
+        report = audit_dir / "REPORT.md"
+        if report.exists() and report.is_file():
+            try:
+                if re.search(r"^\s*VERDICT", report.read_text(encoding="utf-8"), re.MULTILINE):
+                    continue
+            except Exception:
+                pass
         ticket = _TICKET_BY_ID.get(str(row.get("action_id")))
         minutes = int(ticket["scope_lock"]["budget"]["wall_clock_minutes"]) if ticket else 40
         try:

@@ -472,6 +472,54 @@ def test_f2_preflight_not_blocked_by_in_flight_subprocess(monkeypatch: pytest.Mo
     assert response.status_code == 200
 
 
+def test_f10_concurrent_live_dispatches_cannot_double_book_lane(monkeypatch: pytest.MonkeyPatch, client: TestClient, isolated_home: Path):
+    def run_concurrent_case(home: Path, lanes: tuple[int, ...]) -> list[Any]:
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        monkeypatch.setattr(actions, "NEXUS_ACTION_LANES", lanes)
+        _arm(home, "live")
+        arrivals = threading.Condition()
+        release = threading.Event()
+        seen_lanes: list[int] = []
+
+        def blocking_chokepoint(lane: int, _packet_path: Path) -> dict[str, Any]:
+            with arrivals:
+                seen_lanes.append(lane)
+                call_number = len(seen_lanes)
+                arrivals.notify_all()
+            if call_number == 1:
+                assert release.wait(timeout=5)
+            return {"returncode": 0}
+
+        monkeypatch.setattr(actions, "_invoke_chokepoint", blocking_chokepoint)
+        cap1 = _preflight(client, "act-cron-deadman-triage", "cron-deadman")
+        cap2 = _preflight(client, "act-recall-repair-plan", "recall-repair")
+        result1: dict[str, Any] = {}
+
+        def dispatch_first() -> None:
+            result1["response"] = _dispatch(client, cap1)
+
+        worker = threading.Thread(target=dispatch_first, daemon=True)
+        worker.start()
+        with arrivals:
+            assert arrivals.wait_for(lambda: len(seen_lanes) == 1, timeout=5)
+        response2 = _dispatch(client, cap2)
+        release.set()
+        worker.join(timeout=5)
+        assert result1.get("response") is not None
+        response1 = result1["response"]
+        if response2.status_code == 200:
+            return [response1.status_code, response1.json().get("lane"), response2.status_code, response2.json().get("lane"), seen_lanes]
+        return [response1.status_code, response1.json().get("lane"), response2.status_code, response2.json().get("status"), seen_lanes]
+
+    two_lane = run_concurrent_case(isolated_home / "two-lane", (11, 12))
+    assert two_lane[:4] == [200, 11, 200, 12], f"seen_lanes={two_lane[4]}"
+    assert two_lane[4] == [11, 12]
+
+    single_lane = run_concurrent_case(isolated_home / "single-lane", (11,))
+    assert single_lane[:4] == [200, 11, 429, "lane_budget_exhausted"], f"seen_lanes={single_lane[4]}"
+    assert single_lane[4] == [11]
+
+
 def test_f3_csrf_rejects_referer_substring_bypass(client: TestClient, isolated_home: Path):
     _arm(isolated_home, "dry-run")
     cap = _preflight(client)
