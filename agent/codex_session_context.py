@@ -16,6 +16,7 @@ from __future__ import annotations
 import concurrent.futures
 import contextvars
 import os
+from pathlib import Path
 from typing import NamedTuple, Optional
 
 _active_worktree_var: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar(
@@ -35,6 +36,15 @@ _lane_executor_var: contextvars.ContextVar[
     default=None,
 )
 
+_run_execution_cwds_var: contextvars.ContextVar[list[str] | None] = contextvars.ContextVar(
+    "hermes_codex_runtime_execution_cwds",
+    default=None,
+)
+
+
+class WorktreeConfinementError(RuntimeError):
+    """Raised when a runtime/tool cwd cannot be confined to the active worktree."""
+
 
 class _WorktreeContextToken(NamedTuple):
     """Reset tokens for the active worktree and confinement marker."""
@@ -50,12 +60,12 @@ def set_active_worktree(path: Optional[str]):
     undo the change. Typically used at the boundary where a gateway message
     handler kicks off the agent turn.
 
-    A truthy existing ``path`` also marks this turn as requiring worktree
-    confinement: file/terminal/codex writes must stay in that worktree; if the
-    worktree later goes missing/invalid, downstream write surfaces fail closed.
+    A truthy ``path`` marks this turn as requiring worktree confinement. The
+    actual runtime/tool cwd resolver then validates the path at execution time
+    and fails closed if it has disappeared or no longer points at a directory.
     """
     active_token = _active_worktree_var.set(path)
-    confinement_token = _confinement_required_var.set(bool(path and os.path.isdir(path)))
+    confinement_token = _confinement_required_var.set(bool(path))
     return _WorktreeContextToken(active_token, confinement_token)
 
 
@@ -114,3 +124,68 @@ def get_lane_executor() -> Optional[concurrent.futures.Executor]:
 def reset_lane_executor(token) -> None:
     """Reset the lane executor using the token returned by set_lane_executor."""
     _lane_executor_var.reset(token)
+
+
+def resolve_confined_cwd(candidate_cwd: Optional[str]) -> str:
+    """Resolve a subprocess cwd through the active worktree confinement boundary.
+
+    When confinement is not required, this intentionally returns ``candidate_cwd``
+    unchanged to preserve singleton/live behavior. When confinement is required,
+    the active worktree must exist and every subprocess cwd is forced to that
+    exact worktree. There is no fallback to TERMINAL_CWD, ``os.getcwd()``, or
+    temporary staging directories.
+    """
+    if not is_worktree_confinement_required():
+        return candidate_cwd  # type: ignore[return-value]
+
+    active = get_active_worktree()
+    if not active:
+        raise WorktreeConfinementError(
+            "WORKTREE_CONFINEMENT: runtime cwd denied — confinement required but no active worktree is bound"
+        )
+    try:
+        active_path = Path(active).expanduser().resolve()
+    except (OSError, RuntimeError) as exc:
+        raise WorktreeConfinementError(
+            f"WORKTREE_CONFINEMENT: runtime cwd denied — active worktree {active!r} is invalid"
+        ) from exc
+    if not active_path.is_dir():
+        raise WorktreeConfinementError(
+            f"WORKTREE_CONFINEMENT: runtime cwd denied — active worktree {str(active_path)!r} is missing"
+        )
+    return str(active_path)
+
+
+def record_runtime_execution_cwd(cwd: str) -> None:
+    """Record an actually-resolved runtime/tool cwd for finalize-time audit."""
+    resolved = str(Path(cwd).expanduser().resolve())
+    current = _run_execution_cwds_var.get()
+    if current is None:
+        current = []
+        _run_execution_cwds_var.set(current)
+    current.append(resolved)
+
+
+def get_runtime_execution_cwds() -> tuple[str, ...]:
+    """Return cwd values recorded at subprocess execution boundaries."""
+    current = _run_execution_cwds_var.get()
+    return tuple(current or ())
+
+
+def get_runtime_execution_cwd_recorder() -> list[str]:
+    """Return the mutable run-scoped cwd recorder shared with copied contexts."""
+    current = _run_execution_cwds_var.get()
+    if current is None:
+        current = []
+        _run_execution_cwds_var.set(current)
+    return current
+
+
+def reset_runtime_execution_cwds() -> contextvars.Token[list[str] | None]:
+    """Start a fresh shared run-scoped execution-cwd audit list."""
+    return _run_execution_cwds_var.set([])
+
+
+def restore_runtime_execution_cwds(token: contextvars.Token[list[str] | None]) -> None:
+    """Restore the prior execution-cwd audit state."""
+    _run_execution_cwds_var.reset(token)
