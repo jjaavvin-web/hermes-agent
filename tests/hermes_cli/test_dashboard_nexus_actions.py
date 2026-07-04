@@ -627,6 +627,73 @@ def test_w2b_suppressed_rejections_carry_incrementing_suppressed_count(client: T
     assert [row.get("suppressed_count") for row in drops] == [1, 2, 3, 4, 5]
 
 
+def test_w2b_reject_uses_600s_anti_flood_window(monkeypatch: pytest.MonkeyPatch, client: TestClient, isolated_home: Path):
+    _arm(isolated_home, "dry-run")
+    base = actions._now()
+    monkeypatch.setattr(actions, "_now", lambda: base)
+    for idx in range(actions._REJECTION_WRITE_LIMIT_PER_600S):
+        client.post(
+            "/api/dashboard/nexus/actions/preflight",
+            json={"action_id": f"act-w2b-window-{idx}", "finding_id": "x", "snapshot_id": "s"},
+            headers=_token_headers(),
+        )
+
+    client.post(
+        "/api/dashboard/nexus/actions/preflight",
+        json={"action_id": "act-w2b-window-10", "finding_id": "x", "snapshot_id": "s"},
+        headers=_token_headers(),
+    )
+    events = actions._read_jsonl(actions._events_path())
+    assert [row.get("event") for row in events].count("unknown_ticket") == actions._REJECTION_WRITE_LIMIT_PER_600S
+    assert [row.get("event") for row in events].count("rejection_dropped") == 1
+
+    monkeypatch.setattr(actions, "_now", lambda: base + timedelta(seconds=301))
+    client.post(
+        "/api/dashboard/nexus/actions/preflight",
+        json={"action_id": "act-w2b-window-301", "finding_id": "x", "snapshot_id": "s"},
+        headers=_token_headers(),
+    )
+    events = actions._read_jsonl(actions._events_path())
+    assert [row.get("event") for row in events].count("unknown_ticket") == actions._REJECTION_WRITE_LIMIT_PER_600S
+    assert [row.get("event") for row in events].count("rejection_dropped") == 2
+
+    monkeypatch.setattr(actions, "_now", lambda: base + timedelta(seconds=601))
+    client.post(
+        "/api/dashboard/nexus/actions/preflight",
+        json={"action_id": "act-w2b-window-601", "finding_id": "x", "snapshot_id": "s"},
+        headers=_token_headers(),
+    )
+    events = actions._read_jsonl(actions._events_path())
+    assert [row.get("event") for row in events].count("unknown_ticket") == actions._REJECTION_WRITE_LIMIT_PER_600S + 1
+
+
+def test_w2b_recent_suppressed_count_treats_malformed_rows_as_one(isolated_home: Path):
+    actions._append_event(
+        "rejection_dropped",
+        request_id="rid-corrupt",
+        session_hash="sess",
+        decision="unknown_ticket",
+        http_status=404,
+        suppressed_count=None,
+        suppressed_event="unknown_ticket",
+    )
+    rows = actions._read_jsonl(actions._events_path())
+    rows[-1]["suppressed_count"] = "not-an-int"
+    actions._events_path().write_text("\n".join(json.dumps(row) for row in rows) + "\n", encoding="utf-8")
+    assert actions._recent_suppressed_count("unknown_ticket", "sess", "unknown_ticket", 600) == 1
+
+    actions._append_event(
+        "rejection_dropped",
+        request_id="rid-valid",
+        session_hash="sess",
+        decision="unknown_ticket",
+        http_status=404,
+        suppressed_count=3,
+        suppressed_event="unknown_ticket",
+    )
+    assert actions._recent_suppressed_count("unknown_ticket", "sess", "unknown_ticket", 600) == 3
+
+
 def test_w2b_duplicate_replay_events_are_bounded_like_rejections(
     monkeypatch: pytest.MonkeyPatch, client: TestClient, isolated_home: Path
 ):
