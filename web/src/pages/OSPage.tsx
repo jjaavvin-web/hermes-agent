@@ -17,6 +17,7 @@ import {
   GitBranch,
   FolderKanban,
   Network,
+  LayoutDashboard,
   LayoutGrid,
   RefreshCw,
   Server,
@@ -41,21 +42,22 @@ import {
 
 const SNAPSHOT_POLL_MS = 15_000;
 const HEADLINE_METRIC_COUNT = 3;
-type OSView = "nexus" | "connectome" | "grid" | "git" | "projects";
+type OSView = "live" | "nexus" | "connectome" | "grid" | "git" | "projects";
 const VIEW_STORAGE_KEY = "os-view";
 
 function loadStoredView(): OSView {
-  if (typeof window === "undefined") return "nexus";
+  if (typeof window === "undefined") return "live";
   try {
     const stored = window.localStorage.getItem(VIEW_STORAGE_KEY);
+    if (stored === "live") return "live";
     if (stored === "grid") return "grid";
     if (stored === "nexus") return "nexus";
     if (stored === "connectome") return "connectome";
     if (stored === "git") return "git";
     if (stored === "projects") return "projects";
-    return window.innerWidth < 1024 ? "grid" : "nexus";
+    return "live";
   } catch {
-    return window.innerWidth < 1024 ? "grid" : "nexus";
+    return "live";
   }
 }
 
@@ -629,14 +631,15 @@ export default function OSPage() {
   const data = snapshot as OSSnapshot;
 
   return (
-    <div className={`bg-background p-4 text-text-primary ${view === "nexus" || view === "connectome" ? "flex min-h-[540px] flex-col lg:h-[calc(100dvh-112px)]" : "min-h-0"}`}>
+    <div className={`bg-background p-4 text-text-primary ${view === "live" || view === "nexus" || view === "connectome" ? "flex min-h-[540px] flex-col lg:h-[calc(100dvh-112px)]" : "min-h-0"}`}>
       {/* 152/160/112px offsets are top nav + page header + p-4 shell padding; lg drops the mobile bottom-nav height. */}
       <div className="mb-3 flex flex-shrink-0 flex-wrap items-center gap-x-1.5 gap-y-2 text-xs text-text-tertiary">
         <Server className="h-3.5 w-3.5" />
         <span className="font-mondwest text-display tracking-[0.16em]">Infrastructure Operating Status</span>
         {error && <span className="min-w-0 truncate text-warning">· refresh failed: {error}</span>}
         <div className="ml-auto flex flex-shrink-0 overflow-hidden rounded-md border border-border" role="group" aria-label="OS view">
-          <button type="button" onClick={() => setView("nexus")} aria-pressed={view === "nexus"} className={`flex min-h-[44px] items-center gap-1.5 px-2.5 py-1 text-xs font-semibold transition sm:min-h-0 ${view === "nexus" ? "bg-accent/40 text-text-primary" : "text-text-tertiary hover:text-text-primary"}`}><Workflow className="h-3.5 w-3.5" />Nexus</button>
+          <button type="button" onClick={() => setView("live")} aria-pressed={view === "live"} className={`flex min-h-[44px] items-center gap-1.5 px-2.5 py-1 text-xs font-semibold transition sm:min-h-0 ${view === "live" ? "bg-accent/40 text-text-primary" : "text-text-tertiary hover:text-text-primary"}`}><LayoutDashboard className="h-3.5 w-3.5" />Live</button>
+          <button type="button" onClick={() => setView("nexus")} aria-pressed={view === "nexus"} className={`flex min-h-[44px] items-center gap-1.5 border-l border-border px-2.5 py-1 text-xs font-semibold transition sm:min-h-0 ${view === "nexus" ? "bg-accent/40 text-text-primary" : "text-text-tertiary hover:text-text-primary"}`}><Workflow className="h-3.5 w-3.5" />Nexus</button>
           <button type="button" onClick={() => setView("connectome")} aria-pressed={view === "connectome"} className={`flex min-h-[44px] items-center gap-1.5 border-l border-border px-2.5 py-1 text-xs font-semibold transition sm:min-h-0 ${view === "connectome" ? "bg-accent/40 text-text-primary" : "text-text-tertiary hover:text-text-primary"}`}><Network className="h-3.5 w-3.5" />Connectome</button>
           <button type="button" onClick={() => setView("grid")} aria-pressed={view === "grid"} className={`flex min-h-[44px] items-center gap-1.5 border-l border-border px-2.5 py-1 text-xs font-semibold transition sm:min-h-0 ${view === "grid" ? "bg-accent/40 text-text-primary" : "text-text-tertiary hover:text-text-primary"}`}><LayoutGrid className="h-3.5 w-3.5" />Grid</button><button type="button" onClick={() => setView("git")} aria-pressed={view === "git"} className={`flex min-h-[44px] items-center gap-1.5 border-l border-border px-2.5 py-1 text-xs font-semibold transition sm:min-h-0 ${view === "git" ? "bg-accent/40 text-text-primary" : "text-text-tertiary hover:text-text-primary"}`}><GitBranch className="h-3.5 w-3.5" />Git</button>
           <button type="button" onClick={() => setView("projects")} aria-pressed={view === "projects"} className={`flex min-h-[44px] items-center gap-1.5 border-l border-border px-2.5 py-1 text-xs font-semibold transition sm:min-h-0 ${view === "projects" ? "bg-accent/40 text-text-primary" : "text-text-tertiary hover:text-text-primary"}`}><FolderKanban className="h-3.5 w-3.5" />Projects</button>
@@ -645,7 +648,11 @@ export default function OSPage() {
 
       <Hero snapshot={data} loading={loading} onRefresh={() => void loadSnapshot()} onFocusSection={focusSection} />
 
-      {view === "nexus" ? (
+      {view === "live" ? (
+        <div className="mt-3 h-[70vh] min-h-[420px] min-w-0 overflow-hidden rounded-lg border border-border bg-black/20 lg:h-auto lg:flex-1">
+          <iframe src="/nexus" title="Nexus v2" className="block h-full w-full border-0" />
+        </div>
+      ) : view === "nexus" ? (
         <div className="mt-3 h-[70vh] min-h-[420px] min-w-0 lg:h-auto lg:flex-1"><OSNexus snapshot={data} /></div>
       ) : view === "connectome" ? (
         <div className="mt-3 h-[70vh] min-h-[560px] min-w-0 lg:h-auto lg:flex-1"><Connectome /></div>

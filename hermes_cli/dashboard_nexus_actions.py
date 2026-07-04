@@ -54,6 +54,7 @@ except Exception as exc:  # pragma: no cover - tested by monkeypatching the mode
 _TICKET_BY_ID = {ticket["id"]: ticket for ticket in _TICKETS}
 
 _CAPABILITY_TTL_SECONDS = 300
+_REJECTION_FLOOD_WINDOW_SECONDS = 600
 _MINT_LIMIT_PER_600S = 10
 _DISPATCH_LIMIT_PER_600S = 3
 _TAIL_READ_BYTES = 256 * 1024
@@ -198,6 +199,8 @@ def _append_event(
     lane: int | None = None,
     run_id: str | None = None,
     audit_dir: str | None = None,
+    suppressed_count: int | None = None,
+    suppressed_event: str | None = None,
 ) -> None:
     row = {
         "ts": _iso_now(),
@@ -216,6 +219,8 @@ def _append_event(
         "lane": lane,
         "run_id": run_id,
         "audit_dir": audit_dir,
+        "suppressed_count": suppressed_count,
+        "suppressed_event": suppressed_event,
     }
     _append_jsonl(_events_path(), row)
 
@@ -390,6 +395,31 @@ def _recent_event_count(event: str, session_hash: str, seconds: int) -> int:
     return count
 
 
+def _recent_suppressed_count(event: str, session_hash: str, decision: str, seconds: int) -> int:
+    """Return the highest WINDOWED suppression marker count for matching recent rows.
+
+    The marker count is not monotonic across process history: when prior markers
+    age out of this window, the next suppressed marker can restart at 1.
+    """
+    cutoff = _now() - timedelta(seconds=seconds)
+    highest = 0
+    for row in _read_jsonl(_events_path()):
+        if row.get("event") != "rejection_dropped" or row.get("session_hash") != session_hash:
+            continue
+        if row.get("decision") != decision or row.get("suppressed_event") not in {None, event}:
+            continue
+        try:
+            if _parse_dt(str(row["ts"])) < cutoff:
+                continue
+        except Exception:
+            continue
+        try:
+            highest = max(highest, int(row.get("suppressed_count") or 0))
+        except (TypeError, ValueError):
+            highest = max(highest, 1)
+    return highest
+
+
 def _ticket_ui_state(ticket: dict[str, Any], armed_mode: ArmedMode, stop_active: bool) -> str:
     if armed_mode == "off" or stop_active:
         return "locked"
@@ -414,16 +444,33 @@ def _reject(status_code: int, status: str, *, request_id: str, event: str, **kwa
     return JSONResponse({"status": status, "request_id": request_id}, status_code=status_code)
 
 
-def _append_rejection_event(event: str, *, request_id: str, session_hash: str | None = None, decision: str, http_status: int, **kwargs: Any) -> None:
-    if _recent_event_count(event, session_hash or "", 600) < _REJECTION_WRITE_LIMIT_PER_600S:
+def _append_rejection_event(
+    event: str,
+    *,
+    request_id: str,
+    session_hash: str | None = None,
+    decision: str,
+    http_status: int,
+    window_seconds: int = _REJECTION_FLOOD_WINDOW_SECONDS,
+    **kwargs: Any,
+) -> None:
+    session_key = session_hash or ""
+    if _recent_event_count(event, session_key, window_seconds) < _REJECTION_WRITE_LIMIT_PER_600S:
         _append_event(event, request_id=request_id, session_hash=session_hash, decision=decision, http_status=http_status, **kwargs)
         return
-    existing_drop = any(
-        row.get("event") == "rejection_dropped" and row.get("session_hash") == session_hash and row.get("decision") == decision
-        for row in _read_jsonl(_events_path())
+    if _recent_event_count("rejection_dropped", session_key, window_seconds) >= _REJECTION_WRITE_LIMIT_PER_600S:
+        return
+    suppressed_count = _recent_suppressed_count(event, session_key, decision, window_seconds) + 1
+    _append_event(
+        "rejection_dropped",
+        request_id=request_id,
+        session_hash=session_hash,
+        decision=decision,
+        http_status=http_status,
+        suppressed_count=suppressed_count,
+        suppressed_event=event,
+        **kwargs,
     )
-    if not existing_drop:
-        _append_event("rejection_dropped", request_id=request_id, session_hash=session_hash, decision=decision, http_status=http_status, **kwargs)
 
 
 def _ensure_registry_valid() -> JSONResponse | None:
@@ -579,11 +626,13 @@ def dispatch(
         if capability.get("status") == "consumed":
             terminal = _terminal_event_for_capability(body.capability_id)
             if hmac.compare_digest(str(capability["idempotency_key"]), body.idempotency_key) and terminal:
-                _append_event(
+                _append_rejection_event(
                     "duplicate",
                     request_id=request_id,
                     decision="duplicate",
                     http_status=200,
+                    # Duplicate-200 replay visibility deliberately follows capability TTL.
+                    window_seconds=_CAPABILITY_TTL_SECONDS,
                     run_id=str(terminal.get("run_id")),
                     audit_dir=str(terminal.get("audit_dir")),
                     **common,

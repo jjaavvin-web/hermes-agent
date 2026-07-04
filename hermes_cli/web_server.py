@@ -382,7 +382,7 @@ def _new_csp_nonce() -> str:
     return base64.b64encode(secrets.token_bytes(16)).decode("ascii")
 
 
-def _dashboard_csp_report_only(nonce: str) -> str:
+def _dashboard_csp_report_only(nonce: str, *, frame_ancestors: str = "'none'") -> str:
     """Build the report-only dashboard CSP for the current request nonce."""
     return "; ".join(
         (
@@ -393,7 +393,7 @@ def _dashboard_csp_report_only(nonce: str) -> str:
             "font-src 'self' data:",
             "connect-src 'self' ws: wss:",
             "object-src 'none'",
-            "frame-ancestors 'none'",
+            f"frame-ancestors {frame_ancestors}",
         )
     )
 
@@ -564,12 +564,18 @@ async def security_headers_middleware(request: Request, call_next):
     """Attach dashboard security headers to every HTTP response."""
     nonce = _new_csp_nonce()
     request.state.csp_nonce = nonce
+    path = request.url.path
+    allow_same_origin_framing = path.startswith("/_gitnexus-app/") or path == "/nexus"
     response = await call_next(request)
-    response.headers["Content-Security-Policy-Report-Only"] = _dashboard_csp_report_only(nonce)
+    response.headers["Content-Security-Policy-Report-Only"] = _dashboard_csp_report_only(
+        nonce,
+        frame_ancestors="'self'" if path == "/nexus" else "'none'",
+    )
     # The Explorer tab frames the dashboard's OWN same-origin GitNexus app
-    # (served under /_gitnexus-app/); allow same-origin framing there so the
-    # iframe can display. Every other path stays DENY (clickjacking guard).
-    if request.url.path.startswith("/_gitnexus-app/"):
+    # (served under /_gitnexus-app/); the OS tab frames the dashboard's OWN
+    # same-origin /nexus V6 truth surface. Every other path stays DENY
+    # (clickjacking guard), including /api/dashboard/nexus* API routes.
+    if allow_same_origin_framing:
         response.headers["X-Frame-Options"] = "SAMEORIGIN"
     else:
         response.headers["X-Frame-Options"] = "DENY"
