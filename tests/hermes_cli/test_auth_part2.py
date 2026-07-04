@@ -14,7 +14,6 @@ from pathlib import Path
 
 import pytest
 
-from agent.google_oauth import GoogleCredentials
 from hermes_cli import auth
 from hermes_cli.auth import AuthError
 
@@ -71,7 +70,9 @@ def test_provider_registry_helpers_normalize_known_display_names():
     ("raw", "expected"),
     [
         ("claude", "anthropic"),
-        ("gemini-cli", "google-gemini-cli"),
+        # "gemini-cli" -> "google-gemini-cli" removed in the v2026.7.1 merge —
+        # upstream deleted the Google-OAuth/Gemini-CloudCode lane and its
+        # alias; fork runtime does not use it.
         ("github-copilot-acp", "copilot-acp"),
         ("lm-studio", "lmstudio"),
         ("tokenhub", "tencent-tokenhub"),
@@ -303,77 +304,14 @@ def test_xai_expired_token_terminal_refresh_quarantines_and_signals_relogin_requ
 
 # ---------------------------------------------------------------------------
 # Google Gemini OAuth provider getter
+#
+# test_gemini_oauth_runtime_credentials_happy_path_and_shape,
+# test_gemini_oauth_runtime_credentials_missing_auth_file,
+# test_gemini_oauth_runtime_credentials_malformed_auth_file, and
+# test_mark_google_gemini_cli_active_persists_minimal_provider_state removed
+# in the v2026.7.1 merge — upstream deleted the Google-OAuth/Gemini-CloudCode
+# lane (agent/google_oauth.py); fork runtime does not use it.
 # ---------------------------------------------------------------------------
-
-
-def _write_google_credentials(path: Path, *, access: str = "google-access") -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(
-        json.dumps(
-            {
-                "refresh": "google-refresh|project-123|managed-456",
-                "access": access,
-                "expires": int((time.time() + 3600) * 1000),
-                "email": "user@example.test",
-            }
-        ),
-        encoding="utf-8",
-    )
-
-
-def test_gemini_oauth_runtime_credentials_happy_path_and_shape(
-    hermes_home: Path,
-    monkeypatch: pytest.MonkeyPatch,
-):
-    credentials_path = hermes_home / "auth" / "google_oauth.json"
-    _write_google_credentials(credentials_path)
-
-    def _no_network_get_valid_access_token(*, force_refresh: bool = False) -> str:
-        assert force_refresh is False
-        return "google-access"
-
-    monkeypatch.setattr("agent.google_oauth.get_valid_access_token", _no_network_get_valid_access_token)
-
-    creds = auth.resolve_gemini_oauth_runtime_credentials(force_refresh=False)
-
-    assert creds == {
-        "provider": "google-gemini-cli",
-        "base_url": auth.DEFAULT_GEMINI_CLOUDCODE_BASE_URL,
-        "api_key": "google-access",
-        "source": "google-oauth",
-        "expires_at_ms": json.loads(credentials_path.read_text())["expires"],
-        "auth_file": str(credentials_path),
-        "email": "user@example.test",
-        "project_id": "project-123",
-    }
-
-
-def test_gemini_oauth_runtime_credentials_missing_auth_file(hermes_home: Path):
-    with pytest.raises(AuthError) as exc:
-        auth.resolve_gemini_oauth_runtime_credentials()
-
-    assert exc.value.provider == "google-gemini-cli"
-    assert exc.value.code == "google_oauth_not_logged_in"
-
-
-def test_gemini_oauth_runtime_credentials_malformed_auth_file(hermes_home: Path):
-    path = hermes_home / "auth" / "google_oauth.json"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text("not-json{{", encoding="utf-8")
-
-    with pytest.raises(AuthError) as exc:
-        auth.resolve_gemini_oauth_runtime_credentials()
-
-    assert exc.value.provider == "google-gemini-cli"
-    assert exc.value.code == "google_oauth_not_logged_in"
-
-
-def test_mark_google_gemini_cli_active_persists_minimal_provider_state(hermes_home: Path):
-    auth._mark_google_gemini_cli_active({"email": "person@example.test"})
-
-    store = auth._load_auth_store()
-    assert store["active_provider"] == "google-gemini-cli"
-    assert store["providers"]["google-gemini-cli"] == {"email": "person@example.test"}
 
 
 # ---------------------------------------------------------------------------
@@ -667,35 +605,11 @@ def test_external_process_provider_credentials_invalid_provider():
 
 # ---------------------------------------------------------------------------
 # Google credential read/write helper (provider sibling auth-file case)
+#
+# test_google_oauth_credential_file_roundtrip_and_malformed_json removed in
+# the v2026.7.1 merge — upstream deleted the Google-OAuth/Gemini-CloudCode
+# lane (agent/google_oauth.py); fork runtime does not use it.
 # ---------------------------------------------------------------------------
-
-
-def test_google_oauth_credential_file_roundtrip_and_malformed_json(
-    hermes_home: Path,
-):
-    from agent import google_oauth
-
-    path = google_oauth.save_credentials(
-        GoogleCredentials(
-            access_token="saved-google-access",
-            refresh_token="saved-google-refresh",
-            expires_ms=int((time.time() + 3600) * 1000),
-            email="saved@example.test",
-            project_id="saved-project",
-            managed_project_id="saved-managed",
-        )
-    )
-
-    assert path == hermes_home / "auth" / "google_oauth.json"
-    loaded = google_oauth.load_credentials()
-    assert loaded is not None
-    assert loaded.access_token == "saved-google-access"
-    assert loaded.refresh_token == "saved-google-refresh"
-    assert loaded.email == "saved@example.test"
-    assert loaded.project_id == "saved-project"
-
-    path.write_text("not-json{{", encoding="utf-8")
-    assert google_oauth.load_credentials() is None
 
 
 # ---------------------------------------------------------------------------

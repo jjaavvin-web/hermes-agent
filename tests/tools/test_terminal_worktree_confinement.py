@@ -28,7 +28,7 @@ def _clean_terminal_state(monkeypatch):
     monkeypatch.setattr(
         terminal_tool,
         "_check_all_guards",
-        lambda command, env_type: {"approved": True},
+        lambda command, env_type, **kwargs: {"approved": True},
     )
 
 

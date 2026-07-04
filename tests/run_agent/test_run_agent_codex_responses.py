@@ -39,6 +39,28 @@ def _patch_agent_bootstrap(monkeypatch):
     monkeypatch.setattr(run_agent, "check_toolset_requirements", lambda: {})
 
 
+def _patch_endpoint_model_metadata(monkeypatch):
+    """Stub the live custom-endpoint metadata probe.
+
+    ``AIAgent`` init resolves the model's context length via
+    ``get_model_context_length``, which — for a ``base_url`` that isn't a
+    recognised provider host — calls ``fetch_endpoint_model_metadata``
+    (a real ``requests.get``). On a fake host like
+    ``relay.example.com`` this either fails slowly or, once it misses,
+    falls through to further live probes (e.g. the Ollama ``/api/show``
+    check), which also hit the network and hang on DNS resolution.
+    Returning a minimal single-entry metadata shape lets
+    ``_resolve_endpoint_context_length``'s single-candidate fallback
+    resolve immediately without any further probing.
+    """
+    import agent.model_metadata as model_metadata
+    monkeypatch.setattr(
+        model_metadata,
+        "fetch_endpoint_model_metadata",
+        lambda *a, **k: {"stub-model": {"context_length": 128000}},
+    )
+
+
 def _build_agent(monkeypatch):
     _patch_agent_bootstrap(monkeypatch)
 
@@ -266,6 +288,39 @@ def test_copilot_acp_stays_on_chat_completions_for_gpt_5_models(monkeypatch):
     )
     assert agent.provider == "copilot-acp"
     assert agent.api_mode == "chat_completions"
+
+
+def test_custom_provider_gpt5_stays_on_chat_completions(monkeypatch):
+    _patch_agent_bootstrap(monkeypatch)
+    _patch_endpoint_model_metadata(monkeypatch)
+    agent = run_agent.AIAgent(
+        model="gpt-5.4",
+        base_url="https://relay.example.com/v1",
+        provider="custom",
+        api_key="relay-token",
+        quiet_mode=True,
+        max_iterations=1,
+        skip_context_files=True,
+        skip_memory=True,
+    )
+    assert agent.provider == "custom"
+    assert agent.api_mode == "chat_completions"
+
+
+def test_custom_provider_direct_openai_url_still_uses_responses(monkeypatch):
+    _patch_agent_bootstrap(monkeypatch)
+    agent = run_agent.AIAgent(
+        model="gpt-5.4",
+        base_url="https://api.openai.com/v1",
+        provider="custom",
+        api_key="openai-token",
+        quiet_mode=True,
+        max_iterations=1,
+        skip_context_files=True,
+        skip_memory=True,
+    )
+    assert agent.provider == "custom"
+    assert agent.api_mode == "codex_responses"
 
 
 def test_copilot_gpt_5_mini_stays_on_chat_completions(monkeypatch):

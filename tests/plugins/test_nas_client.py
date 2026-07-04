@@ -1,11 +1,11 @@
-"""Tests for plugins.cron.chronos._nas_client."""
+"""Tests for plugins.cron_providers.chronos._nas_client."""
 
 from __future__ import annotations
 
 import pytest
 import requests
 
-from plugins.cron.chronos._nas_client import NasCronClient, NasCronClientError
+from plugins.cron_providers.chronos._nas_client import NasCronClient, NasCronClientError
 
 
 class FakeResponse:
