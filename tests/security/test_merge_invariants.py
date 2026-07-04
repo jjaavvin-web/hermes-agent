@@ -9,6 +9,7 @@ tests/hermes_cli/test_config_drift.py.
 """
 
 import asyncio
+import re
 from pathlib import Path
 
 import pytest
@@ -625,13 +626,14 @@ def test_f4_fail_closed_binding_guards_survive_merge():
     create_task_at = src.find("asyncio.create_task(_run_with_backpressure())")
     assert verify_at != -1 and create_task_at != -1 and verify_at < create_task_at, \
         "per-delivery adoption guard must run before create_task"
+    reason_literals = re.findall(r"(?<![A-Za-z0-9_])[\"']([^\"']+)[\"']", src)
     for reason in (
         "adoption_mismatch",
         "hydrate_live_binding_mismatch",
         "hydrate_scan_failure",
         "post_allocation_exception",
     ):
-        assert reason in src, f"F4 refused reason dropped: {reason}"
+        assert reason in reason_literals, f"F4 refused reason literal dropped from active code: {reason}"
 
 
 def test_f4_runtime_confinement_and_adoption_audit_pins():

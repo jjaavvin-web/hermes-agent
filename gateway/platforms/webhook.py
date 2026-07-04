@@ -219,6 +219,7 @@ class WebhookAdapter(BasePlatformAdapter):
         self._wt_broker_lock = threading.Lock()
         self._lease_by_finalizer: Dict[str, dict] = {}
         self._runtime_cwds_by_finalizer: Dict[str, Any] = {}
+        self._hydrated_adoption_sids: set[str] = set()
 
     def _build_session_key(self, source) -> str:
         """Return the webhook run/session correlation key for a source."""
@@ -768,8 +769,97 @@ class WebhookAdapter(BasePlatformAdapter):
                 )
         return self._wt_broker
 
+    def _hydrated_lease_record(
+        self,
+        *,
+        child: Path,
+        branch: str,
+        base_sha: str | None,
+        reason: str,
+    ) -> dict:
+        return {
+            "sid": child.name,
+            "delivery_id": child.name,
+            "route": "hydrate",
+            "path": str(child),
+            "branch": branch,
+            "base": base_sha,
+            "reason": reason,
+        }
+
+    @staticmethod
+    def _hydrated_worktree_is_clean_for_removal(child: Path, base_sha: str | None) -> bool:
+        """True when a stale hydrated worktree has no local work to harvest."""
+        try:
+            status = subprocess.run(
+                ["git", "-C", str(child), "status", "--porcelain"],
+                capture_output=True, text=True, check=False, timeout=25,
+            )
+        except subprocess.TimeoutExpired:
+            logger.warning("[webhook] stale hydrated worktree status timed out for %s; retaining", child)
+            return False
+        if status.returncode != 0 or status.stdout.strip():
+            return False
+        if not base_sha:
+            return False
+        try:
+            commits = subprocess.run(
+                ["git", "-C", str(child), "rev-list", "--count", f"{base_sha}..HEAD"],
+                capture_output=True, text=True, check=False, timeout=25,
+            )
+        except subprocess.TimeoutExpired:
+            logger.warning("[webhook] stale hydrated worktree rev-list timed out for %s; retaining", child)
+            return False
+        if commits.returncode != 0:
+            return False
+        try:
+            return int((commits.stdout or "0").strip() or "0") == 0
+        except ValueError:
+            return False
+
+    def _complete_stale_hydrated_worktree(
+        self,
+        *,
+        child: Path,
+        branch: str,
+        base_sha: str | None,
+        reason: str,
+        repo_root: Path,
+    ) -> None:
+        """Retire a stale restart candidate without keeping it as an active lease.
+
+        Clean stale worktrees are removed. Dirty/non-clean trees are left on disk
+        for operator harvest, but are deliberately not returned to the broker
+        registry, so they cannot consume active lease capacity after restart.
+        """
+        record = self._hydrated_lease_record(
+            child=child,
+            branch=branch,
+            base_sha=base_sha,
+            reason=reason,
+        )
+        event = "awaiting-harvest"
+        if self._hydrated_worktree_is_clean_for_removal(child, base_sha):
+            try:
+                rm_result = subprocess.run(
+                    ["git", "-C", str(repo_root), "worktree", "remove", str(child)],
+                    capture_output=True, text=True, check=False, timeout=25,
+                )
+            except subprocess.TimeoutExpired:
+                logger.warning("[webhook] clean stale per-delivery worktree removal timed out for %s; retaining", child)
+                rm_result = None
+            if rm_result is not None and (rm_result.returncode == 0 or not child.exists()):
+                event = "removed"
+            elif rm_result is not None:
+                logger.warning(
+                    "[webhook] clean stale per-delivery worktree removal failed for %s: %s",
+                    child,
+                    (rm_result.stderr or "").strip(),
+                )
+        self._append_lease_ledger(event, record)
+
     def _hydrate_per_delivery_sessions(self, *, hermes_home: Path, repo_root: Path) -> dict[str, dict]:
-        """Conservatively adopt only wh-* loki/* worktrees under relay-wt/deliveries."""
+        """Conservatively adopt only live-bound wh-* loki/* worktrees under relay-wt/deliveries."""
         root = hermes_home / "relay-wt" / "deliveries"
         if not root.is_dir():
             return {}
@@ -801,20 +891,18 @@ class WebhookAdapter(BasePlatformAdapter):
                 continue
             meta = entries.get(str(child.resolve())) or entries.get(str(child))
             branch = (meta or {}).get("branch", "")
+            base_sha = (meta or {}).get("base_sha")
             if not branch.startswith("loki/"):
                 continue
             if live_entries is _LIVE_SESSION_SCAN_FAILED:
                 self._append_lease_ledger(
                     "refused",
-                    {
-                        "sid": child.name,
-                        "delivery_id": child.name,
-                        "route": "hydrate",
-                        "path": str(child),
-                        "branch": branch,
-                        "base": (meta or {}).get("base_sha"),
-                        "reason": "hydrate_scan_failure",
-                    },
+                    self._hydrated_lease_record(
+                        child=child,
+                        branch=branch,
+                        base_sha=base_sha,
+                        reason="hydrate_scan_failure",
+                    ),
                 )
                 continue
             if live_entries is not None:
@@ -829,25 +917,33 @@ class WebhookAdapter(BasePlatformAdapter):
                         str(child),
                     )
                 ]
-                if not matching and mismatched:
+                if not matching and len(mismatched) > 0:
                     self._append_lease_ledger(
                         "refused",
-                        {
-                            "sid": child.name,
-                            "delivery_id": child.name,
-                            "route": "hydrate",
-                            "path": str(child),
-                            "branch": branch,
-                            "base": (meta or {}).get("base_sha"),
-                            "reason": "hydrate_live_binding_mismatch",
-                        },
+                        self._hydrated_lease_record(
+                            child=child,
+                            branch=branch,
+                            base_sha=base_sha,
+                            reason="hydrate_live_binding_mismatch",
+                        ),
+                    )
+                    continue
+                adopted_once = child.name in getattr(self, "_hydrated_adoption_sids", set())
+                if not matching and not live_entries and not adopted_once:
+                    self._complete_stale_hydrated_worktree(
+                        child=child,
+                        branch=branch,
+                        base_sha=base_sha,
+                        reason="hydrate_no_live_session",
+                        repo_root=repo_root,
                     )
                     continue
             adopted[child.name] = {
                 "path": str(child),
                 "branch": branch,
-                "base_sha": (meta or {}).get("base_sha"),
+                "base_sha": base_sha,
             }
+            self._hydrated_adoption_sids.add(child.name)
         return adopted
 
     def _allocate_per_delivery_worktree(self, route_name: str, delivery_id: str) -> dict:
