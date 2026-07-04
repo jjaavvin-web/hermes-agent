@@ -474,3 +474,55 @@ def test_hydration_adopts_only_matching_live_session_worktree(tmp_path, monkeypa
             "base_sha": "a" * 40,
         }
     }
+
+
+def test_hydration_harvests_stale_worktree_when_unrelated_unbound_session_is_live(tmp_path, monkeypatch):
+    """Regression (rev-3): a stale wh-* worktree must be stale-completed even when
+    the SessionStore is NON-empty, as long as no live session is bound to THIS
+    worktree. Rev-2 gated stale-completion on `not live_entries` (store totally
+    empty), so any live-but-unbound session (worktree_path=None — the normal
+    steady state for interactive/CLI/Telegram sessions) let the stale candidate
+    fall through to unconditional adoption, silently re-arming it as a trusted
+    lease across restart. This constructs exactly that: one unrelated live entry
+    with worktree_path=None + one clean stale worktree bound to nothing live.
+    """
+    adapter = _make_adapter(cap=2)
+    hermes_home = tmp_path / "hermes_home"
+    repo_root = tmp_path / "repo"
+    root = hermes_home / "relay-wt" / "deliveries"
+    root.mkdir(parents=True)
+    repo_root.mkdir()
+    stale = root / "wh-loki1-stale-attacker"
+    stale.mkdir()
+    # Non-empty store, but the only live session is UNBOUND (no worktree) and
+    # unrelated to the stale candidate — so `matching` and `mismatched` are both
+    # empty, and rev-2 would have fallen through to adopt.
+    adapter._session_store = _FakeSessionStore({
+        "agent:main:cli:interactive": SimpleNamespace(worktree_path=None),
+    })
+    worktree_stdout = _worktree_list_porcelain([(stale, "loki/loki1/stale-attacker", "a" * 40)])
+
+    def fake_run(cmd, *args, **kwargs):
+        if cmd[:5] == ["git", "-C", str(repo_root), "worktree", "list"]:
+            return _completed_process(stdout=worktree_stdout)
+        if cmd[:5] == ["git", "-C", str(repo_root), "worktree", "remove"]:
+            Path(cmd[5]).rmdir()
+            return _completed_process()
+        if len(cmd) >= 4 and cmd[0] == "git" and cmd[2] == str(stale):
+            if cmd[3:5] == ["status", "--porcelain"]:
+                return _completed_process(stdout="")
+            if cmd[3:5] == ["rev-list", "--count"]:
+                return _completed_process(stdout="0\n")
+        raise AssertionError(f"unexpected command: {cmd}")
+
+    monkeypatch.setattr(webhook_module.subprocess, "run", fake_run)
+    existing = adapter._hydrate_per_delivery_sessions(hermes_home=hermes_home, repo_root=repo_root)
+
+    # NOT adopted — the stale worktree must not become an active broker lease.
+    assert existing == {}
+    # Clean stale worktree removed from disk.
+    assert not stale.exists()
+    ledger = hermes_home / "state" / "loki" / "worktree-leases.jsonl"
+    rows = [json.loads(line) for line in ledger.read_text().splitlines()]
+    assert [row["event"] for row in rows] == ["removed"]
+    assert rows[0]["reason"] == "hydrate_no_live_session"

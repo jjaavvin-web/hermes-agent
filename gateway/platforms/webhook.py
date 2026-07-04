@@ -929,7 +929,17 @@ class WebhookAdapter(BasePlatformAdapter):
                     )
                     continue
                 adopted_once = child.name in getattr(self, "_hydrated_adoption_sids", set())
-                if not matching and not live_entries and not adopted_once:
+                # Stale-completion fires whenever NO live session is bound to THIS
+                # worktree — regardless of whether unrelated live sessions exist
+                # elsewhere. The earlier `not live_entries` guard only triggered
+                # when the SessionStore was completely empty, so on any non-idle
+                # gateway a stale/leaked wh-* worktree fell through to unconditional
+                # adoption (re-arming it as a trusted lease across restart — worse
+                # than a capacity wedge). Mismatch (a live session bound to a
+                # DIFFERENT path) is already handled disk-inert above and takes
+                # priority; adoption below is reached only when `matching` is
+                # non-empty (a live session is bound to exactly this worktree).
+                if not matching and not adopted_once:
                     self._complete_stale_hydrated_worktree(
                         child=child,
                         branch=branch,
