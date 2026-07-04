@@ -472,6 +472,39 @@ class TestExistingSessionsHydration:
         assert sid in broker._registry
         assert str(broker._registry[sid].path) == wt_path
 
+
+
+    def test_existing_sessions_over_cap_wedges_fresh_allocation_until_stale_candidates_filtered(self, tmp_path):
+        """Regression proof: constructor hydration itself can fill the lease cap."""
+        repo_root = tmp_path / "repo"
+        hermes_home = tmp_path / "hermes_home"
+        repo_root.mkdir()
+        hermes_home.mkdir()
+        stale_count = 3
+        existing = {
+            f"wh-loki1-stale{i}": {
+                "path": str(hermes_home / "relay-wt" / "deliveries" / f"wh-loki1-stale{i}"),
+                "branch": f"loki/loki1/stale{i}",
+            }
+            for i in range(stale_count)
+        }
+        broker = WorktreeBroker(
+            repo_root=repo_root,
+            hermes_home=hermes_home,
+            existing_sessions=existing,
+            wt_dir_name="relay-wt/deliveries",
+            branch_prefix="loki",
+            ports_enabled=False,
+            max_active_leases=stale_count,
+        )
+
+        with (
+            patch.object(broker, "_disk_free_bytes", return_value=10 * 1024**3),
+            patch.object(broker, "_git", return_value=_ok_git_result()),
+        ):
+            with pytest.raises(LeaseCapacityError):
+                broker.allocate("wh-loki1-fresh", isa_slug="fresh")
+
     def test_second_allocate_returns_existing_without_git(self, tmp_path):
         sid = "aaaaaaaa-0000-4000-8000-cccccccccccc"
         hermes_home = tmp_path / "hermes_home"

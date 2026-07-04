@@ -8,7 +8,9 @@ red check, never a diff. Mirrors the inspect.getsource technique already used in
 tests/hermes_cli/test_config_drift.py.
 """
 
+import ast
 import asyncio
+import re
 from pathlib import Path
 
 import pytest
@@ -26,6 +28,30 @@ REPO = Path(__file__).resolve().parents[2]
 
 def _read(rel: str) -> str:
     return (REPO / rel).read_text(encoding="utf-8")
+
+
+def _code_string_literals(src: str) -> set[str]:
+    """Return the string literals that appear in *real code* — excluding
+    comments (absent from the AST entirely) and docstrings (one whole Constant
+    that never exact-matches a reason token). Used by the F4 merge-invariant pin
+    so a silent-revert commit cannot satisfy it by leaving a reason string in a
+    comment like ``# reason="hydrate_live_binding_mismatch" removed``.
+    """
+    tree = ast.parse(src)
+    docstring_ids = set()
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.Module, ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            body = getattr(node, "body", None)
+            if body and isinstance(body[0], ast.Expr) and isinstance(body[0].value, ast.Constant) \
+                    and isinstance(body[0].value.value, str):
+                docstring_ids.add(id(body[0].value))
+    return {
+        node.value
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Constant)
+        and isinstance(node.value, str)
+        and id(node) not in docstring_ids
+    }
 
 
 def _reset_webhook_refusal_state() -> None:
@@ -625,13 +651,41 @@ def test_f4_fail_closed_binding_guards_survive_merge():
     create_task_at = src.find("asyncio.create_task(_run_with_backpressure())")
     assert verify_at != -1 and create_task_at != -1 and verify_at < create_task_at, \
         "per-delivery adoption guard must run before create_task"
+    # Match against real code string literals only (comment/docstring-proof —
+    # see _code_string_literals): a silent-revert commit cannot satisfy this pin
+    # by leaving a reason string in a comment.
+    reason_literals = _code_string_literals(src)
     for reason in (
         "adoption_mismatch",
         "hydrate_live_binding_mismatch",
         "hydrate_scan_failure",
         "post_allocation_exception",
     ):
-        assert reason in src, f"F4 refused reason dropped: {reason}"
+        assert reason in reason_literals, f"F4 refused reason literal dropped from active code: {reason}"
+
+
+def test_f4_reason_literal_pin_is_comment_and_docstring_proof():
+    """The F4 reason-literal matcher must NOT be satisfiable by a comment or
+    docstring mention (rev-2 bypass: a quoted reason in a `#` comment passed the
+    old raw-regex pin). Proves the pin fails-closed against the exact camouflage
+    a silent revert would leave behind."""
+    reason = "hydrate_live_binding_mismatch"
+
+    # Real code literal → satisfies the pin.
+    real = f'def f():\n    return _refuse("{reason}")\n'
+    assert reason in _code_string_literals(real)
+
+    # Quoted reason inside a comment → MUST NOT satisfy the pin (the rev-2 hole).
+    commented = f'def f():\n    # reason="{reason}" removed in refactor\n    return None\n'
+    assert reason not in _code_string_literals(commented)
+
+    # Bare reason inside a comment → also must not satisfy.
+    bare_comment = f'def f():\n    # used to raise {reason}\n    return None\n'
+    assert reason not in _code_string_literals(bare_comment)
+
+    # Docstring mention → not an exact-match literal (it is one whole Constant).
+    doc = f'def f():\n    """This used to raise {reason}."""\n    return None\n'
+    assert reason not in _code_string_literals(doc)
 
 
 def test_f4_runtime_confinement_and_adoption_audit_pins():
