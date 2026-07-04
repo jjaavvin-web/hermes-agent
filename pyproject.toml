@@ -365,6 +365,7 @@ testpaths = ["tests"]
 markers = [
     "integration: marks tests requiring external services (API keys, Modal, etc.)",
     "real_concurrent_gate: opt out of the autouse stub that disables _detect_concurrent_hermes_instances",
+    "ssh: marks tests that require a reachable SSH target (file-sync perf benchmarks)",
 ]
 # integration tests take way too long to run in the normal CI environments
 addopts = "-m 'not integration' --timeout=30 --timeout-method=thread"
