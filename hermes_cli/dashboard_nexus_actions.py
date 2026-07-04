@@ -54,6 +54,7 @@ except Exception as exc:  # pragma: no cover - tested by monkeypatching the mode
 _TICKET_BY_ID = {ticket["id"]: ticket for ticket in _TICKETS}
 
 _CAPABILITY_TTL_SECONDS = 300
+_REJECTION_FLOOD_WINDOW_SECONDS = 600
 _MINT_LIMIT_PER_600S = 10
 _DISPATCH_LIMIT_PER_600S = 3
 _TAIL_READ_BYTES = 256 * 1024
@@ -395,6 +396,11 @@ def _recent_event_count(event: str, session_hash: str, seconds: int) -> int:
 
 
 def _recent_suppressed_count(event: str, session_hash: str, decision: str, seconds: int) -> int:
+    """Return the highest WINDOWED suppression marker count for matching recent rows.
+
+    The marker count is not monotonic across process history: when prior markers
+    age out of this window, the next suppressed marker can restart at 1.
+    """
     cutoff = _now() - timedelta(seconds=seconds)
     highest = 0
     for row in _read_jsonl(_events_path()):
@@ -410,7 +416,7 @@ def _recent_suppressed_count(event: str, session_hash: str, decision: str, secon
         try:
             highest = max(highest, int(row.get("suppressed_count") or 0))
         except (TypeError, ValueError):
-            highest += 1
+            highest = max(highest, 1)
     return highest
 
 
@@ -445,7 +451,7 @@ def _append_rejection_event(
     session_hash: str | None = None,
     decision: str,
     http_status: int,
-    window_seconds: int = _CAPABILITY_TTL_SECONDS,
+    window_seconds: int = _REJECTION_FLOOD_WINDOW_SECONDS,
     **kwargs: Any,
 ) -> None:
     session_key = session_hash or ""
@@ -625,6 +631,8 @@ def dispatch(
                     request_id=request_id,
                     decision="duplicate",
                     http_status=200,
+                    # Duplicate-200 replay visibility deliberately follows capability TTL.
+                    window_seconds=_CAPABILITY_TTL_SECONDS,
                     run_id=str(terminal.get("run_id")),
                     audit_dir=str(terminal.get("audit_dir")),
                     **common,
