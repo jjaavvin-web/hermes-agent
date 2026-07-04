@@ -6,6 +6,7 @@ import types
 import io
 import contextlib
 from argparse import Namespace
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -14,6 +15,66 @@ import hermes_cli.doctor as doctor
 import hermes_cli.gateway as gateway_cli
 from hermes_cli import doctor as doctor_mod
 from hermes_cli.doctor import _has_provider_env_config
+
+
+_LIVE_STATE_DB = (Path.home() / ".hermes" / "state.db").resolve(strict=False)
+
+
+@pytest.fixture(autouse=True)
+def _fail_if_doctor_probes_live_state_db(monkeypatch):
+    """Regression guard: doctor tests must never open the user's live state.db."""
+    import sqlite3
+
+    real_connect = sqlite3.connect
+
+    def guarded_connect(database, *args, **kwargs):
+        if isinstance(database, str | bytes | os.PathLike):
+            raw_path = os.fsdecode(database)
+            if raw_path.startswith("file:"):
+                raw_path = raw_path.removeprefix("file:").split("?", 1)[0]
+            try:
+                db_path = Path(raw_path).expanduser().resolve(strict=False)
+            except OSError:
+                db_path = None
+            if db_path == _LIVE_STATE_DB:
+                pytest.fail(f"doctor test attempted to open live state.db: {db_path}")
+        return real_connect(database, *args, **kwargs)
+
+    monkeypatch.setattr(sqlite3, "connect", guarded_connect)
+
+
+def _isolate_doctor_paths(monkeypatch, tmp_path, *, home=None, project=None):
+    """Redirect doctor.py import-time path constants into tmp_path."""
+    hermes_home = home or tmp_path / ".hermes"
+    project_root = project or tmp_path / "project"
+    hermes_home.mkdir(parents=True, exist_ok=True)
+    project_root.mkdir(parents=True, exist_ok=True)
+
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.setattr(doctor_mod, "HERMES_HOME", hermes_home)
+    monkeypatch.setattr(doctor_mod, "PROJECT_ROOT", project_root)
+    monkeypatch.setattr(doctor_mod, "_DHH", str(hermes_home))
+    return hermes_home, project_root
+
+
+def test_setenv_alone_does_not_redirect_imported_doctor_home(monkeypatch, tmp_path):
+    """Document why doctor tests must patch doctor_mod.HERMES_HOME directly."""
+    original_home = doctor_mod.HERMES_HOME
+    env_home = tmp_path / ".hermes"
+    env_home.mkdir()
+
+    monkeypatch.setenv("HERMES_HOME", str(env_home))
+
+    assert doctor_mod.HERMES_HOME == original_home
+    assert doctor_mod.HERMES_HOME != env_home
+
+
+def test_isolate_doctor_paths_updates_all_import_time_doctor_constants(monkeypatch, tmp_path):
+    hermes_home, project_root = _isolate_doctor_paths(monkeypatch, tmp_path)
+
+    assert doctor_mod.HERMES_HOME == hermes_home
+    assert doctor_mod.PROJECT_ROOT == project_root
+    assert doctor_mod._DHH == str(hermes_home)
 
 
 class TestDoctorPlatformHints:
@@ -859,43 +920,31 @@ class TestGitHubTokenCheck:
     """Tests for GitHub token / gh auth detection in doctor."""
 
     def test_no_token_and_not_gh_authenticated_shows_warn(self, monkeypatch, tmp_path):
-        home = tmp_path / ".hermes"
-        home.mkdir(parents=True, exist_ok=True)
-        monkeypatch.setenv("HERMES_HOME", str(home))
+        _isolate_doctor_paths(monkeypatch, tmp_path)
         monkeypatch.setenv("PATH", "/nonexistent")  # gh not found
-
-        from hermes_cli.doctor import run_doctor
-        import io, contextlib
 
         buf = io.StringIO()
         with contextlib.redirect_stdout(buf):
-            run_doctor(Namespace(fix=False))
+            doctor_mod.run_doctor(Namespace(fix=False))
         out = buf.getvalue()
 
         assert "No GITHUB_TOKEN" in out
         assert "60 req/hr" in out
 
     def test_token_env_present_shows_ok(self, monkeypatch, tmp_path):
-        home = tmp_path / ".hermes"
-        home.mkdir(parents=True, exist_ok=True)
-        monkeypatch.setenv("HERMES_HOME", str(home))
+        _isolate_doctor_paths(monkeypatch, tmp_path)
         monkeypatch.setenv("GITHUB_TOKEN", "ghp_test123")
         monkeypatch.setenv("PATH", "/nonexistent")  # gh not found
 
-        from hermes_cli.doctor import run_doctor
-        import io, contextlib
-
         buf = io.StringIO()
         with contextlib.redirect_stdout(buf):
-            run_doctor(Namespace(fix=False))
+            doctor_mod.run_doctor(Namespace(fix=False))
         out = buf.getvalue()
 
         assert "GitHub token configured" in out
 
     def test_gh_authenticated_without_env_token_shows_ok(self, monkeypatch, tmp_path):
-        home = tmp_path / ".hermes"
-        home.mkdir(parents=True, exist_ok=True)
-        monkeypatch.setenv("HERMES_HOME", str(home))
+        _isolate_doctor_paths(monkeypatch, tmp_path)
         # No GITHUB_TOKEN or GH_TOKEN
         monkeypatch.delenv("GITHUB_TOKEN", raising=False)
         monkeypatch.delenv("GH_TOKEN", raising=False)
@@ -903,11 +952,14 @@ class TestGitHubTokenCheck:
         # Mock gh to return success
         import shutil
         real_which = shutil.which
+
         def mock_which(cmd):
             return "/usr/local/bin/gh" if cmd == "gh" else real_which(cmd)
+
         monkeypatch.setattr(shutil, "which", mock_which)
 
         call_log = []
+
         def mock_run(cmd, **kwargs):
             call_log.append(cmd)
             if cmd[:2] == ["gh", "auth"]:
@@ -919,12 +971,9 @@ class TestGitHubTokenCheck:
         import subprocess
         monkeypatch.setattr(subprocess, "run", mock_run)
 
-        from hermes_cli.doctor import run_doctor
-        import io, contextlib
-
         buf = io.StringIO()
         with contextlib.redirect_stdout(buf):
-            run_doctor(Namespace(fix=False))
+            doctor_mod.run_doctor(Namespace(fix=False))
         out = buf.getvalue()
 
         assert "gh auth" in str(call_log) or any(c[0] == "gh" for c in call_log), f"gh not called: {call_log}"
