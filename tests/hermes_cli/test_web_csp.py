@@ -6,6 +6,42 @@ import re
 
 import pytest
 
+_CSP_HEADER = "Content-Security-Policy-Report-Only"
+_EXPECTED_CSP_DIRECTIVES = {
+    "default-src": "'self'",
+    "script-src": None,
+    "style-src": "'self' 'unsafe-inline'",
+    "img-src": "'self' data: blob:",
+    "connect-src": "'self' ws: wss:",
+    "font-src": "'self' data:",
+    "object-src": "'none'",
+    "frame-ancestors": "'none'",
+}
+_SCRIPT_SRC_RE = re.compile(r"'self' 'nonce-[A-Za-z0-9+/]{22}=='")
+
+
+def _csp_directives(response) -> dict[str, str]:
+    policy = response.headers[_CSP_HEADER]
+    directives: dict[str, str] = {}
+    for raw_directive in policy.split("; "):
+        name, value = raw_directive.split(" ", 1)
+        assert name not in directives, name
+        directives[name] = value
+    return directives
+
+
+def _assert_dashboard_csp(response, *, frame_ancestors: str = "'none'") -> None:
+    expected = dict(_EXPECTED_CSP_DIRECTIVES)
+    expected["frame-ancestors"] = frame_ancestors
+    directives = _csp_directives(response)
+
+    assert directives.keys() == expected.keys()
+    assert _SCRIPT_SRC_RE.fullmatch(directives["script-src"])
+    for name, value in expected.items():
+        if name == "script-src":
+            continue
+        assert directives[name] == value
+
 
 @pytest.fixture()
 def dashboard_client(monkeypatch):
@@ -28,22 +64,14 @@ def test_spa_index_sets_report_only_csp_header(dashboard_client):
 
     assert response.status_code == 200
     assert response.headers["content-type"].startswith("text/html")
-    policy = response.headers["Content-Security-Policy-Report-Only"]
-    assert "default-src 'self'" in policy
-    assert re.search(r"script-src 'self' 'nonce-[^']+'", policy)
-    assert "style-src 'self' 'unsafe-inline'" in policy
-    assert "img-src 'self' data: blob:" in policy
-    assert "connect-src 'self' ws: wss:" in policy
-    assert "font-src 'self' data:" in policy
-    assert "object-src 'none'" in policy
-    assert "frame-ancestors 'none'" in policy
+    _assert_dashboard_csp(response)
 
 
 def test_spa_index_does_not_set_enforcing_csp_header(dashboard_client):
     response = dashboard_client.get("/")
 
     assert response.status_code == 200
-    assert "Content-Security-Policy-Report-Only" in response.headers
+    assert _CSP_HEADER in response.headers
     assert "Content-Security-Policy" not in response.headers
 
 
@@ -52,14 +80,12 @@ def test_nexus_exact_path_can_be_same_origin_framed_without_widening_api_or_root
 
     assert nexus.status_code == 200
     assert nexus.headers["X-Frame-Options"] == "SAMEORIGIN"
-    assert "frame-ancestors 'self'" in nexus.headers["Content-Security-Policy-Report-Only"]
-    assert "frame-ancestors 'none'" not in nexus.headers["Content-Security-Policy-Report-Only"]
+    _assert_dashboard_csp(nexus, frame_ancestors="'self'")
 
     for path in ("/api/dashboard/nexus", "/api/dashboard/nexus/actions/registry", "/"):
         response = dashboard_client.get(path)
         assert response.headers["X-Frame-Options"] == "DENY", path
-        assert "frame-ancestors 'none'" in response.headers["Content-Security-Policy-Report-Only"], path
-        assert "frame-ancestors 'self'" not in response.headers["Content-Security-Policy-Report-Only"], path
+        _assert_dashboard_csp(response)
 
     gitnexus = dashboard_client.get("/_gitnexus-app/")
     assert gitnexus.headers["X-Frame-Options"] == "SAMEORIGIN"
