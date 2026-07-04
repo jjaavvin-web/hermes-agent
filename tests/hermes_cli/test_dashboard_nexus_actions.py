@@ -608,8 +608,41 @@ def test_f4_rejection_event_writes_are_bounded(client: TestClient, isolated_home
             headers=_token_headers(),
         )
     events = actions._read_jsonl(actions._events_path())
-    assert len(events) <= 12
+    assert len(events) <= actions._REJECTION_WRITE_LIMIT_PER_600S * 2
     assert any(row.get("event") == "rejection_dropped" and row.get("decision") == "unknown_ticket" for row in events)
+
+
+def test_w2b_suppressed_rejections_carry_incrementing_suppressed_count(client: TestClient, isolated_home: Path):
+    _arm(isolated_home, "dry-run")
+    for idx in range(actions._REJECTION_WRITE_LIMIT_PER_600S + 5):
+        client.post(
+            "/api/dashboard/nexus/actions/preflight",
+            json={"action_id": f"act-w2b-nope-{idx}", "finding_id": "x", "snapshot_id": "s"},
+            headers=_token_headers(),
+        )
+    events = actions._read_jsonl(actions._events_path())
+    unknowns = [row for row in events if row.get("event") == "unknown_ticket"]
+    drops = [row for row in events if row.get("event") == "rejection_dropped" and row.get("decision") == "unknown_ticket"]
+    assert len(unknowns) == actions._REJECTION_WRITE_LIMIT_PER_600S
+    assert [row.get("suppressed_count") for row in drops] == [1, 2, 3, 4, 5]
+
+
+def test_w2b_duplicate_replay_events_are_bounded_like_rejections(
+    monkeypatch: pytest.MonkeyPatch, client: TestClient, isolated_home: Path
+):
+    _arm(isolated_home, "live")
+    monkeypatch.setattr(actions, "_invoke_chokepoint", lambda *_args: {"returncode": 0})
+    cap = _preflight(client)
+    assert _dispatch(client, cap).status_code == 200
+    for _idx in range(actions._REJECTION_WRITE_LIMIT_PER_600S + 5):
+        response = _dispatch(client, cap)
+        assert response.status_code == 200
+        assert response.json()["status"] == "duplicate"
+    events = actions._read_jsonl(actions._events_path())
+    duplicates = [row for row in events if row.get("event") == "duplicate"]
+    duplicate_drops = [row for row in events if row.get("event") == "rejection_dropped" and row.get("decision") == "duplicate"]
+    assert len(duplicates) == actions._REJECTION_WRITE_LIMIT_PER_600S
+    assert [row.get("suppressed_count") for row in duplicate_drops] == [1, 2, 3, 4, 5]
 
 
 def test_f5_tail_reads_bounded_and_fail_closed(monkeypatch: pytest.MonkeyPatch, client: TestClient, isolated_home: Path):
