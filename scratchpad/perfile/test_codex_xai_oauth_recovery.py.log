@@ -1,8 +1,0 @@
-..............................................                           [100%]
-=============================== warnings summary ===============================
-tests/run_agent/test_codex_xai_oauth_recovery.py::test_codex_stream_wire_error_event_surfaces_stream_error_event[You do not have an active Grok subscription]
-  /home/josep/.local/share/hermes-agent/venv/lib/python3.11/site-packages/discord/player.py:30: DeprecationWarning: 'audioop' is deprecated and slated for removal in Python 3.13
-    import audioop
-
--- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
-46 passed, 1 warning in 6.83s

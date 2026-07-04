@@ -1,8 +1,0 @@
-...............                                                          [100%]
-=============================== warnings summary ===============================
-tests/run_agent/test_multimodal_tool_content_recovery.py::TestStripImagePartsHelper::test_no_messages_returns_false
-  /home/josep/.local/share/hermes-agent/venv/lib/python3.11/site-packages/discord/player.py:30: DeprecationWarning: 'audioop' is deprecated and slated for removal in Python 3.13
-    import audioop
-
--- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
-15 passed, 1 warning in 1.28s

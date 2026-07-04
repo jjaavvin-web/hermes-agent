@@ -1,8 +1,0 @@
-................                                                         [100%]
-=============================== warnings summary ===============================
-tests/run_agent/test_callable_api_key.py::TestCreateOpenAIClientCallable::test_callable_api_key_passed_to_openai_constructor
-  /home/josep/.local/share/hermes-agent/venv/lib/python3.11/site-packages/discord/player.py:30: DeprecationWarning: 'audioop' is deprecated and slated for removal in Python 3.13
-    import audioop
-
--- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
-16 passed, 1 warning in 2.05s
