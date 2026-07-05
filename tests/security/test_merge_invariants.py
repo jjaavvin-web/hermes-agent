@@ -31,27 +31,32 @@ def _read(rel: str) -> str:
 
 
 def _code_string_literals(src: str) -> set[str]:
-    """Return the string literals that appear in *real code* — excluding
-    comments (absent from the AST entirely) and docstrings (one whole Constant
-    that never exact-matches a reason token). Used by the F4 merge-invariant pin
-    so a silent-revert commit cannot satisfy it by leaving a reason string in a
-    comment like ``# reason="hydrate_live_binding_mismatch" removed``.
+    """Return string literals consumed by call positional/keyword arguments.
+
+    Used by the F4 merge-invariant pin so a silent-revert commit cannot satisfy
+    it via a comment (absent from the AST), a docstring, or a DEAD orphan string
+    statement planted as a decoy (t_ba79c72b hardening): the literal only counts
+    when it is actually consumed by a call (walking nested children, so dict/list
+    literals inside call args still count).
+
+    MAINTAINER NOTES (do not weaken on merge-conflict resolution):
+    - Two implementations of this helper have existed: a docstring-position-only
+      filter (weaker — accepts orphan-string decoys) and this call-consumed one
+      (stronger). On any conflict, KEEP THIS ONE and keep BOTH regression tests
+      below (comment/docstring-proof AND consumed-call-position).
+    - Known brittleness, accepted for a tripwire: refactoring a pinned literal
+      into a variable (``REASON = "adoption_mismatch"; f(reason=REASON)``) makes
+      the pin go RED (fails noisy, forcing human review — never silently green).
     """
     tree = ast.parse(src)
-    docstring_ids = set()
-    for node in ast.walk(tree):
-        if isinstance(node, (ast.Module, ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
-            body = getattr(node, "body", None)
-            if body and isinstance(body[0], ast.Expr) and isinstance(body[0].value, ast.Constant) \
-                    and isinstance(body[0].value.value, str):
-                docstring_ids.add(id(body[0].value))
-    return {
-        node.value
-        for node in ast.walk(tree)
-        if isinstance(node, ast.Constant)
-        and isinstance(node.value, str)
-        and id(node) not in docstring_ids
-    }
+    literals: set[str] = set()
+    for call in (node for node in ast.walk(tree) if isinstance(node, ast.Call)):
+        consumed_nodes = [*call.args, *(kw.value for kw in call.keywords if kw.value is not None)]
+        for node in consumed_nodes:
+            for child in ast.walk(node):
+                if isinstance(child, ast.Constant) and isinstance(child.value, str):
+                    literals.add(child.value)
+    return literals
 
 
 def _reset_webhook_refusal_state() -> None:
@@ -686,6 +691,31 @@ def test_f4_reason_literal_pin_is_comment_and_docstring_proof():
     # Docstring mention → not an exact-match literal (it is one whole Constant).
     doc = f'def f():\n    """This used to raise {reason}."""\n    return None\n'
     assert reason not in _code_string_literals(doc)
+
+
+def test_code_string_literals_require_consumed_call_position():
+    """t_ba79c72b hardening: a DEAD orphan string statement (decoy planted while
+    the real consuming call is removed) must NOT satisfy the F4 reason pin —
+    only literals in consumed call-argument position count."""
+    src_with_dead_decoy = '''
+"module docstring"
+def adoption_guard():
+    "function docstring"
+    "adoption_mismatch"
+    _refuse_worktree_lease(_lease_info)
+'''
+    src_with_consumed_reason = '''
+def adoption_guard():
+    _append_lease_ledger("refused", {"reason": "hydrate_scan_failure"})
+    _refuse_worktree_lease(_lease_info, reason="adoption_mismatch")
+'''
+
+    assert "adoption_mismatch" in src_with_dead_decoy  # Documents the old fake-green substring pin.
+    assert "adoption_mismatch" not in _code_string_literals(src_with_dead_decoy)
+    assert "module docstring" not in _code_string_literals(src_with_dead_decoy)
+    assert "function docstring" not in _code_string_literals(src_with_dead_decoy)
+    assert "adoption_mismatch" in _code_string_literals(src_with_consumed_reason)
+    assert "hydrate_scan_failure" in _code_string_literals(src_with_consumed_reason)
 
 
 def test_f4_runtime_confinement_and_adoption_audit_pins():
