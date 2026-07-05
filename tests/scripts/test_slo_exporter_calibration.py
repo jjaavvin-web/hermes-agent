@@ -152,3 +152,82 @@ def test_synthetic_failed_turn_marker_still_counts(tmp_path: Path):
     assert snapshot["journal_counts"]["turn_error_events"] == 1
     assert snapshot["metrics"]["turn_error_rate"] == 0.25
     assert snapshot["journal_counts"]["diagnostic_error_line_events"] == 1
+
+
+# The four REAL failure formats, shaped exactly like their production logger
+# calls (gateway/run.py "Agent error in session %s"; agent/conversation_loop.py
+# outer-loop / non-retryable / invalid-response-after-retries). This test is
+# the anti-tautology guard for the page-bearing numerator: the fixture text is
+# sourced from the call sites, NOT from _FAILED_TURN_RE's own vocabulary, so a
+# regression to invented-marker-only matching (reviewer BLOCKER, 2026-07-05:
+# old code counted these 4 as errors, first calibration counted 0) fails here.
+REAL_FAILED_TURN_LINES = [
+    "2026-07-05T09:01:02-07:00 FRESH python[1291]: ERROR gateway.run: Agent error in session discord:1509954103638233189:987654",
+    "2026-07-05T09:02:10-07:00 FRESH python[1291]: ERROR agent.conversation_loop: Outer loop error in API call #3",
+    "2026-07-05T09:03:20-07:00 FRESH python[1291]: ERROR agent.conversation_loop: [sess-1] Non-retryable client error: BadRequestError(status=400)",
+    "2026-07-05T09:04:30-07:00 FRESH python[1291]: ERROR agent.conversation_loop: [sess-1] Invalid API response after 2 retries.",
+]
+
+
+def test_real_call_site_failure_lines_are_page_bearing(tmp_path: Path):
+    db = tmp_path / "state.db"
+    make_state_db(db, count=100)
+    canary = tmp_path / "recall-canary.jsonl"
+    service = tmp_path / "recall-events.jsonl"
+
+    # Anti-tautology cross-check: the pre-K4 broad filter also saw all four
+    # (this is the reviewer's empirical "old counts 4" baseline).
+    assert sum(slo_exporter._base._is_counted_gateway_error(line) for line in REAL_FAILED_TURN_LINES) == 4
+
+    snapshot = slo_exporter.build_slo_snapshot(
+        state_db=db,
+        output_dir=tmp_path,
+        now=1_720_142_000.0,
+        window_seconds=10_000,
+        gateway_lines=REAL_FAILED_TURN_LINES,
+        watchdog_lines=[],
+        recall_canary_path=canary,
+        recall_service_path=service,
+    )
+
+    assert snapshot["journal_counts"]["turn_error_events"] == 4
+    assert snapshot["metrics"]["turn_error_rate"] == 0.04
+    # error_events keeps its PRE-K4 broad semantics (name never silently narrows).
+    assert snapshot["journal_counts"]["error_events"] == 4
+    # Real failures are page-bearing, not buried in the diagnostic bucket.
+    assert snapshot["journal_counts"]["diagnostic_error_line_events"] == 0
+
+
+def test_error_events_keeps_broad_semantics_on_noise(tmp_path: Path):
+    db = tmp_path / "state.db"
+    make_state_db(db, count=100)
+    canary = tmp_path / "recall-canary.jsonl"
+    service = tmp_path / "recall-events.jsonl"
+
+    old_broad = sum(slo_exporter._base._is_counted_gateway_error(line) for line in K4_NOISE_LINES)
+    snapshot = slo_exporter.build_slo_snapshot(
+        state_db=db,
+        output_dir=tmp_path,
+        now=1_720_142_000.0,
+        window_seconds=10_000,
+        gateway_lines=K4_NOISE_LINES,
+        watchdog_lines=[],
+        recall_canary_path=canary,
+        recall_service_path=service,
+    )
+    # Same broad count the pre-K4 exporter reported, even though the noise is
+    # now classified out of the page-bearing rate.
+    assert snapshot["journal_counts"]["error_events"] == old_broad
+    assert snapshot["journal_counts"]["turn_error_events"] == 0
+
+
+def test_new_family_counters_have_slo_definitions():
+    for key in (
+        "mcp_reconnect_burst_count",
+        "discord_reconnect_burst_count",
+        "mcp_reconnect_line_count",
+        "discord_reconnect_line_count",
+    ):
+        spec = slo_exporter.SLO_DEFINITIONS[key]
+        assert spec["page"] is False
+        assert spec["unit"] == "count/24h"

@@ -57,10 +57,55 @@ SLO_DEFINITIONS: dict[str, dict[str, Any]] = {
         "page": False,
         "source": "error-looking diagnostic lines that are not explicit failed-turn markers and not classified restart/watchdog/reconnect noise",
     },
+    "mcp_reconnect_burst_count": {
+        "target": "diagnostic",
+        "warn": None,
+        "critical": None,
+        "unit": "count/24h",
+        "page": False,
+        "source": "MCP-family reconnect lines collapsed into 120s bursts",
+    },
+    "discord_reconnect_burst_count": {
+        "target": "diagnostic",
+        "warn": None,
+        "critical": None,
+        "unit": "count/24h",
+        "page": False,
+        "source": "Discord-family reconnect lines collapsed into 120s bursts",
+    },
+    "mcp_reconnect_line_count": {
+        "target": "diagnostic",
+        "warn": None,
+        "critical": None,
+        "unit": "count/24h",
+        "page": False,
+        "source": "raw MCP-family reconnect line count before burst collapse",
+    },
+    "discord_reconnect_line_count": {
+        "target": "diagnostic",
+        "warn": None,
+        "critical": None,
+        "unit": "count/24h",
+        "page": False,
+        "source": "raw Discord-family reconnect line count before burst collapse",
+    },
 }
 
+# Every alternative in the first group must correspond to a REAL logger call
+# that fires only when a user turn fails to produce a normal response:
+#   "Agent error in session"            gateway/run.py — outermost per-turn
+#       handler; the try's success path returns the response, so this fires
+#       only after every tool/provider recovery layer deeper in the loop
+#   "Outer loop error in API call #"    agent/conversation_loop.py
+#   "Non-retryable client error"        agent/conversation_loop.py (terminal,
+#       logged when no fallback rescues the call)
+#   "Invalid API response after N retries."  agent/conversation_loop.py
+# Patterns that can also match tool-level or expected-backend noise belong in
+# the diagnostic buckets, never here (this regex feeds the page-bearing rate).
 _FAILED_TURN_RE = re.compile(
-    r"\b(TURN_FAILED|turn failed|failed turn|terminal turn failure|terminal_error=.*after retries exhausted|returned error to user)\b",
+    r"Agent error in session |Outer loop error in API call #"
+    r"|Non-retryable client error|Invalid API response after \d+ retries"
+    r"|\b(?:TURN_FAILED|turn failed|failed turn|terminal turn failure|terminal_error=.*after retries exhausted|returned error to user)\b",
     re.I,
 )
 _GATEWAY_UNIT_RE = re.compile(r"hermes-gateway\.service", re.I)
@@ -79,7 +124,10 @@ _DISCORD_RECONNECT_RE = re.compile(r"discord\.client|Discord", re.I)
 
 @dataclass(frozen=True)
 class CalibratedJournalCounts:
-    # Existing keys preserved. error_events is now the calibrated numerator.
+    # error_events keeps its PRE-K4 broad semantics (every line matching the
+    # base _is_counted_gateway_error filter, before K4 classification) so the
+    # field name never silently narrows; turn_error_events below is the
+    # page-bearing calibrated numerator.
     error_events: int = 0
     fallback_events: int = 0
     watchdog_restart_events: int = 0
@@ -168,7 +216,10 @@ def parse_journal_counts(gateway_lines: Iterable[str], watchdog_lines: Iterable[
     mcp_reconnect_lines = 0
     discord_reconnect_lines = 0
 
+    legacy_error_lines = 0
     for idx, line in enumerate([*gateway, *watchdog]):
+        if _base._is_counted_gateway_error(line):  # type: ignore[attr-defined]
+            legacy_error_lines += 1
         if _base._TOOL_CONFIG_ERROR_RE.search(line):  # type: ignore[attr-defined]
             tool_config_errors += 1
         if _base._TOOL_BACKEND_ERROR_RE.search(line):  # type: ignore[attr-defined]
@@ -206,7 +257,7 @@ def parse_journal_counts(gateway_lines: Iterable[str], watchdog_lines: Iterable[
 
     base_watchdogs = _base.parse_journal_counts([], watchdog).watchdog_restart_events
     return CalibratedJournalCounts(
-        error_events=turn_errors,
+        error_events=legacy_error_lines,
         fallback_events=fallback_events,
         watchdog_restart_events=base_watchdogs,
         tool_config_error_events=tool_config_errors,
