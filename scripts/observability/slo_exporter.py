@@ -127,7 +127,9 @@ class CalibratedJournalCounts:
     # error_events keeps its PRE-K4 broad semantics (every line matching the
     # base _is_counted_gateway_error filter, before K4 classification) so the
     # field name never silently narrows; turn_error_events below is the
-    # page-bearing calibrated numerator.
+    # page-bearing calibrated numerator. Scope caveat: counted over gateway AND
+    # watchdog lines (this module's combined loop), while the pre-K4 base
+    # scanned gateway lines only — can read slightly HIGH, never quiet.
     error_events: int = 0
     fallback_events: int = 0
     watchdog_restart_events: int = 0
