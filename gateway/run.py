@@ -14168,6 +14168,124 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
 
 
+    _UPDATE_NOTIFICATION_TTL_SECONDS = 48 * 60 * 60
+    _UPDATE_NOTIFICATION_RETRY_MAX_SECONDS = 300.0
+    _UPDATE_MARKER_ARTIFACTS = (
+        ".update_pending.json",
+        ".update_pending.claimed.json",
+        ".update_output.txt",
+        ".update_exit_code",
+        ".update_prompt.json",
+        ".update_response",
+    )
+
+    @staticmethod
+    def _active_update_marker_path(pending_path: Path, claimed_path: Path) -> Optional[Path]:
+        """Return the marker JSON path that currently owns update notification state."""
+        if claimed_path.exists():
+            return claimed_path
+        if pending_path.exists():
+            return pending_path
+        return None
+
+    @staticmethod
+    def _unique_expired_update_marker_path(path: Path) -> Path:
+        """Return a non-clobbering ``*.expired`` evidence path for ``path``."""
+        candidate = path.with_name(f"{path.name}.expired")
+        if not candidate.exists():
+            return candidate
+        for idx in range(1, 1000):
+            numbered = path.with_name(f"{path.name}.expired.{idx}")
+            if not numbered.exists():
+                return numbered
+        raise RuntimeError(f"could not allocate expired marker path for {path}")
+
+    def _expire_update_marker_artifacts(self, *, reason: str) -> None:
+        """Rename stale update marker artifacts to ``*.expired`` without deleting evidence."""
+        renamed: list[str] = []
+        for name in self._UPDATE_MARKER_ARTIFACTS:
+            path = _hermes_home / name
+            if not path.exists():
+                continue
+            try:
+                expired_path = self._unique_expired_update_marker_path(path)
+                path.replace(expired_path)
+                renamed.append(str(expired_path))
+            except OSError as exc:
+                logger.warning(
+                    "Failed to expire stale update marker artifact %s: %s",
+                    path,
+                    exc,
+                )
+        logger.warning(
+            "Post-update notification marker expired after TTL; renamed artifacts for operator evidence (%s): %s",
+            reason,
+            ", ".join(renamed) if renamed else "no artifacts found",
+        )
+
+    @staticmethod
+    def _parse_update_marker_timestamp(raw_timestamp: Any) -> Optional[datetime]:
+        """Parse an update marker timestamp, returning ``None`` on missing/bad values."""
+        if not isinstance(raw_timestamp, str) or not raw_timestamp.strip():
+            return None
+        value = raw_timestamp.strip()
+        if value.endswith("Z"):
+            value = value[:-1] + "+00:00"
+        try:
+            return datetime.fromisoformat(value)
+        except ValueError:
+            return None
+
+    def _update_marker_expired_or_refreshed(
+        self,
+        pending_path: Path,
+        claimed_path: Path,
+        *,
+        ttl_seconds: float,
+    ) -> bool:
+        """Return True when a stale completion marker was expired.
+
+        Missing or malformed timestamp fields are repaired once in-place with a
+        synthetic current timestamp so even legacy markers can later age out via
+        the same TTL path. Corrupt JSON is left to the existing notifier error
+        handling path rather than being renamed as stale without evidence.
+        """
+        marker_path = self._active_update_marker_path(pending_path, claimed_path)
+        if marker_path is None:
+            return False
+
+        try:
+            pending = json.loads(marker_path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            return False
+
+        now = datetime.now()
+        marker_ts = self._parse_update_marker_timestamp(pending.get("timestamp"))
+        if marker_ts is None:
+            pending["timestamp"] = now.isoformat()
+            try:
+                marker_path.write_text(json.dumps(pending), encoding="utf-8")
+                logger.warning(
+                    "Post-update notification marker missing/unparseable timestamp; wrote synthetic timestamp to %s",
+                    marker_path,
+                )
+            except OSError as exc:
+                logger.warning(
+                    "Failed to write synthetic timestamp to update marker %s: %s",
+                    marker_path,
+                    exc,
+                )
+            return False
+
+        age_now = datetime.now(marker_ts.tzinfo) if marker_ts.tzinfo else now
+        age_seconds = (age_now - marker_ts).total_seconds()
+        if age_seconds > ttl_seconds:
+            self._expire_update_marker_artifacts(
+                reason=f"age={age_seconds:.0f}s ttl={ttl_seconds:.0f}s"
+            )
+            return True
+        return False
+
     def _schedule_update_notification_watch(self) -> None:
         """Ensure a background task is watching for update completion."""
         existing_task = getattr(self, "_update_notification_task", None)
@@ -14186,6 +14304,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         poll_interval: float = 2.0,
         stream_interval: float = 4.0,
         timeout: float = 1800.0,
+        notification_retry_max_interval: float = _UPDATE_NOTIFICATION_RETRY_MAX_SECONDS,
+        notification_ttl: float = _UPDATE_NOTIFICATION_TTL_SECONDS,
     ) -> None:
         """Watch ``hermes update --gateway``, streaming output + forwarding prompts.
 
@@ -14246,13 +14366,49 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # until it actually delivers (returns True) instead of giving up
             # after the first completion check — otherwise a platform that
             # reconnects a few seconds after completion never gets notified.
-            while (pending_path.exists() or claimed_path.exists()) and loop.time() < deadline:
-                if exit_code_path.exists() and await self._send_update_notification():
+            retry_delay = poll_interval
+            timed_out = False
+            while pending_path.exists() or claimed_path.exists():
+                if self._update_marker_expired_or_refreshed(
+                    pending_path,
+                    claimed_path,
+                    ttl_seconds=notification_ttl,
+                ):
                     return
+
+                if exit_code_path.exists():
+                    if await self._send_update_notification():
+                        return
+                    await asyncio.sleep(retry_delay)
+                    retry_delay = min(
+                        retry_delay * 2,
+                        notification_retry_max_interval,
+                    )
+                    continue
+
+                if loop.time() >= deadline:
+                    timed_out = True
+                    break
+
                 await asyncio.sleep(poll_interval)
-            if (pending_path.exists() or claimed_path.exists()) and not exit_code_path.exists():
-                exit_code_path.write_text("124")
-                await self._send_update_notification()
+
+            if (pending_path.exists() or claimed_path.exists()) and timed_out:
+                exit_code_path.write_text("124", encoding="utf-8")
+                retry_delay = poll_interval
+                while pending_path.exists() or claimed_path.exists():
+                    if self._update_marker_expired_or_refreshed(
+                        pending_path,
+                        claimed_path,
+                        ttl_seconds=notification_ttl,
+                    ):
+                        return
+                    if await self._send_update_notification():
+                        return
+                    await asyncio.sleep(retry_delay)
+                    retry_delay = min(
+                        retry_delay * 2,
+                        notification_retry_max_interval,
+                    )
             return
 
         def _strip_ansi(text: str) -> str:

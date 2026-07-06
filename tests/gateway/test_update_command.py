@@ -5,6 +5,7 @@ the _send_update_notification startup hook (sends results after restart).
 """
 
 import json
+from datetime import datetime, timedelta
 from pathlib import Path
 from unittest.mock import patch, MagicMock, AsyncMock
 
@@ -421,7 +422,7 @@ class TestUpdateCommandPlatformGate:
         mock_popen.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_allows_plugin_platform_via_registry_fallback(self, monkeypatch):
+    async def test_allows_plugin_platform_via_registry_fallback(self, monkeypatch, tmp_path):
         """A plugin-migrated platform (DISCORD) is no longer in
         ``_UPDATE_ALLOWED_PLATFORMS`` but must still pass the gate via
         the registry's ``allow_update_command=True`` flag.
@@ -446,8 +447,11 @@ class TestUpdateCommandPlatformGate:
         runner = _make_runner()
         event = _make_event(platform=Platform.DISCORD)
         monkeypatch.setenv("HERMES_MANAGED", "")
+        hermes_home = tmp_path / "hermes"
+        hermes_home.mkdir()
 
-        with patch("subprocess.Popen"):
+        with patch("gateway.run._hermes_home", hermes_home), \
+             patch("subprocess.Popen"):
             result = await runner._handle_update_command(event)
 
         # The gate must NOT have rejected us — anything other than the
@@ -457,7 +461,7 @@ class TestUpdateCommandPlatformGate:
         assert "only available from messaging platforms" not in result
 
     @pytest.mark.asyncio
-    async def test_allows_mattermost_via_registry_fallback(self, monkeypatch):
+    async def test_allows_mattermost_via_registry_fallback(self, monkeypatch, tmp_path):
         """Same as DISCORD: MATTERMOST is now plugin-migrated and not in
         the hardcoded frozenset; the registry must keep /update working.
         """
@@ -475,14 +479,17 @@ class TestUpdateCommandPlatformGate:
         runner = _make_runner()
         event = _make_event(platform=Platform.MATTERMOST)
         monkeypatch.setenv("HERMES_MANAGED", "")
+        hermes_home = tmp_path / "hermes"
+        hermes_home.mkdir()
 
-        with patch("subprocess.Popen"):
+        with patch("gateway.run._hermes_home", hermes_home), \
+             patch("subprocess.Popen"):
             result = await runner._handle_update_command(event)
 
         assert "only available from messaging platforms" not in result
 
     @pytest.mark.asyncio
-    async def test_allows_homeassistant_via_registry_fallback(self, monkeypatch):
+    async def test_allows_homeassistant_via_registry_fallback(self, monkeypatch, tmp_path):
         """Same as DISCORD/MATTERMOST: HOMEASSISTANT is now plugin-migrated
         (PR #40709) and not in the hardcoded frozenset; the registry must
         keep /update working via ``allow_update_command=True``.
@@ -501,14 +508,17 @@ class TestUpdateCommandPlatformGate:
         runner = _make_runner()
         event = _make_event(platform=Platform.HOMEASSISTANT)
         monkeypatch.setenv("HERMES_MANAGED", "")
+        hermes_home = tmp_path / "hermes"
+        hermes_home.mkdir()
 
-        with patch("subprocess.Popen"):
+        with patch("gateway.run._hermes_home", hermes_home), \
+             patch("subprocess.Popen"):
             result = await runner._handle_update_command(event)
 
         assert "only available from messaging platforms" not in result
 
     @pytest.mark.asyncio
-    async def test_allows_builtin_platform_in_allowlist(self, monkeypatch):
+    async def test_allows_builtin_platform_in_allowlist(self, monkeypatch, tmp_path):
         """``Platform.TELEGRAM`` is in the hardcoded allowlist — gate
         must pass without consulting the registry.
         """
@@ -519,8 +529,11 @@ class TestUpdateCommandPlatformGate:
         runner = _make_runner()
         event = _make_event(platform=Platform.TELEGRAM)
         monkeypatch.setenv("HERMES_MANAGED", "")
+        hermes_home = tmp_path / "hermes"
+        hermes_home.mkdir()
 
-        with patch("subprocess.Popen"):
+        with patch("gateway.run._hermes_home", hermes_home), \
+             patch("subprocess.Popen"):
             result = await runner._handle_update_command(event)
 
         assert "only available from messaging platforms" not in result
@@ -903,6 +916,77 @@ class TestSendUpdateNotification:
         assert not output_path.exists()
         assert not exit_code_path.exists()
         assert not (hermes_home / ".update_pending.claimed.json").exists()
+
+    @pytest.mark.asyncio
+    async def test_missing_timestamp_is_synthesized_once_for_deferred_marker(self, tmp_path):
+        """Legacy/malformed markers get a synthetic timestamp before normal retry."""
+        runner = _make_runner()
+        hermes_home = tmp_path / "hermes"
+        hermes_home.mkdir()
+
+        pending_path = hermes_home / ".update_pending.json"
+        pending_path.write_text(json.dumps({
+            "platform": "discord", "chat_id": "111", "user_id": "222",
+        }))
+        (hermes_home / ".update_output.txt").write_text("Done")
+        (hermes_home / ".update_exit_code").write_text("0")
+        runner.adapters = {Platform.TELEGRAM: AsyncMock()}
+
+        with patch("gateway.run._hermes_home", hermes_home):
+            result = runner._update_marker_expired_or_refreshed(
+                pending_path,
+                hermes_home / ".update_pending.claimed.json",
+                ttl_seconds=48 * 60 * 60,
+            )
+            assert result is False
+            first_timestamp = json.loads(pending_path.read_text())["timestamp"]
+            assert first_timestamp
+            send_result = await runner._send_update_notification()
+
+        assert send_result is False
+        assert json.loads(pending_path.read_text())["timestamp"] == first_timestamp
+        assert pending_path.exists()
+
+    @pytest.mark.asyncio
+    async def test_old_marker_expires_and_renames_artifacts(self, tmp_path, caplog):
+        """Markers older than TTL are renamed to .expired and not deleted."""
+        runner = _make_runner()
+        hermes_home = tmp_path / "hermes"
+        hermes_home.mkdir()
+
+        old_ts = (datetime.now() - timedelta(hours=49)).isoformat()
+        pending_path = hermes_home / ".update_pending.json"
+        pending_path.write_text(json.dumps({
+            "platform": "discord",
+            "chat_id": "111",
+            "user_id": "222",
+            "timestamp": old_ts,
+        }))
+        output_path = hermes_home / ".update_output.txt"
+        exit_code_path = hermes_home / ".update_exit_code"
+        output_path.write_text("Done")
+        exit_code_path.write_text("0")
+
+        with patch("gateway.run._hermes_home", hermes_home), caplog.at_level("WARNING"):
+            expired = runner._update_marker_expired_or_refreshed(
+                pending_path,
+                hermes_home / ".update_pending.claimed.json",
+                ttl_seconds=48 * 60 * 60,
+            )
+
+        assert expired is True
+        assert not pending_path.exists()
+        assert not output_path.exists()
+        assert not exit_code_path.exists()
+        assert (hermes_home / ".update_pending.json.expired").exists()
+        assert (hermes_home / ".update_output.txt.expired").exists()
+        assert (hermes_home / ".update_exit_code.expired").exists()
+        warning_records = [
+            record for record in caplog.records
+            if "Post-update notification marker expired after TTL" in record.message
+        ]
+        assert len(warning_records) == 1
+
 
 
 # ---------------------------------------------------------------------------

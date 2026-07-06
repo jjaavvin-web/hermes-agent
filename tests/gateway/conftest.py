@@ -48,6 +48,66 @@ def make_async_session_db(sync_mock=None):
     return AsyncSessionDB(sync_mock), sync_mock
 
 
+_UPDATE_MARKER_TEST_MODULES = {
+    "test_update_command.py",
+    "test_update_streaming.py",
+}
+_UPDATE_MARKER_NAMES = (
+    ".update_pending.json",
+    ".update_pending.claimed.json",
+    ".update_output.txt",
+    ".update_exit_code",
+    ".update_prompt.json",
+    ".update_response",
+)
+
+
+def _marker_fingerprint(home: Path) -> dict[str, tuple[bool, int | None, int | None]]:
+    """Stat-only fingerprint for update marker files under ``home``."""
+    result: dict[str, tuple[bool, int | None, int | None]] = {}
+    for name in _UPDATE_MARKER_NAMES:
+        path = home / name
+        try:
+            st = path.stat()
+        except FileNotFoundError:
+            result[name] = (False, None, None)
+        else:
+            result[name] = (True, st.st_mtime_ns, st.st_size)
+    return result
+
+
+@pytest.fixture(autouse=True)
+def _isolate_update_marker_home(request, tmp_path, monkeypatch):
+    """Keep update-marker tests from touching the operator's real Hermes home.
+
+    ``gateway.run`` snapshots ``_hermes_home`` at import time, while
+    ``hermes_cli.main._gateway_prompt()`` resolves paths through
+    ``HERMES_HOME`` / ``get_hermes_home()`` at call time.  The update-marker
+    suites exercise both paths, so isolate both resolvers and assert the real
+    platform-default home did not gain or mutate marker artifacts.
+    """
+    module_name = Path(str(request.fspath)).name
+    if module_name not in _UPDATE_MARKER_TEST_MODULES:
+        yield
+        return
+
+    isolated_home = tmp_path / "isolated-hermes-home"
+    isolated_home.mkdir()
+    real_home = Path.home() / ".hermes"
+    before = _marker_fingerprint(real_home)
+
+    monkeypatch.setenv("HERMES_HOME", str(isolated_home))
+    monkeypatch.setattr("gateway.run._hermes_home", isolated_home, raising=False)
+
+    yield
+
+    after = _marker_fingerprint(real_home)
+    assert after == before, (
+        "update-marker test mutated marker artifacts in the real Hermes home: "
+        f"before={before!r} after={after!r}"
+    )
+
+
 def _ensure_telegram_mock() -> None:
     """Install a comprehensive telegram mock in sys.modules.
 
