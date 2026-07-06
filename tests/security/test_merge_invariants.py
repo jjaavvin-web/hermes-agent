@@ -641,6 +641,29 @@ def test_hydrate_per_delivery_sessions_keeps_wh_and_loki_double_filter():
     assert 'branch.startswith("loki/")' in block, "hydration lost loki/* branch filter"
 
 
+def test_hydration_liveness_filter_survives_merge():
+    """F4 merge invariant (t_8535d138): the _PROCESS_START liveness filter must not
+    silently revert. Dead pre-restart SessionStore entries re-adopting stale wh-*
+    worktrees exhausted the lease pool live on 2026-07-06 (11 adopted >= cap 10,
+    every dispatch 429'd); this one-line-shaped guard is exactly the kind of change
+    the 0.16.0 upstream merge silently dropped from backup.py (PR #70 precedent).
+    """
+    src = _read("gateway/platforms/webhook.py")
+    assert "_PROCESS_START = datetime.now()" in src, "module-level _PROCESS_START marker dropped"
+    assert "def _session_entry_is_live_for_hydration" in src, "hydration liveness helper dropped"
+    helper_start = src.find("def _session_entry_is_live_for_hydration")
+    helper_end = src.find("def _live_session_entries", helper_start)
+    assert helper_end != -1, "liveness helper boundary changed unexpectedly"
+    helper_block = src[helper_start:helper_end]
+    assert "_PROCESS_START" in helper_block, "liveness helper no longer compares against _PROCESS_START"
+    scan_start = src.find("def _live_session_entries")
+    scan_end = src.find("def _same_worktree_path", scan_start)
+    assert scan_start != -1 and scan_end != -1, "live-session scan boundary changed unexpectedly"
+    scan_block = src[scan_start:scan_end]
+    assert "_session_entry_is_live_for_hydration(entry)" in scan_block, \
+        "live-session scan no longer applies the hydration liveness filter"
+
+
 def test_f4_fail_closed_binding_guards_survive_merge():
     """F4 merge invariant: rail-review remediation guards must not silently revert."""
     src = _read("gateway/platforms/webhook.py")

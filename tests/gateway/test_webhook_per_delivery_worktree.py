@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import subprocess
+from datetime import datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -373,7 +374,10 @@ def test_hydration_refuses_live_binding_mismatch_without_touching_disk(tmp_path,
     wrong_child.mkdir()
     repo_root.mkdir()
     adapter._session_store = _FakeSessionStore({
-        "agent:main:webhook:loki1:delivery": SimpleNamespace(worktree_path=str(wrong_child)),
+        "agent:main:webhook:loki1:delivery": SimpleNamespace(
+            updated_at=datetime.now() + timedelta(seconds=1),
+            worktree_path=str(wrong_child),
+        ),
     })
     worktree_stdout = _worktree_list_porcelain([(child, "loki/loki1/mismatch", "a" * 40)])
     disk_touch_commands: list[list[str]] = []
@@ -449,6 +453,91 @@ def test_hydration_subprocess_timeout_retains_worktree_without_crash_or_lock_lea
     adapter._wt_broker_lock.release()
 
 
+def test_hydration_dead_pre_start_bound_session_is_stale_completed_not_adopted(tmp_path, monkeypatch):
+    process_start = datetime(2026, 7, 6, 12, 0, 0)
+    monkeypatch.setattr(webhook_module, "_PROCESS_START", process_start)
+    adapter = _make_adapter(cap=1)
+    hermes_home = tmp_path / "hermes_home"
+    repo_root = tmp_path / "repo"
+    child = hermes_home / "relay-wt" / "deliveries" / "wh-loki1-dead"
+    child.mkdir(parents=True)
+    repo_root.mkdir()
+    adapter._session_store = _FakeSessionStore({
+        "agent:main:webhook:loki1:delivery": SimpleNamespace(
+            updated_at=process_start - timedelta(seconds=1),
+            worktree_path=str(child),
+        ),
+    })
+    worktree_stdout = _worktree_list_porcelain([(child, "loki/loki1/dead", "a" * 40)])
+
+    def fake_run(cmd, *args, **kwargs):
+        if cmd[:5] == ["git", "-C", str(repo_root), "worktree", "list"]:
+            return _completed_process(stdout=worktree_stdout)
+        if cmd[:5] == ["git", "-C", str(repo_root), "worktree", "remove"]:
+            Path(cmd[5]).rmdir()
+            return _completed_process()
+        if len(cmd) >= 4 and cmd[0] == "git" and cmd[2] == str(child):
+            if cmd[3:5] == ["status", "--porcelain"]:
+                return _completed_process(stdout="")
+            if cmd[3:5] == ["rev-list", "--count"]:
+                return _completed_process(stdout="0\n")
+        raise AssertionError(f"unexpected command: {cmd}")
+
+    monkeypatch.setattr(webhook_module.subprocess, "run", fake_run)
+    existing = adapter._hydrate_per_delivery_sessions(hermes_home=hermes_home, repo_root=repo_root)
+
+    assert existing == {}
+    assert not child.exists()
+    broker = WorktreeBroker(
+        repo_root=repo_root,
+        hermes_home=hermes_home,
+        existing_sessions=existing,
+        wt_dir_name="relay-wt/deliveries",
+        branch_prefix="loki",
+        ports_enabled=False,
+        max_active_leases=1,
+    )
+    assert broker._registry == {}
+    ledger = hermes_home / "state" / "loki" / "worktree-leases.jsonl"
+    row = json.loads(ledger.read_text(encoding="utf-8").splitlines()[0])
+    assert row["event"] == "removed"
+    assert row["reason"] == "hydrate_no_live_session"
+
+
+def test_hydration_adopts_matching_post_start_live_session_worktree(tmp_path, monkeypatch):
+    process_start = datetime(2026, 7, 6, 12, 0, 0)
+    monkeypatch.setattr(webhook_module, "_PROCESS_START", process_start)
+    adapter = _make_adapter(cap=1)
+    hermes_home = tmp_path / "hermes_home"
+    repo_root = tmp_path / "repo"
+    child = hermes_home / "relay-wt" / "deliveries" / "wh-loki1-live-post-start"
+    child.mkdir(parents=True)
+    repo_root.mkdir()
+    adapter._session_store = _FakeSessionStore({
+        "agent:main:webhook:loki1:delivery": SimpleNamespace(
+            updated_at=process_start + timedelta(seconds=1),
+            worktree_path=str(child),
+        ),
+    })
+    worktree_stdout = _worktree_list_porcelain([(child, "loki/loki1/live-post-start", "a" * 40)])
+    monkeypatch.setattr(
+        webhook_module.subprocess,
+        "run",
+        lambda cmd, *args, **kwargs: _completed_process(stdout=worktree_stdout),
+    )
+
+    existing = adapter._hydrate_per_delivery_sessions(hermes_home=hermes_home, repo_root=repo_root)
+
+    assert existing == {
+        "wh-loki1-live-post-start": {
+            "path": str(child),
+            "branch": "loki/loki1/live-post-start",
+            "base_sha": "a" * 40,
+        }
+    }
+    assert child.exists()
+
+
 def test_hydration_adopts_only_matching_live_session_worktree(tmp_path, monkeypatch):
     adapter = _make_adapter(cap=1)
     hermes_home = tmp_path / "hermes_home"
@@ -457,7 +546,10 @@ def test_hydration_adopts_only_matching_live_session_worktree(tmp_path, monkeypa
     child.mkdir(parents=True)
     repo_root.mkdir()
     adapter._session_store = _FakeSessionStore({
-        "agent:main:webhook:loki1:delivery": SimpleNamespace(worktree_path=str(child)),
+        "agent:main:webhook:loki1:delivery": SimpleNamespace(
+            updated_at=datetime.now() + timedelta(seconds=1),
+            worktree_path=str(child),
+        ),
     })
     worktree_stdout = _worktree_list_porcelain([(child, "loki/loki1/live", "a" * 40)])
     monkeypatch.setattr(
@@ -498,7 +590,10 @@ def test_hydration_harvests_stale_worktree_when_unrelated_unbound_session_is_liv
     # unrelated to the stale candidate — so `matching` and `mismatched` are both
     # empty, and rev-2 would have fallen through to adopt.
     adapter._session_store = _FakeSessionStore({
-        "agent:main:cli:interactive": SimpleNamespace(worktree_path=None),
+        "agent:main:cli:interactive": SimpleNamespace(
+            updated_at=datetime.now() + timedelta(seconds=1),
+            worktree_path=None,
+        ),
     })
     worktree_stdout = _worktree_list_porcelain([(stale, "loki/loki1/stale-attacker", "a" * 40)])
 
