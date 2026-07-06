@@ -11,6 +11,7 @@ from __future__ import annotations
 import io
 import signal
 import sys
+from pathlib import Path
 
 import pytest
 
@@ -21,6 +22,47 @@ from hermes_cli.main import (
     _log_only_write,
     _run_logged_subprocess,
 )
+
+
+_UPDATE_MARKER_NAMES = (
+    ".update_pending.json",
+    ".update_pending.claimed.json",
+    ".update_output.txt",
+    ".update_exit_code",
+    ".update_prompt.json",
+    ".update_response",
+)
+
+
+def _marker_fingerprint(home: Path) -> dict[str, tuple[bool, int | None, int | None]]:
+    result: dict[str, tuple[bool, int | None, int | None]] = {}
+    for name in _UPDATE_MARKER_NAMES:
+        path = home / name
+        try:
+            st = path.stat()
+        except FileNotFoundError:
+            result[name] = (False, None, None)
+        else:
+            result[name] = (True, st.st_mtime_ns, st.st_size)
+    return result
+
+
+@pytest.fixture(autouse=True)
+def _isolate_update_marker_home(tmp_path, monkeypatch):
+    """Default this update-output module to an isolated HERMES_HOME."""
+    isolated_home = tmp_path / "isolated-hermes-home"
+    isolated_home.mkdir()
+    real_home = Path.home() / ".hermes"
+    before = _marker_fingerprint(real_home)
+    monkeypatch.setenv("HERMES_HOME", str(isolated_home))
+
+    yield
+
+    after = _marker_fingerprint(real_home)
+    assert after == before, (
+        "update hangup tests mutated marker artifacts in the real Hermes home: "
+        f"before={before!r} after={after!r}"
+    )
 
 
 # -----------------------------------------------------------------------------

@@ -11,6 +11,7 @@ import json
 import os
 import time
 import asyncio
+from datetime import datetime, timedelta
 from unittest.mock import patch, MagicMock, AsyncMock
 
 import pytest
@@ -482,6 +483,89 @@ class TestWatchUpdateProgress:
         # ...and the markers are cleaned up after successful delivery.
         assert not pending_path.exists()
         assert not (hermes_home / ".update_exit_code").exists()
+
+    @pytest.mark.asyncio
+    async def test_completion_only_fallback_uses_exponential_backoff(self, tmp_path, monkeypatch):
+        """Deferred post-update notification retries back off instead of 2s spam."""
+        runner = _make_runner()
+        hermes_home = tmp_path / "hermes"
+        hermes_home.mkdir()
+
+        pending = {
+            "platform": "discord",
+            "chat_id": "111",
+            "user_id": "222",
+            "timestamp": datetime.now().isoformat(),
+        }
+        (hermes_home / ".update_pending.json").write_text(json.dumps(pending))
+        (hermes_home / ".update_output.txt").write_text("done\n")
+        (hermes_home / ".update_exit_code").write_text("0")
+        runner.adapters = {Platform.TELEGRAM: AsyncMock()}
+        discord_adapter = AsyncMock()
+        delays = []
+
+        async def fake_sleep(delay):
+            delays.append(delay)
+            if len(delays) == 3:
+                runner.adapters[Platform.DISCORD] = discord_adapter
+
+        monkeypatch.setattr("gateway.run.asyncio.sleep", fake_sleep)
+
+        with patch("gateway.run._hermes_home", hermes_home):
+            await runner._watch_update_progress(
+                poll_interval=0.5,
+                stream_interval=0.2,
+                timeout=30.0,
+                notification_retry_max_interval=2.0,
+                notification_ttl=48 * 60 * 60,
+            )
+
+        assert delays[:3] == [0.5, 1.0, 2.0]
+        discord_adapter.send.assert_called_once()
+        assert not (hermes_home / ".update_pending.json").exists()
+        assert not (hermes_home / ".update_exit_code").exists()
+
+    @pytest.mark.asyncio
+    async def test_completion_only_fallback_expires_stale_marker(self, tmp_path, monkeypatch, caplog):
+        """Old finished-update marker stops the watch and is renamed .expired."""
+        runner = _make_runner()
+        hermes_home = tmp_path / "hermes"
+        hermes_home.mkdir()
+
+        pending = {
+            "platform": "discord",
+            "chat_id": "111",
+            "user_id": "222",
+            "timestamp": (datetime.now() - timedelta(hours=49)).isoformat(),
+        }
+        pending_path = hermes_home / ".update_pending.json"
+        pending_path.write_text(json.dumps(pending))
+        (hermes_home / ".update_output.txt").write_text("done\n")
+        (hermes_home / ".update_exit_code").write_text("0")
+        runner.adapters = {Platform.TELEGRAM: AsyncMock()}
+
+        async def fail_sleep(delay):
+            raise AssertionError(f"stale marker should expire before sleeping, got {delay}")
+
+        monkeypatch.setattr("gateway.run.asyncio.sleep", fail_sleep)
+
+        with patch("gateway.run._hermes_home", hermes_home), caplog.at_level("WARNING"):
+            await runner._watch_update_progress(
+                poll_interval=0.5,
+                stream_interval=0.2,
+                timeout=30.0,
+                notification_ttl=48 * 60 * 60,
+            )
+
+        assert not pending_path.exists()
+        assert (hermes_home / ".update_pending.json.expired").exists()
+        assert (hermes_home / ".update_output.txt.expired").exists()
+        assert (hermes_home / ".update_exit_code.expired").exists()
+        warning_records = [
+            record for record in caplog.records
+            if "Post-update notification marker expired after TTL" in record.message
+        ]
+        assert len(warning_records) == 1
 
     @pytest.mark.asyncio
     async def test_prompt_forwarded_only_once(self, tmp_path):
