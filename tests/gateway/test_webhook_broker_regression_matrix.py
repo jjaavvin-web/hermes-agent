@@ -7,6 +7,7 @@ import json
 import os
 import subprocess
 import threading
+from datetime import datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -241,7 +242,12 @@ def test_resume_hydrates_existing_per_delivery_worktree_and_fail_closes_when_gon
     adapter = _make_adapter(cap=1)
     adapter.set_session_store(
         SimpleNamespace(
-            _entries={"wh-loki1-existing": SimpleNamespace(worktree_path=str(existing))}
+            _entries={
+                "wh-loki1-existing": SimpleNamespace(
+                    updated_at=datetime.now() + timedelta(seconds=1),
+                    worktree_path=str(existing),
+                )
+            }
         )
     )
     adopted = adapter._hydrate_per_delivery_sessions(hermes_home=home, repo_root=repo)
@@ -256,7 +262,12 @@ def test_resume_hydrates_existing_per_delivery_worktree_and_fail_closes_when_gon
 
     adapter.set_session_store(
         SimpleNamespace(
-            _entries={"wh-loki1-existing": SimpleNamespace(worktree_path=str(repo / "wrong-tree"))}
+            _entries={
+                "wh-loki1-existing": SimpleNamespace(
+                    updated_at=datetime.now() + timedelta(seconds=1),
+                    worktree_path=str(repo / "wrong-tree"),
+                )
+            }
         )
     )
     assert adapter._hydrate_per_delivery_sessions(hermes_home=home, repo_root=repo) == {}
@@ -386,7 +397,14 @@ async def test_exception_after_successful_lease_allocation_refuses_releases_and_
 
     adapter._same_worktree_path = crashing_same_worktree  # type: ignore[method-assign]
     adapter.set_session_store(
-        SimpleNamespace(_entries={"agent:main:webhook:webhook:webhook:loki1:post-alloc-crash:webhook:loki1": SimpleNamespace(worktree_path=str(tmp_path / "old"))})
+        SimpleNamespace(
+            _entries={
+                "agent:main:webhook:webhook:webhook:loki1:post-alloc-crash:webhook:loki1": SimpleNamespace(
+                    updated_at=datetime.now() + timedelta(seconds=1),
+                    worktree_path=str(tmp_path / "old"),
+                )
+            }
+        )
     )
     handled: list[str] = []
 

@@ -38,6 +38,7 @@ import re
 import subprocess
 import threading
 import time
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
@@ -106,6 +107,7 @@ _LOOPBACK_HOSTS = frozenset({
 _AGENT_RUN_SEMAPHORE: Optional[asyncio.Semaphore] = None
 _AGENT_RUN_SEMAPHORE_CAP: Optional[int] = None
 _LIVE_SESSION_SCAN_FAILED = object()
+_PROCESS_START = datetime.now()
 
 
 def _get_agent_run_semaphore(max_concurrent_agent_runs: int) -> asyncio.Semaphore:
@@ -673,8 +675,34 @@ class WebhookAdapter(BasePlatformAdapter):
             return object()
         return None
 
+    @staticmethod
+    def _session_entry_updated_at(entry: Any) -> datetime | None:
+        """Return a SessionEntry.updated_at value usable for hydration liveness."""
+        updated_at = getattr(entry, "updated_at", None)
+        if isinstance(updated_at, datetime):
+            return updated_at
+        if isinstance(updated_at, str):
+            try:
+                return datetime.fromisoformat(updated_at.replace("Z", "+00:00"))
+            except ValueError:
+                return None
+        return None
+
+    @staticmethod
+    def _naive_local_datetime(value: datetime) -> datetime:
+        if value.tzinfo is not None and value.utcoffset() is not None:
+            return value.astimezone().replace(tzinfo=None)
+        return value
+
+    def _session_entry_is_live_for_hydration(self, entry: Any) -> bool:
+        """True when a SessionStore entry has been active since this process started."""
+        updated_at = self._session_entry_updated_at(entry)
+        if updated_at is None:
+            return False
+        return self._naive_local_datetime(updated_at) >= self._naive_local_datetime(_PROCESS_START)
+
     def _live_session_entries(self) -> list[Any] | None | object:
-        """Return live SessionStore entries, a fail-closed sentinel, or None.
+        """Return post-process-start SessionStore entries, a fail-closed sentinel, or None.
 
         F1 fail-closed marker: scan exceptions return _LIVE_SESSION_SCAN_FAILED;
         hydration must refuse every candidate with reason hydrate_scan_failure.
@@ -690,7 +718,10 @@ class WebhookAdapter(BasePlatformAdapter):
                 return []
             entries = getattr(store, "_entries")
             if isinstance(entries, dict):
-                return list(entries.values())
+                return [
+                    entry for entry in entries.values()
+                    if self._session_entry_is_live_for_hydration(entry)
+                ]
             logger.error(
                 "[webhook] live session scan found untrusted entries type %s during per-delivery hydration; refusing adoption",
                 type(entries).__name__,
