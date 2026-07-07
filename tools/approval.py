@@ -1108,6 +1108,88 @@ DANGEROUS_PATTERNS_COMPILED = [
 ]
 
 
+# =========================================================================
+# Destructive command classes -- "always" persistence gate (card t_ec1d82e1)
+# =========================================================================
+# Forensics (07-06, ~/.hermes/audits/night-push-20260706/allowlist-forensics/):
+# choosing "always" for ANY dangerous pattern -- including "recursive
+# delete" -- called save_permanent_allowlist() unconditionally and wrote the
+# pattern string into the durable command_allowlist. That is how a
+# "recursive delete" entry regrew into the live allowlist between 06-17 and
+# 07-06. This set names the pattern_key values (the exact description
+# strings returned by detect_dangerous_command()/DANGEROUS_PATTERNS, plus
+# the "execute_code" guard's fixed key) that belong to a destructive class:
+# permanent ("always") approval is downgraded to session-only for these by
+# default -- see _is_destructive_approval_class() /
+# _allow_permanent_destructive_approvals() below. Extend this set only when
+# adding a new DANGEROUS_PATTERNS entry to one of the named classes
+# (recursive delete / root delete / config-env overwrite / remote
+# pipe-to-shell / shell -c-lc wrapper / service restart-stop /
+# execute_code); do NOT build a second classifier against raw commands.
+DESTRUCTIVE_APPROVAL_PATTERN_KEYS: frozenset[str] = frozenset({
+    # -- recursive delete --
+    "recursive delete",
+    "recursive delete (long flag)",
+    "Windows cmd destructive delete",
+    "Windows PowerShell destructive delete",
+    "xargs with rm",
+    "find -exec/-execdir rm",
+    "find -delete",
+    # -- root delete --
+    "delete in root path",
+    # -- config/env-file overwrite --
+    "overwrite system config",
+    "overwrite system file via tee",
+    "overwrite system file via redirection",
+    "overwrite project env/config via tee",
+    "overwrite project env/config via redirection",
+    "overwrite project env/config file",
+    "copy/move file into system config path",
+    "copy/move file into sensitive credential/SSH/shell-rc path",
+    "in-place edit of sensitive credential/SSH/shell-rc path",
+    "in-place edit of sensitive credential/SSH/shell-rc path (long flag)",
+    "in-place edit of sensitive credential/SSH/shell-rc path (perl/ruby)",
+    "in-place edit of system config",
+    "in-place edit of system config (long flag)",
+    "in-place edit of Hermes config/env",
+    "in-place edit of Hermes config/env (long flag)",
+    "in-place edit of Hermes config/env (perl/ruby)",
+    # -- remote pipe-to-shell --
+    "pipe remote content to shell",
+    "execute remote script via process substitution",
+    "execute remote content via command substitution",
+    "pipe decoded content to shell (possible command obfuscation)",
+    "pipe xxd-decoded content to shell (possible command obfuscation)",
+    "pipe tr-transformed output to shell (possible command obfuscation)",
+    "pipe openssl-decoded content to shell (possible command obfuscation)",
+    # -- shell -c / -lc wrappers --
+    "shell command via -c/-lc flag",
+    "script execution via -e/-c flag",
+    "script execution via heredoc",
+    "shell execution via heredoc",
+    # -- service restart/stop --
+    "stop/restart system service",
+    "stop/restart hermes gateway (kills running agents)",
+    "hermes update (restarts gateway, kills running agents)",
+    "docker compose restart/stop/kill/down (container lifecycle)",
+    "docker restart/stop/kill (container lifecycle)",
+    "start gateway outside systemd (use 'systemctl --user restart hermes-gateway')",
+    "kill hermes/gateway process (self-termination)",
+    "kill process via pgrep/pidof expansion (self-termination)",
+    "kill process via backtick pgrep/pidof expansion (self-termination)",
+    "stop/restart hermes launchd service (kills running agents)",
+    # -- execute_code (tools/approval.py::check_execute_code_guard) --
+    "execute_code",
+})
+
+
+def _is_destructive_approval_class(pattern_key: str | None) -> bool:
+    """True when `pattern_key` belongs to a destructive command class for
+    which permanent "always" approval is downgraded to session-only by
+    default (see DESTRUCTIVE_APPROVAL_PATTERN_KEYS)."""
+    return pattern_key in DESTRUCTIVE_APPROVAL_PATTERN_KEYS
+
+
 def _legacy_pattern_key(pattern: str) -> str:
     """Reproduce the old regex-derived approval key for backwards compatibility."""
     return pattern.split(r'\b')[1] if r'\b' in pattern else pattern[:20]
@@ -2198,6 +2280,53 @@ def save_permanent_allowlist(patterns: set):
         logger.warning("Could not save allowlist: %s", e)
 
 
+def _allow_permanent_destructive_approvals() -> bool:
+    """Config escape hatch: security.allow_permanent_destructive_approvals.
+
+    Defaults to False. When explicitly set True, "always" approval for a
+    destructive-class command (see DESTRUCTIVE_APPROVAL_PATTERN_KEYS) persists
+    to the permanent command_allowlist exactly like the legacy (pre-fix)
+    behavior. The default path is the downgrade: destructive-class "always"
+    grants run this session only and are never written to config.yaml.
+    """
+    try:
+        from hermes_cli.config import load_config
+        config = load_config()
+        return bool(cfg_get(config, "security", "allow_permanent_destructive_approvals", default=False))
+    except Exception as e:
+        logger.warning("Failed to read allow_permanent_destructive_approvals: %s", e)
+        return False
+
+
+_DESTRUCTIVE_ALWAYS_DOWNGRADE_NOTICE = (
+    "Permanent (\"always\") approval is unavailable for this command class; "
+    "granted for this session only and not saved to the permanent allowlist."
+)
+
+
+def _apply_always_choice(session_key: str, pattern_key: str) -> str | None:
+    """Apply an "always" approval choice for one pattern_key.
+
+    Grants session approval unconditionally (the command still runs this
+    session/turn). Persists to the permanent allowlist UNLESS pattern_key is
+    a destructive class (DESTRUCTIVE_APPROVAL_PATTERN_KEYS) and the
+    security.allow_permanent_destructive_approvals escape hatch is off (the
+    default) -- see card t_ec1d82e1 / R5a. Returns a one-line user-facing
+    notice string when persistence was downgraded, else None.
+    """
+    approve_session(session_key, pattern_key)
+    if _is_destructive_approval_class(pattern_key) and not _allow_permanent_destructive_approvals():
+        logger.info(
+            "Downgraded 'always' approval to session-only for destructive "
+            "pattern %r (session %s); not persisted to command_allowlist.",
+            pattern_key, session_key,
+        )
+        return _DESTRUCTIVE_ALWAYS_DOWNGRADE_NOTICE
+    approve_permanent(pattern_key)
+    save_permanent_allowlist(_permanent_approved)
+    return None
+
+
 # =========================================================================
 # Approval prompting + orchestration
 # =========================================================================
@@ -2652,14 +2781,13 @@ def check_dangerous_command(command: str, env_type: str,
             "description": description,
         }
 
+    downgrade_notice = None
     if choice == "session":
         approve_session(session_key, pattern_key)
     elif choice == "always":
-        approve_session(session_key, pattern_key)
-        approve_permanent(pattern_key)
-        save_permanent_allowlist(_permanent_approved)
+        downgrade_notice = _apply_always_choice(session_key, pattern_key)
 
-    return {"approved": True, "message": None}
+    return {"approved": True, "message": downgrade_notice}
 
 
 # =========================================================================
@@ -3157,17 +3285,19 @@ def check_all_command_guards(command: str, env_type: str,
                 }
 
             # User approved — persist based on scope (same logic as CLI)
+            downgrade_notices = []
             for key, _, is_tirith in warnings:
                 if choice == "session" or (choice == "always" and is_tirith):
                     approve_session(session_key, key)
                 elif choice == "always":
-                    approve_session(session_key, key)
-                    approve_permanent(key)
-                    save_permanent_allowlist(_permanent_approved)
+                    notice = _apply_always_choice(session_key, key)
+                    if notice:
+                        downgrade_notices.append(notice)
                 # choice == "once": no persistence — command allowed this
                 # single time only, matching the CLI's behavior.
 
-            return {"approved": True, "message": None,
+            return {"approved": True,
+                    "message": " ".join(dict.fromkeys(downgrade_notices)) or None,
                     "user_approved": True, "description": combined_desc}
 
         # Fallback: no gateway callback registered (e.g. cron, batch).
@@ -3238,17 +3368,20 @@ def check_all_command_guards(command: str, env_type: str,
         }
 
     # Persist approval for each warning individually
+    downgrade_notices = []
     for key, _, is_tirith in warnings:
         if choice == "session" or (choice == "always" and is_tirith):
             # tirith: session only (no permanent broad allowlisting)
             approve_session(session_key, key)
         elif choice == "always":
-            # dangerous patterns: permanent allowed
-            approve_session(session_key, key)
-            approve_permanent(key)
-            save_permanent_allowlist(_permanent_approved)
+            # dangerous patterns: permanent allowed, unless the pattern is a
+            # destructive class (see _apply_always_choice / t_ec1d82e1).
+            notice = _apply_always_choice(session_key, key)
+            if notice:
+                downgrade_notices.append(notice)
 
-    return {"approved": True, "message": None,
+    return {"approved": True,
+            "message": " ".join(dict.fromkeys(downgrade_notices)) or None,
             "user_approved": True, "description": combined_desc}
 
 
@@ -3436,15 +3569,17 @@ def check_execute_code_guard(code: str, env_type: str,
         }
 
     # Approved — persist based on scope (same logic as check_all_command_guards).
+    downgrade_notice = None
     if choice == "session":
         approve_session(session_key, pattern_key)
     elif choice == "always":
-        approve_session(session_key, pattern_key)
-        approve_permanent(pattern_key)
-        save_permanent_allowlist(_permanent_approved)
+        # execute_code is itself a destructive class (see
+        # DESTRUCTIVE_APPROVAL_PATTERN_KEYS / t_ec1d82e1) — persistence is
+        # downgraded to session-only unless the escape hatch is set.
+        downgrade_notice = _apply_always_choice(session_key, pattern_key)
     # choice == "once": no persistence — approval lasts this single call only.
 
-    return {"approved": True, "message": None,
+    return {"approved": True, "message": downgrade_notice,
             "user_approved": True, "description": description}
 
 

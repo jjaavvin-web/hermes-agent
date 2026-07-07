@@ -774,3 +774,42 @@ def test_f4_runtime_confinement_and_adoption_audit_pins():
     assert "adoption_failed_runtime_cwd_mismatch" in webhook, "finalize adoption_failed reason string dropped"
     assert "_runtime_cwds_match_lease" in webhook, "webhook finalize audit no longer compares runtime-recorded cwd"
     assert "F4 broker-singleton lock marker" in webhook, "broker singleton lock marker dropped"
+
+
+def test_destructive_approval_pattern_keys_stay_live_against_dangerous_patterns():
+    """card t_ec1d82e1 (item A-always-approval): DESTRUCTIVE_APPROVAL_PATTERN_KEYS
+    is a curated frozenset of DANGEROUS_PATTERNS description strings (plus the
+    hardcoded "execute_code" guard key) naming which dangerous-command classes
+    get their permanent "always" approval downgraded to session-only by
+    default (see tools/approval.py::_is_destructive_approval_class).
+
+    Membership is a plain string match against DANGEROUS_PATTERNS
+    descriptions, so an upstream/refactor commit that RENAMES one of those
+    description strings silently turns the corresponding curated key into a
+    dead no-op: the pattern still matches and blocks/warns as before, but is
+    no longer recognized as destructive — so choosing "always" on it would
+    once again persist it into the durable command_allowlist, reopening the
+    exact recursive-delete regrowth bug (06-17 -> 07-06) this repo already
+    suffered. This test pins BOTH the subset relationship (no dead keys) and
+    the curated count (46) so such a rename, or a silent shrink of the
+    curated set, fails loudly in CI before merge instead of silently
+    reopening the bug.
+    """
+    live_descriptions = {description for _, description in approval_module.DANGEROUS_PATTERNS}
+    curated_keys = approval_module.DESTRUCTIVE_APPROVAL_PATTERN_KEYS - {"execute_code"}
+
+    dead_keys = curated_keys - live_descriptions
+    assert not dead_keys, (
+        "DESTRUCTIVE_APPROVAL_PATTERN_KEYS contains keys with no matching live "
+        f"DANGEROUS_PATTERNS description (dead no-op after a rename): {dead_keys!r} "
+        "-- this silently reopens the recursive-delete persist-on-always bug "
+        "(card t_ec1d82e1)."
+    )
+    assert len(approval_module.DESTRUCTIVE_APPROVAL_PATTERN_KEYS) == 46, (
+        "DESTRUCTIVE_APPROVAL_PATTERN_KEYS count drifted from the pinned "
+        f"baseline of 46 (now {len(approval_module.DESTRUCTIVE_APPROVAL_PATTERN_KEYS)}). "
+        "Update this pin ONLY after confirming the change is an intentional, "
+        "reviewed addition/removal of a destructive command class -- not an "
+        "accidental drop that reopens permanent-persist for a class that "
+        "should be downgraded."
+    )
