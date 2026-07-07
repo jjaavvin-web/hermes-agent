@@ -80,6 +80,7 @@ TICKER_SUCCESS_FILE = CRON_DIR / "ticker_last_success"
 TICKER_INTERVAL_SECONDS = 60
 
 CRON_FIRE_LEDGER_FILE = CRON_DIR / "fire_ledger.jsonl"
+CRON_FIRE_LEDGER_RETENTION_DAYS = 7
 
 # In-process lock protecting load_jobs→modify→save_jobs cycles.
 # Required when tick() runs jobs in parallel threads — without this,
@@ -617,36 +618,125 @@ def mark_recurring_fire_complete(fire_id: str | None, job_id: str, *, success: b
         logger.warning("Failed to record recurring cron fire completion for %s: %s", job_id, exc)
 
 
-def incomplete_recurring_fires() -> List[Dict[str, Any]]:
-    """Return ledger claims without a matching completion row."""
+def _parse_fire_ledger_timestamp(value: Any) -> datetime | None:
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return None
+
+
+def _fire_ledger_row_time(row: Dict[str, Any]) -> datetime | None:
+    for key in ("completed_at", "claimed_at", "recorded_at", "scheduled_for"):
+        ts = _parse_fire_ledger_timestamp(row.get(key))
+        if ts is not None:
+            return ts
+    return None
+
+
+def _read_fire_ledger_rows(*, warn_truncated: bool = False) -> List[Dict[str, Any]]:
     if not CRON_FIRE_LEDGER_FILE.exists():
         return []
-    claims: Dict[str, Dict[str, Any]] = {}
-    completed: set[str] = set()
+    rows: List[Dict[str, Any]] = []
     try:
         with open(CRON_FIRE_LEDGER_FILE, "r", encoding="utf-8") as f:
-            for line in f:
+            for line_no, line in enumerate(f, start=1):
                 if not line.strip():
                     continue
                 try:
                     row = json.loads(line)
-                except ValueError:
+                except ValueError as exc:
+                    if warn_truncated:
+                        logger.warning("Skipping unreadable recurring cron fire ledger line %s: %s", line_no, exc)
                     continue
-                fire_id = row.get("fire_id")
-                if not fire_id:
-                    continue
-                if row.get("status") == "claimed":
-                    claims[fire_id] = row
-                elif row.get("status") in {"completed", "error"}:
-                    completed.add(fire_id)
+                if isinstance(row, dict):
+                    rows.append(row)
     except OSError:
         return []
+    return rows
+
+
+def _compact_fire_ledger(rows: List[Dict[str, Any]]) -> None:
+    if not rows:
+        return
+    now_dt = _hermes_now()
+    cutoff = now_dt - timedelta(days=CRON_FIRE_LEDGER_RETENTION_DAYS)
+    completed_fire_ids = {
+        str(row.get("fire_id"))
+        for row in rows
+        if row.get("fire_id") and row.get("status") in {"completed", "error"}
+    }
+    compacted: List[Dict[str, Any]] = []
+    for row in rows:
+        fire_id = row.get("fire_id")
+        if not fire_id:
+            continue
+        if row.get("status") == "claimed" and str(fire_id) not in completed_fire_ids:
+            compacted.append(row)
+            continue
+        row_time = _fire_ledger_row_time(row)
+        if row_time is not None and row_time >= cutoff:
+            compacted.append(row)
+    if len(compacted) == len(rows):
+        return
+    ensure_dirs()
+    fd, tmp_path = tempfile.mkstemp(dir=str(CRON_DIR), suffix=".tmp", prefix=".fire_ledger_")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            for row in compacted:
+                f.write(json.dumps(row, sort_keys=True) + "\n")
+            f.flush()
+            os.fsync(f.fileno())
+        atomic_replace(tmp_path, CRON_FIRE_LEDGER_FILE)
+    except BaseException:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
+
+
+def incomplete_recurring_fires() -> List[Dict[str, Any]]:
+    """Return ledger claims without a matching completion row."""
+    claims: Dict[str, Dict[str, Any]] = {}
+    completed: set[str] = set()
+    for row in _read_fire_ledger_rows():
+        fire_id = row.get("fire_id")
+        if not fire_id:
+            continue
+        if row.get("status") == "claimed":
+            claims[fire_id] = row
+        elif row.get("status") in {"completed", "error"}:
+            completed.add(fire_id)
     return [row for fid, row in claims.items() if fid not in completed]
 
 
 def reconcile_incomplete_recurring_fires() -> List[Dict[str, Any]]:
-    """Surface advance→execute crash gaps as incomplete ledger rows."""
-    incomplete = incomplete_recurring_fires()
+    """Surface advance→execute crash gaps as incomplete ledger rows.
+
+    Also compacts ``fire_ledger.jsonl`` to bound growth: outstanding claims are
+    retained, while completed/error rows older than
+    ``CRON_FIRE_LEDGER_RETENTION_DAYS`` are dropped. Malformed/truncated lines
+    are skipped with a warning and never crash ticker startup.
+    """
+    rows = _read_fire_ledger_rows(warn_truncated=True)
+    if rows:
+        try:
+            _compact_fire_ledger(rows)
+        except Exception as exc:
+            logger.warning("Failed to compact recurring cron fire ledger: %s", exc)
+    claims: Dict[str, Dict[str, Any]] = {}
+    completed: set[str] = set()
+    for row in rows:
+        fire_id = row.get("fire_id")
+        if not fire_id:
+            continue
+        if row.get("status") == "claimed":
+            claims[fire_id] = row
+        elif row.get("status") in {"completed", "error"}:
+            completed.add(fire_id)
+    incomplete = [row for fid, row in claims.items() if fid not in completed]
     for row in incomplete:
         logger.warning(
             "Recurring cron fire incomplete after schedule advance: job=%s fire_id=%s scheduled_for=%s",
