@@ -68,6 +68,10 @@ _AGENT_CACHE_IDLE_TTL_SECS = 3600.0  # evict agents idle for >1h
 _PLATFORM_CONNECT_TIMEOUT_SECS_DEFAULT = 30.0
 _ADAPTER_DISCONNECT_TIMEOUT_SECS_DEFAULT = 5.0
 _TELEGRAM_COMMAND_MENTION_RE = re.compile(r"(?<![\w:/])/([A-Za-z0-9][A-Za-z0-9_-]*)")
+_INFLIGHT_MARKER_IO_EXECUTOR = concurrent.futures.ThreadPoolExecutor(
+    max_workers=1,
+    thread_name_prefix="gateway-inflight-marker-io",
+)
 
 _TELEGRAM_NOISY_STATUS_RE = re.compile(
     r"("  # transient/auxiliary status that should stay in logs, not gateway chats
@@ -2777,6 +2781,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         self._startup_restore_in_progress = False
         self._startup_restore_queue: List[MessageEvent] = []
         self._startup_restore_tasks: List[asyncio.Task] = []
+        self._startup_resume_marker_futures: List[tuple[Any, str]] = []
         # LRU cache of live SessionSources keyed by session_key. Used by
         # fallback routing paths (shutdown notifications, synthetic
         # background-process events) when the persisted origin is missing
@@ -4265,17 +4270,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         except Exception:
             pass
 
-    def _submit_inflight_marker_io(self, action: Callable[[], Any], description: str, session_key: str) -> None:
-        """Run advisory crash-marker filesystem I/O off the event loop."""
-        try:
-            loop = asyncio.get_running_loop()
-        except RuntimeError:
-            try:
-                action()
-            except Exception:
-                logger.warning("Failed to %s in-flight crash marker for %s", description, session_key, exc_info=True)
-            return
+    def _submit_inflight_marker_io(self, action: Callable[[], Any], description: str, session_key: str) -> Any:
+        """Run advisory crash-marker filesystem I/O off the event loop.
 
+        A dedicated single-worker executor preserves submission order for marker
+        writes/removes.  Without that, the default thread pool can run a later
+        fast remove before an earlier slow write and leave a phantom in-flight
+        marker behind after a clean turn.
+        """
         def _run_action() -> None:
             try:
                 action()
@@ -4283,11 +4285,21 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 logger.warning("Failed to %s in-flight crash marker for %s", description, session_key, exc_info=True)
 
         try:
-            loop.run_in_executor(None, _run_action)
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            try:
+                return _INFLIGHT_MARKER_IO_EXECUTOR.submit(_run_action)
+            except Exception:
+                logger.warning("Failed to schedule %s in-flight crash marker for %s", description, session_key, exc_info=True)
+                return None
+
+        try:
+            return loop.run_in_executor(_INFLIGHT_MARKER_IO_EXECUTOR, _run_action)
         except Exception:
             logger.warning("Failed to schedule %s in-flight crash marker for %s", description, session_key, exc_info=True)
+            return None
 
-    def _write_inflight_crash_marker(self, session_key: str, source: Any = None, *, started_at: float | None = None) -> None:
+    def _write_inflight_crash_marker(self, session_key: str, source: Any = None, *, started_at: float | None = None) -> Any:
         """Best-effort exact crash marker for a claimed gateway turn."""
         try:
             from gateway.inflight_crash_markers import write_marker
@@ -4301,13 +4313,23 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 "approval_key": getattr(entry, "approval_key", None),
                 "deny_patterns": getattr(entry, "deny_patterns", None),
             }
-            self._submit_inflight_marker_io(
+            return self._submit_inflight_marker_io(
                 lambda: write_marker(session_key, **kwargs),
                 "write",
                 session_key,
             )
         except Exception:
             logger.warning("Failed to prepare in-flight crash marker write for %s", session_key, exc_info=True)
+            return None
+
+    async def _await_inflight_marker_io(self, future: Any, session_key: str) -> None:
+        """Cheaply wait for first marker fsync before turn side effects begin."""
+        if future is None:
+            return
+        try:
+            await asyncio.wait_for(asyncio.shield(future), timeout=1.0)
+        except Exception:
+            logger.warning("Initial in-flight crash marker write not durable before turn start for %s", session_key, exc_info=True)
 
     def _persist_active_agents(self) -> None:
         """Persist the live in-flight agent count to ``gateway_state.json``.
@@ -6400,6 +6422,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         exc_info=(type(result), result, result.__traceback__),
                     )
         self._startup_restore_tasks = []
+        marker_futures = list(getattr(self, "_startup_resume_marker_futures", []) or [])
+        self._startup_resume_marker_futures = []
+        for marker_future, session_key in marker_futures:
+            await self._await_inflight_marker_io(marker_future, session_key)
         drained = await self._drain_startup_restore_queue()
         self._startup_restore_in_progress = False
         if drained:
@@ -6515,8 +6541,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             self._running_agents[entry.session_key] = _AGENT_PENDING_SENTINEL
             _started_at = time.time()
             self._running_agents_ts[entry.session_key] = _started_at
-            self._write_inflight_crash_marker(entry.session_key, entry.origin, started_at=_started_at)
+            marker_future = self._write_inflight_crash_marker(entry.session_key, entry.origin, started_at=_started_at)
             self._persist_active_agents()
+            marker_futures = getattr(self, "_startup_resume_marker_futures", None)
+            if marker_futures is None:
+                marker_futures = []
+                self._startup_resume_marker_futures = marker_futures
+            marker_futures.append((marker_future, entry.session_key))
 
             # Empty-text internal event — the _is_resume_pending branch in
             # _handle_message_with_agent prepends the proper reason-aware
@@ -10058,8 +10089,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         self._running_agents[_quick_key] = _AGENT_PENDING_SENTINEL
         _started_at = time.time()
         self._running_agents_ts[_quick_key] = _started_at
-        self._write_inflight_crash_marker(_quick_key, source, started_at=_started_at)
+        marker_future = self._write_inflight_crash_marker(_quick_key, source, started_at=_started_at)
         self._persist_active_agents()
+        await self._await_inflight_marker_io(marker_future, _quick_key)
         _run_generation = self._begin_session_run_generation(_quick_key)
 
         try:
