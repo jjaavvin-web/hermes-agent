@@ -6553,6 +6553,36 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             )
         return True
 
+    def _recover_inflight_sessions_after_unclean_shutdown(self) -> tuple[int, int, bool]:
+        """Recover in-flight sessions after an unclean gateway shutdown.
+
+        Returns ``(marker_count, suspended_count, used_legacy_fallback)``.
+        Exact markers are authoritative when present. If the marker set is
+        empty, loudly run the pre-marker recency fallback once so sessions
+        persisted by older builds or a marker-pipeline failure are still
+        protected from blind resume loops.
+        """
+        from gateway.inflight_crash_markers import load_markers
+
+        session_keys = None
+        if hasattr(self.session_store, "session_keys"):
+            session_keys = self.session_store.session_keys()
+        markers = load_markers(live_session_keys=session_keys)
+        if not markers:
+            logger.warning(
+                "Unclean gateway shutdown detected but zero in-flight crash markers were found; "
+                "running legacy recent-session suspension fallback once"
+            )
+            suspended = self.session_store.suspend_recently_active()
+            return 0, suspended, True
+
+        suspended = self.session_store.mark_inflight_sessions_from_markers(markers)
+        if suspended:
+            logger.info("Marked %d exact in-flight session(s) as resumable from previous run", suspended)
+        else:
+            logger.warning("Found %d in-flight crash marker(s), but none matched active sessions", len(markers))
+        return len(markers), suspended, False
+
     async def start(self) -> bool:
         """
         Start the gateway and all configured platform adapters.
@@ -6847,14 +6877,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 pass
         else:
             try:
-                from gateway.inflight_crash_markers import load_markers
-
-                markers = load_markers()
-                suspended = self.session_store.mark_inflight_sessions_from_markers(markers)
-                if suspended:
-                    logger.info("Marked %d exact in-flight session(s) as resumable from previous run", suspended)
-                elif markers:
-                    logger.warning("Found %d in-flight crash marker(s), but none matched active sessions", len(markers))
+                self._recover_inflight_sessions_after_unclean_shutdown()
             except Exception as e:
                 logger.warning("In-flight session crash-marker recovery failed: %s", e)
 
