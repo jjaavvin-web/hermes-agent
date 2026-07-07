@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import time
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -14,7 +15,12 @@ def retained_delivery_root() -> Path:
     return get_hermes_home() / "relay-wt" / "deliveries"
 
 
-def scan_retained_dirty_deliveries(root: Path | None = None) -> dict[str, Any]:
+SCAN_CACHE_TTL_SECONDS = 15.0
+_SCAN_CACHE_LOCK = threading.Lock()
+_SCAN_CACHE: tuple[Path, float, dict[str, Any]] | None = None
+
+
+def _scan_retained_dirty_deliveries_uncached(root: Path | None = None) -> dict[str, Any]:
     """Return retained dirty ``wh-*`` delivery trees awaiting harvest."""
     base = root or retained_delivery_root()
     now = time.time()
@@ -39,3 +45,23 @@ def scan_retained_dirty_deliveries(root: Path | None = None) -> dict[str, Any]:
             continue
         items.append({"path": str(child), "age_seconds": age_seconds})
     return {"count": len(items), "paths": [i["path"] for i in items], "items": items}
+
+
+def invalidate_scan_cache() -> None:
+    global _SCAN_CACHE
+    with _SCAN_CACHE_LOCK:
+        _SCAN_CACHE = None
+
+
+def scan_retained_dirty_deliveries(root: Path | None = None) -> dict[str, Any]:
+    base = root or retained_delivery_root()
+    now = time.monotonic()
+    global _SCAN_CACHE
+    with _SCAN_CACHE_LOCK:
+        if _SCAN_CACHE is not None:
+            cached_root, expires_at, value = _SCAN_CACHE
+            if cached_root == base and now < expires_at:
+                return value
+        value = _scan_retained_dirty_deliveries_uncached(base)
+        _SCAN_CACHE = (base, now + SCAN_CACHE_TTL_SECONDS, value)
+        return value
