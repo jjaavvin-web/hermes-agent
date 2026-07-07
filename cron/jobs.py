@@ -571,13 +571,14 @@ def compute_next_run(schedule: Dict[str, Any], last_run_at: Optional[str] = None
 
 def _append_fire_ledger(row: Dict[str, Any]) -> None:
     """Append one durable per-fire ledger row for recurring cron fires."""
-    ensure_dirs()
-    payload = dict(row)
-    payload.setdefault("recorded_at", _hermes_now().isoformat())
-    with open(CRON_FIRE_LEDGER_FILE, "a", encoding="utf-8") as f:
-        f.write(json.dumps(payload, sort_keys=True) + "\n")
-        f.flush()
-        os.fsync(f.fileno())
+    with _jobs_lock():
+        ensure_dirs()
+        payload = dict(row)
+        payload.setdefault("recorded_at", _hermes_now().isoformat())
+        with open(CRON_FIRE_LEDGER_FILE, "a", encoding="utf-8") as f:
+            f.write(json.dumps(payload, sort_keys=True) + "\n")
+            f.flush()
+            os.fsync(f.fileno())
 
 
 def record_recurring_fire_claim(job: Dict[str, Any], *, scheduled_for: str | None = None) -> str | None:
@@ -657,7 +658,7 @@ def _read_fire_ledger_rows(*, warn_truncated: bool = False) -> List[Dict[str, An
     return rows
 
 
-def _compact_fire_ledger(rows: List[Dict[str, Any]]) -> None:
+def _compact_fire_ledger_locked(rows: List[Dict[str, Any]]) -> None:
     if not rows:
         return
     now_dt = _hermes_now()
@@ -695,6 +696,16 @@ def _compact_fire_ledger(rows: List[Dict[str, Any]]) -> None:
         except OSError:
             pass
         raise
+
+
+def _compact_fire_ledger(rows: List[Dict[str, Any]]) -> None:
+    with _jobs_lock():
+        # Re-read under the same advisory lock used by appends.  The caller's
+        # snapshot may predate a completion append; compacting from that stale
+        # snapshot would discard the completion and create a phantom incomplete
+        # recurring-fire alert.
+        locked_rows = _read_fire_ledger_rows() if CRON_FIRE_LEDGER_FILE.exists() else rows
+        _compact_fire_ledger_locked(locked_rows)
 
 
 def incomplete_recurring_fires() -> List[Dict[str, Any]]:
