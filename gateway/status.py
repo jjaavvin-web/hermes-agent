@@ -18,6 +18,8 @@ import shlex
 import signal
 import subprocess
 import sys
+import threading
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from hermes_constants import get_hermes_home
@@ -36,6 +38,9 @@ _IS_WINDOWS = sys.platform == "win32"
 _UNSET = object()
 _GATEWAY_LOCK_FILENAME = "gateway.lock"
 _gateway_lock_handle = None
+CODEX_SESSIONS_DIAGNOSTICS_CACHE_TTL_SECONDS = 15.0
+_CODEX_SESSIONS_DIAGNOSTICS_CACHE_LOCK = threading.Lock()
+_CODEX_SESSIONS_DIAGNOSTICS_CACHE: tuple[Path, float, dict[str, Any]] | None = None
 # Windows byte-range locks are mandatory for other readers. Lock a byte well
 # past the JSON payload so runtime status / PID readers can still read the file
 # while another process holds the mutual-exclusion lock.
@@ -72,6 +77,54 @@ def _get_lock_dir() -> Path:
 
 def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _peek_codex_sessions_diagnostics_uncached(path: Path | None = None) -> dict[str, Any]:
+    """Return side-effect-free codex session state diagnostics.
+
+    This deliberately does NOT call ``CodexSessionDispatcher._load_state``:
+    the dispatcher owns fail-closed corruption handling and quarantine-renames
+    corrupt ``codex_sessions.json`` files.  Gateway status is diagnostic-only,
+    so it must never rename, rewrite, or otherwise mutate the session state
+    file while checking for corruption.
+    """
+    sessions_path = path or (get_hermes_home() / "codex_sessions.json")
+    try:
+        raw = sessions_path.read_bytes()
+    except FileNotFoundError:
+        return {}
+    except OSError as exc:
+        return {"load_error": str(exc)}
+
+    try:
+        json.loads(raw)
+    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+        return {"corrupt": True, "load_error": str(exc)}
+    return {}
+
+
+def invalidate_codex_sessions_diagnostics_cache() -> None:
+    global _CODEX_SESSIONS_DIAGNOSTICS_CACHE
+    with _CODEX_SESSIONS_DIAGNOSTICS_CACHE_LOCK:
+        _CODEX_SESSIONS_DIAGNOSTICS_CACHE = None
+
+
+def peek_codex_sessions_diagnostics(path: Path | None = None) -> dict[str, Any]:
+    sessions_path = path or (get_hermes_home() / "codex_sessions.json")
+    now = time.monotonic()
+    global _CODEX_SESSIONS_DIAGNOSTICS_CACHE
+    with _CODEX_SESSIONS_DIAGNOSTICS_CACHE_LOCK:
+        if _CODEX_SESSIONS_DIAGNOSTICS_CACHE is not None:
+            cached_path, expires_at, value = _CODEX_SESSIONS_DIAGNOSTICS_CACHE
+            if cached_path == sessions_path and now < expires_at:
+                return value
+        value = _peek_codex_sessions_diagnostics_uncached(sessions_path)
+        _CODEX_SESSIONS_DIAGNOSTICS_CACHE = (
+            sessions_path,
+            now + CODEX_SESSIONS_DIAGNOSTICS_CACHE_TTL_SECONDS,
+            value,
+        )
+        return value
 
 
 def terminate_pid(pid: int, *, force: bool = False) -> None:
@@ -793,19 +846,7 @@ def write_runtime_status(
         payload.setdefault("restart_loop_guard_invalid", None)
 
     try:
-        from gateway.codex_session_dispatcher import CURRENT_VERSION
-        from gateway.codex_session_dispatcher import CodexSessionDispatcher
-        dispatcher = CodexSessionDispatcher.__new__(CodexSessionDispatcher)
-        dispatcher._sessions_path = get_hermes_home() / "codex_sessions.json"
-        dispatcher._hermes_home = get_hermes_home()
-        dispatcher._state = {"version": CURRENT_VERSION, "sessions": {}}
-        codex_state = CodexSessionDispatcher._load_state(dispatcher)
-        signals = {
-            key: codex_state.get(key)
-            for key in ("quarantined_from", "load_error")
-            if codex_state.get(key)
-        }
-        payload["codex_sessions_diagnostics"] = signals
+        payload["codex_sessions_diagnostics"] = peek_codex_sessions_diagnostics()
     except Exception:
         payload.setdefault("codex_sessions_diagnostics", {})
 
