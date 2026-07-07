@@ -2781,7 +2781,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         self._startup_restore_in_progress = False
         self._startup_restore_queue: List[MessageEvent] = []
         self._startup_restore_tasks: List[asyncio.Task] = []
-        self._startup_resume_marker_futures: List[tuple[Any, str]] = []
         # LRU cache of live SessionSources keyed by session_key. Used by
         # fallback routing paths (shutdown notifications, synthetic
         # background-process events) when the persisted origin is missing
@@ -6299,6 +6298,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         adapter: BasePlatformAdapter,
         event: MessageEvent,
         session_key: str,
+        marker_future: Any = None,
     ) -> None:
         """Dispatch one synthetic startup resume and wait for its agent turn.
 
@@ -6326,6 +6326,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 self._release_running_agent_state(session_key)
             return
         try:
+            await self._await_inflight_marker_io(marker_future, session_key)
             await adapter.handle_message(event)
             session_tasks = getattr(adapter, "_session_tasks", {})
             task = session_tasks.get(session_key) if isinstance(session_tasks, dict) else None
@@ -6422,10 +6423,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         exc_info=(type(result), result, result.__traceback__),
                     )
         self._startup_restore_tasks = []
-        marker_futures = list(getattr(self, "_startup_resume_marker_futures", []) or [])
-        self._startup_resume_marker_futures = []
-        for marker_future, session_key in marker_futures:
-            await self._await_inflight_marker_io(marker_future, session_key)
         drained = await self._drain_startup_restore_queue()
         self._startup_restore_in_progress = False
         if drained:
@@ -6543,11 +6540,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             self._running_agents_ts[entry.session_key] = _started_at
             marker_future = self._write_inflight_crash_marker(entry.session_key, entry.origin, started_at=_started_at)
             self._persist_active_agents()
-            marker_futures = getattr(self, "_startup_resume_marker_futures", None)
-            if marker_futures is None:
-                marker_futures = []
-                self._startup_resume_marker_futures = marker_futures
-            marker_futures.append((marker_future, entry.session_key))
 
             # Empty-text internal event — the _is_resume_pending branch in
             # _handle_message_with_agent prepends the proper reason-aware
@@ -6559,7 +6551,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 internal=True,
             )
             task = asyncio.create_task(
-                self._run_startup_resume_event(adapter, event, entry.session_key)
+                self._run_startup_resume_event(adapter, event, entry.session_key, marker_future)
             )
             self._background_tasks.add(task)
             task.add_done_callback(self._background_tasks.discard)

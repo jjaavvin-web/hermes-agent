@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
+from concurrent.futures import ThreadPoolExecutor
 from unittest.mock import MagicMock
 
 import pytest
@@ -31,7 +32,10 @@ async def test_marker_write_is_offloaded_after_claim(monkeypatch):
 
     runner._write_inflight_crash_marker("s1", started_at=123.0)
 
-    assert calls == [("executor", None)]
+    assert len(calls) == 1
+    assert calls[0][0] == "executor"
+    assert isinstance(calls[0][1], ThreadPoolExecutor)
+    assert calls[0][1]._max_workers == 1  # noqa: SLF001
     write_marker.assert_not_called()
 
 
@@ -52,4 +56,7 @@ def test_marker_remove_is_offloaded(monkeypatch):
     monkeypatch.setattr("gateway.inflight_crash_markers.remove_marker", MagicMock())
 
     assert runner._release_running_agent_state("s1") is True
-    assert calls == [("executor", None)]
+    assert len(calls) == 1
+    assert calls[0][0] == "executor"
+    assert isinstance(calls[0][1], ThreadPoolExecutor)
+    assert calls[0][1]._max_workers == 1  # noqa: SLF001
