@@ -621,3 +621,62 @@ def test_hydration_harvests_stale_worktree_when_unrelated_unbound_session_is_liv
     rows = [json.loads(line) for line in ledger.read_text().splitlines()]
     assert [row["event"] for row in rows] == ["removed"]
     assert rows[0]["reason"] == "hydrate_no_live_session"
+
+
+def test_hydration_clock_jump_future_dated_dead_entry_is_not_adopted(tmp_path, monkeypatch):
+    """B-hydration-clamp (t_f91b9cc5): a WSL2 clock jump can leave a DEAD
+    SessionStore entry future-dated far beyond ``now + skew_tolerance``. The
+    original liveness filter (a589fc146) only enforced a lower bound
+    (``updated_at >= _PROCESS_START``), so a future-dated entry passed the
+    check and was adopted as a trusted lease even though it is not actually
+    live. This reproduces that clock-jump scenario: updated_at is hours in
+    the future relative to both _PROCESS_START and wall-clock now, which must
+    now be treated as NOT live and routed down the same fail-closed
+    stale-complete path as a dead/stale entry — disk evidence preserved, not
+    adopted.
+    """
+    process_start = datetime(2026, 7, 6, 12, 0, 0)
+    monkeypatch.setattr(webhook_module, "_PROCESS_START", process_start)
+    adapter = _make_adapter(cap=1)
+    hermes_home = tmp_path / "hermes_home"
+    repo_root = tmp_path / "repo"
+    child = hermes_home / "relay-wt" / "deliveries" / "wh-loki1-clockjump"
+    child.mkdir(parents=True)
+    repo_root.mkdir()
+    # Clock jumped forward hours beyond both _PROCESS_START and real now —
+    # passes the old ">= _PROCESS_START" check but is not actually live.
+    future_updated_at = datetime.now() + timedelta(hours=6)
+    adapter._session_store = _FakeSessionStore({
+        "agent:main:webhook:loki1:delivery": SimpleNamespace(
+            updated_at=future_updated_at,
+            worktree_path=str(child),
+        ),
+    })
+    worktree_stdout = _worktree_list_porcelain([(child, "loki/loki1/clockjump", "a" * 40)])
+
+    def fake_run(cmd, *args, **kwargs):
+        if cmd[:5] == ["git", "-C", str(repo_root), "worktree", "list"]:
+            return _completed_process(stdout=worktree_stdout)
+        if cmd[:5] == ["git", "-C", str(repo_root), "worktree", "remove"]:
+            Path(cmd[5]).rmdir()
+            return _completed_process()
+        if len(cmd) >= 4 and cmd[0] == "git" and cmd[2] == str(child):
+            if cmd[3:5] == ["status", "--porcelain"]:
+                return _completed_process(stdout="")
+            if cmd[3:5] == ["rev-list", "--count"]:
+                return _completed_process(stdout="0\n")
+        raise AssertionError(f"unexpected command: {cmd}")
+
+    monkeypatch.setattr(webhook_module.subprocess, "run", fake_run)
+    existing = adapter._hydrate_per_delivery_sessions(hermes_home=hermes_home, repo_root=repo_root)
+
+    # NOT adopted — a future-dated (clock-jump) entry must not be treated as live.
+    assert existing == {}
+    # Fail-closed evidence-preserving path: same as a dead/stale entry, not a
+    # parallel one — the worktree is stale-completed (removed from disk) via
+    # the existing hydrate_no_live_session path, not left dangling or adopted.
+    assert not child.exists()
+    ledger = hermes_home / "state" / "loki" / "worktree-leases.jsonl"
+    rows = [json.loads(line) for line in ledger.read_text(encoding="utf-8").splitlines()]
+    assert [row["event"] for row in rows] == ["removed"]
+    assert rows[0]["reason"] == "hydrate_no_live_session"

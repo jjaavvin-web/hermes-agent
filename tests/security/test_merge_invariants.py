@@ -647,15 +647,30 @@ def test_hydration_liveness_filter_survives_merge():
     worktrees exhausted the lease pool live on 2026-07-06 (11 adopted >= cap 10,
     every dispatch 429'd); this one-line-shaped guard is exactly the kind of change
     the 0.16.0 upstream merge silently dropped from backup.py (PR #70 precedent).
+
+    Also pins the B-hydration-clamp defense-in-depth layer (t_f91b9cc5): a WSL2
+    clock jump can leave a DEAD SessionStore entry future-dated far beyond
+    ``now + skew_tolerance``, which the original lower-bound-only filter would
+    adopt. Without pinning the upper-bound (future-skew) clamp here too, a
+    future upstream merge could silently drop just that clamp while this pin
+    stayed green — exactly the PR #70 pattern.
     """
     src = _read("gateway/platforms/webhook.py")
     assert "_PROCESS_START = datetime.now()" in src, "module-level _PROCESS_START marker dropped"
     assert "def _session_entry_is_live_for_hydration" in src, "hydration liveness helper dropped"
+    assert "_HYDRATION_FUTURE_SKEW_TOLERANCE" in src, \
+        "module-level _HYDRATION_FUTURE_SKEW_TOLERANCE constant dropped"
+    assert "def _hydration_future_skew_tolerance_seconds" in src, \
+        "_hydration_future_skew_tolerance_seconds() config helper dropped"
     helper_start = src.find("def _session_entry_is_live_for_hydration")
     helper_end = src.find("def _live_session_entries", helper_start)
     assert helper_end != -1, "liveness helper boundary changed unexpectedly"
     helper_block = src[helper_start:helper_end]
     assert "_PROCESS_START" in helper_block, "liveness helper no longer compares against _PROCESS_START"
+    assert "future_ceiling" in helper_block, \
+        "liveness helper no longer computes a future_ceiling upper bound"
+    assert "_HYDRATION_FUTURE_SKEW_TOLERANCE" in helper_block, \
+        "liveness helper no longer enforces the future-skew clamp"
     scan_start = src.find("def _live_session_entries")
     scan_end = src.find("def _same_worktree_path", scan_start)
     assert scan_start != -1 and scan_end != -1, "live-session scan boundary changed unexpectedly"

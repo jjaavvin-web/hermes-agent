@@ -38,7 +38,7 @@ import re
 import subprocess
 import threading
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
@@ -108,6 +108,28 @@ _AGENT_RUN_SEMAPHORE: Optional[asyncio.Semaphore] = None
 _AGENT_RUN_SEMAPHORE_CAP: Optional[int] = None
 _LIVE_SESSION_SCAN_FAILED = object()
 _PROCESS_START = datetime.now()
+
+
+def _hydration_future_skew_tolerance_seconds() -> int:
+    """Allowed forward clock skew (seconds) for hydration liveness ``updated_at``.
+
+    A SessionEntry with ``updated_at`` beyond ``now + tolerance`` cannot be a
+    genuinely live entry that just updated slightly ahead of this process's
+    clock — it indicates a bad clock (e.g. a WSL2 clock jump) stamping a dead
+    entry into the future, which must not re-adopt a stale worktree lease.
+    """
+    raw = os.environ.get("HERMES_WEBHOOK_HYDRATION_FUTURE_SKEW_SECONDS", "").strip()
+    if raw:
+        try:
+            value = int(raw)
+            if value >= 0:
+                return value
+        except ValueError:
+            pass
+    return 300
+
+
+_HYDRATION_FUTURE_SKEW_TOLERANCE = timedelta(seconds=_hydration_future_skew_tolerance_seconds())
 
 
 def _get_agent_run_semaphore(max_concurrent_agent_runs: int) -> asyncio.Semaphore:
@@ -695,11 +717,27 @@ class WebhookAdapter(BasePlatformAdapter):
         return value
 
     def _session_entry_is_live_for_hydration(self, entry: Any) -> bool:
-        """True when a SessionStore entry has been active since this process started."""
+        """True when a SessionStore entry has been active since this process
+        started AND is not future-dated beyond the allowed clock-skew window.
+
+        Defense-in-depth on top of the ``_PROCESS_START`` liveness rail
+        (t_8535d138): a bad clock (e.g. a WSL2 clock jump) can stamp a DEAD
+        entry's ``updated_at`` far into the future, which would otherwise
+        satisfy ``updated_at >= _PROCESS_START`` and be adopted as trusted.
+        Anything beyond ``now + _HYDRATION_FUTURE_SKEW_TOLERANCE`` cannot be a
+        genuinely live update and is treated as not-live, falling through to
+        the same fail-closed stale-complete path as any other dead entry.
+        """
         updated_at = self._session_entry_updated_at(entry)
         if updated_at is None:
             return False
-        return self._naive_local_datetime(updated_at) >= self._naive_local_datetime(_PROCESS_START)
+        normalized = self._naive_local_datetime(updated_at)
+        if normalized < self._naive_local_datetime(_PROCESS_START):
+            return False
+        future_ceiling = datetime.now() + _HYDRATION_FUTURE_SKEW_TOLERANCE
+        if normalized > future_ceiling:
+            return False
+        return True
 
     def _live_session_entries(self) -> list[Any] | None | object:
         """Return post-process-start SessionStore entries, a fail-closed sentinel, or None.
