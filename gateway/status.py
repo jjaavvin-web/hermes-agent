@@ -786,6 +786,29 @@ def write_runtime_status(
     except Exception:
         payload.setdefault("retained_dirty_deliveries", {"count": 0, "paths": [], "items": []})
 
+    try:
+        from gateway import restart_loop_guard
+        payload["restart_loop_guard_invalid"] = restart_loop_guard.invalid_status()
+    except Exception:
+        payload.setdefault("restart_loop_guard_invalid", None)
+
+    try:
+        from gateway.codex_session_dispatcher import CURRENT_VERSION
+        from gateway.codex_session_dispatcher import CodexSessionDispatcher
+        dispatcher = CodexSessionDispatcher.__new__(CodexSessionDispatcher)
+        dispatcher._sessions_path = get_hermes_home() / "codex_sessions.json"
+        dispatcher._hermes_home = get_hermes_home()
+        dispatcher._state = {"version": CURRENT_VERSION, "sessions": {}}
+        codex_state = CodexSessionDispatcher._load_state(dispatcher)
+        signals = {
+            key: codex_state.get(key)
+            for key in ("quarantined_from", "load_error")
+            if codex_state.get(key)
+        }
+        payload["codex_sessions_diagnostics"] = signals
+    except Exception:
+        payload.setdefault("codex_sessions_diagnostics", {})
+
     if platform is not _UNSET:
         platform_payload = payload["platforms"].get(platform, {})
         if platform_state is not _UNSET:
@@ -797,6 +820,8 @@ def write_runtime_status(
         platform_payload["updated_at"] = _utc_now_iso()
         payload["platforms"][platform] = platform_payload
 
+    for key in ("quarantined_from", "load_error"):
+        payload.pop(key, None)
     _write_json_file(path, payload)
 
 
