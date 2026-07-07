@@ -56,6 +56,8 @@ def test_codex_sessions_diagnostics_cache_expires_at_boundary(tmp_path, monkeypa
 
     assert status.peek_codex_sessions_diagnostics(sessions_path) == {}
     sessions_path.write_text('{"version": 1, "sessions": {"t1":', encoding="utf-8")
+    assert status.peek_codex_sessions_diagnostics(sessions_path) == {}
+    assert calls["count"] == 1
     clock["now"] = 300.0 + status.CODEX_SESSIONS_DIAGNOSTICS_CACHE_TTL_SECONDS
 
     diagnostics = status.peek_codex_sessions_diagnostics(sessions_path)
