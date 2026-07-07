@@ -22,6 +22,7 @@ import logging
 
 logger = logging.getLogger(__name__)
 import os
+import re
 import threading
 import time
 from concurrent.futures import (
@@ -522,10 +523,60 @@ def _get_orchestrator_enabled() -> bool:
     return True
 
 
-def _get_inherit_mcp_toolsets() -> bool:
-    """Whether narrowed child toolsets should keep the parent's MCP toolsets."""
+_MCP_INHERIT_MODES = ("false", "read_only", "true")
+
+
+def _get_inherit_mcp_toolsets() -> str:
+    """Parse ``delegation.inherit_mcp_toolsets`` into a mode string.
+
+    One of ``"false"`` | ``"read_only"`` | ``"true"``.
+
+    Historically this was a plain boolean: ``True`` preserved every parent
+    MCP toolset when narrowing a child's requested toolsets, ``False`` did a
+    strict intersection. C-mcp-inherit (kanban ``t_883970c1``) splits that
+    single switch into three modes because "preserve MCP" and "preserve
+    WRITE-capable MCP" must not be the same knob:
+
+      - ``"false"``:     inherit no parent MCP toolsets at all (legacy
+                          ``False``).
+      - ``"read_only"``: inherit only read-classified parent MCP toolsets.
+                          This is the new fail-closed DEFAULT: unset config
+                          and any unrecognized string value resolve here.
+      - ``"true"``:      legacy behavior -- inherit every parent MCP
+                          toolset, including writer-capable ones (bool-
+                          compatible with the old ``True``). Still logs
+                          loudly whenever it actually preserves a
+                          write-capable server, since that is exactly the
+                          authority leak this item closes off by default.
+
+    This function only controls whether the *narrowed-toolsets* branch of
+    ``_build_child_agent`` bothers to re-add parent MCP toolsets via
+    ``_preserve_parent_mcp_toolsets``. The actual authority boundary is
+    ``_strip_child_disallowed_mcp_toolsets``, which this mode also feeds and
+    which runs unconditionally on every code path.
+    """
     cfg = _load_config()
-    return is_truthy_value(cfg.get("inherit_mcp_toolsets"), default=True)
+    val = cfg.get("inherit_mcp_toolsets")
+    if isinstance(val, bool):
+        return "true" if val else "false"
+    if val is None:
+        return "read_only"
+    if isinstance(val, str):
+        normalized = val.strip().lower().replace("-", "_")
+        if normalized == "readonly":
+            normalized = "read_only"
+        if normalized in _MCP_INHERIT_MODES:
+            return normalized
+        if normalized in ("all", "legacy", "yes", "on", "1"):
+            return "true"
+        if normalized in ("none", "no", "off", "0"):
+            return "false"
+    logger.warning(
+        "Unrecognized delegation.inherit_mcp_toolsets=%r; using fail-closed "
+        "default 'read_only' (valid: false, read_only, true).",
+        val,
+    )
+    return "read_only"
 
 
 def _is_mcp_toolset_name(name: str) -> bool:
@@ -577,12 +628,228 @@ def _expand_parent_toolsets(parent_toolsets: set) -> set:
 def _preserve_parent_mcp_toolsets(
     child_toolsets: List[str], parent_toolsets: set[str]
 ) -> List[str]:
-    """Append any parent MCP toolsets that are missing from a narrowed child."""
+    """Append any parent MCP toolsets that are missing from a narrowed child.
+
+    NOTE: this only re-adds toolsets; it does not itself decide read vs.
+    write authority. ``_strip_child_disallowed_mcp_toolsets`` runs on the
+    result afterwards (and on every other ``_build_child_agent`` branch) and
+    is the actual authority boundary -- see C-mcp-inherit (``t_883970c1``).
+    """
     preserved = list(child_toolsets)
     for toolset_name in sorted(parent_toolsets):
         if _is_mcp_toolset_name(toolset_name) and toolset_name not in preserved:
             preserved.append(toolset_name)
     return preserved
+
+
+# ---------------------------------------------------------------------------
+# C-mcp-inherit (kanban t_883970c1): writer-capable MCP inheritance boundary
+# ---------------------------------------------------------------------------
+#
+# A delegated child must not receive writer-capable MCP tools (mvms-writer,
+# Notion write/update/comment tools, etc.) merely because the parent has them
+# enabled and/or the model asked for them via delegate_task(toolsets=[...]).
+# Only an operator-owned config key (delegation.writer_mcp_allowed_toolsets)
+# may grant that. See the approved scoping decision at
+# ~/.hermes/audits/wave2-20260706/F7-mcp-inherit/SCOPING-PROPOSAL.md.
+
+# Tokens (split on non-alphanumeric boundaries, e.g. "mcp_mvms_writer_mvms_
+# record_completion" -> {"mcp", "mvms", "writer", "record", "completion"})
+# that mark a tool name as mutating. Token-based (not substring) matching
+# avoids false positives like "dataset" incidentally containing "set".
+_MCP_WRITE_TOOL_TOKENS = frozenset({
+    "create", "update", "patch", "post", "delete", "remove", "insert",
+    "write", "comment", "record", "modify", "append", "upload", "publish",
+    "edit", "move", "duplicate", "supersede", "put", "set",
+})
+_MCP_TOKEN_RE = re.compile(r"[a-z0-9]+")
+
+
+def _mcp_server_name_from_toolset(toolset_name: str) -> Optional[str]:
+    """Recover the raw MCP server name behind a toolset name or alias.
+
+    Canonical MCP toolsets are named ``mcp-{server}``
+    (tools/mcp_tool.py:_register_server_tools), which also registers a bare
+    alias equal to the raw server name. Returns None for anything that
+    isn't an MCP toolset at all.
+    """
+    if not toolset_name:
+        return None
+    name = str(toolset_name)
+    if name.startswith("mcp-"):
+        return name[len("mcp-"):]
+    if _is_mcp_toolset_name(name):
+        return name
+    return None
+
+
+def _load_full_delegation_config() -> dict:
+    """Load the whole config.yaml, not narrowed to the ``delegation`` section.
+
+    ``mcp_servers.<name>.authority`` metadata lives outside ``delegation``,
+    so the delegation-scoped ``_load_config()`` can't see it. Mirrors
+    ``_load_config``'s CLI_CONFIG-first / persistent-config fallback order.
+    """
+    try:
+        from cli import CLI_CONFIG
+
+        if CLI_CONFIG:
+            return CLI_CONFIG
+    except Exception:
+        pass
+    try:
+        from hermes_cli.config import load_config
+
+        return load_config() or {}
+    except Exception:
+        return {}
+
+
+def _declared_mcp_authority(server_name: str) -> Optional[str]:
+    """Operator-declared ``mcp_servers.<name>.authority`` ("read"/"write").
+
+    Returns None when unset/invalid so the caller falls back to inference.
+    """
+    try:
+        cfg = _load_full_delegation_config()
+    except Exception:
+        return None
+    servers = cfg.get("mcp_servers") if isinstance(cfg, dict) else None
+    if not isinstance(servers, dict):
+        return None
+    entry = servers.get(server_name)
+    if not isinstance(entry, dict):
+        return None
+    authority = entry.get("authority")
+    if isinstance(authority, str) and authority.strip().lower() in ("read", "write"):
+        return authority.strip().lower()
+    return None
+
+
+def _inferred_mcp_authority(canonical_toolset: str) -> str:
+    """Fail-closed heuristic for a server with no declared ``authority``.
+
+    Classifies "write" if any registered tool name under this toolset
+    tokenizes to a mutating verb (see ``_MCP_WRITE_TOOL_TOKENS``), OR if
+    there is no tool metadata to inspect at all -- an MCP server the
+    registry doesn't currently know about is not something this can
+    positively clear as read-only. Only returns "read" when tools are
+    positively enumerated and none look mutating.
+    """
+    try:
+        from tools.registry import registry
+
+        tool_names = registry.get_tool_names_for_toolset(canonical_toolset)
+    except Exception:
+        tool_names = []
+    if not tool_names:
+        logger.warning(
+            "MCP toolset '%s' has no declared authority and no registered "
+            "tools to infer from; treating as write-capable (fail-closed) "
+            "for delegated-child inheritance.",
+            canonical_toolset,
+        )
+        return "write"
+    for name in tool_names:
+        tokens = set(_MCP_TOKEN_RE.findall(name.lower()))
+        if tokens & _MCP_WRITE_TOOL_TOKENS:
+            return "write"
+    logger.info(
+        "MCP toolset '%s' inferred read-only for delegated-child "
+        "inheritance (no declared authority; no mutating tool names seen).",
+        canonical_toolset,
+    )
+    return "read"
+
+
+def _mcp_toolset_authority(toolset_name: str) -> str:
+    """Return 'read' or 'write' authority for an MCP toolset/alias name."""
+    server_name = _mcp_server_name_from_toolset(toolset_name)
+    if server_name is None:
+        return "read"  # not MCP at all; irrelevant to this gate
+    declared = _declared_mcp_authority(server_name)
+    if declared is not None:
+        return declared
+    return _inferred_mcp_authority(f"mcp-{server_name}")
+
+
+def _get_writer_mcp_allowed_toolsets() -> frozenset:
+    """Operator escape hatch: ``delegation.writer_mcp_allowed_toolsets``.
+
+    A list of raw MCP server names (e.g. ``["mvms-writer"]``) the operator
+    has explicitly decided delegated children may use. This is the ONLY way
+    a child gets writer MCP by default -- a model requesting the same
+    server name via ``delegate_task(toolsets=["mvms-writer"])`` is never
+    sufficient on its own; the request must ALSO be config-allowed here.
+    """
+    cfg = _load_config()
+    raw = cfg.get("writer_mcp_allowed_toolsets")
+    if not raw:
+        return frozenset()
+    if isinstance(raw, str):
+        raw = [raw]
+    if not isinstance(raw, (list, tuple, set, frozenset)):
+        logger.warning(
+            "delegation.writer_mcp_allowed_toolsets=%r is not a list; ignoring.",
+            raw,
+        )
+        return frozenset()
+    return frozenset(str(x) for x in raw if x)
+
+
+def _strip_child_disallowed_mcp_toolsets(child_toolsets: List[str]) -> List[str]:
+    """Final authority boundary: drop writer-capable MCP toolsets a
+    delegated child isn't explicitly config-approved for.
+
+    Runs unconditionally on the result of every ``_build_child_agent``
+    toolset-construction branch (explicit toolsets, no-explicit-toolsets
+    inherit-parent-enabled, inherit-parent-derived, and DEFAULT_TOOLSETS),
+    not just the narrowed-toolset branch that calls
+    ``_preserve_parent_mcp_toolsets`` -- a caller that reaches the
+    inherit-everything branch by simply omitting ``toolsets`` must not
+    bypass this gate. Non-MCP toolsets always pass through untouched.
+    """
+    mode = _get_inherit_mcp_toolsets()
+    if mode == "false":
+        # No parent MCP at all, read or write.
+        return [t for t in child_toolsets if _mcp_server_name_from_toolset(t) is None]
+
+    allowed = _get_writer_mcp_allowed_toolsets()
+    kept: List[str] = []
+    for toolset_name in child_toolsets:
+        server_name = _mcp_server_name_from_toolset(toolset_name)
+        if server_name is None:
+            kept.append(toolset_name)  # not MCP; untouched
+            continue
+        authority = _mcp_toolset_authority(toolset_name)
+        if authority != "write":
+            kept.append(toolset_name)
+            continue
+        if server_name in allowed:
+            logger.info(
+                "Writer MCP toolset '%s' granted to delegated child via "
+                "config escape hatch delegation.writer_mcp_allowed_toolsets.",
+                toolset_name,
+            )
+            kept.append(toolset_name)
+            continue
+        if mode == "true":
+            logger.warning(
+                "delegation.inherit_mcp_toolsets='true' (legacy) is "
+                "preserving writer-capable MCP toolset '%s' for a "
+                "delegated child. This bypasses the read-only default; "
+                "prefer 'read_only' + writer_mcp_allowed_toolsets instead.",
+                toolset_name,
+            )
+            kept.append(toolset_name)
+            continue
+        logger.info(
+            "Stripping writer-capable MCP toolset '%s' from delegated child "
+            "(default read-only inheritance; not in "
+            "writer_mcp_allowed_toolsets).",
+            toolset_name,
+        )
+    return kept
 
 
 DEFAULT_MAX_ITERATIONS = 50
@@ -1124,7 +1391,7 @@ def _build_child_agent(
         # toolset names (e.g. web, terminal) are recognised during intersection.
         expanded_parent = _expand_parent_toolsets(parent_toolsets)
         child_toolsets = [t for t in toolsets if t in expanded_parent]
-        if _get_inherit_mcp_toolsets():
+        if _get_inherit_mcp_toolsets() != "false":
             child_toolsets = _preserve_parent_mcp_toolsets(
                 child_toolsets, parent_toolsets
             )
@@ -1135,6 +1402,16 @@ def _build_child_agent(
         child_toolsets = _strip_blocked_tools(sorted(parent_toolsets))
     else:
         child_toolsets = _strip_blocked_tools(DEFAULT_TOOLSETS)
+
+    # C-mcp-inherit (t_883970c1): the authority boundary. Runs on EVERY
+    # branch above -- including the no-explicit-toolsets "inherit whatever
+    # the parent has" branches -- so a model can't reach writer-capable MCP
+    # (mvms-writer, Notion write tools, ...) either by requesting it via
+    # `toolsets=[...]` or by omitting `toolsets` entirely. Only the config
+    # escape hatch (delegation.writer_mcp_allowed_toolsets) or legacy
+    # delegation.inherit_mcp_toolsets='true' lets a writer MCP server
+    # through; a model-supplied request is never sufficient on its own.
+    child_toolsets = _strip_child_disallowed_mcp_toolsets(child_toolsets)
 
     # Orchestrators retain the 'delegation' toolset that _strip_blocked_tools
     # removed.  The re-add is unconditional on parent-toolset membership because

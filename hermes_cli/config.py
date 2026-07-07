@@ -2128,12 +2128,25 @@ DEFAULT_CONFIG = {
                            # "codex_responses", or "anthropic_messages". Empty = auto-detect
                            # from URL (e.g. /anthropic suffix → anthropic_messages). Set this
                            # explicitly for non-standard endpoints the heuristic can't detect.
-        # When delegate_task narrows child toolsets explicitly, preserve any
-        # MCP toolsets the parent already has enabled. On by default so
-        # narrowing (e.g. toolsets=["web","browser"]) expresses "I want these
-        # extras" without silently stripping MCP tools the parent already has.
-        # Set to false for strict intersection.
-        "inherit_mcp_toolsets": True,
+        # Whether delegated children inherit the parent's MCP toolsets, and
+        # which authority level. One of "false" | "read_only" | "true"
+        # (legacy booleans are still accepted: True -> "true", False ->
+        # "false"). Default "read_only": children get read-only MCP servers
+        # (e.g. mvms, context7) but writer-capable ones (e.g. mvms-writer,
+        # Notion write tools) are stripped regardless of what the parent has
+        # enabled or what the child requests via delegate_task(toolsets=[...]).
+        # "true" restores the old inherit-everything behavior (logs loudly
+        # whenever it actually preserves a writer-capable server); "false"
+        # disables MCP inheritance entirely (strict intersection).
+        # See C-mcp-inherit (kanban t_883970c1) /
+        # ~/.hermes/audits/wave2-20260706/F7-mcp-inherit/SCOPING-PROPOSAL.md.
+        "inherit_mcp_toolsets": "read_only",
+        # Escape hatch for "read_only": named MCP servers (raw server name,
+        # e.g. "mvms-writer") that delegated children MAY inherit even
+        # though they're writer-capable. Operator/config-only -- a child's
+        # own `enabled_toolsets`/`toolsets` request is never sufficient by
+        # itself to grant a writer-capable MCP server. Empty by default.
+        "writer_mcp_allowed_toolsets": [],
         "max_iterations": 50,  # per-subagent iteration cap (each subagent gets its own budget,
                                # independent of the parent's max_iterations)
         # Subagent summaries return to the parent's context verbatim. A batch

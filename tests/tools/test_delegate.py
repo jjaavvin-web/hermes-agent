@@ -1884,7 +1884,17 @@ class TestChildCredentialPoolResolution(unittest.TestCase):
             self.assertEqual(mock_child._credential_pool, mock_pool)
 
     @patch("tools.delegate_tool._load_config", return_value={})
-    def test_build_child_agent_preserves_mcp_toolsets_by_default(self, mock_cfg):
+    @patch(
+        "tools.delegate_tool._load_full_delegation_config",
+        return_value={"mcp_servers": {"MiniMax": {"authority": "read"}}},
+    )
+    def test_build_child_agent_preserves_declared_read_only_mcp_by_default(
+        self, mock_full_cfg, mock_cfg
+    ):
+        """MCP toolsets with a declared read-only authority are still
+        preserved under the new default -- this item (C-mcp-inherit,
+        t_883970c1) restricts WRITE authority, not MCP inheritance as a
+        whole."""
         parent = _make_mock_parent()
         parent.enabled_toolsets = ["web", "browser", "mcp-MiniMax"]
 
@@ -1907,6 +1917,41 @@ class TestChildCredentialPoolResolution(unittest.TestCase):
             MockAgent.call_args[1]["enabled_toolsets"],
             ["web", "browser", "mcp-MiniMax"],
         )
+
+    @patch("tools.delegate_tool._load_config", return_value={})
+    @patch("tools.delegate_tool._load_full_delegation_config", return_value={})
+    def test_build_child_agent_strips_unclassified_mcp_by_default_fail_closed(
+        self, mock_full_cfg, mock_cfg
+    ):
+        """C-mcp-inherit (t_883970c1): the OLD default eagerly preserved
+        every parent MCP toolset regardless of authority -- that was the
+        vulnerability this item closes. An MCP server with no declared
+        ``authority`` and no registered tools to infer from must now be
+        treated as write-capable (fail-closed) and stripped from a
+        delegated child by default. See
+        test_build_child_agent_preserves_declared_read_only_mcp_by_default
+        for the read-only counterpart, which is still preserved."""
+        parent = _make_mock_parent()
+        parent.enabled_toolsets = ["web", "browser", "mcp-MiniMax"]
+
+        with patch("run_agent.AIAgent") as MockAgent:
+            mock_child = MagicMock()
+            MockAgent.return_value = mock_child
+
+            _build_child_agent(
+                task_index=0,
+                goal="Test narrowed toolsets",
+                context=None,
+                toolsets=["web", "browser"],
+                model=None,
+                max_iterations=10,
+                parent_agent=parent,
+                task_count=1,
+            )
+
+        got = MockAgent.call_args[1]["enabled_toolsets"]
+        self.assertNotIn("mcp-MiniMax", got)
+        self.assertEqual(sorted(got), ["browser", "web"])
 
     @patch(
         "tools.delegate_tool._load_config",

@@ -30,6 +30,48 @@ def _read(rel: str) -> str:
     return (REPO / rel).read_text(encoding="utf-8")
 
 
+def _dict_literal_value(src: str, assign_name: str, *nested_keys: str):
+    """Return the literal value at ``nested_keys`` inside a module-level
+    ``assign_name = { ... }`` dict literal, via AST (not string-matching).
+
+    Used by the C-mcp-inherit merge-invariant pin to assert the actual
+    DEFAULT_CONFIG['delegation']['inherit_mcp_toolsets'] literal value
+    resolves to ``"read_only"`` — a plain substring search for
+    ``'"inherit_mcp_toolsets": "read_only"'`` would also match a stray
+    comment/docstring mention (or a decoy), so this walks the real dict
+    literal structure instead, the same "trust the AST, not the text"
+    principle as ``_code_string_literals`` above.
+
+    Raises AssertionError with a clear message if the assignment or any key
+    in the path is missing (so a merge that renames/restructures the config
+    fails loudly rather than silently skipping the check).
+    """
+    tree = ast.parse(src)
+    node = None
+    for stmt in tree.body:
+        if isinstance(stmt, ast.Assign) and any(
+            isinstance(t, ast.Name) and t.id == assign_name for t in stmt.targets
+        ):
+            node = stmt.value
+            break
+    assert node is not None, f"module-level assignment {assign_name!r} not found"
+    assert isinstance(node, ast.Dict), f"{assign_name!r} is not a dict literal"
+
+    for key in nested_keys:
+        found = None
+        for k, v in zip(node.keys, node.values):
+            if isinstance(k, ast.Constant) and k.value == key:
+                found = v
+                break
+        assert found is not None, f"key {key!r} not found while walking {nested_keys!r}"
+        node = found
+        if key != nested_keys[-1]:
+            assert isinstance(node, ast.Dict), f"key {key!r} is not a nested dict literal"
+
+    assert isinstance(node, ast.Constant), f"final value at {nested_keys!r} is not a literal constant"
+    return node.value
+
+
 def _code_string_literals(src: str) -> set[str]:
     """Return string literals consumed by call positional/keyword arguments.
 
@@ -812,4 +854,70 @@ def test_destructive_approval_pattern_keys_stay_live_against_dangerous_patterns(
         "reviewed addition/removal of a destructive command class -- not an "
         "accidental drop that reopens permanent-persist for a class that "
         "should be downgraded."
+    )
+
+
+def test_c_mcp_inherit_writer_authority_boundary_survives_merge():
+    """C-mcp-inherit (kanban t_883970c1): the writer-capable-MCP authority
+    boundary on delegated children must survive an upstream merge.
+
+    A prompt-injected autonomous delegate lane can request writer-capable
+    MCP (mvms-writer, Notion write tools, ...) for a spawned child either by
+    naming it in ``delegate_task(toolsets=[...])`` or simply by omitting
+    ``toolsets`` (the "inherit everything the parent has" branch). Two
+    fork-local mechanisms close that off: (a) the DEFAULT_CONFIG default for
+    ``delegation.inherit_mcp_toolsets`` flipped from the old eager-inherit
+    ``True`` to the fail-closed string ``"read_only"``, and (b) an
+    unconditional authority gate (``_strip_child_disallowed_mcp_toolsets``)
+    that runs on every ``_build_child_agent`` toolset-construction branch and
+    only lets a writer-capable server through via the config-only escape
+    hatch (``delegation.writer_mcp_allowed_toolsets``) -- never via a
+    model-supplied request alone.
+
+    Per this box's PR#70 / 0.16.0 silent-revert doctrine (hermes_cli/config.py
+    and tools/delegate_tool.py are both files NousResearch upstream actively
+    edits, and the regression tests guarding this live only in tests/tools/,
+    not in a merge-invariant-checked location) -- a merge that silently
+    reverts either mechanism must turn THIS named CI check RED before merge,
+    not leave josep to infer it from a diff.
+    """
+    # (a) The DEFAULT_CONFIG literal itself, walked via AST (not a substring
+    # search) so a stray comment/docstring mention of "read_only" elsewhere
+    # in the file can't fake this check green, and a revert back to the bare
+    # boolean `True` is caught even though "True" as text could appear
+    # elsewhere in the file too.
+    config_src = _read("hermes_cli/config.py")
+    inherit_default = _dict_literal_value(
+        config_src, "DEFAULT_CONFIG", "delegation", "inherit_mcp_toolsets"
+    )
+    assert inherit_default == "read_only", (
+        "DEFAULT_CONFIG['delegation']['inherit_mcp_toolsets'] no longer "
+        f"defaults to the fail-closed 'read_only' string (got {inherit_default!r}) "
+        "-- this silently re-arms eager writer-capable MCP inheritance for "
+        "delegated children (C-mcp-inherit, t_883970c1)."
+    )
+
+    # (b) The config-only escape hatch key and the unconditional authority
+    # gate call must both survive inside _build_child_agent specifically
+    # (not merely somewhere in the file, which a refactor could satisfy with
+    # a dead/unreachable reference).
+    delegate_src = _read("tools/delegate_tool.py")
+    start = delegate_src.find("def _build_child_agent(")
+    assert start != -1, "_build_child_agent dropped from tools/delegate_tool.py"
+    end = delegate_src.find("\ndef _dump_subagent_timeout_diagnostic(", start)
+    assert end != -1, "_build_child_agent boundary changed unexpectedly"
+    block = delegate_src[start:end]
+
+    assert "writer_mcp_allowed_toolsets" in delegate_src, (
+        "the delegation.writer_mcp_allowed_toolsets config escape-hatch key "
+        "was dropped from tools/delegate_tool.py -- there would be no "
+        "config-only way left to grant writer MCP to a delegated child "
+        "(C-mcp-inherit, t_883970c1)."
+    )
+    assert "_strip_child_disallowed_mcp_toolsets(child_toolsets)" in block, (
+        "_build_child_agent no longer calls "
+        "_strip_child_disallowed_mcp_toolsets(child_toolsets) -- the "
+        "unconditional writer-MCP authority gate is no longer applied to "
+        "the derived child toolset list, silently re-opening writer-capable "
+        "MCP inheritance for delegated children (C-mcp-inherit, t_883970c1)."
     )
