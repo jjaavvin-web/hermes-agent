@@ -4265,6 +4265,24 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         except Exception:
             pass
 
+    def _write_inflight_crash_marker(self, session_key: str, source: Any = None, *, started_at: float | None = None) -> None:
+        """Best-effort exact crash marker for a claimed gateway turn."""
+        try:
+            from gateway.inflight_crash_markers import write_marker
+
+            entry = self.session_store.lookup_by_session_key(session_key)
+            write_marker(
+                session_key,
+                session_id=getattr(entry, "session_id", None),
+                started_at=started_at,
+                worktree=getattr(entry, "worktree_path", None),
+                autonomous_dispatch=getattr(entry, "autonomous_dispatch", None),
+                approval_key=getattr(entry, "approval_key", None),
+                deny_patterns=getattr(entry, "deny_patterns", None),
+            )
+        except Exception:
+            logger.debug("Failed to write in-flight crash marker for %s", session_key, exc_info=True)
+
     def _persist_active_agents(self) -> None:
         """Persist the live in-flight agent count to ``gateway_state.json``.
 
@@ -6469,7 +6487,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # sentinel) sees the slot as occupied and queues behind it
             # instead of spinning up a duplicate AIAgent (#45456).
             self._running_agents[entry.session_key] = _AGENT_PENDING_SENTINEL
-            self._running_agents_ts[entry.session_key] = time.time()
+            _started_at = time.time()
+            self._running_agents_ts[entry.session_key] = _started_at
+            self._write_inflight_crash_marker(entry.session_key, entry.origin, started_at=_started_at)
             self._persist_active_agents()
 
             # Empty-text internal event — the _is_resume_pending branch in
@@ -6827,11 +6847,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 pass
         else:
             try:
-                suspended = self.session_store.suspend_recently_active()
+                from gateway.inflight_crash_markers import load_markers
+
+                markers = load_markers()
+                suspended = self.session_store.mark_inflight_sessions_from_markers(markers)
                 if suspended:
-                    logger.info("Marked %d in-flight session(s) as resumable from previous run", suspended)
+                    logger.info("Marked %d exact in-flight session(s) as resumable from previous run", suspended)
+                elif markers:
+                    logger.warning("Found %d in-flight crash marker(s), but none matched active sessions", len(markers))
             except Exception as e:
-                logger.warning("Session suspension on startup failed: %s", e)
+                logger.warning("In-flight session crash-marker recovery failed: %s", e)
 
         # Stuck-loop detection (#7536): if a session has been active across
         # 3+ consecutive restarts, it's probably stuck in a loop (the same
@@ -9982,7 +10007,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 self._active_session_leases = {}
             self._active_session_leases[_quick_key] = _active_session_lease
         self._running_agents[_quick_key] = _AGENT_PENDING_SENTINEL
-        self._running_agents_ts[_quick_key] = time.time()
+        _started_at = time.time()
+        self._running_agents_ts[_quick_key] = _started_at
+        self._write_inflight_crash_marker(_quick_key, source, started_at=_started_at)
         self._persist_active_agents()
         _run_generation = self._begin_session_run_generation(_quick_key)
 
@@ -15800,6 +15827,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 logger.debug("Failed to release active session slot", exc_info=True)
         self._running_agents.pop(session_key, None)
         self._running_agents_ts.pop(session_key, None)
+        try:
+            from gateway.inflight_crash_markers import remove_marker
+            remove_marker(session_key)
+        except Exception:
+            logger.debug("Failed to remove in-flight crash marker for %s", session_key, exc_info=True)
         if hasattr(self, "_busy_ack_ts"):
             self._busy_ack_ts.pop(session_key, None)
         # Turn boundary: a running-agent slot was just released.  Persist the
