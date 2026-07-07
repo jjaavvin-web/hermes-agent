@@ -1846,6 +1846,12 @@ class SessionStore:
 
         return entries
 
+    def session_keys(self) -> List[str]:
+        """Return persisted session keys for crash-marker boot-time sweep."""
+        with self._lock:
+            self._ensure_loaded_locked()
+            return list(self._entries.keys())
+
     def lookup_by_session_key(self, session_key: str) -> Optional[SessionEntry]:
         """Return the active session entry for a persisted session key, if any."""
         if not session_key:

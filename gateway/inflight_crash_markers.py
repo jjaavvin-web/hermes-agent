@@ -9,14 +9,22 @@ sessions.json activity.
 from __future__ import annotations
 
 import json
+import logging
 import os
+import threading
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterable
 
 from hermes_constants import get_hermes_home
 
+logger = logging.getLogger("gateway.run")
+
 MARKER_VERSION = 1
+MARKER_MAX_AGE_SECONDS = 24 * 60 * 60
+DIR_FSYNC_MIN_INTERVAL_SECONDS = 0.25
+_DIR_FSYNC_LOCK = threading.Lock()
+_LAST_DIR_FSYNC: dict[str, float] = {}
 
 
 def markers_dir() -> Path:
@@ -31,7 +39,15 @@ def marker_path(session_key: str) -> Path:
     return markers_dir() / f"{_safe_name(session_key)}.json"
 
 
-def _fsync_directory(path: Path) -> None:
+def _fsync_directory(path: Path, *, coalesce: bool = True) -> None:
+    key = str(path)
+    if coalesce:
+        now = time.monotonic()
+        with _DIR_FSYNC_LOCK:
+            last = _LAST_DIR_FSYNC.get(key, 0.0)
+            if now - last < DIR_FSYNC_MIN_INTERVAL_SECONDS:
+                return
+            _LAST_DIR_FSYNC[key] = now
     try:
         fd = os.open(str(path), os.O_RDONLY)
     except OSError:
@@ -91,17 +107,52 @@ def remove_marker(session_key: str) -> None:
         pass
 
 
-def load_markers() -> list[dict[str, Any]]:
+def _marker_age_seconds(path: Path, data: dict[str, Any], now: float) -> float:
+    started_at = data.get("started_at")
+    if isinstance(started_at, (int, float)):
+        return max(0.0, now - float(started_at))
+    try:
+        return max(0.0, now - path.stat().st_mtime)
+    except OSError:
+        return 0.0
+
+
+def _remove_marker_path(path: Path, reason: str) -> None:
+    try:
+        path.unlink(missing_ok=True)
+        _fsync_directory(path.parent)
+    except OSError as exc:
+        logger.warning("Failed to sweep in-flight crash marker %s (%s): %s", path, reason, exc)
+
+
+def load_markers(
+    *,
+    max_age_seconds: int = MARKER_MAX_AGE_SECONDS,
+    live_session_keys: Iterable[str] | None = None,
+) -> list[dict[str, Any]]:
     root = markers_dir()
     if not root.is_dir():
         return []
+    allowed = {str(key) for key in live_session_keys} if live_session_keys is not None else None
+    now = time.time()
     markers: list[dict[str, Any]] = []
     for path in sorted(root.glob("*.json")):
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, ValueError, TypeError):
+        except (OSError, ValueError, TypeError) as exc:
+            logger.warning("Ignoring unreadable in-flight crash marker %s: %s", path, exc)
             continue
-        if isinstance(data, dict) and data.get("session_key"):
-            data["marker_path"] = str(path)
-            markers.append(data)
+        if not isinstance(data, dict) or not data.get("session_key"):
+            continue
+        session_key = str(data.get("session_key"))
+        if max_age_seconds > 0 and _marker_age_seconds(path, data, now) > max_age_seconds:
+            logger.warning("Ignoring stale in-flight crash marker %s for %s", path, session_key)
+            _remove_marker_path(path, "stale")
+            continue
+        if allowed is not None and session_key not in allowed:
+            logger.warning("Sweeping in-flight crash marker %s for missing session %s", path, session_key)
+            _remove_marker_path(path, "missing_session")
+            continue
+        data["marker_path"] = str(path)
+        markers.append(data)
     return markers
