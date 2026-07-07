@@ -30,6 +30,31 @@ _MIGRATIONS: dict[tuple[int, int], Any] = {}
 _KANBAN_COMPLETION_SUMMARY = "Codex session completed by dispatcher."
 
 
+def _fsync_directory(path: Path) -> None:
+    try:
+        fd = os.open(str(path), os.O_RDONLY)
+    except OSError:
+        return
+    try:
+        os.fsync(fd)
+    except OSError:
+        pass
+    finally:
+        os.close(fd)
+
+
+def _quarantine_state_file(path: Path, exc: BaseException) -> Path | None:
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    quarantine = path.with_name(f"{path.name}.corrupt-{stamp}")
+    try:
+        os.replace(path, quarantine)
+        _fsync_directory(path.parent)
+        return quarantine
+    except OSError as qexc:
+        log.warning("Failed to quarantine corrupt codex_sessions.json (%s): %s", exc, qexc)
+        return None
+
+
 def _clean_optional_ref(value: Any) -> str | None:
     """Normalize optional cross-system ids from slash args / ISA fields."""
     if value is None:
@@ -1050,9 +1075,20 @@ class CodexSessionDispatcher(_CommandsMixin):
                     data = json.load(fd)
                 finally:
                     fcntl.flock(fd, fcntl.LOCK_UN)
-        except (json.JSONDecodeError, OSError) as exc:
-            log.warning("codex_sessions.json unreadable, starting empty: %s", exc)
-            return {"version": CURRENT_VERSION, "sessions": {}}
+        except json.JSONDecodeError as exc:
+            quarantine = _quarantine_state_file(self._sessions_path, exc)
+            if quarantine is not None:
+                log.warning(
+                    "codex_sessions.json corrupt; quarantined to %s and starting fresh: %s",
+                    quarantine,
+                    exc,
+                )
+            else:
+                log.warning("codex_sessions.json corrupt; starting fresh without quarantine: %s", exc)
+            return {"version": CURRENT_VERSION, "sessions": {}, "quarantined_from": str(quarantine) if quarantine else None}
+        except OSError as exc:
+            log.warning("codex_sessions.json unreadable, starting empty with loud signal: %s", exc)
+            return {"version": CURRENT_VERSION, "sessions": {}, "load_error": str(exc)}
 
         version = data.get("version", 1)
         if version > CURRENT_VERSION:
@@ -1080,7 +1116,10 @@ class CodexSessionDispatcher(_CommandsMixin):
             try:
                 with open(tmp_path, "w", encoding="utf-8") as tmp_fd:
                     json.dump(state, tmp_fd, indent=2)
+                    tmp_fd.flush()
+                    os.fsync(tmp_fd.fileno())
                 os.replace(tmp_path, self._sessions_path)
+                _fsync_directory(self._sessions_path.parent)
             finally:
                 fcntl.flock(lock_fd, fcntl.LOCK_UN)
 
