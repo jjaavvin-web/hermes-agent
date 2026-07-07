@@ -31,7 +31,10 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import time
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import List, Optional
 
 from hermes_constants import get_hermes_home
@@ -48,13 +51,89 @@ def _state_path():
     return get_hermes_home() / "gateway" / "restart_loop.json"
 
 
-def _load_boots() -> List[float]:
+def _invalid_marker_path() -> Path:
+    return _state_path().with_suffix(".invalid.json")
+
+
+def _quarantine_path(path: Path) -> Path:
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    return path.with_name(f"{path.name}.corrupt-{stamp}")
+
+
+def _fsync_directory(path: Path) -> None:
     try:
-        raw = _state_path().read_text(encoding="utf-8")
+        dir_fd = os.open(str(path), os.O_RDONLY)
+    except OSError:
+        return
+    try:
+        os.fsync(dir_fd)
+    except OSError:
+        pass
+    finally:
+        os.close(dir_fd)
+
+
+def _mark_invalid(reason: str, detail: str = "") -> None:
+    marker = _invalid_marker_path()
+    payload = {
+        "status": "invalid",
+        "reason": reason,
+        "detail": detail,
+        "state_path": str(_state_path()),
+        "recorded_at": datetime.now(timezone.utc).isoformat(),
+    }
+    try:
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        tmp = marker.with_name(f".{marker.name}.{os.getpid()}.tmp")
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(payload, f, indent=2)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, marker)
+        _fsync_directory(marker.parent)
+    except OSError:
+        logger.warning("Restart-loop breaker state invalid (%s): %s", reason, detail)
+
+
+def invalid_status() -> Optional[dict]:
+    """Return the persisted invalid/quarantine marker, if present."""
+    try:
+        return json.loads(_invalid_marker_path().read_text(encoding="utf-8"))
+    except (OSError, ValueError, TypeError):
+        return None
+
+
+def _clear_invalid_marker() -> None:
+    try:
+        _invalid_marker_path().unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
+def _load_boots() -> List[float]:
+    path = _state_path()
+    try:
+        raw = path.read_text(encoding="utf-8")
         data = json.loads(raw)
         boots = data.get("boots", [])
+        _clear_invalid_marker()
         return [float(t) for t in boots if isinstance(t, (int, float))]
-    except (OSError, ValueError, TypeError):
+    except FileNotFoundError:
+        _clear_invalid_marker()
+        return []
+    except (OSError, ValueError, TypeError) as exc:
+        if path.exists():
+            quarantine = _quarantine_path(path)
+            try:
+                os.replace(path, quarantine)
+                _fsync_directory(path.parent)
+                detail = f"{type(exc).__name__}: {exc}; quarantined={quarantine}"
+            except OSError as qexc:
+                detail = f"{type(exc).__name__}: {exc}; quarantine_failed={qexc}"
+        else:
+            detail = f"{type(exc).__name__}: {exc}"
+        _mark_invalid("unreadable_state", detail)
+        logger.warning("Restart-loop breaker state invalid; failing open with quarantine marker: %s", detail)
         return []
 
 
@@ -62,9 +141,16 @@ def _save_boots(boots: List[float]) -> None:
     try:
         path = _state_path()
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps({"boots": boots}), encoding="utf-8")
-    except OSError:
-        pass
+        tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump({"boots": boots}, f)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, path)
+        _fsync_directory(path.parent)
+        _clear_invalid_marker()
+    except OSError as exc:
+        logger.warning("Restart-loop breaker state write failed: %s", exc)
 
 
 def record_restart_interrupted_boot(
