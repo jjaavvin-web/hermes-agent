@@ -13,10 +13,11 @@ import logging
 import os
 import subprocess
 import uuid
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Awaitable, Callable, Optional
+from typing import Any, Awaitable, Callable, Iterator, Optional
 
 from agent.worktree_broker import slugify_ref
 from gateway.codex_session_dispatcher_commands import _CommandsMixin
@@ -28,6 +29,67 @@ CURRENT_VERSION = 1
 # _MIGRATIONS: (from_ver, to_ver) → fn. No migrations needed at v1.
 _MIGRATIONS: dict[tuple[int, int], Any] = {}
 _KANBAN_COMPLETION_SUMMARY = "Codex session completed by dispatcher."
+
+
+def _fsync_directory(path: Path) -> None:
+    try:
+        fd = os.open(str(path), os.O_RDONLY)
+    except OSError:
+        return
+    try:
+        os.fsync(fd)
+    except OSError:
+        pass
+    finally:
+        os.close(fd)
+
+
+@contextmanager
+def locked_codex_sessions_file(path: Path, *, exclusive: bool) -> Iterator[Any]:
+    """Lock the codex_sessions.json state file with dispatcher/dashboard discipline."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    mode = "a+" if exclusive else "r"
+    with open(path, mode, encoding="utf-8") as fd:
+        fcntl.flock(fd, fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH)
+        try:
+            fd.seek(0)
+            yield fd
+        finally:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+
+
+def load_locked_json(path: Path) -> Any:
+    with locked_codex_sessions_file(path, exclusive=False) as fd:
+        return json.load(fd)
+
+
+def write_locked_json(path: Path, payload: Any, *, indent: int | None = 2) -> None:
+    tmp_path = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    with locked_codex_sessions_file(path, exclusive=True):
+        try:
+            with open(tmp_path, "w", encoding="utf-8") as tmp_fd:
+                json.dump(payload, tmp_fd, indent=indent)
+                tmp_fd.flush()
+                os.fsync(tmp_fd.fileno())
+            os.replace(tmp_path, path)
+            _fsync_directory(path.parent)
+        finally:
+            try:
+                tmp_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+
+
+def _quarantine_state_file(path: Path, exc: BaseException) -> Path | None:
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    quarantine = path.with_name(f"{path.name}.corrupt-{stamp}")
+    try:
+        os.replace(path, quarantine)
+        _fsync_directory(path.parent)
+        return quarantine
+    except OSError as qexc:
+        log.warning("Failed to quarantine corrupt codex_sessions.json (%s): %s", exc, qexc)
+        return None
 
 
 def _clean_optional_ref(value: Any) -> str | None:
@@ -1044,14 +1106,21 @@ class CodexSessionDispatcher(_CommandsMixin):
         if not self._sessions_path.exists():
             return {"version": CURRENT_VERSION, "sessions": {}}
         try:
-            with open(self._sessions_path, "r", encoding="utf-8") as fd:
-                fcntl.flock(fd, fcntl.LOCK_SH)
-                try:
-                    data = json.load(fd)
-                finally:
-                    fcntl.flock(fd, fcntl.LOCK_UN)
-        except (json.JSONDecodeError, OSError) as exc:
-            log.warning("codex_sessions.json unreadable, starting empty: %s", exc)
+            data = load_locked_json(self._sessions_path)
+        except json.JSONDecodeError as exc:
+            quarantine = _quarantine_state_file(self._sessions_path, exc)
+            data = {"version": CURRENT_VERSION, "sessions": {}}
+            if quarantine is not None:
+                log.warning(
+                    "codex_sessions.json corrupt; quarantined to %s and starting fresh: %s",
+                    quarantine,
+                    exc,
+                )
+            else:
+                log.warning("codex_sessions.json corrupt; starting fresh without quarantine: %s", exc)
+            return data
+        except OSError as exc:
+            log.warning("codex_sessions.json unreadable, starting empty with loud signal: %s", exc)
             return {"version": CURRENT_VERSION, "sessions": {}}
 
         version = data.get("version", 1)
@@ -1072,17 +1141,7 @@ class CodexSessionDispatcher(_CommandsMixin):
 
     def _write_state(self, state: dict) -> None:
         """Write codex_sessions.json with exclusive lock + atomic rename (spec §5)."""
-        self._sessions_path.parent.mkdir(parents=True, exist_ok=True)
-        tmp_path = self._sessions_path.with_suffix(".json.tmp")
-
-        with open(self._sessions_path, "a+", encoding="utf-8") as lock_fd:
-            fcntl.flock(lock_fd, fcntl.LOCK_EX)
-            try:
-                with open(tmp_path, "w", encoding="utf-8") as tmp_fd:
-                    json.dump(state, tmp_fd, indent=2)
-                os.replace(tmp_path, self._sessions_path)
-            finally:
-                fcntl.flock(lock_fd, fcntl.LOCK_UN)
+        write_locked_json(self._sessions_path, state, indent=2)
 
     # ── tmux helpers ──────────────────────────────────────────────────────────
 

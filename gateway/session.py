@@ -1656,23 +1656,42 @@ class SessionStore:
             )
         return len(removed_keys)
 
+    def mark_inflight_sessions_from_markers(self, markers: List[Dict[str, Any]]) -> int:
+        """Mark only sessions named by durable in-flight crash markers.
+
+        Unclean boot recovery should be exact: a recent-but-completed routing
+        entry is not enough evidence that a gateway turn was in progress.
+        Each marker is written at turn claim and removed at release.
+        """
+        count = 0
+        wanted = {str(m.get("session_key") or ""): m for m in markers if m.get("session_key")}
+        if not wanted:
+            return 0
+        with self._lock:
+            self._ensure_loaded_locked()
+            for key, marker in wanted.items():
+                entry = self._entries.get(key)
+                if entry is None or entry.resume_pending or entry.suspended:
+                    continue
+                marker_session_id = marker.get("session_id")
+                if marker_session_id and marker_session_id != entry.session_id:
+                    continue
+                entry.resume_pending = True
+                entry.resume_reason = "restart_interrupted"
+                entry.last_resume_marked_at = _now()
+                count += 1
+            if count:
+                self._save()
+        return count
+
     def suspend_recently_active(self, max_age_seconds: int = 120) -> int:
-        """Mark recently-active sessions as resumable after an unexpected exit.
+        """Compatibility fallback for manual/user-triggered recovery only.
 
-        Called on gateway startup after a crash or fast restart to preserve
-        in-flight sessions instead of destroying their conversation history
-        (#7536).  Only marks sessions updated within *max_age_seconds* to
-        avoid touching long-idle sessions.  Sets ``resume_pending=True`` so
-        the next incoming message on the same session_key auto-resumes from
-        the existing transcript.
-
-        Entries already flagged ``resume_pending=True`` are skipped.  Entries
-        explicitly ``suspended=True`` (from /stop or stuck-loop escalation)
-        are also skipped.  Terminal escalation for genuinely stuck sessions
-        is still handled by the existing ``.restart_failure_counts`` counter
-        (threshold 3), which runs after this method and sets ``suspended=True``.
-
-        Returns the number of sessions marked resumable.
+        Boot-time unclean-crash recovery now uses exact in-flight markers via
+        ``mark_inflight_sessions_from_markers``.  This recent-session heuristic
+        remains available to callers that deliberately want the older broad
+        behavior, but gateway startup no longer treats recency as proof of an
+        in-flight turn.
         """
         from datetime import timedelta
 
@@ -1826,6 +1845,20 @@ class SessionStore:
         entries.sort(key=lambda e: e.updated_at, reverse=True)
 
         return entries
+
+    def session_keys(self) -> List[str]:
+        """Return persisted session keys for crash-marker boot-time sweep."""
+        with self._lock:
+            self._ensure_loaded_locked()
+            return list(self._entries.keys())
+
+    def lookup_by_session_key(self, session_key: str) -> Optional[SessionEntry]:
+        """Return the active session entry for a persisted session key, if any."""
+        if not session_key:
+            return None
+        with self._lock:
+            self._ensure_loaded_locked()
+            return self._entries.get(session_key)
 
     def lookup_by_session_id(self, session_id: str) -> Optional[SessionEntry]:
         """Return the active session entry for a persisted session ID, if any."""

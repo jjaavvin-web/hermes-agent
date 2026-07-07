@@ -44,6 +44,7 @@ from agent.peer_review import (
     _DEFAULT_POOL_SIZE,
 )
 from agent.worktree_broker import WorktreeBroker
+from gateway.codex_session_dispatcher import load_locked_json, write_locked_json
 
 log = logging.getLogger(__name__)
 
@@ -84,7 +85,8 @@ def _load_json(path: Path) -> dict:
     if not path.exists():
         return {}
     try:
-        return json.loads(path.read_text(encoding="utf-8"))
+        data = load_locked_json(path)
+        return data if isinstance(data, dict) else {}
     except (json.JSONDecodeError, OSError):
         return {}
 
@@ -195,10 +197,7 @@ def _find_thread_for_sid(sid: str) -> tuple[Optional[str], Optional[dict]]:
 
 
 def _persist_sessions(state: dict) -> None:
-    _SESSIONS_PATH.parent.mkdir(parents=True, exist_ok=True)
-    tmp = _SESSIONS_PATH.with_suffix(".json.tmp")
-    tmp.write_text(json.dumps(state, indent=2), encoding="utf-8")
-    tmp.replace(_SESSIONS_PATH)
+    write_locked_json(_SESSIONS_PATH, state, indent=2)
     _invalidate_snapshot()
 
 
