@@ -4265,23 +4265,49 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         except Exception:
             pass
 
+    def _submit_inflight_marker_io(self, action: Callable[[], Any], description: str, session_key: str) -> None:
+        """Run advisory crash-marker filesystem I/O off the event loop."""
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            try:
+                action()
+            except Exception:
+                logger.warning("Failed to %s in-flight crash marker for %s", description, session_key, exc_info=True)
+            return
+
+        def _run_action() -> None:
+            try:
+                action()
+            except Exception:
+                logger.warning("Failed to %s in-flight crash marker for %s", description, session_key, exc_info=True)
+
+        try:
+            loop.run_in_executor(None, _run_action)
+        except Exception:
+            logger.warning("Failed to schedule %s in-flight crash marker for %s", description, session_key, exc_info=True)
+
     def _write_inflight_crash_marker(self, session_key: str, source: Any = None, *, started_at: float | None = None) -> None:
         """Best-effort exact crash marker for a claimed gateway turn."""
         try:
             from gateway.inflight_crash_markers import write_marker
 
             entry = self.session_store.lookup_by_session_key(session_key)
-            write_marker(
+            kwargs = {
+                "session_id": getattr(entry, "session_id", None),
+                "started_at": started_at,
+                "worktree": getattr(entry, "worktree_path", None),
+                "autonomous_dispatch": getattr(entry, "autonomous_dispatch", None),
+                "approval_key": getattr(entry, "approval_key", None),
+                "deny_patterns": getattr(entry, "deny_patterns", None),
+            }
+            self._submit_inflight_marker_io(
+                lambda: write_marker(session_key, **kwargs),
+                "write",
                 session_key,
-                session_id=getattr(entry, "session_id", None),
-                started_at=started_at,
-                worktree=getattr(entry, "worktree_path", None),
-                autonomous_dispatch=getattr(entry, "autonomous_dispatch", None),
-                approval_key=getattr(entry, "approval_key", None),
-                deny_patterns=getattr(entry, "deny_patterns", None),
             )
         except Exception:
-            logger.debug("Failed to write in-flight crash marker for %s", session_key, exc_info=True)
+            logger.warning("Failed to prepare in-flight crash marker write for %s", session_key, exc_info=True)
 
     def _persist_active_agents(self) -> None:
         """Persist the live in-flight agent count to ``gateway_state.json``.
@@ -15852,9 +15878,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         self._running_agents_ts.pop(session_key, None)
         try:
             from gateway.inflight_crash_markers import remove_marker
-            remove_marker(session_key)
+            self._submit_inflight_marker_io(lambda: remove_marker(session_key), "remove", session_key)
         except Exception:
-            logger.debug("Failed to remove in-flight crash marker for %s", session_key, exc_info=True)
+            logger.warning("Failed to prepare in-flight crash marker removal for %s", session_key, exc_info=True)
         if hasattr(self, "_busy_ack_ts"):
             self._busy_ack_ts.pop(session_key, None)
         # Turn boundary: a running-agent slot was just released.  Persist the
