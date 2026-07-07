@@ -410,6 +410,7 @@ def _build_runtime_status_record() -> dict[str, Any]:
         "restart_requested": False,
         "active_agents": 0,
         "platforms": {},
+        "retained_dirty_deliveries": {"count": 0, "paths": [], "items": []},
         "updated_at": _utc_now_iso(),
     })
     return payload
@@ -778,6 +779,12 @@ def write_runtime_status(
         # for a single-profile gateway. Lets `hermes status` show per-profile
         # coverage without a second probe.
         payload["served_profiles"] = list(served_profiles or [])
+
+    try:
+        from gateway.delivery_retention import scan_retained_dirty_deliveries
+        payload["retained_dirty_deliveries"] = scan_retained_dirty_deliveries()
+    except Exception:
+        payload.setdefault("retained_dirty_deliveries", {"count": 0, "paths": [], "items": []})
 
     if platform is not _UNSET:
         platform_payload = payload["platforms"].get(platform, {})
