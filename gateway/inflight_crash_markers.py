@@ -109,7 +109,11 @@ def remove_marker(session_key: str) -> None:
 
 def _marker_age_seconds(path: Path, data: dict[str, Any], now: float) -> float:
     started_at = data.get("started_at")
-    if isinstance(started_at, (int, float)):
+    # started_at is expected to be a UNIX epoch timestamp from time.time().  Very
+    # small synthetic/legacy values are not useful for age bounding; use mtime so
+    # old tests/fixtures and pre-bound markers are not swept solely because they
+    # used monotonic-style placeholders.
+    if isinstance(started_at, (int, float)) and float(started_at) > 946684800:
         return max(0.0, now - float(started_at))
     try:
         return max(0.0, now - path.stat().st_mtime)
