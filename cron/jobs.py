@@ -79,6 +79,8 @@ TICKER_SUCCESS_FILE = CRON_DIR / "ticker_last_success"
 # drift apart.
 TICKER_INTERVAL_SECONDS = 60
 
+CRON_FIRE_LEDGER_FILE = CRON_DIR / "fire_ledger.jsonl"
+
 # In-process lock protecting load_jobs→modify→save_jobs cycles.
 # Required when tick() runs jobs in parallel threads — without this,
 # concurrent mark_job_run / advance_next_run calls can clobber each other.
@@ -565,6 +567,95 @@ def compute_next_run(schedule: Dict[str, Any], last_run_at: Optional[str] = None
 # =============================================================================
 # Ticker heartbeat (liveness signal for `hermes cron status`)
 # =============================================================================
+
+def _append_fire_ledger(row: Dict[str, Any]) -> None:
+    """Append one durable per-fire ledger row for recurring cron fires."""
+    ensure_dirs()
+    payload = dict(row)
+    payload.setdefault("recorded_at", _hermes_now().isoformat())
+    with open(CRON_FIRE_LEDGER_FILE, "a", encoding="utf-8") as f:
+        f.write(json.dumps(payload, sort_keys=True) + "\n")
+        f.flush()
+        os.fsync(f.fileno())
+
+
+def record_recurring_fire_claim(job: Dict[str, Any], *, scheduled_for: str | None = None) -> str | None:
+    """Record a recurring fire immediately before schedule advancement.
+
+    Returns the fire_id to pass to ``mark_recurring_fire_complete``.  Best
+    effort to callers, but the append itself is fsynced when it succeeds.
+    """
+    schedule = job.get("schedule", {})
+    if not isinstance(schedule, dict) or schedule.get("kind") not in {"cron", "interval"}:
+        return None
+    fire_id = f"{job.get('id')}:{scheduled_for or job.get('next_run_at') or _hermes_now().isoformat()}"
+    try:
+        _append_fire_ledger({
+            "fire_id": fire_id,
+            "job_id": job.get("id"),
+            "job_name": job.get("name"),
+            "scheduled_for": scheduled_for or job.get("next_run_at"),
+            "status": "claimed",
+            "claimed_at": _hermes_now().isoformat(),
+        })
+    except Exception as exc:
+        logger.warning("Failed to record recurring cron fire claim for %s: %s", job.get("id"), exc)
+    return fire_id
+
+
+def mark_recurring_fire_complete(fire_id: str | None, job_id: str, *, success: bool) -> None:
+    if not fire_id:
+        return
+    try:
+        _append_fire_ledger({
+            "fire_id": fire_id,
+            "job_id": job_id,
+            "status": "completed" if success else "error",
+            "completed_at": _hermes_now().isoformat(),
+        })
+    except Exception as exc:
+        logger.warning("Failed to record recurring cron fire completion for %s: %s", job_id, exc)
+
+
+def incomplete_recurring_fires() -> List[Dict[str, Any]]:
+    """Return ledger claims without a matching completion row."""
+    if not CRON_FIRE_LEDGER_FILE.exists():
+        return []
+    claims: Dict[str, Dict[str, Any]] = {}
+    completed: set[str] = set()
+    try:
+        with open(CRON_FIRE_LEDGER_FILE, "r", encoding="utf-8") as f:
+            for line in f:
+                if not line.strip():
+                    continue
+                try:
+                    row = json.loads(line)
+                except ValueError:
+                    continue
+                fire_id = row.get("fire_id")
+                if not fire_id:
+                    continue
+                if row.get("status") == "claimed":
+                    claims[fire_id] = row
+                elif row.get("status") in {"completed", "error"}:
+                    completed.add(fire_id)
+    except OSError:
+        return []
+    return [row for fid, row in claims.items() if fid not in completed]
+
+
+def reconcile_incomplete_recurring_fires() -> List[Dict[str, Any]]:
+    """Surface advance→execute crash gaps as incomplete ledger rows."""
+    incomplete = incomplete_recurring_fires()
+    for row in incomplete:
+        logger.warning(
+            "Recurring cron fire incomplete after schedule advance: job=%s fire_id=%s scheduled_for=%s",
+            row.get("job_id"),
+            row.get("fire_id"),
+            row.get("scheduled_for"),
+        )
+    return incomplete
+
 
 def _atomic_write_epoch(path: Path) -> None:
     """Atomically write the current epoch time to ``path``.

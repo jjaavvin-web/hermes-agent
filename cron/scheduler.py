@@ -237,7 +237,16 @@ _LEGACY_HOME_TARGET_ENV_VARS = {
     "QQBOT_HOME_CHANNEL": "QQ_HOME_CHANNEL",
 }
 
-from cron.jobs import get_due_jobs, mark_job_run, save_job_output, advance_next_run, claim_dispatch
+from cron.jobs import (
+    advance_next_run,
+    claim_dispatch,
+    get_due_jobs,
+    mark_job_run,
+    mark_recurring_fire_complete,
+    reconcile_incomplete_recurring_fires,
+    record_recurring_fire_claim,
+    save_job_output,
+)
 
 # Sentinel: when a cron agent has nothing new to report, it can start its
 # response with this marker to suppress delivery.  Output is still saved
@@ -3252,6 +3261,7 @@ def tick(verbose: bool = True, adapters=None, loop=None, sync: bool = True) -> i
         return 0
 
     try:
+        reconcile_incomplete_recurring_fires()
         due_jobs = get_due_jobs()
 
         if verbose and not due_jobs:
@@ -3266,7 +3276,9 @@ def tick(verbose: bool = True, adapters=None, loop=None, sync: bool = True) -> i
         # For parallel jobs that are already running, advance_next_run keeps
         # bumping next_run_at forward so the grace window never expires.
         # mark_job_run() overwrites next_run_at on completion.
+        fire_ids: dict[str, str | None] = {}
         for job in due_jobs:
+            fire_ids[job["id"]] = record_recurring_fire_claim(job, scheduled_for=job.get("next_run_at"))
             advance_next_run(job["id"])
 
         # Resolve max parallel workers: env var > config.yaml > unbounded.
@@ -3301,7 +3313,9 @@ def tick(verbose: bool = True, adapters=None, loop=None, sync: bool = True) -> i
             module-level ``run_one_job`` so ``tick`` and external providers
             (Chronos ``fire_due``) use the identical execute→save→deliver→mark
             body."""
-            return run_one_job(job, adapters=adapters, loop=loop, verbose=verbose)
+            result = run_one_job(job, adapters=adapters, loop=loop, verbose=verbose)
+            mark_recurring_fire_complete(fire_ids.get(job["id"]), job["id"], success=bool(result))
+            return result
 
         # Partition due jobs: those with a per-job workdir mutate
         # os.environ["TERMINAL_CWD"] inside run_job, which is process-global, so
