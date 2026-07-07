@@ -161,7 +161,7 @@ class TestCleanShutdownMarker:
         assert not marker.exists(), "Marker should be cleaned up"
 
     def test_no_marker_triggers_suspension(self, tmp_path, monkeypatch):
-        """Without .clean_shutdown marker (crash), suspension should fire."""
+        """Simulation of legacy no-marker crash fallback: recent sessions become resume_pending."""
         monkeypatch.setattr("gateway.run._hermes_home", tmp_path)
 
         marker = tmp_path / ".clean_shutdown"

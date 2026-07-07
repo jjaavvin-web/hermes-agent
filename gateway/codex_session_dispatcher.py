@@ -1109,6 +1109,7 @@ class CodexSessionDispatcher(_CommandsMixin):
             data = load_locked_json(self._sessions_path)
         except json.JSONDecodeError as exc:
             quarantine = _quarantine_state_file(self._sessions_path, exc)
+            data = {"version": CURRENT_VERSION, "sessions": {}}
             if quarantine is not None:
                 log.warning(
                     "codex_sessions.json corrupt; quarantined to %s and starting fresh: %s",
@@ -1117,10 +1118,10 @@ class CodexSessionDispatcher(_CommandsMixin):
                 )
             else:
                 log.warning("codex_sessions.json corrupt; starting fresh without quarantine: %s", exc)
-            return {"version": CURRENT_VERSION, "sessions": {}, "quarantined_from": str(quarantine) if quarantine else None}
+            return data
         except OSError as exc:
             log.warning("codex_sessions.json unreadable, starting empty with loud signal: %s", exc)
-            return {"version": CURRENT_VERSION, "sessions": {}, "load_error": str(exc)}
+            return {"version": CURRENT_VERSION, "sessions": {}}
 
         version = data.get("version", 1)
         if version > CURRENT_VERSION:

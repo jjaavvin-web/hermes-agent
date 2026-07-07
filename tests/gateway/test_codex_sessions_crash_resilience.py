@@ -11,7 +11,8 @@ def test_corrupt_codex_sessions_json_is_quarantined_not_silently_emptied(tmp_pat
     state = dispatcher._load_state()
 
     assert state["sessions"] == {}
-    assert state.get("quarantined_from")
+    assert "quarantined_from" not in state
+    assert "load_error" not in state
     assert not sessions_path.exists()
     quarantined = list(tmp_path.glob("codex_sessions.json.corrupt-*"))
     assert len(quarantined) == 1
