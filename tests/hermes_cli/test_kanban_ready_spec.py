@@ -15,12 +15,16 @@ same ``spawn_fn`` stub pattern.
 
 from __future__ import annotations
 
+import argparse
+import json
 import textwrap
 from pathlib import Path
 
 import pytest
 
+from hermes_cli import kanban as kb_cli
 from hermes_cli import kanban_db as kb
+from hermes_cli import profiles as hprofiles
 
 
 # ---------------------------------------------------------------------------
@@ -427,3 +431,130 @@ def test_dispatch_result_has_skipped_ready_spec_field():
     """DispatchResult exposes skipped_ready_spec as an empty list by default."""
     result = kb.DispatchResult()
     assert result.skipped_ready_spec == []
+
+
+# ===========================================================================
+# Verifier-declared repair coverage — REAL profiles.profile_exists resolver
+# (deliberately NOT the `spawnable` fixture, which stubs profile_exists=True
+# and would hide the bug this repair fixes: a silently-defaulted verifier
+# must NOT be resolved against the real, near-empty profile store).
+# ===========================================================================
+
+
+def _verifier_policy(tmp_path, monkeypatch):
+    """Point hermes_cli.profiles at a tmp profiles ROOT containing only a
+    ``default/`` profile (no ``h2reviewer/``) and return a board_policy dict
+    wired to the REAL ``profile_exists`` resolver."""
+    hermes_home = tmp_path / "verifier-repair-home"
+    (hermes_home / "profiles" / "default").mkdir(parents=True)
+    monkeypatch.setattr(hprofiles, "_get_default_hermes_home", lambda: hermes_home)
+    return {"verifier_resolver": hprofiles.profile_exists}
+
+
+def _verifier_card(body, tid="t_verifier_repair"):
+    return {"id": tid, "board": "hermes", "body": body}
+
+
+def test_defaulted_verifier_ok_against_real_profile_exists(tmp_path, monkeypatch):
+    """A well-formed card that declares only `scope` (no `verifier` key) must
+    validate ok=True against the REAL profile_exists resolver, even though the
+    default verifier id ('h2reviewer') has no profile on disk."""
+    from hermes_cli.ready_spec import validate_ready_spec
+
+    policy = _verifier_policy(tmp_path, monkeypatch)
+    body = textwrap.dedent("""\
+        ```ready-spec
+        scope: defaulted verifier must get its contractual free pass
+        allowed_workspace: scratch
+        ```
+    """)
+    r = validate_ready_spec(_verifier_card(body), resolved_workspace="scratch", board_policy=policy)
+    assert r.ok is True, f"expected ok=True for defaulted verifier; got errors={r.errors}"
+
+
+def test_explicit_h2reviewer_still_unresolved_against_real_profile_exists(tmp_path, monkeypatch):
+    """An EXPLICITLY declared `verifier: h2reviewer` must still fail
+    verifier_unresolved — the profile genuinely doesn't exist. The fix only
+    changes WHEN resolution runs, not what it returns when it does."""
+    from hermes_cli.ready_spec import validate_ready_spec
+
+    policy = _verifier_policy(tmp_path, monkeypatch)
+    body = textwrap.dedent("""\
+        ```ready-spec
+        scope: explicit h2reviewer must still resolve for real
+        allowed_workspace: scratch
+        verifier: h2reviewer
+        ```
+    """)
+    r = validate_ready_spec(_verifier_card(body), resolved_workspace="scratch", board_policy=policy)
+    assert r.ok is False and "verifier_unresolved" in r.codes, (
+        f"expected verifier_unresolved for explicit h2reviewer; got ok={r.ok} codes={r.codes}"
+    )
+
+
+def test_explicit_unknown_verifier_unresolved_against_real_profile_exists(tmp_path, monkeypatch):
+    """An EXPLICITLY declared unknown verifier must still fail verifier_unresolved."""
+    from hermes_cli.ready_spec import validate_ready_spec
+
+    policy = _verifier_policy(tmp_path, monkeypatch)
+    body = textwrap.dedent("""\
+        ```ready-spec
+        scope: explicit unknown verifier must still fail closed
+        allowed_workspace: scratch
+        verifier: not_a_real_profile
+        ```
+    """)
+    r = validate_ready_spec(_verifier_card(body), resolved_workspace="scratch", board_policy=policy)
+    assert r.ok is False and "verifier_unresolved" in r.codes, (
+        f"expected verifier_unresolved for explicit unknown verifier; got ok={r.ok} codes={r.codes}"
+    )
+
+
+# ===========================================================================
+# `hermes kanban lint-ready` CLI path — _cmd_lint_ready direct invocation.
+# Confirms the repair reaches end users through the real CLI wiring
+# (kb._ready_spec_board_policy -> hermes_cli.profiles.profile_exists), not
+# just the pure validator.
+# ===========================================================================
+
+
+def _lint_ready_ns(task="all", as_json=True):
+    return argparse.Namespace(task=task, json=as_json)
+
+
+def test_lint_ready_cli_reports_pass_for_defaulted_verifier_card(kanban_home, monkeypatch, capsys):
+    """A ready-column card that declares `scope` but NO `verifier` must report
+    status 'pass' through the real `hermes kanban lint-ready` CLI path — the
+    board's own profiles store (a fresh tmp HERMES_HOME) has no h2reviewer/
+    profile, so this fails BEFORE the fix and passes AFTER it. Deliberately
+    does NOT use the `spawnable` fixture (that stubs profile_exists=True on
+    the assignee-resolution path, which would mask the verifier bug)."""
+    body = textwrap.dedent("""\
+        Card — well-formed, no verifier declared.
+
+        ```ready-spec
+        scope: prove lint-ready reports pass for a defaulted verifier
+        allowed_workspace: scratch
+        evidence_path: ~/.hermes/audits/hermes/t_lint_defaulted/
+        ```
+    """)
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn,
+            title="card-defaulted-verifier",
+            body=body,
+            assignee="alice",
+            workspace_kind="scratch",
+        )
+
+    rc = kb_cli._cmd_lint_ready(_lint_ready_ns(task=tid, as_json=True))
+    out = capsys.readouterr().out
+    payload = json.loads(out)
+
+    assert rc == 0, f"lint-ready must exit 0 for a passing card; got rc={rc}, out={out!r}"
+    assert len(payload) == 1
+    assert payload[0]["task_id"] == tid
+    assert payload[0]["status"] == "pass", (
+        f"expected status 'pass' for defaulted-verifier card; got {payload[0]!r}"
+    )
+    assert payload[0]["errors"] == []

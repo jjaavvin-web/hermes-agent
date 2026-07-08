@@ -206,13 +206,14 @@ def _validate_ready_spec_inner(task: dict, *, resolved_workspace: Optional[str] 
     # 5) verifier — default = reviewer profile; must resolve against REAL profiles.
     #    Accepts either a set (known_profiles, pure) or a callable (verifier_resolver,
     #    e.g. profiles.profile_exists) so dispatch checks live profiles, not a fake set.
+    verifier_declared = "verifier" in spec
     verifier = spec.get("verifier", policy.get("default_verifier", "h2reviewer"))
     resolved["verifier"] = verifier
     resolver = policy.get("verifier_resolver")
     known = policy.get("known_profiles")
     if not (isinstance(verifier, str) and verifier.strip()):
         err("verifier_empty", "verifier must be a non-empty profile/skill id")
-    elif resolver is not None:
+    elif verifier_declared and resolver is not None:
         # FAIL CLOSED: a resolver crash (e.g. DB locked) means we cannot CONFIRM the
         # verifier — the trust compiler must then refuse, not silently pass.
         try:
@@ -221,7 +222,7 @@ def _validate_ready_spec_inner(task: dict, *, resolved_workspace: Optional[str] 
             resolved_ok = False
         if not resolved_ok:
             err("verifier_unresolved", f"verifier {verifier!r} could not be resolved")
-    elif known is not None and verifier not in known:
+    elif verifier_declared and known is not None and verifier not in known:
         err("verifier_unresolved", f"verifier {verifier!r} does not resolve to a known profile")
 
     resolved["has_ready_spec_block"] = raw is not None
