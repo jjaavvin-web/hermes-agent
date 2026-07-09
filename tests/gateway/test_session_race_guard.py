@@ -402,6 +402,42 @@ async def test_active_session_bypass_commands_dispatch_without_interrupt(
     assert session_key not in runner.adapters[Platform.TELEGRAM]._pending_messages
 
 
+@pytest.mark.asyncio
+async def test_sol_dispatches_to_deterministic_handler_without_agent_fallthrough():
+    """Registered /sol must reach its handler instead of becoming an LLM turn."""
+    runner = _make_runner()
+    event = _make_event(text='/sol "Smoke" --body "Body"')
+    runner._handle_sol_command = AsyncMock(return_value="Created t_smoke")
+
+    with patch.object(
+        GatewayRunner,
+        "_handle_message_with_agent",
+        AsyncMock(side_effect=AssertionError("/sol fell through to agent")),
+    ):
+        result = await runner._handle_message(event)
+
+    assert result == "Created t_smoke"
+    runner._handle_sol_command.assert_awaited_once_with(event)
+
+
+@pytest.mark.asyncio
+async def test_sol_dispatches_while_agent_is_running_without_interrupt():
+    """Explicit /sol intake must remain deterministic during an active turn."""
+    runner = _make_runner()
+    event = _make_event(text='/sol "Smoke" --body "Body"')
+    session_key = build_session_key(event.source)
+    fake_agent = MagicMock()
+    fake_agent.get_activity_summary.return_value = {"seconds_since_activity": 0}
+    runner._running_agents[session_key] = fake_agent
+    runner._handle_sol_command = AsyncMock(return_value="Created t_smoke")
+
+    result = await runner._handle_message(event)
+
+    assert result == "Created t_smoke"
+    runner._handle_sol_command.assert_awaited_once_with(event)
+    fake_agent.interrupt.assert_not_called()
+
+
 # ------------------------------------------------------------------
 # Test 6: /stop during sentinel force-cleans and unlocks session
 # ------------------------------------------------------------------

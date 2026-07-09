@@ -9273,13 +9273,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if _cmd_def_inner and _cmd_def_inner.name == "background":
                 return await self._handle_background_command(event)
 
-            # /kanban must bypass the guard. It writes to a profile-agnostic
+            # /kanban and /sol intake must bypass the guard. They write to a profile-agnostic
             # DB (kanban.db), not to the running agent's state. In fact
             # /kanban unblock is often the only way to free a worker that
             # has blocked waiting for a peer — letting that be dispatched
             # mid-run is the whole point of the board.
             if _cmd_def_inner and _cmd_def_inner.name == "kanban":
                 return await self._handle_kanban_command(event)
+            if _cmd_def_inner and _cmd_def_inner.name == "sol":
+                return await self._handle_sol_command(event)
 
             # /goal is safe mid-run for status/pause/clear/wait (inspection
             # and control-plane only — doesn't interrupt the running turn).
@@ -9674,6 +9676,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         if canonical == "kanban":
             return await self._handle_kanban_command(event)
+
+        if canonical == "sol":
+            return await self._handle_sol_command(event)
 
         if canonical == "project":
             return await self._handle_project_command(event)
