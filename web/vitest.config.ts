@@ -7,6 +7,7 @@ export default defineConfig({
   resolve: {
     alias: {
       "@": path.resolve(__dirname, "./src"),
+      "@hermes/shared": path.resolve(__dirname, "../apps/shared/src"),
     },
   },
   test: {

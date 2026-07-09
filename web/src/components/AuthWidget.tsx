@@ -47,6 +47,18 @@ export function AuthWidget({ className }: AuthWidgetProps) {
 
   useEffect(() => {
     let cancelled = false;
+
+    // The server injects this flag into every SPA document. In loopback
+    // session-token mode there is no cookie-backed identity, so /api/auth/me
+    // intentionally returns 401. Do not issue a request that can only create
+    // route-wide console/network noise; the widget is gated-mode UI only.
+    if (!window.__HERMES_AUTH_REQUIRED__) {
+      setHidden(true);
+      return () => {
+        cancelled = true;
+      };
+    }
+
     api
       .getAuthMe()
       .then((data) => {
