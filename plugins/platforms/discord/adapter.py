@@ -4797,11 +4797,14 @@ class DiscordAdapter(BasePlatformAdapter):
         msg_type = MessageType.COMMAND if text.startswith("/") else MessageType.TEXT
         channel_id = str(interaction.channel_id)
         parent_id = str(getattr(getattr(interaction, "channel", None), "parent_id", "") or "")
+        interaction_id = str(getattr(interaction, "id", "") or "") or None
         return MessageEvent(
             text=text,
             message_type=msg_type,
             source=source,
             raw_message=interaction,
+            message_id=interaction_id,
+            delivery_id=interaction_id,
             channel_prompt=self._resolve_channel_prompt(channel_id, parent_id or None),
         )
 
@@ -6511,6 +6514,7 @@ class DiscordAdapter(BasePlatformAdapter):
             source=source,
             raw_message=message,
             message_id=str(message.id),
+            delivery_id=str(message.id),
             media_urls=media_urls,
             media_types=media_types,
             reply_to_message_id=reply_to_id,

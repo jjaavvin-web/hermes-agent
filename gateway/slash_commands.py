@@ -53,6 +53,92 @@ logger = logging.getLogger("gateway.run")
 # past this the reset proceeds and the cleanup is left to finish (or leak) in
 # its worker thread. (#35994)
 _RESET_CLEANUP_TIMEOUT_S = 30.0
+_SOL_INTAKE_BOARD = "sol"
+_PROVENANCE_MAX_CHARS = 160
+
+
+def _clean_provenance_value(value: Any) -> Optional[str]:
+    if value is None:
+        return None
+    text = str(value)
+    text = "".join(ch for ch in text if ch.isprintable()).strip()
+    if not text:
+        return None
+    return text[:_PROVENANCE_MAX_CHARS]
+
+
+def _source_platform_name(source: SessionSource) -> str:
+    platform = getattr(source, "platform", None)
+    return (platform.value if hasattr(platform, "value") else str(platform or "")).lower()
+
+
+def _sol_intake_provenance(event: MessageEvent) -> dict[str, str]:
+    source = event.source
+    pairs = {
+        "platform": _source_platform_name(source),
+        "chat_id": getattr(source, "chat_id", None),
+        "thread_id": getattr(source, "thread_id", None),
+        "user_id": getattr(source, "user_id", None),
+        "message_id": (
+            getattr(event, "message_id", None)
+            or getattr(source, "message_id", None)
+        ),
+        "delivery_id": getattr(event, "delivery_id", None),
+    }
+    cleaned: dict[str, str] = {}
+    for key, value in pairs.items():
+        clean = _clean_provenance_value(value)
+        if clean is not None:
+            cleaned[key] = clean
+    return cleaned
+
+
+def _sol_intake_idempotency_key(provenance: dict[str, str]) -> str:
+    # Discord message snowflakes are the stable retry identity. Delivery/update
+    # ids may change across retries, so they are persisted as provenance only.
+    event_identity = provenance.get("message_id", "")
+    identity = "|".join(
+        [
+            _SOL_INTAKE_BOARD,
+            provenance.get("platform", ""),
+            provenance.get("chat_id", ""),
+            provenance.get("thread_id", ""),
+            event_identity,
+        ]
+    )
+    return f"sol-intake:{hashlib.sha256(identity.encode('utf-8')).hexdigest()}"
+
+
+def _parse_sol_intake_args(text: str) -> tuple[str, str]:
+    import argparse
+
+    rest = (text or "").strip()
+    rest = rest.lstrip("/")
+    command, separator, remainder = rest.partition(" ")
+    if command == "sol":
+        rest = remainder.lstrip() if separator else ""
+
+    parser = argparse.ArgumentParser(prog="/sol", add_help=False)
+    parser.exit_on_error = False  # type: ignore[attr-defined]
+    def _raise_usage(_message: str) -> None:
+        raise ValueError("usage: /sol <title> --body <body>")
+    parser.error = _raise_usage  # type: ignore[method-assign]
+    parser.add_argument("title")
+    parser.add_argument("--body", required=True)
+    try:
+        args = parser.parse_args(shlex.split(rest) if rest else [])
+    except (SystemExit, argparse.ArgumentError, ValueError) as exc:
+        raise ValueError("usage: /sol <title> --body <body>") from exc
+
+    title = str(args.title or "").strip()
+    body = str(args.body or "").strip()
+    if not title or not body:
+        raise ValueError("usage: /sol <title> --body <body>")
+    if len(title) > 240:
+        raise ValueError("/sol title must be 240 characters or fewer")
+    if len(body) > 20_000:
+        raise ValueError("/sol body must be 20,000 characters or fewer")
+    return title, body
 
 
 def _model_switch_skew_guard() -> Optional[str]:
@@ -461,6 +547,73 @@ class GatewaySlashCommandsMixin:
         if len(output) > 3800:
             output = output[:3800] + "\n" + t("gateway.kanban.truncated_suffix")
         return output or t("gateway.kanban.no_output")
+
+    async def _handle_sol_command(self, event: MessageEvent) -> str:
+        """Create/reuse a Sol triage card from explicit gateway input."""
+        try:
+            title, body = _parse_sol_intake_args(event.text or "")
+        except ValueError as exc:
+            return f"⚠ {exc}"
+
+        provenance = _sol_intake_provenance(event)
+        if provenance.get("platform") != "discord":
+            return "⚠ /sol intake is currently restricted to Discord."
+        if not provenance.get("chat_id"):
+            return "⚠ /sol requires a Discord chat identity."
+        if not provenance.get("message_id"):
+            return "⚠ /sol requires a stable Discord message identity."
+        idempotency_key = _sol_intake_idempotency_key(provenance)
+        profile_resolver = getattr(self, "_active_profile_name", None)
+        raw_notifier_profile = getattr(self, "_kanban_notifier_profile", None) or (
+            profile_resolver() if callable(profile_resolver) else None
+        )
+        notifier_profile = str(raw_notifier_profile) if raw_notifier_profile else None
+
+        def _create_and_subscribe() -> tuple[str, str]:
+            from hermes_cli import kanban_db as _kb
+
+            _kb.create_board(_SOL_INTAKE_BOARD)
+            conn = _kb.connect(board=_SOL_INTAKE_BOARD)
+            try:
+                task_id = _kb.create_task(
+                    conn,
+                    title=title,
+                    body=body,
+                    assignee=None,
+                    created_by=f"gateway:{provenance.get('platform', 'unknown')}",
+                    triage=True,
+                    idempotency_key=idempotency_key,
+                    idempotency_reuse_archived=True,
+                    provenance=provenance,
+                    board=_SOL_INTAKE_BOARD,
+                )
+                _kb.add_notify_sub(
+                    conn,
+                    task_id=task_id,
+                    platform=provenance["platform"],
+                    chat_id=provenance["chat_id"],
+                    thread_id=provenance.get("thread_id"),
+                    user_id=provenance.get("user_id"),
+                    notifier_profile=notifier_profile,
+                )
+                task = _kb.get_task(conn, task_id)
+                status = task.status if task is not None else "triage"
+                assignee = task.assignee if task is not None else None
+            finally:
+                conn.close()
+            return task_id, f"Created {task_id}  ({status}, assignee={assignee or '-'})"
+
+        try:
+            task_id, output = await asyncio.to_thread(_create_and_subscribe)
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.warning("sol intake failed: %s", exc)
+            return "⚠ Sol intake failed. Check gateway logs for details."
+
+        return (
+            output.rstrip()
+            + "\n"
+            + t("gateway.kanban.subscribed_suffix", task_id=task_id)
+        )
 
     async def _handle_status_command(self, event: MessageEvent) -> str:
         """Handle /status command."""
@@ -1290,9 +1443,10 @@ class GatewaySlashCommandsMixin:
         """Handle /help command - list available commands."""
         from gateway.run import _telegramize_command_mentions
         from hermes_cli.commands import gateway_help_lines
+        platform = getattr(getattr(event, "source", None), "platform", None)
         lines = [
             t("gateway.help.header"),
-            *gateway_help_lines(),
+            *gateway_help_lines(platform=platform),
         ]
         try:
             from agent.skill_commands import get_skill_commands
@@ -1309,13 +1463,14 @@ class GatewaySlashCommandsMixin:
             pass
         return _telegramize_command_mentions(
             "\n".join(lines),
-            getattr(getattr(event, "source", None), "platform", None),
+            platform,
         )
 
     async def _handle_commands_command(self, event: MessageEvent) -> str:
         from gateway.run import _telegramize_command_mentions
         from hermes_cli.commands import gateway_help_lines
 
+        platform = getattr(getattr(event, "source", None), "platform", None)
         raw_args = event.get_command_args().strip()
         if raw_args:
             try:
@@ -1326,7 +1481,7 @@ class GatewaySlashCommandsMixin:
             requested_page = 1
 
         # Build combined entry list: built-in commands + skill commands
-        entries = list(gateway_help_lines())
+        entries = list(gateway_help_lines(platform=platform))
         try:
             from agent.skill_commands import get_skill_commands
             skill_cmds = get_skill_commands()

@@ -217,6 +217,11 @@ class TestGatewayHelpLines:
         assert len(bg_line) == 1
         assert "/bg" in bg_line[0]
 
+    def test_sol_is_discord_only_in_platform_help(self):
+        assert any("`/sol " in line for line in gateway_help_lines(platform="discord"))
+        assert not any("`/sol " in line for line in gateway_help_lines(platform="telegram"))
+        assert not any("`/sol " in line for line in gateway_help_lines(platform="slack"))
+
 
 class TestTelegramBotCommands:
     def test_returns_list_of_tuples(self):

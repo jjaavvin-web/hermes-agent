@@ -2398,6 +2398,7 @@ def create_task(
     parents: Iterable[str] = (),
     triage: bool = False,
     idempotency_key: Optional[str] = None,
+    idempotency_reuse_archived: bool = False,
     max_runtime_seconds: Optional[int] = None,
     skills: Optional[Iterable[str]] = None,
     max_retries: Optional[int] = None,
@@ -2407,6 +2408,7 @@ def create_task(
     session_id: Optional[str] = None,
     board: Optional[str] = None,
     project_id: Optional[str] = None,
+    provenance: Optional[dict[str, Any]] = None,
 ) -> str:
     """Create a new task and optionally link it under parent tasks.
 
@@ -2416,10 +2418,11 @@ def create_task(
     parents — a specifier/triager is expected to promote the task to
     ``todo`` once the spec is fleshed out.
 
-    If ``idempotency_key`` is provided and a non-archived task with the
-    same key already exists, returns the existing task's id instead of
-    creating a duplicate. Useful for retried webhooks / automation that
-    should not double-write.
+    If ``idempotency_key`` is provided and a matching task exists, returns
+    the existing task's id instead of creating a duplicate. Archived tasks
+    are excluded by default for backward compatibility; set
+    ``idempotency_reuse_archived=True`` for immutable delivery identities
+    whose retries must resolve to the original row for the full lifecycle.
 
     ``max_runtime_seconds`` caps how long a worker may run before the
     dispatcher SIGTERMs (then SIGKILLs after a grace window) and
@@ -2536,21 +2539,6 @@ def create_task(
             )
         skills_list = cleaned
 
-    # Idempotency check — return the existing task instead of creating a
-    # duplicate. Done BEFORE entering write_txn to keep the fast path fast
-    # and to avoid holding a write lock during the lookup. Race is
-    # acceptable: two concurrent creators with the same key might both
-    # insert, at which point both rows exist but the next lookup stabilises.
-    if idempotency_key:
-        row = conn.execute(
-            "SELECT id FROM tasks WHERE idempotency_key = ? "
-            "AND status != 'archived' "
-            "ORDER BY created_at DESC LIMIT 1",
-            (idempotency_key,),
-        ).fetchone()
-        if row:
-            return row["id"]
-
     now = int(time.time())
 
     # Resolve workspace_path from board-level default_workdir when the
@@ -2578,6 +2566,20 @@ def create_task(
         task_id = _new_task_id()
         try:
             with write_txn(conn):
+                if idempotency_key:
+                    archived_filter = (
+                        "" if idempotency_reuse_archived
+                        else "AND status != 'archived' "
+                    )
+                    row = conn.execute(
+                        "SELECT id FROM tasks WHERE idempotency_key = ? "
+                        + archived_filter
+                        + "ORDER BY created_at DESC LIMIT 1",
+                        (idempotency_key,),
+                    ).fetchone()
+                    if row:
+                        return row["id"]
+
                 # Determine task status from parent status, unless the caller
                 # parks it directly in blocked for human-ops review or in
                 # triage for a specifier.
@@ -2666,20 +2668,18 @@ def create_task(
                         "INSERT OR IGNORE INTO task_links (parent_id, child_id) VALUES (?, ?)",
                         (pid, task_id),
                     )
-                _append_event(
-                    conn,
-                    task_id,
-                    "created",
-                    {
-                        "assignee": assignee,
-                        "status": task_status,
-                        "parents": list(parents),
-                        "tenant": tenant,
-                        "branch_name": branch_name,
-                        "skills": list(skills_list) if skills_list else None,
-                        "goal_mode": bool(goal_mode) or None,
-                    },
-                )
+                event_payload = {
+                    "assignee": assignee,
+                    "status": task_status,
+                    "parents": list(parents),
+                    "tenant": tenant,
+                    "branch_name": branch_name,
+                    "skills": list(skills_list) if skills_list else None,
+                    "goal_mode": bool(goal_mode) or None,
+                }
+                if provenance:
+                    event_payload["provenance"] = dict(provenance)
+                _append_event(conn, task_id, "created", event_payload)
             return task_id
         except sqlite3.IntegrityError:
             if attempt == 1:

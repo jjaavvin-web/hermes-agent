@@ -511,6 +511,7 @@ async def test_dispatch_thread_session_builds_thread_event(adapter):
 
 def test_build_slash_event_preserves_thread_context(adapter):
     interaction = SimpleNamespace(
+        id=987654321,
         channel=_FakeThreadChannel(channel_id=555, name="Planning"),
         channel_id=555,
         user=SimpleNamespace(display_name="Jezza", id=42),
@@ -523,10 +524,44 @@ def test_build_slash_event_preserves_thread_context(adapter):
     assert event.source.chat_type == "thread"
     assert event.source.thread_id == "555"
     assert "TestGuild" in event.source.chat_name
+    assert event.message_id == "987654321"
+    assert event.delivery_id == "987654321"
+
+
+@pytest.mark.asyncio
+async def test_native_sol_slash_builds_stable_identity_and_reaches_handler(adapter):
+    adapter._register_slash_commands()
+    interaction = SimpleNamespace(
+        id=424242,
+        channel=_FakeThreadChannel(channel_id=555, name="Planning"),
+        channel_id=555,
+        user=SimpleNamespace(display_name="Jezza", id=42, name="Jezza"),
+        guild_id=1,
+        response=SimpleNamespace(defer=AsyncMock()),
+        edit_original_response=AsyncMock(),
+        delete_original_response=AsyncMock(),
+    )
+    captured = []
+
+    async def capture(event):
+        captured.append(event)
+
+    adapter.handle_message = capture
+    command = adapter._client.tree.commands["sol"]
+
+    await command.callback(interaction, args='"Native intake" --body "Body"')
+
+    adapter._check_slash_authorization.assert_awaited_once()
+    assert len(captured) == 1
+    event = captured[0]
+    assert event.text == '/sol "Native intake" --body "Body"'
+    assert event.message_id == "424242"
+    assert event.delivery_id == "424242"
 
 
 def test_build_slash_event_uses_group_context_for_channels(adapter):
     interaction = SimpleNamespace(
+        id=123456789,
         channel=_FakeTextChannel(channel_id=123, name="general"),
         channel_id=123,
         user=SimpleNamespace(display_name="Jezza", id=42),

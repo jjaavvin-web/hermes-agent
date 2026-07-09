@@ -210,6 +210,9 @@ COMMAND_REGISTRY: list[CommandDef] = [
                             "archive", "tail", "dispatch", "stats", "notify-subscribe",
                             "notify-list", "notify-unsubscribe", "log", "runs",
                             "heartbeat", "assignees", "context", "specify", "gc")),
+    CommandDef("sol", "Intake a Discord request into Sol Kanban triage",
+               "Tools & Skills", gateway_only=True,
+               args_hint="<title> --body <body>"),
     CommandDef("project", "Intake a project into Kanban triage from Telegram",
                "Tools & Skills", gateway_only=True, args_hint="[title or short description]"),
     CommandDef("reload", "Reload .env variables into the running session", "Tools & Skills",
@@ -460,12 +463,21 @@ def _requires_argument(args_hint: str) -> bool:
     return args_hint.strip().startswith("<")
 
 
-def gateway_help_lines() -> list[str]:
-    """Generate gateway help text lines from the registry."""
+def gateway_help_lines(platform: str | None = None) -> list[str]:
+    """Generate gateway help text lines from the registry.
+
+    ``/sol`` is a Discord-only intake surface. Keep the default unfiltered for
+    internal callers, but hide it whenever a concrete non-Discord platform
+    requests help or command discovery.
+    """
     overrides = _resolve_config_gates()
+    raw_platform = getattr(platform, "value", platform)
+    platform_name = str(raw_platform or "").strip().lower()
     lines: list[str] = []
     for cmd in COMMAND_REGISTRY:
         if not _is_gateway_available(cmd, overrides):
+            continue
+        if cmd.name == "sol" and platform_name and platform_name != "discord":
             continue
         args = f" {cmd.args_hint}" if cmd.args_hint else ""
         alias_parts: list[str] = []
@@ -529,6 +541,11 @@ def telegram_bot_commands() -> list[tuple[str, str]]:
     result: list[tuple[str, str]] = []
     for cmd in COMMAND_REGISTRY:
         if not _is_gateway_available(cmd, overrides):
+            continue
+        # /sol is an intentionally Discord-only control-plane intake surface.
+        # Do not advertise it in Telegram's command menu; the handler also
+        # rejects non-Discord sources defensively.
+        if cmd.name == "sol":
             continue
         # Built-in arg-taking commands are included — their handlers show
         # usage text when invoked without arguments, and hiding them from
@@ -1165,7 +1182,7 @@ _SLACK_PRIORITY_ALIASES = ("btw", "bg")
 #   - moa: high-cost slash mode, available through /hermes moa to avoid
 #     displacing existing native Slack slash commands at the 50-command cap.
 #   - debug: the log/report upload surface; reached via /hermes debug on Slack.
-_SLACK_VIA_HERMES_ONLY = frozenset({"credits", "billing", "moa", "debug"})
+_SLACK_VIA_HERMES_ONLY = frozenset({"credits", "billing", "moa", "debug", "sol"})
 
 
 def _sanitize_slack_name(raw: str) -> str:

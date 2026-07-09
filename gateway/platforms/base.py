@@ -1730,6 +1730,12 @@ class MessageEvent:
     raw_message: Any = None
     message_id: Optional[str] = None
 
+    # Stable platform delivery/interaction identifier. Unlike
+    # ``platform_update_id`` (Telegram getUpdates offset), this is portable
+    # across adapters and may equal ``message_id`` when the platform exposes
+    # only one durable event identifier.
+    delivery_id: Optional[str] = None
+
     # Platform-specific update identifier.  For Telegram this is the
     # ``update_id`` from the PTB Update wrapper; other platforms currently
     # ignore it.  Used by ``/restart`` to record the triggering update so the
