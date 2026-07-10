@@ -1,13 +1,13 @@
 /**
  * HTML Gallery — curated Hermes-generated HTML reports in three tabs.
  *
+ *  "Favorites" — MANUAL: reports starred to keep around (the default tab).
  *  "Latest"    — AUTO: the five newest unassigned reports, one per audit
- *                group, newest in a hero slot.  Moving an item out lets the
- *                next-newest take its place, so this doubles as the triage
- *                stream for daily cron-generated reports.  The list is
- *                re-sorted by mtime CLIENT-SIDE: the backend floats legacy
- *                "featured" path-fragments above genuinely newer files.
- *  "Favorites" — MANUAL: reports starred to keep around.
+ *                group.  Moving an item out lets the next-newest take its
+ *                place, so this doubles as the triage stream for daily
+ *                cron-generated reports.  The list is re-sorted by mtime
+ *                CLIENT-SIDE: the backend floats legacy "featured"
+ *                path-fragments above genuinely newer files.
  *  "Old"       — MANUAL: reports dismissed out of the way.
  *
  *  Assignments persist in localStorage keyed by artifact id (stable across
@@ -280,16 +280,16 @@ function useFitBox(): {
 // Thumbnail card
 // ---------------------------------------------------------------------------
 
+const THUMB_ASPECT = 16 / 10;
+
 function ThumbCard({
   item,
   view,
-  hero = false,
   onOpen,
   onMove,
 }: {
   item: ArtifactItem;
   view: ViewMode;
-  hero?: boolean;
   onOpen: (id: string) => void;
   onMove: (id: string, target: Bucket | "latest") => void;
 }) {
@@ -302,8 +302,7 @@ function ThumbCard({
   const thumbHtml = useMemo(() => (html === null ? null : stripScripts(html)), [html]);
 
   // Height of the un-scaled iframe: fill the thumbnail box's aspect ratio.
-  const aspect = hero ? 16 / 9 : 16 / 10;
-  const frameHeight = Math.round(DESIGN_WIDTH / aspect);
+  const frameHeight = Math.round(DESIGN_WIDTH / THUMB_ASPECT);
 
   return (
     <div
@@ -327,7 +326,7 @@ function ThumbCard({
       <div
         ref={ref}
         className="relative w-full overflow-hidden bg-white"
-        style={{ aspectRatio: String(aspect) }}
+        style={{ aspectRatio: String(THUMB_ASPECT) }}
       >
         {thumbHtml !== null && scale > 0 ? (
           <iframe
@@ -365,9 +364,7 @@ function ThumbCard({
       {/* Caption row */}
       <div className="flex items-center gap-1.5 px-3 py-2">
         <div className="min-w-0 flex-1">
-          <p className={["truncate font-medium leading-snug", hero ? "text-sm" : "text-xs"].join(" ")}>
-            {item.title}
-          </p>
+          <p className="truncate font-medium leading-snug text-xs">{item.title}</p>
           <p className="truncate text-[0.65rem] text-text-secondary mt-0.5">
             {item.group} · {relativeTime(item.mtime)} · {fmtSize(item.size)}
           </p>
@@ -450,7 +447,7 @@ export default function HtmlGalleryPage() {
   const [data, setData] = useState<ArtifactsResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [fetchErr, setFetchErr] = useState<string | null>(null);
-  const [view, setView] = useState<ViewMode>("latest");
+  const [view, setView] = useState<ViewMode>("favorites");
   const [assignments, setAssignments] = useState<Assignments>(() => loadAssignments());
 
   // Id of the card opened full-size in the current tab (null = grid).
@@ -527,8 +524,8 @@ export default function HtmlGalleryPage() {
   // ---------------------------------------------------------------------------
 
   const TAB_META: Array<{ mode: ViewMode; label: string; Icon: typeof Star }> = [
-    { mode: "latest", label: "Latest", Icon: LayoutGrid },
     { mode: "favorites", label: "Favorites", Icon: Star },
+    { mode: "latest", label: "Latest", Icon: LayoutGrid },
     { mode: "old", label: "Old", Icon: Archive },
   ];
 
@@ -624,18 +621,10 @@ export default function HtmlGalleryPage() {
           </div>
         ) : (
           <div className="min-h-0 flex-1 overflow-y-auto pr-1">
-            <div className="grid gap-4 grid-cols-1 sm:grid-cols-2 xl:grid-cols-6">
-              {visible.map((item, idx) => {
-                const hero = view === "latest" && idx === 0;
-                return (
-                  <div
-                    key={item.id}
-                    className={hero ? "sm:col-span-2 xl:col-span-4" : "xl:col-span-2"}
-                  >
-                    <ThumbCard item={item} view={view} hero={hero} onOpen={setOpenId} onMove={move} />
-                  </div>
-                );
-              })}
+            <div className="grid gap-4 grid-cols-1 sm:grid-cols-2 xl:grid-cols-3">
+              {visible.map((item) => (
+                <ThumbCard key={item.id} item={item} view={view} onOpen={setOpenId} onMove={move} />
+              ))}
             </div>
             {view === "latest" && (
               <p className="text-[0.65rem] text-text-secondary mt-3 px-1">

@@ -271,10 +271,37 @@ describe("bucketize", () => {
 // Rendering
 // ---------------------------------------------------------------------------
 
+/** Click a tab chip by its label. */
+function clickTab(container: HTMLElement, label: string) {
+  const chip = Array.from(container.querySelectorAll("button")).find((b) =>
+    b.textContent?.includes(label),
+  );
+  expect(chip).toBeTruthy();
+  act(() => {
+    chip?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+  });
+}
+
 describe("HtmlGalleryPage", () => {
-  it("defaults to the Latest view with five deduped cards and download buttons", async () => {
+  it("defaults to the Favorites tab with its empty state", async () => {
     globalThis.fetch = mockFetch() as unknown as typeof fetch;
     const { container } = render(<HtmlGalleryPage />);
+
+    await waitFor(() => {
+      expect(container.textContent).toContain("Nothing here yet — hit the ★");
+      // No cards on the empty default tab.
+      expect(container.querySelectorAll("[role='button'][aria-label^='Open ']").length).toBe(0);
+    });
+  });
+
+  it("shows five deduped cards with download buttons on the Latest tab", async () => {
+    globalThis.fetch = mockFetch() as unknown as typeof fetch;
+    const { container } = render(<HtmlGalleryPage />);
+
+    await waitFor(() => {
+      expect(container.textContent).toContain("Favorites");
+    });
+    clickTab(container, "Latest");
 
     await waitFor(() => {
       expect(container.textContent).toContain("Alpha Day Report");
@@ -301,6 +328,11 @@ describe("HtmlGalleryPage", () => {
   it("moves a card to Favorites, backfills Latest, and persists the assignment", async () => {
     globalThis.fetch = mockFetch() as unknown as typeof fetch;
     const { container } = render(<HtmlGalleryPage />);
+
+    await waitFor(() => {
+      expect(container.textContent).toContain("Favorites");
+    });
+    clickTab(container, "Latest");
 
     let moveBtn: Element | null = null;
     await waitFor(() => {
@@ -346,17 +378,11 @@ describe("HtmlGalleryPage", () => {
     const { container } = render(<HtmlGalleryPage />);
 
     await waitFor(() => {
-      expect(container.textContent).toContain("Alpha Day Report");
+      expect(container.textContent).toContain("Favorites");
     });
-
-    const oldChip = Array.from(container.querySelectorAll("button")).find((b) =>
-      b.textContent?.includes("Old"),
-    );
-    act(() => {
-      oldChip?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-    });
+    clickTab(container, "Old");
     await waitFor(() => {
-      expect(container.textContent).toContain("Nothing here yet");
+      expect(container.textContent).toContain("Nothing here yet — move stale reports");
     });
   });
 
@@ -372,6 +398,11 @@ describe("HtmlGalleryPage", () => {
       .spyOn(HTMLAnchorElement.prototype, "click")
       .mockImplementation(() => {});
     const { container } = render(<HtmlGalleryPage />);
+
+    await waitFor(() => {
+      expect(container.textContent).toContain("Favorites");
+    });
+    clickTab(container, "Latest");
 
     let btn: Element | null = null;
     await waitFor(() => {
@@ -418,6 +449,11 @@ describe("HtmlGalleryPage", () => {
     const { container } = render(<HtmlGalleryPage />);
 
     await waitFor(() => {
+      expect(container.textContent).toContain("Favorites");
+    });
+    clickTab(container, "Latest");
+
+    await waitFor(() => {
       expect(container.textContent).toContain("Preview unavailable");
     });
   });
@@ -425,6 +461,11 @@ describe("HtmlGalleryPage", () => {
   it("opens the full-size viewer when a Latest card is clicked", async () => {
     globalThis.fetch = mockFetch() as unknown as typeof fetch;
     const { container } = render(<HtmlGalleryPage />);
+
+    await waitFor(() => {
+      expect(container.textContent).toContain("Favorites");
+    });
+    clickTab(container, "Latest");
 
     let card: Element | null = null;
     await waitFor(() => {
