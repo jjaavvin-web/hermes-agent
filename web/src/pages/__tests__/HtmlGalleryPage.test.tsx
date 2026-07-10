@@ -6,12 +6,14 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import HtmlGalleryPage from "../HtmlGalleryPage";
 import {
+  bucketize,
   clearArtifactHtmlCache,
   decodeIdToRel,
   filenameFor,
   pickLatest,
   stripScripts,
   type ArtifactItem,
+  type Assignments,
 } from "@/lib/htmlArtifacts";
 
 vi.mock("@/contexts/usePageHeader", () => ({
@@ -133,6 +135,7 @@ async function waitFor(assertion: () => void) {
 beforeEach(() => {
   (globalThis as { ResizeObserver?: unknown }).ResizeObserver = ResizeObserverStub;
   clearArtifactHtmlCache();
+  localStorage.clear();
 });
 
 afterEach(() => {
@@ -236,6 +239,34 @@ describe("pickLatest", () => {
   });
 });
 
+describe("bucketize", () => {
+  it("routes assigned items to their buckets and backfills Latest", () => {
+    const assignments: Assignments = {
+      [ITEMS[0].id]: "favorites", // Alpha Day Report
+      [ITEMS[2].id]: "old", // Bravo Index
+    };
+    const b = bucketize(ITEMS, assignments);
+    expect(b.favorites.map((i) => i.title)).toEqual(["Alpha Day Report"]);
+    expect(b.old.map((i) => i.title)).toEqual(["Bravo Index"]);
+    // With alpha's newest assigned away, its group frees up and the older
+    // alpha draft becomes eligible again; foxtrot backfills too.
+    expect(b.latest.map((i) => i.title)).toEqual([
+      "Charlie Health",
+      "Delta Map",
+      "Echo Summary",
+      "Foxtrot Extra",
+      "Alpha Older Draft",
+    ]);
+  });
+
+  it("returns everything unassigned to the auto flow", () => {
+    const b = bucketize(ITEMS, {});
+    expect(b.favorites).toEqual([]);
+    expect(b.old).toEqual([]);
+    expect(b.latest.length).toBe(5);
+  });
+});
+
 // ---------------------------------------------------------------------------
 // Rendering
 // ---------------------------------------------------------------------------
@@ -267,7 +298,50 @@ describe("HtmlGalleryPage", () => {
     expect(container.querySelector("button[aria-label='Download bravo.html']")).not.toBeNull();
   });
 
-  it("switches to the Archive view showing the full list", async () => {
+  it("moves a card to Favorites, backfills Latest, and persists the assignment", async () => {
+    globalThis.fetch = mockFetch() as unknown as typeof fetch;
+    const { container } = render(<HtmlGalleryPage />);
+
+    let moveBtn: Element | null = null;
+    await waitFor(() => {
+      moveBtn = container.querySelector(
+        "button[aria-label='Move to Favorites: Alpha Day Report']",
+      );
+      expect(moveBtn).not.toBeNull();
+    });
+
+    act(() => {
+      moveBtn?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    await waitFor(() => {
+      // The moved card left Latest and the next-newest group backfilled.
+      expect(container.textContent).not.toContain("Alpha Day Report");
+      expect(container.textContent).toContain("Foxtrot Extra");
+    });
+
+    // Assignment persisted for future sessions.
+    const stored = JSON.parse(
+      localStorage.getItem("hermes-html-gallery-assignments-v1") ?? "{}",
+    ) as Record<string, string>;
+    expect(Object.values(stored)).toEqual(["favorites"]);
+
+    // The Favorites tab shows the moved card, with a return-to-Latest control.
+    const favChip = Array.from(container.querySelectorAll("button")).find((b) =>
+      b.textContent?.includes("Favorites"),
+    );
+    act(() => {
+      favChip?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await waitFor(() => {
+      expect(container.textContent).toContain("Alpha Day Report");
+      expect(
+        container.querySelector("button[aria-label='Return to Latest: Alpha Day Report']"),
+      ).not.toBeNull();
+    });
+  });
+
+  it("shows the Old tab empty state until something is moved there", async () => {
     globalThis.fetch = mockFetch() as unknown as typeof fetch;
     const { container } = render(<HtmlGalleryPage />);
 
@@ -275,20 +349,14 @@ describe("HtmlGalleryPage", () => {
       expect(container.textContent).toContain("Alpha Day Report");
     });
 
-    const archiveChip = Array.from(container.querySelectorAll("button")).find((b) =>
-      b.textContent?.includes("Archive"),
+    const oldChip = Array.from(container.querySelectorAll("button")).find((b) =>
+      b.textContent?.includes("Old"),
     );
-    expect(archiveChip).toBeTruthy();
     act(() => {
-      archiveChip?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      oldChip?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
-
     await waitFor(() => {
-      // Full list including the items Latest excluded.
-      expect(container.textContent).toContain("Alpha Older Draft");
-      expect(container.textContent).toContain("Foxtrot Extra");
-      // Position indicator over the full set.
-      expect(container.textContent).toContain(`1 / ${ITEMS.length}`);
+      expect(container.textContent).toContain("Nothing here yet");
     });
   });
 
@@ -370,7 +438,7 @@ describe("HtmlGalleryPage", () => {
 
     await waitFor(() => {
       // Viewer toolbar appears with Back + position within the latest five.
-      expect(container.querySelector("button[aria-label='Back to Latest grid']")).not.toBeNull();
+      expect(container.querySelector("button[aria-label='Back to grid']")).not.toBeNull();
       expect(container.textContent).toContain("1 / 5");
       const iframe = container.querySelector("iframe[sandbox='allow-scripts']");
       expect(iframe).not.toBeNull();

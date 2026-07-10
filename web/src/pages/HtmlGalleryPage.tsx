@@ -1,28 +1,25 @@
 /**
- * HTML Gallery — browse, preview, and download Hermes-generated HTML files.
+ * HTML Gallery — curated Hermes-generated HTML reports in three tabs.
  *
- * Two views:
+ *  "Latest"    — AUTO: the five newest unassigned reports, one per audit
+ *                group, newest in a hero slot.  Moving an item out lets the
+ *                next-newest take its place, so this doubles as the triage
+ *                stream for daily cron-generated reports.  The list is
+ *                re-sorted by mtime CLIENT-SIDE: the backend floats legacy
+ *                "featured" path-fragments above genuinely newer files.
+ *  "Favorites" — MANUAL: reports starred to keep around.
+ *  "Old"       — MANUAL: reports dismissed out of the way.
  *
- *  "Latest" (default) — the five newest reports, at most one per audit group,
- *  rendered as live thumbnail cards (newest gets a hero slot).  The list is
- *  re-sorted by mtime CLIENT-SIDE: the backend floats legacy "featured"
- *  path-fragments to the top, which buries genuinely new reports (e.g. the
- *  daily morning config/health + work-recap pages) under stale mockups.
- *  Clicking a card opens a full-size viewer with prev/next.
- *
- *  "Archive" — the complete list in the original sidebar + preview layout,
- *  for digging through history.
- *
- *  Every card and every viewer has a Download action: the HTML is fetched
- *  with the auth header (token never in a URL), wrapped in a Blob, and saved
- *  via a temporary <a download>.  Filenames come from decoding the opaque
- *  artifact id (url-safe base64 of the ~/.hermes-relative path) — generic
- *  basenames like index.html fall back to the group name.
+ *  Assignments persist in localStorage keyed by artifact id (stable across
+ *  in-place overwrites).  Every card and viewer has move controls plus a
+ *  Download action: authed fetch → Blob → <a download> (token never in a
+ *  URL); filenames derive from decoding the opaque id — display only.
  *
  *  Rendering: <iframe srcDoc=...> bypasses the global X-Frame-Options: deny
- *  header.  Thumbnails run with sandbox="" (no scripts — cheap + inert);
- *  full viewers use sandbox="allow-scripts" in an opaque origin, so embedded
- *  scripts cannot touch the parent dashboard.
+ *  header.  Thumbnails run with sandbox="" and scripts stripped (inert +
+ *  quiet); the full-size viewer keeps sandbox="allow-scripts" in an opaque
+ *  origin and AUTO-FITS: content wider than the pane renders at its design
+ *  width and is transform-scaled down so nothing scrolls horizontally.
  *
  * Data:  GET /api/dashboard/artifacts
  * Serve: GET /api/dashboard/artifacts/raw?id=<opaque>  (header-authed)
@@ -30,22 +27,28 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
+  Archive,
   ArrowLeft,
   ChevronLeft,
   ChevronRight,
   Download,
   LayoutGrid,
-  List,
+  Star,
+  Undo2,
 } from "lucide-react";
 import { usePageHeader } from "@/contexts/usePageHeader";
 import { fetchJSON } from "@/lib/api";
 import {
+  bucketize,
   cacheKeyFor,
   fetchArtifactHtml,
   filenameFor,
-  pickLatest,
+  loadAssignments,
+  saveAssignments,
   stripScripts,
   type ArtifactItem,
+  type Assignments,
+  type Bucket,
 } from "@/lib/htmlArtifacts";
 
 // ---------------------------------------------------------------------------
@@ -64,7 +67,7 @@ interface ArtifactsResponse {
   error?: string;
 }
 
-type ViewMode = "latest" | "archive";
+type ViewMode = "latest" | "favorites" | "old";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -160,6 +163,10 @@ function useDownload(item: ArtifactItem): { state: DownloadState; trigger: () =>
   return { state, trigger };
 }
 
+const ICON_BTN =
+  "inline-flex items-center gap-1 rounded border transition-colors shrink-0 " +
+  "text-text-secondary border-current/20 hover:text-midground hover:border-midground/40";
+
 function DownloadButton({ item, compact = false }: { item: ArtifactItem; compact?: boolean }) {
   const { state, trigger } = useDownload(item);
   return (
@@ -171,11 +178,10 @@ function DownloadButton({ item, compact = false }: { item: ArtifactItem; compact
       aria-label={`Download ${filenameFor(item)}`}
       title={`Download ${filenameFor(item)}`}
       className={[
-        "inline-flex items-center gap-1 rounded border transition-colors shrink-0",
         compact ? "px-1.5 py-1" : "px-2 py-1 text-xs font-medium",
         state === "error"
-          ? "text-destructive border-destructive/40"
-          : "text-text-secondary border-current/20 hover:text-midground hover:border-midground/40",
+          ? "inline-flex items-center gap-1 rounded border transition-colors shrink-0 text-destructive border-destructive/40"
+          : ICON_BTN,
       ].join(" ")}
     >
       <Download className="h-3.5 w-3.5" />
@@ -185,43 +191,111 @@ function DownloadButton({ item, compact = false }: { item: ArtifactItem; compact
 }
 
 // ---------------------------------------------------------------------------
-// Thumbnail card
+// Move controls
 // ---------------------------------------------------------------------------
 
-/** Design width the thumbnail iframe renders at before being scaled down. */
-const THUMB_DESIGN_WIDTH = 1280;
+/** The two move targets shown for an item, given the tab it's sitting in.
+ *  "latest" clears the assignment (returns the item to the auto flow). */
+const MOVE_TARGETS: Record<ViewMode, Array<Bucket | "latest">> = {
+  latest: ["favorites", "old"],
+  favorites: ["latest", "old"],
+  old: ["latest", "favorites"],
+};
 
-/** Track the rendered width of a container so the fixed-width iframe can be
+const TARGET_META: Record<Bucket | "latest", { label: string; Icon: typeof Star }> = {
+  latest: { label: "Return to Latest", Icon: Undo2 },
+  favorites: { label: "Move to Favorites", Icon: Star },
+  old: { label: "Move to Old", Icon: Archive },
+};
+
+function MoveButtons({
+  item,
+  view,
+  onMove,
+  compact = false,
+}: {
+  item: ArtifactItem;
+  view: ViewMode;
+  onMove: (id: string, target: Bucket | "latest") => void;
+  compact?: boolean;
+}) {
+  return (
+    <>
+      {MOVE_TARGETS[view].map((target) => {
+        const { label, Icon } = TARGET_META[target];
+        return (
+          <button
+            key={target}
+            onClick={(e) => {
+              e.stopPropagation();
+              onMove(item.id, target);
+            }}
+            aria-label={`${label}: ${item.title}`}
+            title={label}
+            className={[ICON_BTN, compact ? "px-1.5 py-1" : "px-2 py-1 text-xs font-medium"].join(
+              " ",
+            )}
+          >
+            <Icon className="h-3.5 w-3.5" />
+            {!compact && label.replace("Move to ", "").replace("Return to ", "")}
+          </button>
+        );
+      })}
+    </>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Fit-to-container measurement
+// ---------------------------------------------------------------------------
+
+/** Design width the fixed-width iframes render at before being scaled. */
+const DESIGN_WIDTH = 1280;
+
+/** Track a container's rendered size so fixed-width iframes can be
  *  transform-scaled to fit it exactly. */
-function useFitScale(): { ref: React.RefObject<HTMLDivElement | null>; scale: number } {
+function useFitBox(): {
+  ref: React.RefObject<HTMLDivElement | null>;
+  width: number;
+  height: number;
+} {
   const ref = useRef<HTMLDivElement | null>(null);
-  const [scale, setScale] = useState(0);
+  const [box, setBox] = useState({ width: 0, height: 0 });
 
   useEffect(() => {
     const el = ref.current;
     if (!el) return;
     const ro = new ResizeObserver((entries) => {
-      const width = entries[0]?.contentRect.width ?? 0;
-      if (width > 0) setScale(width / THUMB_DESIGN_WIDTH);
+      const rect = entries[0]?.contentRect;
+      if (rect && rect.width > 0) setBox({ width: rect.width, height: rect.height });
     });
     ro.observe(el);
     return () => ro.disconnect();
   }, []);
 
-  return { ref, scale };
+  return { ref, width: box.width, height: box.height };
 }
+
+// ---------------------------------------------------------------------------
+// Thumbnail card
+// ---------------------------------------------------------------------------
 
 function ThumbCard({
   item,
+  view,
   hero = false,
   onOpen,
+  onMove,
 }: {
   item: ArtifactItem;
+  view: ViewMode;
   hero?: boolean;
   onOpen: (id: string) => void;
+  onMove: (id: string, target: Bucket | "latest") => void;
 }) {
   const { html, failed, loading } = useArtifactHtml(item);
-  const { ref, scale } = useFitScale();
+  const { ref, width } = useFitBox();
+  const scale = width > 0 ? width / DESIGN_WIDTH : 0;
 
   // Scripts can't run in the fully-sandboxed thumbnail anyway; stripping
   // them silences per-script console errors (see stripScripts).
@@ -229,7 +303,7 @@ function ThumbCard({
 
   // Height of the un-scaled iframe: fill the thumbnail box's aspect ratio.
   const aspect = hero ? 16 / 9 : 16 / 10;
-  const frameHeight = Math.round(THUMB_DESIGN_WIDTH / aspect);
+  const frameHeight = Math.round(DESIGN_WIDTH / aspect);
 
   return (
     <div
@@ -267,7 +341,7 @@ function ThumbCard({
                track width — only the scaled visual matters. */
             className="absolute top-0 left-0 pointer-events-none select-none border-0"
             style={{
-              width: THUMB_DESIGN_WIDTH,
+              width: DESIGN_WIDTH,
               height: frameHeight,
               transform: `scale(${scale})`,
               transformOrigin: "top left",
@@ -289,7 +363,7 @@ function ThumbCard({
       </div>
 
       {/* Caption row */}
-      <div className="flex items-center gap-2 px-3 py-2">
+      <div className="flex items-center gap-1.5 px-3 py-2">
         <div className="min-w-0 flex-1">
           <p className={["truncate font-medium leading-snug", hero ? "text-sm" : "text-xs"].join(" ")}>
             {item.title}
@@ -298,6 +372,7 @@ function ThumbCard({
             {item.group} · {relativeTime(item.mtime)} · {fmtSize(item.size)}
           </p>
         </div>
+        <MoveButtons item={item} view={view} onMove={onMove} compact />
         <DownloadButton item={item} compact />
       </div>
     </div>
@@ -305,31 +380,59 @@ function ThumbCard({
 }
 
 // ---------------------------------------------------------------------------
-// Full-size viewer pane (shared by Latest viewer and Archive)
+// Full-size viewer pane — auto-fits wide content to the pane
 // ---------------------------------------------------------------------------
 
 function ViewerPane({ item }: { item: ArtifactItem }) {
   const { html, failed, loading } = useArtifactHtml(item);
+  const { ref, width, height } = useFitBox();
 
-  if (loading) {
-    return (
-      <div className="flex-1 flex items-center justify-center text-text-secondary text-sm">
-        Loading…
-      </div>
-    );
-  }
+  const doc =
+    failed || html === null
+      ? '<p style="font-family:sans-serif;padding:1rem">Failed to load this artifact.</p>'
+      : html;
+
+  // Auto-fit: pane narrower than the design width → render at DESIGN_WIDTH
+  // and scale down so nothing scrolls horizontally.  Wide-enough panes (and
+  // the pre-measure first frame, width 0) render natively.
+  const fitScale = width > 0 && width < DESIGN_WIDTH ? width / DESIGN_WIDTH : 1;
+
+  // The measured container must ALWAYS render — an early return here would
+  // mount useFitBox's effect against a null ref and the observer would never
+  // attach (the fit branch would silently stay disabled).
   return (
-    <iframe
-      key={item.id}
-      srcDoc={
-        failed || html === null
-          ? '<p style="font-family:sans-serif;padding:1rem">Failed to load this artifact.</p>'
-          : html
-      }
-      sandbox="allow-scripts"
-      className="w-full flex-1 min-h-0 rounded border border-current/10 bg-white"
-      title={item.title}
-    />
+    <div
+      ref={ref}
+      className="relative w-full flex-1 min-h-0 overflow-hidden rounded border border-current/10 bg-white"
+    >
+      {loading ? (
+        <div className="absolute inset-0 flex items-center justify-center text-text-secondary text-sm bg-midground/5">
+          Loading…
+        </div>
+      ) : fitScale === 1 ? (
+        <iframe
+          key={item.id}
+          srcDoc={doc}
+          sandbox="allow-scripts"
+          className="absolute inset-0 w-full h-full border-0"
+          title={item.title}
+        />
+      ) : (
+        <iframe
+          key={item.id}
+          srcDoc={doc}
+          sandbox="allow-scripts"
+          className="absolute top-0 left-0 border-0"
+          style={{
+            width: DESIGN_WIDTH,
+            height: Math.max(1, Math.round(height / fitScale)),
+            transform: `scale(${fitScale})`,
+            transformOrigin: "top left",
+          }}
+          title={item.title}
+        />
+      )}
+    </div>
   );
 }
 
@@ -348,12 +451,10 @@ export default function HtmlGalleryPage() {
   const [loading, setLoading] = useState(true);
   const [fetchErr, setFetchErr] = useState<string | null>(null);
   const [view, setView] = useState<ViewMode>("latest");
+  const [assignments, setAssignments] = useState<Assignments>(() => loadAssignments());
 
-  // Latest view: id of the card opened full-size (null = grid showing).
-  const [openLatestId, setOpenLatestId] = useState<string | null>(null);
-
-  // Archive view: user-chosen id; null until user clicks (auto-select below).
-  const [chosenId, setChosenId] = useState<string | null>(null);
+  // Id of the card opened full-size in the current tab (null = grid).
+  const [openId, setOpenId] = useState<string | null>(null);
 
   // Fetch artifact list once on mount.
   useEffect(() => {
@@ -375,88 +476,81 @@ export default function HtmlGalleryPage() {
     };
   }, []);
 
+  // Persist assignments whenever they change.
+  useEffect(() => {
+    saveAssignments(assignments);
+  }, [assignments]);
+
   const items = useMemo<ArtifactItem[]>(() => data?.items ?? [], [data]);
-  const latest = useMemo(() => pickLatest(items), [items]);
+  const buckets = useMemo(() => bucketize(items, assignments), [items, assignments]);
+  const visible = buckets[view];
 
-  // ----- Latest viewer selection -----
-  const openLatestIdx = useMemo(
-    () => latest.findIndex((i) => i.id === openLatestId),
-    [latest, openLatestId],
-  );
-  const openLatest = openLatestIdx >= 0 ? latest[openLatestIdx] : null;
+  const move = useCallback((id: string, target: Bucket | "latest") => {
+    setAssignments((prev) => {
+      const next = { ...prev };
+      if (target === "latest") delete next[id];
+      else next[id] = target;
+      return next;
+    });
+  }, []);
 
-  const latestNext = useCallback(() => {
-    if (latest.length === 0 || openLatestIdx < 0) return;
-    setOpenLatestId(latest[(openLatestIdx + 1) % latest.length].id);
-  }, [latest, openLatestIdx]);
+  // ----- Viewer selection within the active tab -----
+  const openIdx = useMemo(() => visible.findIndex((i) => i.id === openId), [visible, openId]);
+  const openItem = openIdx >= 0 ? visible[openIdx] : null;
 
-  const latestPrev = useCallback(() => {
-    if (latest.length === 0 || openLatestIdx < 0) return;
-    setOpenLatestId(latest[(openLatestIdx - 1 + latest.length) % latest.length].id);
-  }, [latest, openLatestIdx]);
+  const goNext = useCallback(() => {
+    if (visible.length === 0 || openIdx < 0) return;
+    setOpenId(visible[(openIdx + 1) % visible.length].id);
+  }, [visible, openIdx]);
 
-  // ----- Archive selection (unchanged behaviour from the original page) -----
-  const selectedId = useMemo<string | null>(() => {
-    if (items.length === 0) return null;
-    if (chosenId !== null && items.some((i) => i.id === chosenId)) return chosenId;
-    return items[0].id;
-  }, [items, chosenId]);
+  const goPrev = useCallback(() => {
+    if (visible.length === 0 || openIdx < 0) return;
+    setOpenId(visible[(openIdx - 1 + visible.length) % visible.length].id);
+  }, [visible, openIdx]);
 
-  const selectedIdx = useMemo(
-    () => items.findIndex((i) => i.id === selectedId),
-    [items, selectedId],
-  );
-  const selected = selectedIdx >= 0 ? items[selectedIdx] : null;
-
-  const archiveNext = useCallback(() => {
-    if (items.length === 0) return;
-    setChosenId(items[(selectedIdx + 1) % items.length].id);
-  }, [items, selectedIdx]);
-
-  const archivePrev = useCallback(() => {
-    if (items.length === 0) return;
-    setChosenId(items[(selectedIdx - 1 + items.length) % items.length].id);
-  }, [items, selectedIdx]);
-
-  // ----- Keyboard navigation -----
+  // ----- Keyboard navigation (viewer only) -----
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       const tag = (e.target as HTMLElement | null)?.tagName?.toLowerCase();
       if (tag === "input" || tag === "textarea") return;
-      if (view === "archive") {
-        if (e.key === "ArrowRight") archiveNext();
-        if (e.key === "ArrowLeft") archivePrev();
-      } else if (openLatest) {
-        if (e.key === "ArrowRight") latestNext();
-        if (e.key === "ArrowLeft") latestPrev();
-        if (e.key === "Escape") setOpenLatestId(null);
-      }
+      if (!openItem) return;
+      if (e.key === "ArrowRight") goNext();
+      if (e.key === "ArrowLeft") goPrev();
+      if (e.key === "Escape") setOpenId(null);
     };
     document.addEventListener("keydown", handler);
     return () => document.removeEventListener("keydown", handler);
-  }, [view, openLatest, archiveNext, archivePrev, latestNext, latestPrev]);
+  }, [openItem, goNext, goPrev]);
 
   // ---------------------------------------------------------------------------
   // Render
   // ---------------------------------------------------------------------------
 
-  const total = data?.counts.total ?? items.length;
+  const TAB_META: Array<{ mode: ViewMode; label: string; Icon: typeof Star }> = [
+    { mode: "latest", label: "Latest", Icon: LayoutGrid },
+    { mode: "favorites", label: "Favorites", Icon: Star },
+    { mode: "old", label: "Old", Icon: Archive },
+  ];
+
+  const EMPTY_COPY: Record<ViewMode, string> = {
+    latest: "No HTML reports found.",
+    favorites: "Nothing here yet — hit the ★ on any report to keep it handy.",
+    old: "Nothing here yet — move stale reports here to clear them out of Latest.",
+  };
 
   return (
     <div className="flex min-h-0 flex-1 flex-col" style={{ height: "calc(100vh - 5rem)" }}>
-      {/* View toggle */}
+      {/* Tabs */}
       <div className="flex items-center gap-2 pb-3 flex-wrap">
-        {(
-          [
-            { mode: "latest", label: "Latest", icon: LayoutGrid, count: latest.length },
-            { mode: "archive", label: "Archive", icon: List, count: total },
-          ] as const
-        ).map(({ mode, label, icon: Icon, count }) => {
+        {TAB_META.map(({ mode, label, Icon }) => {
           const active = view === mode;
           return (
             <button
               key={mode}
-              onClick={() => setView(mode)}
+              onClick={() => {
+                setView(mode);
+                setOpenId(null);
+              }}
               className={[
                 "inline-flex items-center gap-1.5 px-3 py-1 rounded text-xs font-medium border transition-colors",
                 active
@@ -466,161 +560,91 @@ export default function HtmlGalleryPage() {
             >
               <Icon className="h-3.5 w-3.5" />
               {label}
-              {!loading && data ? <span className="opacity-60">({count})</span> : null}
+              {!loading && data ? <span className="opacity-60">({buckets[mode].length})</span> : null}
             </button>
           );
         })}
-
-        {/* Archive nav controls */}
-        {view === "archive" && items.length > 0 && (
-          <div className="ml-auto flex items-center gap-2 text-xs text-text-secondary">
-            <button
-              onClick={archivePrev}
-              aria-label="Previous"
-              className="p-1 hover:text-midground transition-colors"
-            >
-              <ChevronLeft className="h-4 w-4" />
-            </button>
-            <span>
-              {selectedIdx + 1} / {items.length}
-            </span>
-            <button
-              onClick={archiveNext}
-              aria-label="Next"
-              className="p-1 hover:text-midground transition-colors"
-            >
-              <ChevronRight className="h-4 w-4" />
-            </button>
-          </div>
-        )}
       </div>
 
-      {/* Loading / error / empty states */}
+      {/* Loading / error states */}
       {loading && (
         <div className="flex-1 flex items-center justify-center text-text-secondary text-sm">
           Loading…
         </div>
       )}
       {!loading && fetchErr && <p className="text-xs text-destructive px-1">{fetchErr}</p>}
-      {!loading && !fetchErr && items.length === 0 && (
-        <div className="flex-1 flex items-center justify-center text-text-secondary text-sm">
-          No HTML artifacts found.
-        </div>
-      )}
 
-      {/* ----- LATEST: card grid or full-size viewer ----- */}
-      {!loading && !fetchErr && items.length > 0 && view === "latest" && (
-        openLatest ? (
+      {/* Viewer or grid for the active tab */}
+      {!loading && !fetchErr && (
+        openItem ? (
           <div className="flex min-h-0 flex-1 flex-col">
             {/* Viewer toolbar */}
-            <div className="flex items-center gap-2 pb-2">
+            <div className="flex items-center gap-2 pb-2 flex-wrap">
               <button
-                onClick={() => setOpenLatestId(null)}
-                aria-label="Back to Latest grid"
-                className="inline-flex items-center gap-1 px-2 py-1 rounded text-xs font-medium border text-text-secondary border-current/20 hover:text-midground hover:border-midground/40 transition-colors"
+                onClick={() => setOpenId(null)}
+                aria-label="Back to grid"
+                className={`${ICON_BTN} px-2 py-1 text-xs font-medium`}
               >
                 <ArrowLeft className="h-3.5 w-3.5" />
                 Back
               </button>
               <div className="min-w-0 flex-1">
-                <p className="truncate text-sm font-medium">{openLatest.title}</p>
+                <p className="truncate text-sm font-medium">{openItem.title}</p>
                 <p className="truncate text-[0.65rem] text-text-secondary">
-                  {openLatest.group} · {relativeTime(openLatest.mtime)} · {fmtSize(openLatest.size)}
+                  {openItem.group} · {relativeTime(openItem.mtime)} · {fmtSize(openItem.size)}
                 </p>
               </div>
               <div className="flex items-center gap-2 text-xs text-text-secondary">
                 <button
-                  onClick={latestPrev}
+                  onClick={goPrev}
                   aria-label="Previous"
                   className="p-1 hover:text-midground transition-colors"
                 >
                   <ChevronLeft className="h-4 w-4" />
                 </button>
                 <span>
-                  {openLatestIdx + 1} / {latest.length}
+                  {openIdx + 1} / {visible.length}
                 </span>
                 <button
-                  onClick={latestNext}
+                  onClick={goNext}
                   aria-label="Next"
                   className="p-1 hover:text-midground transition-colors"
                 >
                   <ChevronRight className="h-4 w-4" />
                 </button>
               </div>
-              <DownloadButton item={openLatest} />
+              <MoveButtons item={openItem} view={view} onMove={move} />
+              <DownloadButton item={openItem} />
             </div>
-            <ViewerPane item={openLatest} />
+            <ViewerPane item={openItem} />
+          </div>
+        ) : visible.length === 0 ? (
+          <div className="flex-1 flex items-center justify-center text-text-secondary text-sm px-6 text-center">
+            {EMPTY_COPY[view]}
           </div>
         ) : (
           <div className="min-h-0 flex-1 overflow-y-auto pr-1">
             <div className="grid gap-4 grid-cols-1 sm:grid-cols-2 xl:grid-cols-6">
-              {latest.map((item, idx) => (
-                <div
-                  key={item.id}
-                  className={idx === 0 ? "sm:col-span-2 xl:col-span-4" : "xl:col-span-2"}
-                >
-                  <ThumbCard item={item} hero={idx === 0} onOpen={setOpenLatestId} />
-                </div>
-              ))}
-            </div>
-            <p className="text-[0.65rem] text-text-secondary mt-3 px-1">
-              Five most recent reports, one per audit group — the full history ({total}) lives
-              in Archive.
-            </p>
-          </div>
-        )
-      )}
-
-      {/* ----- ARCHIVE: sidebar + preview ----- */}
-      {!loading && !fetchErr && items.length > 0 && view === "archive" && (
-        <div className="flex min-h-0 flex-1 gap-3">
-          <aside className="w-64 shrink-0 flex flex-col min-h-0 border-r border-current/10 pr-2">
-            <ul className="flex-1 overflow-y-auto space-y-0.5">
-              {items.map((item) => {
-                const active = item.id === selectedId;
+              {visible.map((item, idx) => {
+                const hero = view === "latest" && idx === 0;
                 return (
-                  <li key={item.id}>
-                    <button
-                      onClick={() => setChosenId(item.id)}
-                      className={[
-                        "w-full text-left px-2 py-2 rounded text-xs transition-colors",
-                        active
-                          ? "bg-midground/15 text-midground"
-                          : "text-text-secondary hover:bg-midground/8 hover:text-midground",
-                      ].join(" ")}
-                    >
-                      <p className="truncate font-medium leading-snug">{item.title}</p>
-                      <p className="truncate text-[0.65rem] opacity-60 mt-0.5">
-                        {item.group} · {relativeTime(item.mtime)} · {fmtSize(item.size)}
-                      </p>
-                    </button>
-                  </li>
+                  <div
+                    key={item.id}
+                    className={hero ? "sm:col-span-2 xl:col-span-4" : "xl:col-span-2"}
+                  >
+                    <ThumbCard item={item} view={view} hero={hero} onOpen={setOpenId} onMove={move} />
+                  </div>
                 );
               })}
-            </ul>
-          </aside>
-
-          <div className="flex-1 min-h-0 min-w-0 flex flex-col">
-            {selected ? (
-              <>
-                <div className="flex items-center gap-2 pb-2">
-                  <div className="min-w-0 flex-1">
-                    <p className="truncate text-sm font-medium">{selected.title}</p>
-                    <p className="truncate text-[0.65rem] text-text-secondary">
-                      {selected.group} · {relativeTime(selected.mtime)} · {fmtSize(selected.size)}
-                    </p>
-                  </div>
-                  <DownloadButton item={selected} />
-                </div>
-                <ViewerPane item={selected} />
-              </>
-            ) : (
-              <div className="flex-1 flex items-center justify-center text-text-secondary text-sm">
-                Select an item to preview
-              </div>
+            </div>
+            {view === "latest" && (
+              <p className="text-[0.65rem] text-text-secondary mt-3 px-1">
+                Five most recent reports, one per audit group — ★ keeps one in Favorites,
+                the box moves it to Old, and the next-newest takes its slot.
+              </p>
             )}
           </div>
-        </div>
+        )
       )}
     </div>
   );

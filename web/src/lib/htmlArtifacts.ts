@@ -105,6 +105,69 @@ export function stripScripts(html: string): string {
   return html.replace(/<script\b[\s\S]*?<\/script\s*>/gi, "");
 }
 
+// ---------------------------------------------------------------------------
+// Bucket assignments (Latest / Favorites / Old)
+// ---------------------------------------------------------------------------
+
+/** Manual bucket an artifact can be moved to.  Unassigned items flow through
+ *  the auto "Latest" view (newest five).  Persisted in localStorage keyed by
+ *  the artifact id, so assignments survive reloads AND in-place file
+ *  overwrites (same path → same id → still favorited). */
+export type Bucket = "favorites" | "old";
+export type Assignments = Record<string, Bucket>;
+
+const ASSIGNMENTS_KEY = "hermes-html-gallery-assignments-v1";
+
+export function loadAssignments(): Assignments {
+  try {
+    const raw = localStorage.getItem(ASSIGNMENTS_KEY);
+    if (!raw) return {};
+    const parsed: unknown = JSON.parse(raw);
+    if (typeof parsed !== "object" || parsed === null) return {};
+    const out: Assignments = {};
+    for (const [id, bucket] of Object.entries(parsed as Record<string, unknown>)) {
+      if (bucket === "favorites" || bucket === "old") out[id] = bucket;
+    }
+    return out;
+  } catch {
+    return {};
+  }
+}
+
+export function saveAssignments(assignments: Assignments): void {
+  try {
+    localStorage.setItem(ASSIGNMENTS_KEY, JSON.stringify(assignments));
+  } catch {
+    // Quota/private-mode failures degrade to session-only assignments.
+  }
+}
+
+function newestFirst(a: ArtifactItem, b: ArtifactItem): number {
+  return a.mtime !== b.mtime ? b.mtime - a.mtime : a.id.localeCompare(b.id);
+}
+
+/** Split items into the three tabs: manual favorites/old buckets, and the
+ *  auto Latest view computed over the UNASSIGNED remainder — moving an item
+ *  out of Latest lets the next-newest report take its slot. */
+export function bucketize(
+  items: ArtifactItem[],
+  assignments: Assignments,
+  n: number = LATEST_COUNT,
+): { latest: ArtifactItem[]; favorites: ArtifactItem[]; old: ArtifactItem[] } {
+  const favorites: ArtifactItem[] = [];
+  const old: ArtifactItem[] = [];
+  const unassigned: ArtifactItem[] = [];
+  for (const item of items) {
+    const bucket = assignments[item.id];
+    if (bucket === "favorites") favorites.push(item);
+    else if (bucket === "old") old.push(item);
+    else unassigned.push(item);
+  }
+  favorites.sort(newestFirst);
+  old.sort(newestFirst);
+  return { latest: pickLatest(unassigned, n), favorites, old };
+}
+
 /** The N newest reports, at most one per group — so one audit directory can
  *  never occupy every Latest slot.  Ignores the server's featured-first
  *  ordering (the backend floats legacy path-fragments above newer files).
