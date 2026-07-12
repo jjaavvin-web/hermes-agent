@@ -45,7 +45,6 @@ import {
   Puzzle,
   Radio,
   RotateCw,
-  Server,
   Settings,
   Shield,
   ShieldCheck,
@@ -58,7 +57,6 @@ import {
   Wrench,
   X,
   Zap,
-  DollarSign,
 } from "lucide-react";
 import { Button } from "@nous-research/ui/ui/components/button";
 import { SelectionSwitcher } from "@nous-research/ui/ui/components/selection-switcher";
@@ -201,7 +199,8 @@ const BUILTIN_NAV_REST: NavItem[] = [
     icon: MessageSquare,
   },
   { path: "/files", label: "Files", icon: FolderOpen },
-  { path: "/cost", label: "Cost", icon: DollarSign },
+  // Cost tab retired 2026-07-11 (josep GO) — verdict signals live in the
+  // MOTHERSHIP NEXUS plugin snapshot; route stays reachable directly.
   {
     path: "/analytics",
     labelKey: "analytics",
@@ -218,9 +217,11 @@ const BUILTIN_NAV_REST: NavItem[] = [
   { path: "/cron", labelKey: "cron", label: "Cron", icon: Clock },
   { path: "/skills", labelKey: "skills", label: "Skills", icon: Package },
   { path: "/explorer", labelKey: "explorer", label: "Explorer", icon: Network },
-  { path: "/os", labelKey: "os", label: "OS", icon: Server },
+  // OS tab retired 2026-07-11 (josep GO) — verdict signals live in the
+  // MOTHERSHIP NEXUS plugin snapshot; route stays reachable directly.
   { path: "/html", label: "HTML", icon: Code },
-  { path: "/learning", label: "Learning", icon: Sparkles },
+  // Learning tab retired 2026-07-11 (josep GO) — verdict signals live in the
+  // MOTHERSHIP NEXUS plugin snapshot; route stays reachable directly.
   { path: "/plugins", labelKey: "plugins", label: "Plugins", icon: Puzzle },
   { path: "/mcp", label: "MCP", icon: Plug },
   { path: "/channels", label: "Channels", icon: Radio },
