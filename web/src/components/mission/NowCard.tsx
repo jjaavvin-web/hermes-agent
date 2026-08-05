@@ -1,5 +1,5 @@
 import { type FC } from "react";
-import { useNavigate } from "react-router-dom";
+import { useNavigate } from "react-router";
 import { Button } from "@nous-research/ui/ui/components/button";
 import HermesFlying from "@/components/mythos/HermesFlying";
 import { useMissionSnapshot } from "@/components/mission/useMissionStream";
