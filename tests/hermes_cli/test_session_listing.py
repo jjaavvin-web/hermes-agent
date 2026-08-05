@@ -1,7 +1,13 @@
-"""Tests for shared Hermes CLI and gateway session-listing policy."""
+"""Tests for the shared session-listing helpers (hermes_cli/session_listing.py).
+
+Covers both the fork's CLI/gateway listing-policy suite and upstream v0.20's
+search / lane-scope suite.
+"""
 from __future__ import annotations
 
 from typing import Any
+
+import pytest
 
 from hermes_cli.session_listing import (
     format_gateway_session_listing,
@@ -11,6 +17,13 @@ from hermes_cli.session_listing import (
 
 
 class _FakeSessionDB:
+    """Fork listing-policy double.
+
+    Re-anchored for the v0.20 merge: ``query_session_listing`` now also passes
+    ``session_key``/``search_query``/``order_by_last_active``, so accept (and
+    ignore) them while still recording the three fields the fork asserts on.
+    """
+
     def __init__(self, rows: list[dict[str, Any]]) -> None:
         self.rows = rows
         self.calls: list[dict[str, Any]] = []
@@ -21,6 +34,9 @@ class _FakeSessionDB:
         source: str | None,
         exclude_sources: list[str] | None,
         limit: int,
+        session_key: str | None = None,
+        search_query: str | None = None,
+        order_by_last_active: bool = False,
     ) -> list[dict[str, Any]]:
         self.calls.append(
             {"source": source, "exclude_sources": exclude_sources, "limit": limit}
@@ -29,21 +45,21 @@ class _FakeSessionDB:
 
 
 def test_parse_strips_display_aliases() -> None:
-    assert parse_session_listing_args("list") == (False, False, "")
-    assert parse_session_listing_args("ls") == (False, False, "")
-    assert parse_session_listing_args("browse") == (False, False, "")
+    assert parse_session_listing_args("list") == (False, False, "", None)
+    assert parse_session_listing_args("ls") == (False, False, "", None)
+    assert parse_session_listing_args("browse") == (False, False, "", None)
 
 
 def test_parse_recognizes_all_and_full_flags_case_insensitively() -> None:
-    assert parse_session_listing_args("ALL") == (True, False, "")
-    assert parse_session_listing_args("--full") == (False, True, "")
-    assert parse_session_listing_args("all full") == (True, True, "")
-    assert parse_session_listing_args("--all FULL") == (True, True, "")
+    assert parse_session_listing_args("ALL") == (True, False, "", None)
+    assert parse_session_listing_args("--full") == (False, True, "", None)
+    assert parse_session_listing_args("all full") == (True, True, "", None)
+    assert parse_session_listing_args("--all FULL") == (True, True, "", None)
 
 
 def test_parse_preserves_non_flag_text_as_target() -> None:
-    assert parse_session_listing_args("My Session") == (False, False, "My Session")
-    assert parse_session_listing_args("ls My Session") == (False, False, "My Session")
+    assert parse_session_listing_args("My Session") == (False, False, "My Session", None)
+    assert parse_session_listing_args("ls My Session") == (False, False, "My Session", None)
 
 
 def test_query_scopes_to_source_by_default() -> None:
@@ -152,3 +168,132 @@ def test_format_non_empty_rows_renders_title_ids_footer_and_optional_source() ->
     assert "Resume:" in with_source
     assert "`discord`" in with_source
     assert "`discord`" not in without_source
+
+
+class TestParseSessionListingArgs:
+    def test_plain_listing(self):
+        assert parse_session_listing_args("") == (False, False, "", None)
+
+
+
+
+class TestQuerySessionListingSearch:
+    @pytest.fixture
+    def db(self, tmp_path):
+        from hermes_state import SessionDB
+        db = SessionDB(db_path=tmp_path / "state.db")
+        db.create_session("sess_an94", "telegram", user_id="1", chat_id="2")
+        db.set_session_title("sess_an94", "AN-94 Prestige Barrel Build #2")
+        db.create_session("sess_winton", "whatsapp", user_id="1", chat_id="2")
+        db.set_session_title("sess_winton", "Winton Email Sheet Update #3")
+        db.create_session("sess_untitled", "telegram", user_id="1", chat_id="2")
+        yield db
+        db.close()
+
+    def _ids(self, db, **kw):
+        return [r["id"] for r in query_session_listing(db, **kw)]
+
+
+
+    def test_source_scoping(self, db):
+        assert self._ids(db, source="telegram", search_query="winton") == []
+        assert self._ids(db, source="whatsapp", search_query="winton") == ["sess_winton"]
+
+
+    def test_search_matches_compression_root_title(self, tmp_path):
+        """Searching an old (compressed-away) title surfaces the live tip."""
+        from hermes_state import SessionDB
+        db = SessionDB(db_path=tmp_path / "chain.db")
+        db.create_session("root_1", "telegram", user_id="1", chat_id="2")
+        db.set_session_title("root_1", "Old Chat")
+        db.end_session("root_1", end_reason="compression")
+        db.create_session(
+            "tip_1", "telegram", user_id="1", chat_id="2", parent_session_id="root_1"
+        )
+        db.set_session_title("tip_1", "AN-94 Build")
+        try:
+            for query in ("old chat", "root_1", "an94"):
+                rows = query_session_listing(db, source="telegram", search_query=query)
+                assert [r["id"] for r in rows] == ["tip_1"], query
+        finally:
+            db.close()
+
+
+class TestQuerySessionListingLaneScope:
+    @pytest.fixture
+    def db(self, tmp_path):
+        from hermes_state import SessionDB
+
+        db = SessionDB(db_path=tmp_path / "state.db")
+        lane_key = "agent:main:telegram:dm:lane"
+        db.create_session(
+            "lane_current", "telegram", session_key=lane_key,
+            user_id="lane-user", chat_id="lane",
+        )
+        db.set_session_title("lane_current", "Current lane")
+        db.create_session(
+            "lane_named", "telegram", session_key=lane_key,
+            user_id="lane-user", chat_id="lane",
+        )
+        db.set_session_title("lane_named", "Needle lane")
+        db.create_session(
+            "lane_unnamed", "telegram", session_key=lane_key,
+            user_id="lane-user", chat_id="lane",
+        )
+        for i in range(60):
+            db.create_session(
+                f"foreign_{i}", "telegram",
+                session_key=f"agent:main:telegram:dm:foreign-{i}",
+                user_id=f"foreign-user-{i}", chat_id=f"foreign-{i}",
+            )
+            db.set_session_title(f"foreign_{i}", f"Needle foreign {i}")
+        yield db, lane_key
+        db.close()
+
+    def test_exact_lane_precedes_limit_and_current_session_exclusion(self, db):
+        session_db, lane_key = db
+
+        rows = query_session_listing(
+            session_db,
+            source="telegram",
+            session_key=lane_key,
+            current_session_id="lane_current",
+            limit=1,
+        )
+
+        assert [row["id"] for row in rows] == ["lane_named"]
+
+    def test_exact_lane_preserves_full_and_search_modes(self, db):
+        session_db, lane_key = db
+
+        full_rows = query_session_listing(
+            session_db,
+            source="telegram",
+            session_key=lane_key,
+            include_unnamed=True,
+            limit=10,
+        )
+        search_rows = query_session_listing(
+            session_db,
+            source="telegram",
+            session_key=lane_key,
+            search_query="needle",
+            limit=10,
+        )
+
+        assert {row["id"] for row in full_rows} == {
+            "lane_current", "lane_named", "lane_unnamed",
+        }
+        assert [row["id"] for row in search_rows] == ["lane_named"]
+
+    def test_omitted_session_key_keeps_source_scope(self, db):
+        session_db, _lane_key = db
+
+        rows = query_session_listing(
+            session_db,
+            source="telegram",
+            search_query="needle foreign 59",
+            limit=10,
+        )
+
+        assert [row["id"] for row in rows] == ["foreign_59"]

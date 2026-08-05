@@ -40,10 +40,37 @@ from pathlib import Path
 # Repo bootstrap — make ``hermes_cli`` importable regardless of CWD.
 # ---------------------------------------------------------------------------
 
-_DEFAULT_HERMES_REPO_ROOT = "/home/josep/.local/share/hermes-agent"
-_REPO_ROOT = Path(os.environ.get("HERMES_REPO_ROOT", _DEFAULT_HERMES_REPO_ROOT))
-if str(_REPO_ROOT) not in sys.path:
-    sys.path.insert(0, str(_REPO_ROOT))
+_BUNDLED_REPO_ROOT = Path(__file__).resolve().parents[1]
+_repo_root_override = os.environ.get("HERMES_REPO_ROOT")
+if _repo_root_override is not None:
+    if not _repo_root_override.strip():
+        raise RuntimeError("HERMES_REPO_ROOT is invalid: empty path")
+    try:
+        _resolved_override = Path(_repo_root_override).resolve(strict=True)
+    except (OSError, RuntimeError) as exc:
+        raise RuntimeError(
+            f"HERMES_REPO_ROOT is invalid: {_repo_root_override!r}"
+        ) from exc
+    if _resolved_override != _BUNDLED_REPO_ROOT:
+        raise RuntimeError(
+            "HERMES_REPO_ROOT provenance mismatch: "
+            f"expected {_BUNDLED_REPO_ROOT}, got {_resolved_override}"
+        )
+
+_REPO_ROOT = _BUNDLED_REPO_ROOT
+
+
+def _is_bundled_root_entry(entry: str) -> bool:
+    try:
+        return Path(entry).resolve() == _REPO_ROOT
+    except (OSError, RuntimeError, TypeError):
+        return False
+
+
+sys.path[:] = [
+    str(_REPO_ROOT),
+    *(entry for entry in sys.path if not _is_bundled_root_entry(entry)),
+]
 
 
 # ---------------------------------------------------------------------------
@@ -51,15 +78,46 @@ if str(_REPO_ROOT) not in sys.path:
 # ---------------------------------------------------------------------------
 
 
+def _kanban_db():
+    """Return the deferred kernel only when it comes from this bundle."""
+    from hermes_cli import kanban_db as kb  # noqa: PLC0415
+
+    expected = _REPO_ROOT / "hermes_cli" / "kanban_db.py"
+    module_file = getattr(kb, "__file__", None)
+    if not isinstance(module_file, (str, os.PathLike)):
+        raise RuntimeError(
+            "hermes_cli.kanban_db provenance validation failed: "
+            f"expected file {expected}, got {module_file!r}"
+        )
+    try:
+        expected_file = expected.resolve(strict=True)
+        actual_file = Path(module_file).resolve(strict=True)
+    except (OSError, RuntimeError, TypeError) as exc:
+        raise RuntimeError(
+            "hermes_cli.kanban_db provenance validation failed: "
+            f"expected file {expected}, got {module_file!r}"
+        ) from exc
+    if (
+        not expected_file.is_file()
+        or not actual_file.is_file()
+        or actual_file != expected_file
+    ):
+        raise RuntimeError(
+            "hermes_cli.kanban_db provenance mismatch: "
+            f"expected {expected_file}, got {actual_file}"
+        )
+    return kb
+
+
 def _connect_board(board: str | None):
     """Return a live sqlite3 connection to the board's kanban DB."""
-    from hermes_cli import kanban_db as kb  # noqa: PLC0415
+    kb = _kanban_db()
 
     return kb.connect(board=board)
 
 
 def _fetch_task(conn, task_id: str):
-    from hermes_cli import kanban_db as kb  # noqa: PLC0415
+    kb = _kanban_db()
 
     task = kb.get_task(conn, task_id)
     if task is None:
@@ -67,14 +125,21 @@ def _fetch_task(conn, task_id: str):
     return task
 
 
-def _complete(conn, task_id: str, summary: str, metadata: dict) -> None:
-    from hermes_cli import kanban_db as kb  # noqa: PLC0415
+def _complete(conn, task_id: str, summary: str, metadata: dict) -> bool:
+    kb = _kanban_db()
 
-    kb.complete_task(conn, task_id, summary=summary, metadata=metadata)
+    return bool(
+        kb.complete_task(
+            conn,
+            task_id,
+            summary=summary,
+            metadata=metadata,
+        )
+    )
 
 
 def _block(conn, task_id: str, reason: str) -> None:
-    from hermes_cli import kanban_db as kb  # noqa: PLC0415
+    kb = _kanban_db()
 
     kb.block_task(conn, task_id, reason=reason)
 
@@ -95,10 +160,31 @@ def _isa_gate(task_id: str) -> tuple[bool, str]:
     """
     try:
         scripts_dir = Path(__file__).resolve().parent
-        if str(scripts_dir) not in sys.path:
-            sys.path.insert(0, str(scripts_dir))
-        import isa_common  # noqa: PLC0415
-        import isa_lint  # noqa: PLC0415
+
+        def _is_bundled_scripts_entry(entry: str) -> bool:
+            try:
+                return Path(entry).resolve() == scripts_dir
+            except (OSError, RuntimeError, TypeError):
+                return False
+
+        def _set_bundled_import_precedence() -> None:
+            sys.path[:] = [
+                str(_REPO_ROOT),
+                str(scripts_dir),
+                *(
+                    entry
+                    for entry in sys.path
+                    if not _is_bundled_root_entry(entry)
+                    and not _is_bundled_scripts_entry(entry)
+                ),
+            ]
+
+        _set_bundled_import_precedence()
+        try:
+            import isa_common  # noqa: PLC0415
+            import isa_lint  # noqa: PLC0415
+        finally:
+            _set_bundled_import_precedence()
 
         isa_path = isa_common.find_isa_for_card(task_id)
         if isa_path is None:
@@ -156,7 +242,16 @@ def run(
         return 1
 
     with contextlib.closing(_connect_board(board)) as conn:
-        _complete(conn, task_id, summary=summary, metadata=metadata)
+        completed = _complete(
+            conn,
+            task_id,
+            summary=summary,
+            metadata=metadata,
+        )
+
+    if not completed:
+        _log_error(f"Kanban kernel refused completion of task {task_id}.")
+        return 1
 
     _log_info(f"Task {task_id} completed via claude-kanban-bridge.")
     return 0

@@ -13,6 +13,7 @@ Exit codes:
 from __future__ import annotations
 
 import argparse
+import ast
 import json
 import re
 import sys
@@ -94,6 +95,95 @@ BARE_CLAUDE_PATTERNS = (
 # flag message at provider_lane_canary.py:688), so the source scan must exclude
 # itself or it self-flags as a bare-claude leak.
 SELF_SOURCE_PATH = Path(__file__).resolve()
+
+_SUBPROCESS_ARGV_CALLS = {
+    "subprocess.call",
+    "subprocess.check_call",
+    "subprocess.check_output",
+    "subprocess.Popen",
+    "subprocess.run",
+}
+_SHELL_STRING_CALLS = {
+    "os.popen",
+    "os.system",
+    "subprocess.getoutput",
+    "subprocess.getstatusoutput",
+}
+_SHELL_EXECUTABLES = {"bash", "cmd", "dash", "fish", "powershell", "pwsh", "sh", "zsh"}
+
+
+PythonCommand = str | tuple[str, ...]
+
+
+def _command_has_bare_claude(command: PythonCommand) -> bool:
+    if isinstance(command, str):
+        return any(pattern.search(command) for pattern in BARE_CLAUDE_PATTERNS)
+    if not command:
+        return False
+    executable = command[0].replace("\\", "/").rsplit("/", 1)[-1].lower()
+    args = [part for part in command[1:] if isinstance(part, str)]
+    if executable == "claude":
+        return any(arg in {"-p", "--print"} for arg in args)
+    if executable in _SHELL_EXECUTABLES:
+        return any(any(pattern.search(arg) for pattern in BARE_CLAUDE_PATTERNS) for arg in args)
+    return False
+
+
+def _python_bare_claude_hits(text: str) -> list[tuple[int, str]]:
+    """Return only literal commands passed to Python process-launch APIs."""
+    try:
+        tree = ast.parse(text)
+    except SyntaxError:
+        return []
+    module_aliases = {"os": "os", "subprocess": "subprocess"}
+    call_aliases: dict[str, str] = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name in module_aliases:
+                    module_aliases[alias.asname or alias.name] = alias.name
+        elif isinstance(node, ast.ImportFrom) and node.module in module_aliases:
+            for alias in node.names:
+                call_aliases[alias.asname or alias.name] = f"{node.module}.{alias.name}"
+
+    lines = text.splitlines()
+    hits: list[tuple[int, str]] = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call) or not node.args:
+            continue
+        if isinstance(node.func, ast.Name):
+            call_name = call_aliases.get(node.func.id, node.func.id)
+        elif isinstance(node.func, ast.Attribute) and isinstance(node.func.value, ast.Name):
+            module = module_aliases.get(node.func.value.id, node.func.value.id)
+            call_name = f"{module}.{node.func.attr}"
+        else:
+            continue
+        try:
+            literal = ast.literal_eval(node.args[0])
+        except (ValueError, TypeError, SyntaxError, MemoryError, RecursionError):
+            continue
+        command: PythonCommand | None = None
+        if isinstance(literal, str):
+            command = literal
+        elif isinstance(literal, (list, tuple)) and all(isinstance(part, str) for part in literal):
+            command = tuple(literal)
+        if command is None:
+            continue
+        if call_name in _SUBPROCESS_ARGV_CALLS and isinstance(command, str):
+            shell_enabled = any(
+                keyword.arg == "shell"
+                and isinstance(keyword.value, ast.Constant)
+                and keyword.value.value is True
+                for keyword in node.keywords
+            )
+            if not shell_enabled:
+                continue
+        elif call_name not in _SUBPROCESS_ARGV_CALLS | _SHELL_STRING_CALLS:
+            continue
+        if _command_has_bare_claude(command):
+            source = lines[node.lineno - 1].strip() if node.lineno <= len(lines) else ""
+            hits.append((node.lineno, source))
+    return hits
 
 
 @dataclass
@@ -666,11 +756,24 @@ def scan_bare_claude(paths: Iterable[Path]) -> list[Lane]:
                 or "metered_env_keys" in text_lower
             )
             lines = text.splitlines()
-            for lineno, line in enumerate(lines, start=1):
-                stripped = line.strip()
-                if not stripped or stripped.startswith("#"):
-                    continue
-                if any(pattern.search(line) for pattern in BARE_CLAUDE_PATTERNS):
+            if path.suffix == ".py":
+                # Python prose and diagnostics often mention the forbidden
+                # command. Only AST-confirmed subprocess/shell execution is a
+                # route; comments, docstrings, and returned/logged literals are inert.
+                excluded_test_path = (
+                    path.name.startswith("test_")
+                    or "/tests/" in str(path)
+                    or "tests" in path.parts
+                )
+                hits = [] if guarded_subscription_file or excluded_test_path else _python_bare_claude_hits(text)
+            else:
+                hits = []
+                for lineno, line in enumerate(lines, start=1):
+                    stripped = line.strip()
+                    if not stripped or stripped.startswith("#"):
+                        continue
+                    if not any(pattern.search(line) for pattern in BARE_CLAUDE_PATTERNS):
+                        continue
                     # Ignore explicit negative/doc/help/test text that mentions the forbidden command but does not execute it.
                     context = "\n".join(lines[max(0, lineno - 8):lineno + 8]).lower()
                     if (
@@ -692,22 +795,24 @@ def scan_bare_claude(paths: Iterable[Path]) -> list[Lane]:
                         or "tests" in path.parts
                     ):
                         continue
-                    lane = Lane(
-                        lane_id=f"source-scan:{path}:{lineno}",
-                        lane_type="source_bare_claude_scan",
-                        source_path=str(path),
-                        source_line=lineno,
-                        provider="source-subprocess",
-                        model="claude-cli",
-                        provider_declared_at=loc(path, lineno),
-                        model_declared_at=loc(path, lineno),
-                        fallback_chain=None,
-                        tool_allowlist="subprocess",
-                        tool_declared_at=loc(path, lineno),
-                    )
-                    line_ref, text_ref = doctrine("bare_claude")
-                    lane.checks.append(Check(FLAG, "bare-claude-subprocess", "P0", line_ref, text_ref, "run_claude_oneshot", stripped[:240], "Executable bare claude -p/--print pattern found", "Replace with agent.claude_cli_runtime.run_claude_oneshot."))
-                    lanes.append(lane)
+                    hits.append((lineno, stripped))
+            for lineno, stripped in hits:
+                lane = Lane(
+                    lane_id=f"source-scan:{path}:{lineno}",
+                    lane_type="source_bare_claude_scan",
+                    source_path=str(path),
+                    source_line=lineno,
+                    provider="source-subprocess",
+                    model="claude-cli",
+                    provider_declared_at=loc(path, lineno),
+                    model_declared_at=loc(path, lineno),
+                    fallback_chain=None,
+                    tool_allowlist="subprocess",
+                    tool_declared_at=loc(path, lineno),
+                )
+                line_ref, text_ref = doctrine("bare_claude")
+                lane.checks.append(Check(FLAG, "bare-claude-subprocess", "P0", line_ref, text_ref, "run_claude_oneshot", stripped[:240], "Executable bare claude -p/--print pattern found", "Replace with agent.claude_cli_runtime.run_claude_oneshot."))
+                lanes.append(lane)
     return lanes
 
 

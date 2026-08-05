@@ -199,6 +199,23 @@ def test_dashboard_smoke_declared_4xx_seed_for_parameterized_get():
     assert "path seed" in reason
 
 
+def test_dashboard_smoke_accepts_inactive_ssh_ownership():
+    from hermes_cli import web_server
+
+    route = cast(
+        APIRoute,
+        next(
+            route
+            for route in web_server.app.routes
+            if isinstance(route, APIRoute) and route.path == "/api/ssh/ownership"
+        ),
+    )
+    expected, reason = dashboard_smoke._declared_expected_for_route(route)
+
+    assert expected == {200, 404}
+    assert reason == "declared inactive SSH ownership response accepted"
+
+
 def test_dashboard_route_manifest_gate_fails_on_missing_and_unexpected_route():
     from hermes_cli import web_server
 

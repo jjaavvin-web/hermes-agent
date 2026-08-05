@@ -73,6 +73,17 @@ SKIPPED_GET_ROUTES: Mapping[str, str] = {
     "/api/hermes/update/check": "network update-check route; skipped to preserve no-metered/no-network smoke",
     "/api/model/options": "provider catalog route; skipped to preserve no-metered/no-network smoke",
     "/api/model/recommended-default": "provider recommendation route; skipped to preserve no-metered/no-network smoke",
+    "/api/providers/oauth": "provider OAuth discovery route; skipped to preserve no-network smoke",
+    "/api/analytics/usage": "provider usage aggregation route; skipped to preserve no-network smoke",
+    "/api/life/agenda": "calendar and live-board aggregation route; skipped to preserve no-network/no-live-state smoke",
+    "/api/plugins/kanban/diagnostics": "host and container diagnostics route; registration checked without external process probes",
+    "/api/plugins/kanban/model-options": "models.dev catalog route; skipped to preserve no-network smoke",
+    "/api/dashboard/work-nexus": "full git worktree graph route; registration checked without expensive repository probes",
+    "/api/dashboard/artifacts": "recursive audit-artifact scan route; registration checked without traversing live archives",
+    "/api/dashboard/git-health": "per-worktree git readiness route; registration checked without expensive repository probes",
+    "/api/dashboard/git-graph": "multi-worktree git graph route; registration checked without expensive repository probes",
+    "/api/dashboard/git-river": "multi-worktree git history route; registration checked without expensive repository probes",
+    "/api/dashboard/command-center": "live command aggregation route; registration checked without subprocess or provider initialization",
 }
 
 # Some dynamic path params can use stable harmless values.  They may still return
@@ -541,6 +552,8 @@ def _required_param_names(route: APIRoute, attr: str) -> list[str]:
 def _declared_expected_for_route(route: APIRoute) -> tuple[set[int], str | None]:
     if route.path == "/api/gitnexus/{path:path}":
         return set(DECLARED_PROXY_STATUSES), "declared proxy/sidecar 4xx/5xx response accepted"
+    if route.path == "/api/ssh/ownership":
+        return {200, 404}, "declared inactive SSH ownership response accepted"
     path_params = _path_param_names(route.path)
     required_query = _required_param_names(route, "query_params")
     if path_params or required_query:

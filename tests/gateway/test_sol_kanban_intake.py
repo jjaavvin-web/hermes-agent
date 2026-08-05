@@ -101,11 +101,13 @@ async def test_sol_intake_forces_sol_board_triage_and_subscribes(kanban_home):
             "task_id": task_id,
             "platform": "discord",
             "chat_id": "channel-1",
+            "chat_type": None,
             "thread_id": "thread-1",
             "user_id": "user-1",
             "notifier_profile": "gateway-profile",
+            "delivery_metadata": {},
             "created_at": subs[0]["created_at"],
-            "last_event_id": 0,
+            "last_event_id": 1,
         }
     ]
 

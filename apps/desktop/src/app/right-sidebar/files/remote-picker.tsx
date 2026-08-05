@@ -5,6 +5,7 @@ import { Codicon } from '@/components/ui/codicon'
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from '@/components/ui/dialog'
 import { useI18n } from '@/i18n'
 import { readDesktopDir, setDesktopFsRemotePicker } from '@/lib/desktop-fs'
+import { displayPath, pathLeaf } from '@/lib/display-path'
 import { cn } from '@/lib/utils'
 
 function clean(path: string) {
@@ -24,7 +25,7 @@ function parentDir(path: string) {
 }
 
 function pathName(path: string) {
-  return path.split('/').filter(Boolean).pop() || path
+  return pathLeaf(path) || path
 }
 
 interface PendingSelection {
@@ -167,7 +168,7 @@ export function RemoteFolderPicker() {
         </div>
 
         <div className="shrink-0 flex items-center justify-between gap-2 border-t border-border/70 px-4 py-3">
-          <div className="min-w-0 truncate text-xs text-muted-foreground">{currentPath}</div>
+          <div className="min-w-0 truncate text-xs text-muted-foreground">{displayPath(currentPath)}</div>
           <div className="flex shrink-0 items-center gap-2">
             <Button onClick={() => close()} size="sm" variant="ghost">
               {t.common.cancel}
@@ -185,7 +186,7 @@ export function RemoteFolderPicker() {
 function FolderRow({ disabled = false, name, onClick }: { disabled?: boolean; name: string; onClick: () => void }) {
   return (
     <button
-      className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs text-(--ui-text-secondary) hover:bg-(--ui-row-hover-background) hover:text-foreground disabled:pointer-events-none disabled:opacity-40"
+      className="row-hover flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs text-(--ui-text-secondary) hover:text-foreground disabled:pointer-events-none disabled:opacity-40"
       disabled={disabled}
       onClick={onClick}
       type="button"

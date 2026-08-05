@@ -7,9 +7,15 @@ Covers ISC-24..29 of the isa-enforcement-layer ISA. The gate function
 from __future__ import annotations
 
 import importlib.util
+import json
+import os
 import subprocess
 import sys
 from pathlib import Path
+
+import pytest
+
+from hermes_cli import kanban_db as kb
 
 _SCRIPTS = Path(__file__).resolve().parents[2] / "scripts"
 
@@ -25,6 +31,212 @@ def _load(name: str):
 
 isa_common = _load("isa_common")
 bridge = _load("claude_kanban_bridge")
+
+
+def _run_isolated_bridge(
+    tmp_path: Path,
+    code: str,
+    *args: Path,
+    extra_env: dict[str, str] | None = None,
+) -> subprocess.CompletedProcess[str]:
+    """Run a cold bridge probe without inheriting this process's imports."""
+    home = tmp_path / "home"
+    hermes_home = home / ".hermes"
+    cwd = tmp_path / "cwd"
+    pycache = tmp_path / "pycache"
+    hermes_home.mkdir(parents=True)
+    cwd.mkdir()
+    pycache.mkdir()
+    env = {
+        key: os.environ[key]
+        for key in ("PATH", "LANG", "LC_ALL", "TZ")
+        if key in os.environ
+    }
+    env.update(
+        {
+            "HOME": str(home),
+            "HERMES_HOME": str(hermes_home),
+            "PYTHONDONTWRITEBYTECODE": "1",
+            "PYTHONPYCACHEPREFIX": str(pycache),
+        }
+    )
+    if extra_env:
+        env.update(extra_env)
+    return subprocess.run(
+        [
+            sys.executable,
+            "-I",
+            "-B",
+            "-c",
+            code,
+            str(_SCRIPTS / "claude_kanban_bridge.py"),
+            *(str(arg) for arg in args),
+        ],
+        capture_output=True,
+        text=True,
+        timeout=30,
+        cwd=cwd,
+        env=env,
+    )
+
+
+def test_cold_default_binds_bundled_root_and_kanban_db_provenance(tmp_path):
+    result = _run_isolated_bridge(
+        tmp_path,
+        r"""
+import importlib.util
+import json
+from pathlib import Path
+import sys
+
+bridge_path = Path(sys.argv[1]).resolve()
+bundled_root = bridge_path.parents[1]
+sys.path.insert(0, str(bundled_root / "scripts" / ".."))
+spec = importlib.util.spec_from_file_location("cold_bridge_probe", bridge_path)
+assert spec and spec.loader
+bridge = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(bridge)
+if hasattr(bridge, "_kanban_db"):
+    kb = bridge._kanban_db()
+else:
+    from hermes_cli import kanban_db as kb
+print(json.dumps({
+    "repo_root": str(bridge._REPO_ROOT.resolve()),
+    "sys_path_0": str(Path(sys.path[0]).resolve()),
+    "bundled_root_entries": sum(
+        Path(entry).resolve() == bundled_root for entry in sys.path if entry
+    ),
+    "kanban_db": str(Path(kb.__file__).resolve()),
+}))
+""",
+    )
+
+    assert result.returncode == 0, result.stderr
+    observed = json.loads(result.stdout)
+    bundled_root = (_SCRIPTS / "claude_kanban_bridge.py").resolve().parents[1]
+    assert Path(observed["repo_root"]) == bundled_root
+    assert Path(observed["sys_path_0"]) == bundled_root
+    assert observed["bundled_root_entries"] == 1
+    assert Path(observed["kanban_db"]) == bundled_root / "hermes_cli" / "kanban_db.py"
+
+
+def test_cold_mismatched_repo_override_fails_before_db_access(tmp_path):
+    foreign = tmp_path / "foreign"
+    package = foreign / "hermes_cli"
+    package.mkdir(parents=True)
+    (package / "__init__.py").write_text("", encoding="utf-8")
+    marker = tmp_path / "db-accessed"
+    (package / "kanban_db.py").write_text(
+        "import os\nfrom pathlib import Path\n"
+        "def connect(*args, **kwargs):\n"
+        "    Path(os.environ['DB_ACCESS_MARKER']).write_text('connect')\n",
+        encoding="utf-8",
+    )
+
+    result = _run_isolated_bridge(
+        tmp_path,
+        r"""
+import importlib.util
+from pathlib import Path
+import sys
+
+bridge_path = Path(sys.argv[1]).resolve()
+spec = importlib.util.spec_from_file_location("override_bridge_probe", bridge_path)
+assert spec and spec.loader
+bridge = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(bridge)
+""",
+        extra_env={
+            "HERMES_REPO_ROOT": str(foreign),
+            "DB_ACCESS_MARKER": str(marker),
+        },
+    )
+
+    assert result.returncode != 0
+    assert "HERMES_REPO_ROOT" in result.stderr
+    assert not marker.exists()
+
+
+def test_preloaded_foreign_kanban_db_fails_before_primitive_call(tmp_path):
+    foreign = tmp_path / "foreign"
+    package = foreign / "hermes_cli"
+    package.mkdir(parents=True)
+    (package / "__init__.py").write_text("", encoding="utf-8")
+    marker = tmp_path / "primitive-called"
+    (package / "kanban_db.py").write_text(
+        "import os\nfrom pathlib import Path\n"
+        "def connect(*args, **kwargs):\n"
+        "    Path(os.environ['DB_ACCESS_MARKER']).write_text('connect')\n"
+        "    return object()\n",
+        encoding="utf-8",
+    )
+
+    result = _run_isolated_bridge(
+        tmp_path,
+        r"""
+import importlib.util
+from pathlib import Path
+import sys
+
+bridge_path = Path(sys.argv[1]).resolve()
+foreign = Path(sys.argv[2]).resolve()
+sys.path.insert(0, str(foreign))
+from hermes_cli import kanban_db as foreign_kb
+assert Path(foreign_kb.__file__).resolve() == foreign / "hermes_cli" / "kanban_db.py"
+spec = importlib.util.spec_from_file_location("cached_bridge_probe", bridge_path)
+assert spec and spec.loader
+bridge = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(bridge)
+bridge._connect_board(None)
+""",
+        foreign,
+        extra_env={"DB_ACCESS_MARKER": str(marker)},
+    )
+
+    assert result.returncode != 0
+    assert "kanban_db" in result.stderr
+    assert "provenance" in result.stderr.lower()
+    assert not marker.exists()
+
+
+def test_cold_isa_gate_preserves_bundled_path_precedence(tmp_path):
+    result = _run_isolated_bridge(
+        tmp_path,
+        r"""
+import importlib.util
+import json
+from pathlib import Path
+import sys
+
+bridge_path = Path(sys.argv[1]).resolve()
+bundled_root = bridge_path.parents[1]
+scripts_dir = bridge_path.parent
+spec = importlib.util.spec_from_file_location("isa_gate_path_probe", bridge_path)
+assert spec and spec.loader
+bridge = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(bridge)
+allowed, reason = bridge._isa_gate("t_no_linked_isa_transition_probe")
+resolved_path = [str(Path(entry).resolve()) for entry in sys.path if entry]
+print(json.dumps({
+    "allowed": allowed,
+    "reason": reason,
+    "sys_path_0": resolved_path[0],
+    "sys_path_1": resolved_path[1],
+    "bundled_root_entries": resolved_path.count(str(bundled_root)),
+    "scripts_dir_entries": resolved_path.count(str(scripts_dir)),
+}))
+""",
+    )
+
+    assert result.returncode == 0, result.stderr
+    observed = json.loads(result.stdout)
+    bundled_root = (_SCRIPTS / "claude_kanban_bridge.py").resolve().parents[1]
+    assert observed["allowed"] is True
+    assert observed["reason"] == ""
+    assert Path(observed["sys_path_0"]) == bundled_root
+    assert Path(observed["sys_path_1"]) == _SCRIPTS.resolve()
+    assert observed["bundled_root_entries"] == 1
+    assert observed["scripts_dir_entries"] == 1
 
 
 def _e1_isa(card: str, phase: str, progress: str, criteria: str, verification: str) -> str:
@@ -79,6 +291,118 @@ def _work_root(tmp_path, monkeypatch) -> Path:
     root = tmp_path / "work"
     root.mkdir(parents=True, exist_ok=True)
     return root
+
+
+# --------------------------------------------------------------------------
+# R1 completion authority and truthful refusal
+# --------------------------------------------------------------------------
+
+
+@pytest.fixture
+def kanban_home(tmp_path, monkeypatch):
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    kb.init_db()
+    return home
+
+
+def test_bridge_returns_failure_when_kernel_refuses_completion(monkeypatch, capsys):
+    task = type("Task", (), {"assignee": "worker"})()
+    monkeypatch.setattr(bridge, "_connect_board", lambda board: object())
+    monkeypatch.setattr(bridge, "_fetch_task", lambda conn, task_id: task)
+    monkeypatch.setattr(bridge, "_isa_gate", lambda task_id: (True, ""))
+    monkeypatch.setattr(bridge.contextlib, "closing", lambda obj: _NullClosing(obj))
+    monkeypatch.setattr(bridge, "_complete", lambda *args, **kwargs: False)
+
+    rc = bridge.run("t_deadbeef", "default", summary="refused")
+
+    captured = capsys.readouterr()
+    assert rc != 0
+    assert "completed via" not in captured.err
+    assert "refused" in captured.err.lower()
+
+
+class _NullClosing:
+    def __init__(self, value):
+        self.value = value
+
+    def __enter__(self):
+        return self.value
+
+    def __exit__(self, *_args):
+        return False
+
+
+def test_specialist_bridge_rejects_foreign_task_without_mutation(
+    kanban_home, tmp_path, monkeypatch,
+):
+    own_workspace = tmp_path / "own-bridge"
+    own_workspace.mkdir()
+    foreign_workspace = tmp_path / "foreign-bridge"
+    foreign_workspace.mkdir()
+
+    with kb.connect() as conn:
+        own = kb.create_task(
+            conn, title="own", assignee="sol-builder",
+            workspace_kind="dir", workspace_path=str(own_workspace),
+        )
+        foreign = kb.create_task(
+            conn, title="foreign", assignee="sol-verifier",
+            workspace_kind="dir", workspace_path=str(foreign_workspace),
+        )
+        before = kb.get_task(conn, foreign)
+        before_events = list(kb.list_events(conn, foreign))
+
+    monkeypatch.setenv("HERMES_WORKER_AUTHORITY", "sol-builder")
+    monkeypatch.setenv("HERMES_KANBAN_WORKSPACE", str(own_workspace))
+    monkeypatch.setenv("HERMES_KANBAN_TASK", own)
+    monkeypatch.setenv("HERMES_KANBAN_BOARD", "default")
+    monkeypatch.setattr(bridge, "_isa_gate", lambda task_id: (True, ""))
+
+    rc = bridge.run(foreign, "default", summary="hijack")
+
+    assert rc != 0
+    with kb.connect() as conn:
+        after = kb.get_task(conn, foreign)
+        assert after is not None and before is not None
+        assert after.status == before.status == "ready"
+        assert kb.list_events(conn, foreign) == before_events
+
+
+def test_specialist_bridge_rejects_foreign_block_without_mutation(
+    kanban_home, tmp_path, monkeypatch,
+):
+    own_workspace = tmp_path / "own-block"
+    own_workspace.mkdir()
+    foreign_workspace = tmp_path / "foreign-block"
+    foreign_workspace.mkdir()
+
+    with kb.connect() as conn:
+        own = kb.create_task(
+            conn, title="own block", assignee="sol-builder",
+            workspace_kind="dir", workspace_path=str(own_workspace),
+        )
+        foreign = kb.create_task(
+            conn, title="foreign block", assignee="sol-verifier",
+            workspace_kind="dir", workspace_path=str(foreign_workspace),
+        )
+        before = kb.get_task(conn, foreign)
+        before_events = list(kb.list_events(conn, foreign))
+
+    monkeypatch.setenv("HERMES_WORKER_AUTHORITY", "sol-builder")
+    monkeypatch.setenv("HERMES_KANBAN_WORKSPACE", str(own_workspace))
+    monkeypatch.setenv("HERMES_KANBAN_TASK", own)
+    monkeypatch.setenv("HERMES_KANBAN_BOARD", "default")
+    monkeypatch.setattr(bridge, "_isa_gate", lambda task_id: (False, "blocked"))
+
+    assert bridge.run(foreign, "default", summary="hijack") != 0
+    with kb.connect() as conn:
+        after = kb.get_task(conn, foreign)
+        assert after is not None and before is not None
+        assert after.status == before.status == "ready"
+        assert kb.list_events(conn, foreign) == before_events
 
 
 # --------------------------------------------------------------------------

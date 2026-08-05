@@ -194,9 +194,9 @@ def test_dispatch_in_gateway_defaults_fail_closed():
     NOTE: the deployed runtime value lives in ~/.hermes/config.yaml and is guarded
     separately by config_drift_lint (weekly-hygiene); this test guards the CODE default.
     """
-    cfg = _read("hermes_cli/config.py")
-    assert '"dispatch_in_gateway": False' in cfg, "config.py DEFAULT must be False"
-    assert '"dispatch_in_gateway": True' not in cfg, "config.py re-armed dispatch to True"
+    cfg = _read("hermes_cli/config_defaults.py")
+    assert '"dispatch_in_gateway": False' in cfg, "config_defaults.py DEFAULT must be False"
+    assert '"dispatch_in_gateway": True' not in cfg, "config_defaults.py re-armed dispatch to True"
     for rel in ("hermes_cli/kanban.py", "gateway/kanban_watchers.py"):
         src = _read(rel)
         assert 'dispatch_in_gateway", True' not in src, f"{rel} has a default-True dispatch site"
@@ -838,6 +838,18 @@ def test_destructive_approval_pattern_keys_stay_live_against_dangerous_patterns(
     reopening the bug.
     """
     live_descriptions = {description for _, description in approval_module.DANGEROUS_PATTERNS}
+    # v0.20 moved these three command classes from the regex table into its
+    # structural execution-flag parser. Probe the production detector so the
+    # persistence rail cannot go dead after a rename or parser refactor.
+    structural_probes = {
+        "bash -c 'true'": "shell command via -c/-lc flag",
+        "python -c 'pass'": "script execution via -e/-c flag",
+        "python <<'PY'\npass\nPY": "script execution via heredoc",
+    }
+    for command, expected in structural_probes.items():
+        detected = approval_module.detect_dangerous_command(command)
+        assert detected == (True, expected, expected)
+        live_descriptions.add(expected)
     curated_keys = approval_module.DESTRUCTIVE_APPROVAL_PATTERN_KEYS - {"execute_code"}
 
     dead_keys = curated_keys - live_descriptions
@@ -886,7 +898,7 @@ def test_c_mcp_inherit_writer_authority_boundary_survives_merge():
     # in the file can't fake this check green, and a revert back to the bare
     # boolean `True` is caught even though "True" as text could appear
     # elsewhere in the file too.
-    config_src = _read("hermes_cli/config.py")
+    config_src = _read("hermes_cli/config_defaults.py")
     inherit_default = _dict_literal_value(
         config_src, "DEFAULT_CONFIG", "delegation", "inherit_mcp_toolsets"
     )

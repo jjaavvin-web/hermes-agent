@@ -48,15 +48,26 @@ def test_picker_surfaces_do_not_offer_fable_after_curated_removal():
 
 
 def test_anthropic_curated_models_still_merge_when_live_omits_other_curated_alias():
-    """Non-retired curated Anthropic aliases still survive a lagging live catalog."""
+    """A curated alias missing from /v1/models still surfaces (first).
+
+    Upstream v0.20 asserted this with ``claude-fable-5``; the fork retired that
+    alias from the curated picker (see hermes_cli/models.py), so the same
+    upstream invariant is re-anchored onto still-curated aliases — including
+    upstream's newly added ``claude-sonnet-5``.
+    """
     curated = M._PROVIDER_MODELS["anthropic"]
     assert "claude-opus-4-7" in curated
+    assert "claude-sonnet-5" in curated  # newest Sonnet alias is curated
+    assert "claude-fable-5" not in curated  # fork: retired from the picker
 
     live = ["claude-opus-4-8", "claude-sonnet-4-6", "claude-haiku-4-5-20251001"]
     with patch.object(M, "_fetch_anthropic_models", return_value=live):
         result = M.provider_model_ids("anthropic")
 
     assert "claude-opus-4-7" in result
+    assert "claude-sonnet-5" in result
+    assert "claude-fable-5" not in result  # fork: retired from the picker
+    # Curated order is preserved at the front.
     assert result[:len(curated)] == list(curated)
 
 

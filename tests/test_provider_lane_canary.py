@@ -193,6 +193,44 @@ def test_source_scan_enabled_flags_bare_claude_and_excludes_self(tmp_path: Path)
     ), "canary source scan must exclude its own path"
 
 
+def test_python_source_scan_ignores_inert_literals_but_flags_executable_commands(tmp_path: Path) -> None:
+    safe = tmp_path / "safe_diagnostics.py"
+    safe.write_text(
+        '''"""No headless claude: never run claude -p from this module."""
+# claude --print is forbidden here.
+import subprocess
+
+def dry_run() -> str:
+    return "WOULD_RUN claude -p review (dry-run)"
+
+subprocess.run(["printf", "%s", "claude -p is only prose"], check=False)
+''',
+        encoding="utf-8",
+    )
+    argv_leak = tmp_path / "argv_leak.py"
+    argv_leak.write_text(
+        '''import subprocess
+subprocess.run(["claude", "--print", "do the work"], check=False)
+''',
+        encoding="utf-8",
+    )
+    shell_leak = tmp_path / "shell_leak.py"
+    shell_leak.write_text(
+        '''from subprocess import run as execute
+execute("claude -p 'do the work'", shell=True, check=False)
+''',
+        encoding="utf-8",
+    )
+
+    lanes = canary.scan_bare_claude([safe, argv_leak, shell_leak])
+
+    assert {(Path(lane.source_path).name, lane.source_line) for lane in lanes} == {
+        ("argv_leak.py", 2),
+        ("shell_leak.py", 2),
+    }
+    assert all(check.rule_id == "bare-claude-subprocess" for lane in lanes for check in lane.checks)
+
+
 def test_live_profile_lane_config_has_zero_forbidden_routes(tmp_path: Path) -> None:
     hermes_home = canary.DEFAULT_HERMES_HOME
     if not (hermes_home / "config.yaml").is_file():
