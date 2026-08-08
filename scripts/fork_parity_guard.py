@@ -116,7 +116,14 @@ def _run_suite(
     # Ambient PYTHONPATH must never decide module resolution for a decisive
     # run; the provenance gate would catch the fallout, but don't invite it.
     env.pop("PYTHONPATH", None)
+    # An ambient FORK_PARITY_SEALED_FIXTURE (leftover shell export, CI copy)
+    # would silently soften the in-suite lineage checks to assume-eligible;
+    # only an explicit fixture-mode extra_env may set it (review P1 finding).
+    env.pop("FORK_PARITY_SEALED_FIXTURE", None)
     env.update(extra_env or {})
+    # Provenance evidence is append-mode in the conftest hook; a reused
+    # out-dir must not leak prior runs' rows into this run's gate.
+    provenance.unlink(missing_ok=True)
     cmd = [
         python, "-m", "pytest", *pytest_args,
         "-q",
@@ -129,17 +136,26 @@ def _run_suite(
         "-o", f"cache_dir={out_dir / f'pytest-cache-{name}'}",
     ]
     started = time.time()
-    result = subprocess.run(
-        cmd, cwd=str(repo), env=env, capture_output=True, text=True, timeout=3600,
-    )
+    try:
+        result = subprocess.run(
+            cmd, cwd=str(repo), env=env, capture_output=True, text=True, timeout=3600,
+        )
+        stdout, stderr, exit_code = result.stdout, result.stderr, result.returncode
+    except subprocess.TimeoutExpired as exc:
+        # A hung suite must produce a clean non-PASS gate, not an unhandled
+        # traceback (review P1 finding). junit stays missing -> the gates
+        # already treat that as collection failure.
+        stdout = (exc.stdout or b"").decode() if isinstance(exc.stdout, bytes) else (exc.stdout or "")
+        stderr = f"TIMEOUT after {exc.timeout}s"
+        exit_code = 124
     log_path.write_text(
-        result.stdout + "\n--- STDERR ---\n" + result.stderr, encoding="utf-8"
+        stdout + "\n--- STDERR ---\n" + stderr, encoding="utf-8"
     )
     return {
         "name": name,
         "cmd": cmd,
         "cwd": str(repo),
-        "exit_code": result.returncode,
+        "exit_code": exit_code,
         "duration_s": round(time.time() - started, 2),
         "junit_xml": str(junit),
         "provenance_jsonl": str(provenance),
@@ -313,6 +329,34 @@ def main() -> int:
 
     # ── static evaluation (before suites, so a dead tree still classifies) ──
     integrity_errors = lib.manifest_integrity_errors(manifest)
+    # Docket binding: enforce when the custody docket is reachable; a manifest
+    # re-carved in lockstep with its own count pins would otherwise only be
+    # caught by human review (review P1 finding). On portable checkouts the
+    # docket audit dir may be absent — recorded, not failed.
+    docket_source = str(manifest.get("docket_source") or "")
+    docket_expected = str(manifest.get("docket_sha256") or "")
+    docket_binding = "not_declared"
+    if docket_source and docket_expected:
+        # docket_source is a machine-portable label: either an absolute path
+        # or "audit <dir>/<file>" relative to the local hermes audits root.
+        rel = docket_source.removeprefix("audit ").strip()
+        candidates = [
+            Path(docket_source),
+            Path.home() / ".hermes" / "audits" / rel,
+        ]
+        docket_path = next((c for c in candidates if c.is_file()), candidates[0])
+        if docket_path.exists():
+            if _sha256(docket_path) == docket_expected:
+                docket_binding = "verified"
+            else:
+                docket_binding = "MISMATCH"
+                integrity_errors.append(
+                    f"custody docket {docket_source} does not match manifest "
+                    "docket_sha256 (docket re-carve or tamper)"
+                )
+        else:
+            docket_binding = "absent (portable run; recount protection is a review control)"
+    verdict["target"]["docket_binding"] = docket_binding
     item_records = [
         lib.evaluate_item(item, repo, ancestry_mode=args.ancestry_mode)
         for item in items
@@ -370,10 +414,20 @@ def main() -> int:
                 if file_part and not file_part.startswith("tests/security/"):
                     external_files.add(file_part)
         for index, file_part in enumerate(sorted(external_files)):
+            proof_env = dict(fixture_env)
+            if "test_dashboard_smoke" in file_part:
+                # The smoke gate HANGS when real provider keys are present;
+                # CI (tests.yml) forces exactly these empty. Reproduce that
+                # required shaping instead of depending on a keyless dev box.
+                proof_env.update({
+                    "OPENROUTER_API_KEY": "",
+                    "OPENAI_API_KEY": "",
+                    "NOUS_API_KEY": "",
+                })
             proof_suites.append(_run_suite(
                 name=f"proof-{index:02d}-{Path(file_part).stem}",
                 pytest_args=[file_part],
-                repo=repo, python=args.python, out_dir=out_dir, extra_env=fixture_env,
+                repo=repo, python=args.python, out_dir=out_dir, extra_env=proof_env,
             ))
     suites.extend(proof_suites)
     verdict["suites"] = suites

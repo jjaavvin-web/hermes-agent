@@ -1914,5 +1914,6 @@
   "trajectory_compressor",
   "tui_gateway",
   "utils"
- ]
+ ],
+ "maintenance": "security_suite_min_collected is a hand-maintained STABLE-count floor (operator-local plugin-route cases excluded by the runner): bump it in the same PR whenever tests are added to or removed from tests/security/, or the drift margin decays. repo_owned_top_level and per-item docket text are review-controlled; the runner additionally verifies docket_sha256 against docket_source whenever that audit path is reachable."
 }
