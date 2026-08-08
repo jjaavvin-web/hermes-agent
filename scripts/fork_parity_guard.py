@@ -77,17 +77,81 @@ def _load_lib():
     return module
 
 
+def _git_env() -> dict:
+    """Environment for git probes with ambient redirection scrubbed.
+
+    Inherited GIT_DIR/GIT_WORK_TREE/GIT_INDEX_FILE could make ``git -C repo``
+    report an approved HEAD from a DIFFERENT repository while the guard tests
+    other filesystem bytes (external-review negative control)."""
+    env = dict(os.environ)
+    for key in ("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE",
+                "GIT_COMMON_DIR", "GIT_OBJECT_DIRECTORY",
+                "GIT_ALTERNATE_OBJECT_DIRECTORIES"):
+        env.pop(key, None)
+    return env
+
+
 def _git(repo: Path, *args: str) -> str:
     try:
         result = subprocess.run(
             ["git", "-C", str(repo), *args],
-            capture_output=True, text=True, timeout=60,
+            capture_output=True, text=True, timeout=60, env=_git_env(),
         )
     except (OSError, subprocess.TimeoutExpired):
         return ""
     if result.returncode != 0:
         return ""
     return result.stdout.strip()
+
+
+def _concealed_byte_drift(repo: Path) -> dict:
+    """Byte-verify the worktree against the HEAD tree (fail closed).
+
+    ``git status`` trusts index stat flags, so tracked bytes altered under
+    ``update-index --assume-unchanged`` / ``skip-worktree`` present as a clean
+    tree at the approved SHA while different code actually runs — the exact
+    false-green the release gate exists to prevent (external-review P1).
+    Every tracked blob is re-hashed from the filesystem and compared to the
+    HEAD object; index hiding flags are reported alongside.
+    """
+    flags = [
+        line for line in _git(repo, "ls-files", "-v").splitlines()
+        if line[:1].islower() or line.startswith("S ")
+    ]
+    ls_tree = _git(repo, "ls-tree", "-r", "HEAD")
+    expected: dict = {}
+    for line in ls_tree.splitlines():
+        try:
+            meta, path = line.split("\t", 1)
+            mode, otype, sha = meta.split()
+        except ValueError:
+            continue
+        if otype == "blob" and mode != "120000":  # symlink bytes differ by design
+            expected[path] = sha
+    paths = sorted(expected)
+    hashed: dict = {}
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(repo), "hash-object", "--stdin-paths"],
+            input="\n".join(paths) + "\n", capture_output=True, text=True,
+            timeout=300, env=_git_env(),
+        )
+        if result.returncode == 0:
+            hashed = dict(zip(paths, result.stdout.split()))
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+    if not hashed:
+        return {"checked": 0, "mismatches": ["byte verification failed to run — fail closed"], "index_hiding_flags": flags}
+    mismatches = [
+        path for path in paths
+        if hashed.get(path) != expected[path]
+    ]
+    return {
+        "checked": len(paths),
+        "mismatches": mismatches[:20],
+        "mismatch_total": len(mismatches),
+        "index_hiding_flags": flags,
+    }
 
 
 def _sha256(path: Path) -> str:
@@ -304,6 +368,9 @@ def main() -> int:
 
     head = _git(repo, "rev-parse", "HEAD")
     dirty = _git(repo, "status", "--porcelain")
+    # Byte binding applies to lineage-bound targets (a HEAD exists); sealed
+    # git-less fixtures already record reduced custody via ancestry_mode.
+    concealed = _concealed_byte_drift(repo) if head else None
     base_commit = manifest.get("target_base_commit", "")
     base_is_ancestor = lib.commit_is_ancestor(repo, base_commit) if base_commit else None
 
@@ -579,14 +646,38 @@ def main() -> int:
         "phase_eligibility", "parity_completeness",
     )
     failing = [name for name in gate_names if not verdict["gates"][name]["pass"]]
+    binding_reasons = []
+    if concealed is not None:
+        if concealed.get("mismatch_total") or concealed.get("mismatches"):
+            binding_reasons.append(
+                f"concealed byte drift: {concealed.get('mismatch_total', len(concealed['mismatches']))} "
+                f"tracked file(s) differ from HEAD blobs (index-hiding defeated): "
+                f"{concealed['mismatches'][:5]}"
+            )
+        if concealed.get("index_hiding_flags"):
+            binding_reasons.append(
+                f"index hiding flags present (assume-unchanged/skip-worktree): "
+                f"{concealed['index_hiding_flags'][:5]}"
+            )
+    if binding_reasons:
+        failing.append("commit_byte_binding")
     verdict["gates"]["merge_integration_gate"] = {
         "pass": not failing,
         "failing_gates": failing,
         "bound_to_head": head or None,
         "worktree_dirty": bool(dirty),
+        "byte_binding": (
+            {
+                "tracked_blobs_verified": concealed.get("checked", 0),
+                "reasons": binding_reasons,
+            }
+            if concealed is not None
+            else {"skipped": "no git HEAD (sealed fixture; ancestry_mode recorded)"}
+        ),
         "note": (
             "PASS means the fork-parity assurance gates held for this exact "
-            "checkout; it does NOT claim deployment or merge readiness."
+            "checkout, with every tracked blob re-hashed against HEAD; it does "
+            "NOT claim deployment or merge readiness."
         ),
     }
 
