@@ -171,7 +171,7 @@
    "introduced_by": [
     "591a72baaf85"
    ],
-   "docket_item": "591a72baaf85 (deploy current verified frontend — source only)",
+   "docket_item": "591a72baaf85 (deploy current verified frontend \u2014 source only)",
    "docket_item_sha256_16": "e0686a12e1515a09",
    "anchors": [
     {
@@ -196,7 +196,7 @@
    "introduced_by": [
     "05a0381da930"
    ],
-   "docket_item": "05a0381da930 (restore fork dashboard deps — package.json only)",
+   "docket_item": "05a0381da930 (restore fork dashboard deps \u2014 package.json only)",
    "docket_item_sha256_16": "dc0379d5783009d7",
    "anchors": [
     {
@@ -292,7 +292,7 @@
    "introduced_by": [
     "f00fbbef6429"
    ],
-   "docket_item": "agent/transports/codex_app_server_session.py refactor in f00fbbef6429 — extracts _command_guard_blocks()/_hardline_blocks() helper methods (KEYSTONE #1b guard-floor, with defense-in-depth + reason-injection-DoS comments) from the earlier inline guard checks",
+   "docket_item": "agent/transports/codex_app_server_session.py refactor in f00fbbef6429 \u2014 extracts _command_guard_blocks()/_hardline_blocks() helper methods (KEYSTONE #1b guard-floor, with defense-in-depth + reason-injection-DoS comments) from the earlier inline guard checks",
    "docket_item_sha256_16": "af915c8741997168",
    "anchors": [
     {
@@ -362,7 +362,7 @@
    "introduced_by": [
     "4388ed3620ef"
    ],
-   "docket_item": "tests/security/test_codex_exec_approval_matrix.py — DELETED (-180 lines) by f00fbbef6429 as an apparent WIP accident",
+   "docket_item": "tests/security/test_codex_exec_approval_matrix.py \u2014 DELETED (-180 lines) by f00fbbef6429 as an apparent WIP accident",
    "docket_item_sha256_16": "a7a747e88c984409",
    "anchors": [
     {
@@ -376,7 +376,7 @@
      "test": "tests/security/test_codex_exec_approval_matrix.py::test_exec_approval_declines_when_no_callback_is_wired"
     }
    ],
-   "notes": "The docket item is this test file's WIP deletion; restoration held — file present, 10 behavioral tests, no xfail."
+   "notes": "The docket item is this test file's WIP deletion; restoration held \u2014 file present, 10 behavioral tests, no xfail."
   },
   {
    "id": "fp-014",
@@ -387,7 +387,7 @@
    "introduced_by": [
     "f00fbbef6429"
    ],
-   "docket_item": "scratchpad/exfil_probe.py (236 lines, added in f00fbbef6429) — a manual CLI script probing tools/approval.py's CREDENTIAL_EXFIL_DENY_PATTERNS / detect_hardline_command / _detect_credential_exfiltration against a battery of exfil one-liners",
+   "docket_item": "scratchpad/exfil_probe.py (236 lines, added in f00fbbef6429) \u2014 a manual CLI script probing tools/approval.py's CREDENTIAL_EXFIL_DENY_PATTERNS / detect_hardline_command / _detect_credential_exfiltration against a battery of exfil one-liners",
    "docket_item_sha256_16": "56f7329bea8e3e00",
    "anchors": [
     {
@@ -444,7 +444,7 @@
     "b7378d5a9bf7",
     "222e42a370"
    ],
-   "docket_item": "b7378d5a9bf7 — Nexus health detail view (dashboard_health.py DetailPanel/FilterRail/NexusHealthPage)",
+   "docket_item": "b7378d5a9bf7 \u2014 Nexus health detail view (dashboard_health.py DetailPanel/FilterRail/NexusHealthPage)",
    "docket_item_sha256_16": "e9c229ed1f7b3d00",
    "anchors": [
     {
@@ -472,7 +472,7 @@
    "introduced_by": [
     "077367836b20"
    ],
-   "docket_item": "077367836b20 — learning dashboard tab (LearningPage.tsx, LearningPanel.tsx)",
+   "docket_item": "077367836b20 \u2014 learning dashboard tab (LearningPage.tsx, LearningPanel.tsx)",
    "docket_item_sha256_16": "71392b1f8d3a3a54",
    "anchors": [
     {
@@ -497,7 +497,7 @@
     "09b38643c6cd",
     "082b999374"
    ],
-   "docket_item": "09b38643c6cd — codex sessions dashboard tab (#48) (CodexSessionsPage.tsx + SPA route)",
+   "docket_item": "09b38643c6cd \u2014 codex sessions dashboard tab (#48) (CodexSessionsPage.tsx + SPA route)",
    "docket_item_sha256_16": "60a692a8a276de0e",
    "anchors": [
     {
@@ -525,7 +525,7 @@
    "introduced_by": [
     "bcfa6495fee7"
    ],
-   "docket_item": "bcfa6495fee7 — Neural Connectome router mount (source: dashboard_connectome.py + Connectome.tsx)",
+   "docket_item": "bcfa6495fee7 \u2014 Neural Connectome router mount (source: dashboard_connectome.py + Connectome.tsx)",
    "docket_item_sha256_16": "2ff4428a3d2509c3",
    "anchors": [
     {
@@ -553,7 +553,7 @@
    "introduced_by": [
     "dfb23d5d7fa9"
    ],
-   "docket_item": "dfb23d5d7fa9 — retire OS/Cost/Learning nav tabs",
+   "docket_item": "dfb23d5d7fa9 \u2014 retire OS/Cost/Learning nav tabs",
    "docket_item_sha256_16": "007e054b45ddbb1e",
    "anchors": [
     {
@@ -595,7 +595,7 @@
    "introduced_by": [
     "f8f8dc3e10e2"
    ],
-   "docket_item": "f8f8dc3e10e2 — behavioral recall info panel",
+   "docket_item": "f8f8dc3e10e2 \u2014 behavioral recall info panel",
    "docket_item_sha256_16": "856c5d12cbbf1fbe",
    "anchors": [
     {
@@ -616,7 +616,7 @@
    "introduced_by": [
     "71faa4f2026a"
    ],
-   "docket_item": "71faa4f2026a — mobile bottom sheet OS inspect",
+   "docket_item": "71faa4f2026a \u2014 mobile bottom sheet OS inspect",
    "docket_item_sha256_16": "fb9e6cf4b3446e84",
    "anchors": [
     {
@@ -637,7 +637,7 @@
    "introduced_by": [
     "bdbc1b030cea"
    ],
-   "docket_item": "bdbc1b030cea + 24424e8ed513 + 4a0a6db446e8 + df62c6d6617f — OS/Nexus polish cluster (hover edge labels, full-height canvas, side-by-side inspect, mobile touch a11y, hero flex-wrap/info disclosure, OS/Learning status primitive alignment)",
+   "docket_item": "bdbc1b030cea + 24424e8ed513 + 4a0a6db446e8 + df62c6d6617f \u2014 OS/Nexus polish cluster (hover edge labels, full-height canvas, side-by-side inspect, mobile touch a11y, hero flex-wrap/info disclosure, OS/Learning status primitive alignment)",
    "docket_item_sha256_16": "5b72606b0de9eb90",
    "anchors": [
     {
@@ -697,7 +697,7 @@
    "introduced_by": [
     "f9b7ee7d8c15"
    ],
-   "docket_item": "fork commit f9b7ee7d8c15 — codex-native exec + apply_patch command-guard floor (all four approval paths)",
+   "docket_item": "fork commit f9b7ee7d8c15 \u2014 codex-native exec + apply_patch command-guard floor (all four approval paths)",
    "docket_item_sha256_16": "b5f81c892ed5d0af",
    "anchors": [
     {
@@ -1721,7 +1721,7 @@
    "kind": "meta",
    "phase": "in_repo",
    "introduced_by": [],
-   "docket_item": "critic:DEFAULT_CONFIG key closure — fork config.py vs merge config_defaults.py (AST comparison, 627 fork keys)",
+   "docket_item": "critic:DEFAULT_CONFIG key closure \u2014 fork config.py vs merge config_defaults.py (AST comparison, 627 fork keys)",
    "docket_item_sha256_16": "14dd1400b3866efd",
    "anchors": [
     {
@@ -1778,7 +1778,7 @@
    "kind": "superseded",
    "phase": "in_repo",
    "introduced_by": [],
-   "docket_item": "critic:fork-original-closure.json non-py closure — 114 of 231 substantive non-py files absent from merge (apps/desktop/electron *.cjs bulk, ui-tui billing/credits, web/package-lock.json, website docs)",
+   "docket_item": "critic:fork-original-closure.json non-py closure \u2014 114 of 231 substantive non-py files absent from merge (apps/desktop/electron *.cjs bulk, ui-tui billing/credits, web/package-lock.json, website docs)",
    "docket_item_sha256_16": "367053763d526b60",
    "anchors": [
     {
@@ -1800,7 +1800,7 @@
    "kind": "security_invariant",
    "phase": "in_repo",
    "introduced_by": [],
-   "docket_item": "critic:recheck — sec3 backup.py _should_exclude + _QUICK_STATE_FILES verdicts",
+   "docket_item": "critic:recheck \u2014 sec3 backup.py _should_exclude + _QUICK_STATE_FILES verdicts",
    "docket_item_sha256_16": "5e2b0675d690a572",
    "anchors": [
     {
@@ -1820,7 +1820,7 @@
      "test": "tests/hermes_cli/test_backup.py::TestBackup::test_full_backup_never_copies_planted_secret_files"
     }
    ],
-   "notes": "Critic recheck of fp-028/029 — same anchors, behavioral proofs."
+   "notes": "Critic recheck of fp-028/029 \u2014 same anchors, behavioral proofs."
   },
   {
    "id": "fp-070",
@@ -1829,7 +1829,7 @@
    "kind": "security_invariant",
    "phase": "in_repo",
    "introduced_by": [],
-   "docket_item": "critic:recheck — sec3 credential_pool.select_anthropic_oauth_only + runtime_provider disable_paid_api_fallback billing guard",
+   "docket_item": "critic:recheck \u2014 sec3 credential_pool.select_anthropic_oauth_only + runtime_provider disable_paid_api_fallback billing guard",
    "docket_item_sha256_16": "3a5c5c55faab3e9f",
    "anchors": [
     {
@@ -1863,7 +1863,7 @@
    "kind": "structural",
    "phase": "in_repo",
    "introduced_by": [],
-   "docket_item": "critic:recheck — memory_providers RELOCATED to plugins.memory.config_schema",
+   "docket_item": "critic:recheck \u2014 memory_providers RELOCATED to plugins.memory.config_schema",
    "docket_item_sha256_16": "23f31c9a82ca402a",
    "anchors": [
     {
@@ -1882,5 +1882,37 @@
    ],
    "notes": "Critic recheck of fp-054 relocation."
   }
+ ],
+ "repo_owned_top_level": [
+  "acp_adapter",
+  "agent",
+  "batch_runner",
+  "cli",
+  "cron",
+  "gateway",
+  "hermes_bootstrap",
+  "hermes_cli",
+  "hermes_constants",
+  "hermes_logging",
+  "hermes_state",
+  "hermes_state_common",
+  "hermes_state_portability",
+  "hermes_state_schema",
+  "hermes_state_search",
+  "hermes_time",
+  "mcp_serve",
+  "mini_swe_runner",
+  "model_tools",
+  "plugins",
+  "providers",
+  "run_agent",
+  "setup",
+  "tests",
+  "tools",
+  "toolset_distributions",
+  "toolsets",
+  "trajectory_compressor",
+  "tui_gateway",
+  "utils"
  ]
 }

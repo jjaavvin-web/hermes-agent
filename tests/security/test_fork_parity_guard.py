@@ -117,8 +117,9 @@ def test_repo_owned_imports_resolve_from_this_checkout():
     import tools.approval  # noqa: F401
 
     rows = fpl.module_provenance_rows(sys.modules)
-    foreign = fpl.foreign_module_rows(rows, REPO)
-    split = fpl.split_package_rows(rows, REPO)
+    owned = fpl.manifest_owned_names(MANIFEST, REPO)
+    foreign = fpl.foreign_module_rows(rows, REPO, owned=owned)
+    split = fpl.split_package_rows(rows, REPO, owned=owned)
     assert not foreign, "repo-owned modules resolved outside this checkout:\n" + "\n".join(
         f"{r['module']} -> {r.get('realpath') or r.get('path')}" for r in foreign
     )

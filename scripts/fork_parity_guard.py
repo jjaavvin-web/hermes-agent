@@ -120,6 +120,10 @@ def _run_suite(
     cmd = [
         python, "-m", "pytest", *pytest_args,
         "-q",
+        # Non-strict XPASS is recorded as a plain pass in xunit1 junit, so the
+        # absolute gate cannot see it; forcing strict turns any XPASS into a
+        # visible failure (cockpit mutation class m10 proves the seam).
+        "-o", "xfail_strict=true",
         "-o", "junit_family=xunit1",
         f"--junitxml={junit}",
         "-o", f"cache_dir={out_dir / f'pytest-cache-{name}'}",
@@ -142,6 +146,24 @@ def _run_suite(
         "log": str(log_path),
         "log_sha256": _sha256(log_path) if log_path.exists() else None,
     }
+
+
+def _xpassed_from_log(log_path: Path) -> int:
+    """XPASS count from pytest's terminal summary line.
+
+    xunit1 junit records a NON-STRICT xpass as a plain pass, and an explicit
+    ``strict=False`` marker overrides the ``xfail_strict`` ini default, so the
+    junit report alone cannot see this outcome (cockpit mutation class m10).
+    The ``-q`` summary line ("… N xpassed …") reports it reliably."""
+    import re as _re
+
+    if not log_path.exists():
+        return 0
+    text = log_path.read_text(encoding="utf-8", errors="replace")
+    total = 0
+    for match in _re.finditer(r"(\d+) xpassed", text):
+        total = max(total, int(match.group(1)))
+    return total
 
 
 def _parse_junit(junit_path: Path) -> dict:
@@ -341,6 +363,9 @@ def main() -> int:
 
     # ── gate: absolute suite ───────────────────────────────────────────────
     counts = decisive["counts"]
+    log_xpassed = _xpassed_from_log(Path(security_suite["log"]))
+    if log_xpassed > counts.get("xpassed", 0):
+        counts["xpassed"] = log_xpassed
     min_collected = int(manifest.get("security_suite_min_collected", 0) or 0)
     absolute_reasons = []
     if security_suite["exit_code"] != 0:
@@ -385,8 +410,9 @@ def main() -> int:
 
     # ── gate: provenance ───────────────────────────────────────────────────
     provenance_rows = _read_provenance_rows([s["provenance_jsonl"] for s in suites])
-    foreign = lib.foreign_module_rows(provenance_rows, repo)
-    split = lib.split_package_rows(provenance_rows, repo)
+    owned = lib.manifest_owned_names(manifest, repo)
+    foreign = lib.foreign_module_rows(provenance_rows, repo, owned=owned)
+    split = lib.split_package_rows(provenance_rows, repo, owned=owned)
     provenance_reasons = []
     if not provenance_rows:
         provenance_reasons.append(
@@ -398,7 +424,6 @@ def main() -> int:
         )
     if split:
         provenance_reasons.append(f"{len(split)} split-package row(s)")
-    owned = lib.repo_top_level_names(repo)
     repo_owned_rows = [
         row for row in provenance_rows
         if str(row.get("module", "")).partition(".")[0] in owned

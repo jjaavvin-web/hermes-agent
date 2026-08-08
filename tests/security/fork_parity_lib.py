@@ -77,6 +77,11 @@ def manifest_integrity_errors(manifest: Mapping[str, Any]) -> List[str]:
         )
     if not manifest.get("closed_stale_tests"):
         errors.append("closed_stale_tests missing/empty (differential gate has no input)")
+    if not manifest.get("repo_owned_top_level"):
+        errors.append(
+            "repo_owned_top_level missing/empty (provenance owned-name universe "
+            "would silently shrink when a whole package is deleted)"
+        )
 
     counts = manifest.get("counts") or {}
     recount: Dict[str, int] = {}
@@ -139,6 +144,18 @@ def repo_top_level_names(repo: Path) -> set:
     return names
 
 
+def manifest_owned_names(manifest: Mapping[str, Any], repo: Path) -> set:
+    """Owned-name universe for provenance checks: the manifest's declared
+    top-level names UNION the live scan.
+
+    The declared list is load-bearing: a deleted repo-owned package would
+    otherwise leave the live-scan universe entirely, making its foreign
+    resolution (the editable finder serving deployment bytes) invisible to
+    the provenance gate (cockpit mutation class m1)."""
+    declared = set(manifest.get("repo_owned_top_level") or [])
+    return declared | repo_top_level_names(repo)
+
+
 def module_provenance_rows(modules: Mapping[str, Any]) -> List[Dict[str, Any]]:
     """name/__file__/__spec__.origin/__path__/realpath rows for loaded modules."""
     rows: List[Dict[str, Any]] = []
@@ -165,6 +182,7 @@ def module_provenance_rows(modules: Mapping[str, Any]) -> List[Dict[str, Any]]:
 def foreign_module_rows(
     rows: Iterable[Mapping[str, Any]],
     repo: Path,
+    owned: set | None = None,
 ) -> List[Dict[str, Any]]:
     """Rows for repo-owned module names that resolved OUTSIDE ``repo``.
 
@@ -173,8 +191,11 @@ def foreign_module_rows(
     or shadowed module does not ImportError — it silently runs foreign bytes.
     Any repo-owned row whose ``__file__`` realpath or any package ``__path__``
     entry resolves outside the checkout under test is contamination.
+
+    Callers with a manifest should pass ``owned=manifest_owned_names(...)`` so
+    a wholesale-deleted package stays in the universe.
     """
-    owned = repo_top_level_names(repo)
+    owned = owned if owned is not None else repo_top_level_names(repo)
     prefix = os.path.realpath(str(repo)).rstrip(os.sep) + os.sep
     foreign: List[Dict[str, Any]] = []
     for row in rows:
@@ -193,9 +214,13 @@ def foreign_module_rows(
     return foreign
 
 
-def split_package_rows(rows: Iterable[Mapping[str, Any]], repo: Path) -> List[Dict[str, Any]]:
+def split_package_rows(
+    rows: Iterable[Mapping[str, Any]],
+    repo: Path,
+    owned: set | None = None,
+) -> List[Dict[str, Any]]:
     """Repo-owned packages whose ``__path__`` spans more than one real root."""
-    owned = repo_top_level_names(repo)
+    owned = owned if owned is not None else repo_top_level_names(repo)
     split: List[Dict[str, Any]] = []
     for row in rows:
         top_level = str(row.get("module", "")).partition(".")[0]

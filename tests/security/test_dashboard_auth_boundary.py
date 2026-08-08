@@ -250,6 +250,35 @@ def test_mcp_oauth_callback_is_single_use(loopback_client, mcp_flow_registry):
     assert flow._callback == ("code-1", "one-shot"), "replay must not overwrite delivery"
 
 
+def test_mcp_oauth_callback_state_check_is_constant_time(
+    loopback_client, mcp_flow_registry, monkeypatch
+):
+    """The public callback's state validation must route through
+    ``secrets.compare_digest`` (constant-time on attacker-controlled input),
+    not ordinary ``==`` — pinned mechanically, not by reading the source."""
+    from tools import mcp_dashboard_oauth as oauth_module
+
+    real_compare = oauth_module.secrets.compare_digest
+    observed_calls = []
+
+    def counting_compare(left, right):
+        observed_calls.append((left, right))
+        return real_compare(left, right)
+
+    monkeypatch.setattr(oauth_module.secrets, "compare_digest", counting_compare)
+
+    _register_flow(mcp_flow_registry, server_name="srv-ct", state="ct-state")
+    response = loopback_client.get(
+        "/api/mcp/oauth/callback/srv-ct",
+        params={"code": "auth-code", "state": "ct-state"},
+    )
+
+    assert response.status_code == 200
+    assert any(
+        "ct-state" in call for call in observed_calls
+    ), "callback state validation did not route through secrets.compare_digest"
+
+
 @pytest.mark.parametrize(
     "near_miss",
     (
