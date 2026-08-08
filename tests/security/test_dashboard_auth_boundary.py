@@ -1,4 +1,4 @@
-"""No registered ``/api`` route is reachable in loopback mode without the dashboard session token unless it is on the shared ``PUBLIC_API_PATHS`` allowlist; ``?token=`` query auth is accepted only for the SSE/download allowlists needed by browser/EventSource/download callers and must not become a universal API bypass."""
+"""No registered ``/api`` route is reachable in loopback mode without the dashboard session token unless it is on the shared ``PUBLIC_API_PATHS`` allowlist or under the ``/api/mcp/oauth/callback/`` browser-redirect prefix (both middlewares exempt that prefix so external OAuth providers can redirect the user's browser there; the handler itself fails closed on flow/state matching); ``?token=`` query auth is accepted only for the SSE/download allowlists needed by browser/EventSource/download callers and must not become a universal API bypass."""
 
 from __future__ import annotations
 
@@ -40,11 +40,20 @@ def _concrete_path(path: str) -> str:
     return _PATH_PARAM_RE.sub("1", path)
 
 
+# The one prefix-public API surface: external MCP OAuth providers redirect
+# the user's browser here, so BOTH middlewares exempt it (loopback:
+# ``auth_middleware``'s ``is_mcp_oauth_callback``; gated:
+# ``_GATE_PUBLIC_PREFIXES``). The trailing slash is load-bearing — near-miss
+# paths like ``/api/mcp/oauth/callbackX`` stay token-gated (pinned below).
+_MCP_OAUTH_CALLBACK_PUBLIC_PREFIX = "/api/mcp/oauth/callback/"
+
 GET_API_ROUTE_PATHS = _iter_get_api_route_paths()
 GATED_GET_API_ROUTE_PATHS = [
     path
     for path in GET_API_ROUTE_PATHS
-    if path not in PUBLIC_API_PATHS and path not in web_server._QUERY_TOKEN_PATHS
+    if path not in PUBLIC_API_PATHS
+    and path not in web_server._QUERY_TOKEN_PATHS
+    and not path.startswith(_MCP_OAUTH_CALLBACK_PUBLIC_PREFIX)
 ]
 PUBLIC_GET_API_ROUTE_PATHS = [
     path
@@ -147,3 +156,108 @@ def test_download_query_token():
 
     assert web_server._has_valid_query_token(ok_request, "/api/files/download") is True
     assert web_server._has_valid_query_token(bad_request, "/api/files/download") is False
+
+
+# ── MCP OAuth callback boundary ─────────────────────────────────────────────
+# The callback prefix is browser-redirect public by design; every security
+# property lives in the handler: an unauthenticated caller with no matching
+# (server_name, authorization_required, constant-time state) flow gets a 404
+# shell page and delivers nothing, delivery is single-use, and near-miss
+# paths outside the trailing-slash prefix stay token-gated.
+
+
+@pytest.fixture
+def mcp_flow_registry():
+    with web_server._mcp_oauth_flows_lock:
+        saved = dict(web_server._mcp_oauth_flows)
+        web_server._mcp_oauth_flows.clear()
+    yield web_server._mcp_oauth_flows
+    with web_server._mcp_oauth_flows_lock:
+        web_server._mcp_oauth_flows.clear()
+        web_server._mcp_oauth_flows.update(saved)
+
+
+def _register_flow(registry, *, server_name: str, state: str):
+    from tools.mcp_dashboard_oauth import DashboardOAuthFlow
+
+    flow = DashboardOAuthFlow(
+        flow_id=f"flow-{server_name}",
+        server_name=server_name,
+        profile=None,
+        hermes_home="/nonexistent-test-home",
+        redirect_uri=f"http://127.0.0.1:8080/api/mcp/oauth/callback/{server_name}",
+    )
+    flow.expected_state = state
+    flow.status = "authorization_required"
+    with web_server._mcp_oauth_flows_lock:
+        registry[flow.flow_id] = flow
+    return flow
+
+
+def test_mcp_oauth_callback_prefix_is_public_in_both_middlewares():
+    from hermes_cli.dashboard_auth.middleware import _GATE_PUBLIC_PREFIXES
+
+    assert _MCP_OAUTH_CALLBACK_PUBLIC_PREFIX.endswith("/")
+    assert _MCP_OAUTH_CALLBACK_PUBLIC_PREFIX in _GATE_PUBLIC_PREFIXES
+    assert any(
+        path.startswith(_MCP_OAUTH_CALLBACK_PUBLIC_PREFIX)
+        for path in GET_API_ROUTE_PATHS
+    ), "callback route no longer registered under the public prefix"
+
+
+def test_mcp_oauth_callback_no_flow_is_public_but_404(loopback_client, mcp_flow_registry):
+    response = loopback_client.get("/api/mcp/oauth/callback/unknown-server")
+
+    assert response.status_code == 404
+    assert "expired" in response.text.lower()
+
+
+def test_mcp_oauth_callback_requires_matching_pre_registered_flow(
+    loopback_client, mcp_flow_registry
+):
+    flow = _register_flow(mcp_flow_registry, server_name="srv", state="expected-state")
+
+    mismatch = loopback_client.get(
+        "/api/mcp/oauth/callback/srv",
+        params={"code": "auth-code", "state": "attacker-state"},
+    )
+    assert mismatch.status_code == 404
+    assert not flow._callback_ready.is_set(), "state mismatch must not deliver"
+
+    match = loopback_client.get(
+        "/api/mcp/oauth/callback/srv",
+        params={"code": "auth-code", "state": "expected-state"},
+    )
+    assert match.status_code == 200
+    assert flow._callback_ready.is_set()
+    assert flow._callback == ("auth-code", "expected-state")
+
+
+def test_mcp_oauth_callback_is_single_use(loopback_client, mcp_flow_registry):
+    flow = _register_flow(mcp_flow_registry, server_name="srv2", state="one-shot")
+
+    first = loopback_client.get(
+        "/api/mcp/oauth/callback/srv2",
+        params={"code": "code-1", "state": "one-shot"},
+    )
+    assert first.status_code == 200
+
+    replay = loopback_client.get(
+        "/api/mcp/oauth/callback/srv2",
+        params={"code": "code-2", "state": "one-shot"},
+    )
+    assert replay.status_code == 409
+    assert flow._callback == ("code-1", "one-shot"), "replay must not overwrite delivery"
+
+
+@pytest.mark.parametrize(
+    "near_miss",
+    (
+        "/api/mcp/oauth/callback",
+        "/api/mcp/oauth/callbackevil",
+        "/api/mcp/oauth/flows/some-flow-id",
+    ),
+)
+def test_mcp_oauth_callback_near_miss_paths_stay_gated(loopback_client, near_miss):
+    response = loopback_client.get(near_miss)
+    assert response.status_code == 401

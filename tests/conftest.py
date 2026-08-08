@@ -1484,3 +1484,47 @@ def _isolate_computer_use_approval_state():
             _cu_tool._session_auto_approve.clear()
     except Exception:
         pass
+
+
+# ── Fork-parity import provenance (opt-in, evidence-only) ───────────────────
+# When FORK_PARITY_PROVENANCE_OUT names a writable file, append one JSON line
+# per loaded module at session finish: name, __file__, __spec__.origin,
+# package __path__, and realpath. scripts/fork_parity_guard.py sets the
+# variable for its decisive pytest subprocesses and fails closed when any
+# repo-owned module resolved outside the checkout under test — this venv
+# carries an editable-install finder that silently serves DEPLOYMENT copies
+# of repo-owned names whenever the checkout misses one, which is exactly the
+# masking this evidence exists to expose. Unset, the hook is a no-op; it
+# never raises into the test session either way.
+def pytest_sessionfinish(session, exitstatus):
+    out_path = os.environ.get("FORK_PARITY_PROVENANCE_OUT", "")
+    if not out_path:
+        return
+    try:
+        import json as _json
+
+        rows = []
+        for name in sorted(sys.modules):
+            module = sys.modules.get(name)
+            if module is None:
+                continue
+            module_file = getattr(module, "__file__", None)
+            spec = getattr(module, "__spec__", None)
+            origin = getattr(spec, "origin", None) if spec is not None else None
+            pkg_path = getattr(module, "__path__", None)
+            if module_file is None and pkg_path is None:
+                continue
+            rows.append({
+                "module": name,
+                "file": module_file,
+                "spec_origin": origin,
+                "path": [str(entry) for entry in pkg_path] if pkg_path is not None else None,
+                "realpath": os.path.realpath(module_file) if module_file else None,
+            })
+        with open(out_path, "a", encoding="utf-8") as fh:
+            for row in rows:
+                fh.write(_json.dumps(row, sort_keys=True) + "\n")
+    except Exception:
+        # Provenance evidence must never turn a test run red by itself;
+        # the guard runner fails closed on MISSING evidence instead.
+        pass

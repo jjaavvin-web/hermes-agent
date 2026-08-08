@@ -1,0 +1,1886 @@
+{
+ "schema": "hermes-fork-parity-manifest/2",
+ "docket_source": "audit 20260807T173333Z-fable-v020-custody/fork-parity-verdicts.json",
+ "docket_sha256": "275bad2a16b79c170b952d66c6f3372b22449fd866888ff2e6a7f174e0df4bb0",
+ "target_base_commit": "5424fa8002ed3eea24c220e97d166b66628c3426",
+ "counts": {
+  "total": 71,
+  "RELOCATED": 9,
+  "PRESERVED_EQUIVALENT": 39,
+  "SUPERSEDED_LEGIT": 23
+ },
+ "security_suite_min_collected": 795,
+ "closed_stale_tests": [
+  "tests/security/test_credential_persistence.py::test_is_borrowed_credential_source_truth_table",
+  "tests/security/test_credential_persistence.py::test_sanitize_strips_retired_xai_loopback_pkce_tokens",
+  "tests/security/test_credential_persistence.py::test_sanitize_keeps_owned_xai_device_code_tokens_on_disk",
+  "tests/security/test_dashboard_auth_boundary.py::test_unauthenticated_api_routes_401",
+  "tests/security/test_dashboard_auth_boundary.py::test_mcp_oauth_callback_prefix_is_public_in_both_middlewares",
+  "tests/security/test_dashboard_auth_boundary.py::test_mcp_oauth_callback_no_flow_is_public_but_404",
+  "tests/security/test_dashboard_auth_boundary.py::test_mcp_oauth_callback_requires_matching_pre_registered_flow",
+  "tests/security/test_dashboard_auth_boundary.py::test_mcp_oauth_callback_is_single_use",
+  "tests/security/test_dashboard_auth_boundary.py::test_mcp_oauth_callback_near_miss_paths_stay_gated"
+ ],
+ "items": [
+  {
+   "id": "fp-001",
+   "verdict": "RELOCATED",
+   "severity": "NONE",
+   "kind": "structural",
+   "phase": "in_repo",
+   "introduced_by": [
+    "a7564fcbc221"
+   ],
+   "docket_item": "hermes_state.py SCHEMA_SQL: additive turn_usage per-turn cost/latency ledger table + idx_turn_usage_session + idx_turn_usage_ts indexes",
+   "docket_item_sha256_16": "105952a764cd006b",
+   "anchors": [
+    {
+     "path": "hermes_state_common.py",
+     "mode": "contains",
+     "text": "turn_usage"
+    },
+    {
+     "path": "hermes_state_common.py",
+     "mode": "contains",
+     "text": "idx_turn_usage_session"
+    }
+   ],
+   "proofs": [],
+   "notes": "turn_usage DDL relocated into hermes_state_common.SCHEMA_SQL; exercised by cost/SLO suites."
+  },
+  {
+   "id": "fp-002",
+   "verdict": "RELOCATED",
+   "severity": "NONE",
+   "kind": "security_invariant",
+   "phase": "in_repo",
+   "introduced_by": [],
+   "docket_item": "dispatch_in_gateway fail-safe (fail-closed) default True->False at 4 code sites: gateway/kanban_watchers.py notifier gate, gateway/kanban_watchers.py dispatcher gate, hermes_cli/config.py DEFAULT_CONFIG, hermes_cli/kanban.py _check_dispatcher_presence",
+   "docket_item_sha256_16": "aafa9ed4b1cbd074",
+   "anchors": [
+    {
+     "path": "hermes_cli/config_defaults.py",
+     "mode": "contains",
+     "text": "\"dispatch_in_gateway\": False"
+    },
+    {
+     "path": "hermes_cli/kanban.py",
+     "mode": "contains",
+     "text": "\"dispatch_in_gateway\""
+    },
+    {
+     "path": "gateway/kanban_watchers.py",
+     "mode": "contains",
+     "text": "\"dispatch_in_gateway\""
+    }
+   ],
+   "proofs": [
+    {
+     "test": "tests/security/test_merge_invariants.py::test_dispatch_in_gateway_defaults_fail_closed"
+    },
+    {
+     "test": "tests/hermes_cli/test_kanban_core_functionality.py::test_config_default_dispatch_in_gateway_is_false"
+    },
+    {
+     "test": "tests/security/test_fork_parity_guard.py::test_dispatch_in_gateway_runtime_default_is_false"
+    }
+   ],
+   "notes": "3 default-False sites in merge (fork's notifier-side 4th site superseded). Literal + grep + behavioral proofs."
+  },
+  {
+   "id": "fp-003",
+   "verdict": "PRESERVED_EQUIVALENT",
+   "severity": "NONE",
+   "kind": "structural",
+   "phase": "in_repo",
+   "introduced_by": [
+    "3a70aaa5e963"
+   ],
+   "docket_item": "3a70aaa5e963 (TUI execFileNoThrow spawn typing)",
+   "docket_item_sha256_16": "29bab8381d0eb185",
+   "anchors": [
+    {
+     "path": "ui-tui/packages/hermes-ink/src/utils/execFileNoThrow.ts",
+     "mode": "contains",
+     "text": "spawn"
+    }
+   ],
+   "proofs": [],
+   "notes": "Typed-spawn TUI fix; JS lane (tsc/vitest), pytest-invisible by design."
+  },
+  {
+   "id": "fp-004",
+   "verdict": "PRESERVED_EQUIVALENT",
+   "severity": "NONE",
+   "kind": "structural",
+   "phase": "in_repo",
+   "introduced_by": [
+    "46d43c9cdaf1"
+   ],
+   "docket_item": "46d43c9cdaf1 (prune rarely-used MCP tools from Codex requests)",
+   "docket_item_sha256_16": "74d452429c8a3c08",
+   "anchors": [
+    {
+     "path": "agent/codex_responses_adapter.py",
+     "mode": "contains",
+     "symbol": "_CODEX_PRUNE_TOOL_PREFIXES"
+    }
+   ],
+   "proofs": [
+    {
+     "test": "tests/agent/test_codex_tool_prune.py::test_loki_webhook_gets_slim_set"
+    },
+    {
+     "test": "tests/agent/test_codex_tool_prune.py::test_failsafe_empty_platform_prunes_prefix"
+    }
+   ],
+   "notes": "Route-aware MCP tool pruning; fail-closed toward pruning behaviorally tested."
+  },
+  {
+   "id": "fp-005",
+   "verdict": "PRESERVED_EQUIVALENT",
+   "severity": "NONE",
+   "kind": "structural",
+   "phase": "in_repo",
+   "introduced_by": [
+    "d99d817b625f"
+   ],
+   "docket_item": "d99d817b625f (os-dashboard runaway guards)",
+   "docket_item_sha256_16": "6e4559ce39d7aefc",
+   "anchors": [
+    {
+     "path": "hermes_cli/dashboard_os.py",
+     "mode": "contains",
+     "text": "20000"
+    },
+    {
+     "path": "hermes_cli/dashboard_os.py",
+     "mode": "contains",
+     "text": "15000"
+    }
+   ],
+   "proofs": [],
+   "notes": "os-dashboard runaway amber thresholds present; display-only, untested (NONE severity)."
+  },
+  {
+   "id": "fp-006",
+   "verdict": "PRESERVED_EQUIVALENT",
+   "severity": "NONE",
+   "kind": "structural",
+   "phase": "in_repo",
+   "introduced_by": [
+    "591a72baaf85"
+   ],
+   "docket_item": "591a72baaf85 (deploy current verified frontend — source only)",
+   "docket_item_sha256_16": "e0686a12e1515a09",
+   "anchors": [
+    {
+     "path": "web/src/components/AuthWidget.tsx",
+     "mode": "contains",
+     "text": "__HERMES_AUTH_REQUIRED__"
+    },
+    {
+     "path": "web/src/components/__tests__/AuthWidget.test.tsx",
+     "mode": "exists"
+    }
+   ],
+   "proofs": [],
+   "notes": "Auth widget guard + relocated vitest test (JS lane)."
+  },
+  {
+   "id": "fp-007",
+   "verdict": "PRESERVED_EQUIVALENT",
+   "severity": "NONE",
+   "kind": "structural",
+   "phase": "in_repo",
+   "introduced_by": [
+    "05a0381da930"
+   ],
+   "docket_item": "05a0381da930 (restore fork dashboard deps — package.json only)",
+   "docket_item_sha256_16": "dc0379d5783009d7",
+   "anchors": [
+    {
+     "path": "web/package.json",
+     "mode": "contains",
+     "text": "@xyflow/react"
+    }
+   ],
+   "proofs": [],
+   "notes": "Fork dashboard deps survived in superset package.json."
+  },
+  {
+   "id": "fp-008",
+   "verdict": "PRESERVED_EQUIVALENT",
+   "severity": "NONE",
+   "kind": "meta",
+   "phase": "in_repo",
+   "introduced_by": [
+    "b39dbae2ab84"
+   ],
+   "docket_item": "b39dbae2ab84 (vitest+jsdom harness + web test script)",
+   "docket_item_sha256_16": "ac8b17272ec93cea",
+   "anchors": [
+    {
+     "path": "web/package.json",
+     "mode": "contains",
+     "text": "vitest"
+    },
+    {
+     "path": "web/src/test-setup.ts",
+     "mode": "exists"
+    }
+   ],
+   "proofs": [],
+   "notes": "vitest+jsdom harness; executable via npm lane, structural here."
+  },
+  {
+   "id": "fp-009",
+   "verdict": "PRESERVED_EQUIVALENT",
+   "severity": "P3",
+   "kind": "meta",
+   "phase": "in_repo",
+   "introduced_by": [
+    "f00fbbef6429"
+   ],
+   "docket_item": "f00fbbef6429 as a whole (\"wip: preserve READY_SPEC working state before P1 batched deploy\")",
+   "docket_item_sha256_16": "22df8233153896fa",
+   "anchors": [
+    {
+     "path": "agent/transports/codex_app_server_session.py",
+     "mode": "contains",
+     "symbol": "_HERMES_TO_CODEX_PERMISSION_PROFILE"
+    }
+   ],
+   "proofs": [],
+   "notes": "WIP snapshot commit; constituent real items mapped as fp-010..fp-015."
+  },
+  {
+   "id": "fp-010",
+   "verdict": "SUPERSEDED_LEGIT",
+   "severity": "NONE",
+   "kind": "structural",
+   "phase": "in_repo",
+   "introduced_by": [
+    "e32ebc6aa2"
+   ],
+   "docket_item": "agent/learn_prompt.py + /learn command wiring (gateway/run.py, cli.py, hermes_cli/cli_commands_mixin.py, hermes_cli/commands.py, tui_gateway/server.py) added in f00fbbef6429",
+   "docket_item_sha256_16": "bc07bca9d1ad80c1",
+   "anchors": [
+    {
+     "path": "agent/learn_prompt.py",
+     "mode": "exists"
+    },
+    {
+     "path": "hermes_cli/commands.py",
+     "mode": "contains",
+     "text": "learn"
+    }
+   ],
+   "proofs": [
+    {
+     "test": "tests/tui_gateway/test_protocol.py::test_command_dispatch_learn_returns_agent_prompt"
+    }
+   ],
+   "notes": "/learn command live via canonical lineage; WIP duplicate superseded. (Sibling gateway test test_dispatcher_routes_learn_to_agent_prompt has a pre-existing stale prompt-string assertion at the frozen base; see FLAKE-TRIAGE.)"
+  },
+  {
+   "id": "fp-011",
+   "verdict": "PRESERVED_EQUIVALENT",
+   "severity": "NONE",
+   "kind": "security_invariant",
+   "phase": "in_repo",
+   "introduced_by": [
+    "f00fbbef6429"
+   ],
+   "docket_item": "agent/transports/codex_app_server_session.py refactor in f00fbbef6429 — extracts _command_guard_blocks()/_hardline_blocks() helper methods (KEYSTONE #1b guard-floor, with defense-in-depth + reason-injection-DoS comments) from the earlier inline guard checks",
+   "docket_item_sha256_16": "af915c8741997168",
+   "anchors": [
+    {
+     "path": "agent/transports/codex_app_server_session.py",
+     "mode": "contains",
+     "text": "_command_guard_blocks"
+    },
+    {
+     "path": "agent/transports/codex_app_server_session.py",
+     "mode": "contains",
+     "text": "_hardline_blocks"
+    }
+   ],
+   "proofs": [
+    {
+     "test": "tests/security/test_codex_exec_approval_matrix.py::test_codex_exec_auto_accept_must_route_through_check_all_command_guards"
+    },
+    {
+     "test": "tests/security/test_codex_exec_approval_matrix.py::test_codex_exec_callback_accept_must_route_through_detect_hardline_before_accept"
+    },
+    {
+     "test": "tests/security/test_codex_exec_approval_matrix.py::test_codex_apply_patch_auto_accept_must_route_through_check_all_command_guards"
+    },
+    {
+     "test": "tests/security/test_codex_exec_approval_matrix.py::test_codex_apply_patch_callback_accept_must_route_through_check_all_command_guards"
+    },
+    {
+     "test": "tests/security/test_codex_exec_approval_matrix.py::test_exec_approval_declines_when_callback_raises"
+    },
+    {
+     "test": "tests/security/test_fork_parity_guard.py::test_codex_cwd_confinement_fails_closed"
+    }
+   ],
+   "notes": "Fail-closed guard-helper refactor; all four approval paths behaviorally pinned."
+  },
+  {
+   "id": "fp-012",
+   "verdict": "PRESERVED_EQUIVALENT",
+   "severity": "NONE",
+   "kind": "structural",
+   "phase": "in_repo",
+   "introduced_by": [
+    "f00fbbef6429"
+   ],
+   "docket_item": "hermes_cli/observability_slo.py auxiliary_fallback_events SLO noise-reduction (added in f00fbbef6429, filters title-generation fail-closed noise out of the fallback SLO)",
+   "docket_item_sha256_16": "98fc5b346ef9e717",
+   "anchors": [
+    {
+     "path": "hermes_cli/observability_slo.py",
+     "mode": "contains",
+     "text": "auxiliary_fallback_events"
+    }
+   ],
+   "proofs": [
+    {
+     "test": "tests/hermes_cli/test_observability_slo.py::test_auxiliary_title_generation_fallback_noise_is_separate_from_provider_fallback"
+    }
+   ],
+   "notes": "SLO noise separation behaviorally tested."
+  },
+  {
+   "id": "fp-013",
+   "verdict": "PRESERVED_EQUIVALENT",
+   "severity": "NONE",
+   "kind": "meta",
+   "phase": "in_repo",
+   "introduced_by": [
+    "4388ed3620ef"
+   ],
+   "docket_item": "tests/security/test_codex_exec_approval_matrix.py — DELETED (-180 lines) by f00fbbef6429 as an apparent WIP accident",
+   "docket_item_sha256_16": "a7a747e88c984409",
+   "anchors": [
+    {
+     "path": "tests/security/test_codex_exec_approval_matrix.py",
+     "mode": "contains",
+     "text": "_decide_exec_approval"
+    }
+   ],
+   "proofs": [
+    {
+     "test": "tests/security/test_codex_exec_approval_matrix.py::test_exec_approval_declines_when_no_callback_is_wired"
+    }
+   ],
+   "notes": "The docket item is this test file's WIP deletion; restoration held — file present, 10 behavioral tests, no xfail."
+  },
+  {
+   "id": "fp-014",
+   "verdict": "PRESERVED_EQUIVALENT",
+   "severity": "NONE",
+   "kind": "meta",
+   "phase": "in_repo",
+   "introduced_by": [
+    "f00fbbef6429"
+   ],
+   "docket_item": "scratchpad/exfil_probe.py (236 lines, added in f00fbbef6429) — a manual CLI script probing tools/approval.py's CREDENTIAL_EXFIL_DENY_PATTERNS / detect_hardline_command / _detect_credential_exfiltration against a battery of exfil one-liners",
+   "docket_item_sha256_16": "56f7329bea8e3e00",
+   "anchors": [
+    {
+     "path": "scratchpad/exfil_probe.py",
+     "mode": "exists"
+    }
+   ],
+   "proofs": [
+    {
+     "test": "tests/security/test_exfil_rail.py::test_credential_exfil_deny_pattern_count_pinned"
+    }
+   ],
+   "notes": "Manual probe retained; probed rail has a dedicated behavioral suite."
+  },
+  {
+   "id": "fp-015",
+   "verdict": "PRESERVED_EQUIVALENT",
+   "severity": "NONE",
+   "kind": "meta",
+   "phase": "in_repo",
+   "introduced_by": [
+    "f00fbbef6429"
+   ],
+   "docket_item": "new/modified test files bundled in f00fbbef6429: tests/cli/test_cli_init.py, tests/gateway/test_reload_skills_command.py, tests/hermes_cli/test_observability_slo.py, tests/tui_gateway/test_protocol.py (learn-command parametrize + new test_command_dispatch_learn_returns_agent_prompt)",
+   "docket_item_sha256_16": "f00198de84425089",
+   "anchors": [
+    {
+     "path": "tests/cli/test_cli_init.py",
+     "mode": "exists"
+    },
+    {
+     "path": "tests/gateway/test_reload_skills_command.py",
+     "mode": "exists"
+    },
+    {
+     "path": "tests/hermes_cli/test_observability_slo.py",
+     "mode": "exists"
+    },
+    {
+     "path": "tests/tui_gateway/test_protocol.py",
+     "mode": "exists"
+    }
+   ],
+   "proofs": [],
+   "notes": "Bundled test files present and collectible."
+  },
+  {
+   "id": "fp-016",
+   "verdict": "SUPERSEDED_LEGIT",
+   "severity": "NONE",
+   "kind": "superseded",
+   "phase": "in_repo",
+   "introduced_by": [
+    "b7378d5a9bf7",
+    "222e42a370"
+   ],
+   "docket_item": "b7378d5a9bf7 — Nexus health detail view (dashboard_health.py DetailPanel/FilterRail/NexusHealthPage)",
+   "docket_item_sha256_16": "e9c229ed1f7b3d00",
+   "anchors": [
+    {
+     "path": "web/src/pages/NexusHealthPage.tsx",
+     "mode": "absent_or_repurposed"
+    },
+    {
+     "path": "hermes_cli/dashboard_health.py",
+     "mode": "exists"
+    }
+   ],
+   "proofs": [
+    {
+     "test": "tests/hermes_cli/test_dashboard_smoke.py::test_dashboard_router_expected_count_matches_mounted_routes"
+    }
+   ],
+   "notes": "Tab retired by fork pre-merge; backend health router mount-gated."
+  },
+  {
+   "id": "fp-017",
+   "verdict": "PRESERVED_EQUIVALENT",
+   "severity": "NONE",
+   "kind": "structural",
+   "phase": "in_repo",
+   "introduced_by": [
+    "077367836b20"
+   ],
+   "docket_item": "077367836b20 — learning dashboard tab (LearningPage.tsx, LearningPanel.tsx)",
+   "docket_item_sha256_16": "71392b1f8d3a3a54",
+   "anchors": [
+    {
+     "path": "web/src/pages/LearningPage.tsx",
+     "mode": "exists"
+    },
+    {
+     "path": "web/src/components/learning/LearningPanel.tsx",
+     "mode": "exists"
+    }
+   ],
+   "proofs": [],
+   "notes": "Learning route reachable (nav removal is fp-020's intent)."
+  },
+  {
+   "id": "fp-018",
+   "verdict": "SUPERSEDED_LEGIT",
+   "severity": "NONE",
+   "kind": "superseded",
+   "phase": "in_repo",
+   "introduced_by": [
+    "09b38643c6cd",
+    "082b999374"
+   ],
+   "docket_item": "09b38643c6cd — codex sessions dashboard tab (#48) (CodexSessionsPage.tsx + SPA route)",
+   "docket_item_sha256_16": "60a692a8a276de0e",
+   "anchors": [
+    {
+     "path": "web/src/pages/CodexSessionsPage.tsx",
+     "mode": "absent_or_repurposed"
+    },
+    {
+     "path": "hermes_cli/dashboard_codex_sessions.py",
+     "mode": "exists"
+    }
+   ],
+   "proofs": [
+    {
+     "test": "tests/hermes_cli/test_dashboard_smoke.py::test_dashboard_router_expected_count_matches_mounted_routes"
+    }
+   ],
+   "notes": "Tab retired by fork pre-merge; data plane survives, mount-gated."
+  },
+  {
+   "id": "fp-019",
+   "verdict": "PRESERVED_EQUIVALENT",
+   "severity": "NONE",
+   "kind": "structural",
+   "phase": "in_repo",
+   "introduced_by": [
+    "bcfa6495fee7"
+   ],
+   "docket_item": "bcfa6495fee7 — Neural Connectome router mount (source: dashboard_connectome.py + Connectome.tsx)",
+   "docket_item_sha256_16": "2ff4428a3d2509c3",
+   "anchors": [
+    {
+     "path": "hermes_cli/dashboard_connectome.py",
+     "mode": "exists"
+    },
+    {
+     "path": "web/src/components/os/Connectome.tsx",
+     "mode": "exists"
+    }
+   ],
+   "proofs": [
+    {
+     "test": "tests/hermes_cli/test_dashboard_smoke.py::test_dashboard_router_expected_count_matches_mounted_routes"
+    }
+   ],
+   "notes": "Connectome router mounted; count floor includes it."
+  },
+  {
+   "id": "fp-020",
+   "verdict": "PRESERVED_EQUIVALENT",
+   "severity": "NONE",
+   "kind": "structural",
+   "phase": "in_repo",
+   "introduced_by": [
+    "dfb23d5d7fa9"
+   ],
+   "docket_item": "dfb23d5d7fa9 — retire OS/Cost/Learning nav tabs",
+   "docket_item_sha256_16": "007e054b45ddbb1e",
+   "anchors": [
+    {
+     "path": "web/src/App.tsx",
+     "mode": "contains",
+     "text": "BUILTIN_NAV_REST"
+    }
+   ],
+   "proofs": [],
+   "notes": "Nav-tab retirement preserved; routes stay directly reachable."
+  },
+  {
+   "id": "fp-021",
+   "verdict": "PRESERVED_EQUIVALENT",
+   "severity": "NONE",
+   "kind": "structural",
+   "phase": "in_repo",
+   "introduced_by": [
+    "de545ac61d56"
+   ],
+   "docket_item": "de545ac61d56 + 776d970f07 + 0a7cd3422f-era HTML-tab v3 work (Favorites default, uniform Latest grid)",
+   "docket_item_sha256_16": "7aff367966f67c67",
+   "anchors": [
+    {
+     "path": "web/src/pages/HtmlGalleryPage.tsx",
+     "mode": "contains",
+     "text": "\"favorites\""
+    }
+   ],
+   "proofs": [],
+   "notes": "HTML-tab v3: favorites default present."
+  },
+  {
+   "id": "fp-022",
+   "verdict": "PRESERVED_EQUIVALENT",
+   "severity": "NONE",
+   "kind": "structural",
+   "phase": "in_repo",
+   "introduced_by": [
+    "f8f8dc3e10e2"
+   ],
+   "docket_item": "f8f8dc3e10e2 — behavioral recall info panel",
+   "docket_item_sha256_16": "856c5d12cbbf1fbe",
+   "anchors": [
+    {
+     "path": "web/src/components/learning/LearningPanel.tsx",
+     "mode": "contains",
+     "text": "RecallEvalPanel"
+    }
+   ],
+   "proofs": [],
+   "notes": "Behavioral-recall info panel present."
+  },
+  {
+   "id": "fp-023",
+   "verdict": "PRESERVED_EQUIVALENT",
+   "severity": "NONE",
+   "kind": "structural",
+   "phase": "in_repo",
+   "introduced_by": [
+    "71faa4f2026a"
+   ],
+   "docket_item": "71faa4f2026a — mobile bottom sheet OS inspect",
+   "docket_item_sha256_16": "fb9e6cf4b3446e84",
+   "anchors": [
+    {
+     "path": "web/src/components/os/OSNexus.tsx",
+     "mode": "contains",
+     "text": "useBelowBreakpoint"
+    }
+   ],
+   "proofs": [],
+   "notes": "Mobile bottom-sheet OS inspect present."
+  },
+  {
+   "id": "fp-024",
+   "verdict": "PRESERVED_EQUIVALENT",
+   "severity": "NONE",
+   "kind": "structural",
+   "phase": "in_repo",
+   "introduced_by": [
+    "bdbc1b030cea"
+   ],
+   "docket_item": "bdbc1b030cea + 24424e8ed513 + 4a0a6db446e8 + df62c6d6617f — OS/Nexus polish cluster (hover edge labels, full-height canvas, side-by-side inspect, mobile touch a11y, hero flex-wrap/info disclosure, OS/Learning status primitive alignment)",
+   "docket_item_sha256_16": "5b72606b0de9eb90",
+   "anchors": [
+    {
+     "path": "web/src/components/os/OSNexus.tsx",
+     "mode": "contains",
+     "text": "LABEL_SHOW_ZOOM"
+    }
+   ],
+   "proofs": [],
+   "notes": "OS/Nexus polish cluster anchor present."
+  },
+  {
+   "id": "fp-025",
+   "verdict": "PRESERVED_EQUIVALENT",
+   "severity": "NONE",
+   "kind": "security_invariant",
+   "phase": "in_repo",
+   "introduced_by": [],
+   "docket_item": "Must-survive invariant routes: /nexus, /nexus-slice, /api/pulse/graph in hermes_cli/web_server.py",
+   "docket_item_sha256_16": "0dba7f8443702ce6",
+   "anchors": [
+    {
+     "path": "hermes_cli/web_server.py",
+     "mode": "contains",
+     "text": "\"/nexus\""
+    },
+    {
+     "path": "hermes_cli/web_server.py",
+     "mode": "contains",
+     "text": "\"/nexus-slice\""
+    },
+    {
+     "path": "hermes_cli/web_server.py",
+     "mode": "contains",
+     "text": "\"/api/pulse/graph\""
+    }
+   ],
+   "proofs": [
+    {
+     "test": "tests/hermes_cli/test_dashboard_smoke.py::test_dashboard_route_manifest_fixture_matches_live_app"
+    },
+    {
+     "test": "tests/hermes_cli/test_nexus_page.py::test_nexus_page_loopback_token_nonce_and_content"
+    },
+    {
+     "test": "tests/hermes_cli/test_dashboard_nexus_slice.py::test_static_demo_page_route_registered_with_token_and_labels"
+    }
+   ],
+   "notes": "Must-survive fork routes; live-GET + route-manifest behavioral proofs."
+  },
+  {
+   "id": "fp-026",
+   "verdict": "PRESERVED_EQUIVALENT",
+   "severity": "NONE",
+   "kind": "security_invariant",
+   "phase": "in_repo",
+   "introduced_by": [
+    "f9b7ee7d8c15"
+   ],
+   "docket_item": "fork commit f9b7ee7d8c15 — codex-native exec + apply_patch command-guard floor (all four approval paths)",
+   "docket_item_sha256_16": "b5f81c892ed5d0af",
+   "anchors": [
+    {
+     "path": "agent/transports/codex_app_server_session.py",
+     "mode": "contains",
+     "text": "_command_guard_blocks"
+    },
+    {
+     "path": "tools/approval.py",
+     "mode": "contains",
+     "symbol": "check_all_command_guards"
+    }
+   ],
+   "proofs": [
+    {
+     "test": "tests/security/test_codex_exec_approval_matrix.py::test_codex_exec_auto_accept_must_route_through_check_all_command_guards"
+    },
+    {
+     "test": "tests/security/test_codex_exec_approval_matrix.py::test_codex_exec_callback_accept_must_route_through_detect_hardline_before_accept"
+    },
+    {
+     "test": "tests/security/test_codex_exec_approval_matrix.py::test_codex_apply_patch_auto_accept_must_route_through_check_all_command_guards"
+    },
+    {
+     "test": "tests/security/test_codex_exec_approval_matrix.py::test_codex_apply_patch_callback_accept_must_route_through_check_all_command_guards"
+    },
+    {
+     "test": "tests/security/test_codex_exec_approval_matrix.py::test_exec_approval_declines_when_callback_raises"
+    },
+    {
+     "test": "tests/security/test_fork_parity_guard.py::test_codex_cwd_confinement_fails_closed"
+    }
+   ],
+   "notes": "Codex exec+apply_patch command-guard floor, all four approval paths."
+  },
+  {
+   "id": "fp-027",
+   "verdict": "PRESERVED_EQUIVALENT",
+   "severity": "NONE",
+   "kind": "security_invariant",
+   "phase": "in_repo",
+   "introduced_by": [],
+   "docket_item": "sec3:dispatch_in_gateway defaults False (fail-closed) in hermes_cli/config_defaults.py",
+   "docket_item_sha256_16": "cd8c5463047117ef",
+   "anchors": [
+    {
+     "path": "hermes_cli/config_defaults.py",
+     "mode": "contains",
+     "text": "\"dispatch_in_gateway\": False"
+    }
+   ],
+   "proofs": [
+    {
+     "test": "tests/security/test_merge_invariants.py::test_dispatch_in_gateway_defaults_fail_closed"
+    },
+    {
+     "test": "tests/hermes_cli/test_kanban_core_functionality.py::test_config_default_dispatch_in_gateway_is_false"
+    },
+    {
+     "test": "tests/security/test_fork_parity_guard.py::test_dispatch_in_gateway_runtime_default_is_false"
+    }
+   ],
+   "notes": "sec3 restatement of the config-default leg of fp-002."
+  },
+  {
+   "id": "fp-028",
+   "verdict": "PRESERVED_EQUIVALENT",
+   "severity": "NONE",
+   "kind": "security_invariant",
+   "phase": "in_repo",
+   "introduced_by": [],
+   "docket_item": "sec3:backup.py::_should_exclude component-walk + secret sets; state.db in _PRIVATE_RESTORE_FILE_NAMES only",
+   "docket_item_sha256_16": "795b3c8d5b9cb45e",
+   "anchors": [
+    {
+     "path": "hermes_cli/backup.py",
+     "mode": "contains",
+     "symbol": "_should_exclude"
+    },
+    {
+     "path": "hermes_cli/backup.py",
+     "mode": "contains",
+     "text": "_PRIVATE_RESTORE_FILE_NAMES"
+    },
+    {
+     "path": "hermes_cli/backup.py",
+     "mode": "call_edge",
+     "caller": "run_backup",
+     "callee": "_should_exclude"
+    }
+   ],
+   "proofs": [
+    {
+     "test": "tests/security/test_merge_invariants.py::test_backup_should_exclude_recurses_secrets"
+    },
+    {
+     "test": "tests/hermes_cli/test_backup.py::TestShouldExclude::test_excludes_secret_bearing_files"
+    },
+    {
+     "test": "tests/hermes_cli/test_backup.py::TestBackup::test_full_backup_never_copies_planted_secret_files"
+    }
+   ],
+   "notes": "Backup secret exclusion component-walk; state.db restore-set membership."
+  },
+  {
+   "id": "fp-029",
+   "verdict": "PRESERVED_EQUIVALENT",
+   "severity": "NONE",
+   "kind": "security_invariant",
+   "phase": "in_repo",
+   "introduced_by": [],
+   "docket_item": "sec3:create_quick_snapshot calls _should_exclude; .env/auth.json NOT in _QUICK_STATE_FILES",
+   "docket_item_sha256_16": "df2ebdb41096419d",
+   "anchors": [
+    {
+     "path": "hermes_cli/backup.py",
+     "mode": "contains",
+     "text": "_QUICK_STATE_FILES"
+    },
+    {
+     "path": "hermes_cli/backup.py",
+     "mode": "call_edge",
+     "caller": "create_quick_snapshot",
+     "callee": "_should_exclude"
+    }
+   ],
+   "proofs": [
+    {
+     "test": "tests/hermes_cli/test_backup.py::TestQuickSnapshot::test_quick_snapshot_never_copies_planted_secret_files"
+    },
+    {
+     "test": "tests/security/test_merge_invariants.py::test_restore_quick_snapshot_rejects_id_traversal"
+    },
+    {
+     "test": "tests/security/test_merge_invariants.py::test_restore_quick_snapshot_skips_manifest_traversal_entry"
+    }
+   ],
+   "notes": "Quick snapshot exclusion + traversal guards."
+  },
+  {
+   "id": "fp-030",
+   "verdict": "PRESERVED_EQUIVALENT",
+   "severity": "NONE",
+   "kind": "security_invariant",
+   "phase": "in_repo",
+   "introduced_by": [],
+   "docket_item": "sec3:runtime_provider.py disable_paid_api_fallback (billing guard)",
+   "docket_item_sha256_16": "74b76d693c04e33c",
+   "anchors": [
+    {
+     "path": "hermes_cli/runtime_provider.py",
+     "mode": "contains",
+     "text": "disable_paid_api_fallback"
+    },
+    {
+     "path": "hermes_cli/config_defaults.py",
+     "mode": "contains",
+     "text": "\"disable_paid_api_fallback\": False"
+    }
+   ],
+   "proofs": [
+    {
+     "test": "tests/hermes_cli/test_runtime_provider.py::test_disable_paid_api_fallback_blocks_anthropic_when_pool_unavailable"
+    },
+    {
+     "test": "tests/hermes_cli/test_runtime_provider.py::test_disable_paid_api_fallback_uses_anthropic_oauth_pool_entry"
+    },
+    {
+     "test": "tests/security/test_fork_parity_guard.py::test_billing_guard_paid_fallback_flag_parses_fail_safe"
+    }
+   ],
+   "notes": "Billing guard behavior + default-key literal pin (closes worker-flagged pin gap)."
+  },
+  {
+   "id": "fp-031",
+   "verdict": "PRESERVED_EQUIVALENT",
+   "severity": "NONE",
+   "kind": "security_invariant",
+   "phase": "in_repo",
+   "introduced_by": [],
+   "docket_item": "sec3:credential_pool.py select_anthropic_oauth_only (Max OAuth routing)",
+   "docket_item_sha256_16": "85f7569fe05df79b",
+   "anchors": [
+    {
+     "path": "agent/credential_pool.py",
+     "mode": "contains",
+     "symbol": "select_anthropic_oauth_only"
+    }
+   ],
+   "proofs": [
+    {
+     "test": "tests/agent/test_credential_pool.py::test_anthropic_oauth_only_selection_does_not_rotate_to_api_key"
+    }
+   ],
+   "notes": "Max-OAuth-only routing never rotates to API key."
+  },
+  {
+   "id": "fp-032",
+   "verdict": "PRESERVED_EQUIVALENT",
+   "severity": "NONE",
+   "kind": "security_invariant",
+   "phase": "in_repo",
+   "introduced_by": [],
+   "docket_item": "sec3:tools/approval.py CREDENTIAL_EXFIL_DENY_PATTERNS + DISP-5 git-push floor + session deny rail + credential-taint floor",
+   "docket_item_sha256_16": "e566e9a8129a1924",
+   "anchors": [
+    {
+     "path": "tools/approval.py",
+     "mode": "contains",
+     "symbol": "CREDENTIAL_EXFIL_DENY_PATTERNS"
+    },
+    {
+     "path": "tools/approval.py",
+     "mode": "contains",
+     "text": "_GIT_PUSH_FLOOR_RE"
+    },
+    {
+     "path": "tools/approval.py",
+     "mode": "contains",
+     "symbol": "register_session_deny_patterns"
+    },
+    {
+     "path": "tools/approval.py",
+     "mode": "call_edge",
+     "caller": "check_session_deny_patterns",
+     "callee": "_floor_block_if_autonomous"
+    },
+    {
+     "path": "tools/approval.py",
+     "mode": "call_edge",
+     "caller": "detect_hardline_command",
+     "callee": "_detect_credential_exfiltration"
+    }
+   ],
+   "proofs": [
+    {
+     "test": "tests/security/test_exfil_rail.py::test_credential_exfil_deny_pattern_count_pinned"
+    },
+    {
+     "test": "tests/security/test_exfil_rail.py::test_credential_exfil_deny_patterns_match_exfil_commands"
+    },
+    {
+     "test": "tests/security/test_credential_taint.py::test_two_step_stage_then_upload_is_blocked"
+    },
+    {
+     "test": "tests/tools/test_approval_deny_rules.py::TestDenyBeatsYolo::test_deny_blocks_under_yolo_env"
+    },
+    {
+     "test": "tests/tools/test_approval_deny_rules.py::TestDenyBeatsYolo::test_deny_blocks_under_session_yolo"
+    },
+    {
+     "test": "tests/test_disp5_autonomous_floor.py::test_floor_blocks_push_under_marker_with_no_deny_list"
+    },
+    {
+     "test": "tests/security/test_merge_invariants.py::test_disp5_autonomous_floor_present_and_armed"
+    },
+    {
+     "test": "tests/security/test_fork_parity_guard.py::test_webhook_default_deny_patterns_cover_push_and_ci"
+    },
+    {
+     "test": "tests/security/test_fork_parity_guard.py::test_exfil_hardline_blocks_credential_reads"
+    },
+    {
+     "test": "tests/security/test_fork_parity_guard.py::test_deny_floor_beats_permanent_allowlist"
+    }
+   ],
+   "notes": "Exfil deny rails + DISP-5 git-push floor + session deny rail + deny-beats-yolo ordering."
+  },
+  {
+   "id": "fp-033",
+   "verdict": "PRESERVED_EQUIVALENT",
+   "severity": "NONE",
+   "kind": "security_invariant",
+   "phase": "in_repo",
+   "introduced_by": [],
+   "docket_item": "sec3:gateway/platforms/webhook.py DEFAULT_WEBHOOK_DENY_PATTERNS",
+   "docket_item_sha256_16": "2a99df6b960e19b4",
+   "anchors": [
+    {
+     "path": "gateway/platforms/webhook.py",
+     "mode": "contains",
+     "symbol": "DEFAULT_WEBHOOK_DENY_PATTERNS"
+    }
+   ],
+   "proofs": [
+    {
+     "test": "tests/security/test_deny_rails.py::test_webhook_deny_patterns_start_with_credential_exfil_rail"
+    },
+    {
+     "test": "tests/security/test_deny_rails.py::test_webhook_deny_patterns_keep_git_and_pr_blockers"
+    },
+    {
+     "test": "tests/security/test_deny_rails.py::test_default_webhook_deny_pattern_count_pinned"
+    },
+    {
+     "test": "tests/security/test_merge_invariants.py::test_refused_saturated_webhook_registers_no_approval_rails_after_refusal"
+    },
+    {
+     "test": "tests/security/test_fork_parity_guard.py::test_webhook_default_deny_patterns_cover_push_and_ci"
+    }
+   ],
+   "notes": "Webhook deny patterns: exfil-first ordering, count pin, refusal-before-rails."
+  },
+  {
+   "id": "fp-034",
+   "verdict": "PRESERVED_EQUIVALENT",
+   "severity": "NONE",
+   "kind": "security_invariant",
+   "phase": "in_repo",
+   "introduced_by": [],
+   "docket_item": "sec3:gateway/session.py set_autonomous_envelope + mark_inflight_sessions_from_markers + lookup_by_session_key + session_keys (run.py calls all four)",
+   "docket_item_sha256_16": "60dea94a3368f290",
+   "anchors": [
+    {
+     "path": "gateway/session.py",
+     "mode": "contains",
+     "text": "set_autonomous_envelope"
+    },
+    {
+     "path": "gateway/session.py",
+     "mode": "contains",
+     "text": "mark_inflight_sessions_from_markers"
+    }
+   ],
+   "proofs": [
+    {
+     "test": "tests/gateway/test_inflight_crash_markers.py::test_unclean_boot_marks_only_marker_named_session_not_recent_idle"
+    },
+    {
+     "test": "tests/gateway/test_restart_resume_floor.py::test_restart_resume_uses_persisted_deny_patterns"
+    },
+    {
+     "test": "tests/gateway/test_restart_resume_floor.py::test_non_webhook_persisted_envelope_treated_autonomous"
+    },
+    {
+     "test": "tests/security/test_merge_invariants.py::test_restart_resume_rearms_disp5_floor"
+    }
+   ],
+   "notes": "Autonomous envelope persistence + crash-marker rehydration re-arms floors."
+  },
+  {
+   "id": "fp-035",
+   "verdict": "PRESERVED_EQUIVALENT",
+   "severity": "NONE",
+   "kind": "security_invariant",
+   "phase": "in_repo",
+   "introduced_by": [],
+   "docket_item": "sec3:hermes_cli/active_sessions.py resolve_/coerce_max_concurrent_agent_runs failing closed to 4",
+   "docket_item_sha256_16": "2479b806f14204e2",
+   "anchors": [
+    {
+     "path": "hermes_cli/active_sessions.py",
+     "mode": "contains",
+     "text": "DEFAULT_MAX_CONCURRENT_AGENT_RUNS"
+    }
+   ],
+   "proofs": [
+    {
+     "test": "tests/hermes_cli/test_active_sessions.py::test_resolve_max_concurrent_agent_runs_values"
+    },
+    {
+     "test": "tests/gateway/test_webhook_backpressure.py::test_webhook_agent_run_backpressure_rejects_over_cap_with_retry_after"
+    }
+   ],
+   "notes": "Concurrency cap fails closed to 4; 429 enforcement behavioral."
+  },
+  {
+   "id": "fp-036",
+   "verdict": "PRESERVED_EQUIVALENT",
+   "severity": "NONE",
+   "kind": "security_invariant",
+   "phase": "in_repo",
+   "introduced_by": [],
+   "docket_item": "sec3:hermes_cli/kanban_db.py READY_SPEC trust gate + WorkerAuthorityResolutionError spine",
+   "docket_item_sha256_16": "4ed828666146e1a7",
+   "anchors": [
+    {
+     "path": "hermes_cli/kanban_db.py",
+     "mode": "contains",
+     "text": "HERMES_KANBAN_ENFORCE_READY_SPEC"
+    },
+    {
+     "path": "hermes_cli/kanban_db.py",
+     "mode": "contains",
+     "text": "WorkerAuthorityResolutionError"
+    },
+    {
+     "path": "hermes_cli/kanban_db.py",
+     "mode": "call_edge",
+     "caller": "dispatch_once",
+     "callee": "_dispatch_once_locked"
+    },
+    {
+     "path": "hermes_cli/kanban_db.py",
+     "mode": "call_edge",
+     "caller": "_dispatch_once_locked",
+     "callee": "ready_spec_evaluate"
+    }
+   ],
+   "proofs": [
+    {
+     "test": "tests/hermes_cli/test_kanban_ready_spec.py::test_enforce_gate_exception_fails_closed"
+    },
+    {
+     "test": "tests/hermes_cli/test_kanban_ready_spec.py::test_enforce_dry_run_does_not_call_claim_task"
+    },
+    {
+     "test": "tests/hermes_cli/test_kanban_worker_spawn_toolsets.py::test_resolve_worker_cli_toolsets_fails_closed_on_missing_malformed_or_unknown"
+    },
+    {
+     "test": "tests/hermes_cli/test_kanban_worker_spawn_toolsets.py::test_default_spawn_never_calls_popen_when_toolsets_unresolved"
+    },
+    {
+     "test": "tests/security/test_merge_invariants.py::test_ready_spec_trust_compiler_gate_survives_merge"
+    }
+   ],
+   "notes": "READY_SPEC trust gate before claim_task; authority-error no-spawn spine."
+  },
+  {
+   "id": "fp-037",
+   "verdict": "PRESERVED_EQUIVALENT",
+   "severity": "NONE",
+   "kind": "security_invariant",
+   "phase": "in_repo",
+   "introduced_by": [],
+   "docket_item": "sec3:hermes_cli/web_server.py routes /nexus, /nexus-slice, /api/pulse/graph",
+   "docket_item_sha256_16": "1ac9ff0a960543c8",
+   "anchors": [
+    {
+     "path": "hermes_cli/web_server.py",
+     "mode": "contains",
+     "text": "\"/api/pulse/graph\""
+    }
+   ],
+   "proofs": [
+    {
+     "test": "tests/hermes_cli/test_dashboard_smoke.py::test_dashboard_route_manifest_fixture_matches_live_app"
+    },
+    {
+     "test": "tests/hermes_cli/test_nexus_page.py::test_nexus_page_loopback_token_nonce_and_content"
+    },
+    {
+     "test": "tests/hermes_cli/test_dashboard_nexus_slice.py::test_static_demo_page_route_registered_with_token_and_labels"
+    }
+   ],
+   "notes": "sec3 restatement of fp-025 invariant routes."
+  },
+  {
+   "id": "fp-038",
+   "verdict": "PRESERVED_EQUIVALENT",
+   "severity": "NONE",
+   "kind": "security_invariant",
+   "phase": "in_repo",
+   "introduced_by": [
+    "f9b7ee7d8c15"
+   ],
+   "docket_item": "sec3:agent/transports/codex_app_server_session.py command-guard floor on all four Codex exec + apply_patch approval paths",
+   "docket_item_sha256_16": "9bcee924c8f7d620",
+   "anchors": [
+    {
+     "path": "agent/transports/codex_app_server_session.py",
+     "mode": "contains",
+     "text": "_hardline_blocks"
+    }
+   ],
+   "proofs": [
+    {
+     "test": "tests/security/test_codex_exec_approval_matrix.py::test_codex_exec_auto_accept_must_route_through_check_all_command_guards"
+    },
+    {
+     "test": "tests/security/test_codex_exec_approval_matrix.py::test_codex_exec_callback_accept_must_route_through_detect_hardline_before_accept"
+    },
+    {
+     "test": "tests/security/test_codex_exec_approval_matrix.py::test_codex_apply_patch_auto_accept_must_route_through_check_all_command_guards"
+    },
+    {
+     "test": "tests/security/test_codex_exec_approval_matrix.py::test_codex_apply_patch_callback_accept_must_route_through_check_all_command_guards"
+    },
+    {
+     "test": "tests/security/test_codex_exec_approval_matrix.py::test_exec_approval_declines_when_callback_raises"
+    }
+   ],
+   "notes": "sec3 restatement of fp-026 codex guard floor."
+  },
+  {
+   "id": "fp-039",
+   "verdict": "SUPERSEDED_LEGIT",
+   "severity": "NONE",
+   "kind": "superseded",
+   "phase": "in_repo",
+   "introduced_by": [],
+   "docket_item": "agent/chat_completion_helpers.py (fork-line-survival.json: fork_added=113, survived=0, score=0.0)",
+   "docket_item_sha256_16": "6d95e85e9461f052",
+   "anchors": [
+    {
+     "path": "agent/chat_completion_helpers.py",
+     "mode": "exists"
+    }
+   ],
+   "proofs": [],
+   "notes": "Upstream v0.20 file adopted wholesale; survival-metric false positive (no fork content lost)."
+  },
+  {
+   "id": "fp-040",
+   "verdict": "SUPERSEDED_LEGIT",
+   "severity": "NONE",
+   "kind": "superseded",
+   "phase": "in_repo",
+   "introduced_by": [],
+   "docket_item": "hermes_cli/model_switch.py (fork_added=89, survived=0, score=0.0)",
+   "docket_item_sha256_16": "2e5fb5ad2517e066",
+   "anchors": [
+    {
+     "path": "hermes_cli/model_switch.py",
+     "mode": "exists"
+    }
+   ],
+   "proofs": [],
+   "notes": "Upstream v0.20 file adopted wholesale; survival-metric false positive (no fork content lost)."
+  },
+  {
+   "id": "fp-041",
+   "verdict": "SUPERSEDED_LEGIT",
+   "severity": "NONE",
+   "kind": "superseded",
+   "phase": "in_repo",
+   "introduced_by": [],
+   "docket_item": "tools/mcp_oauth.py (fork_added=79, survived=0, score=0.0)",
+   "docket_item_sha256_16": "07877e8cd845414b",
+   "anchors": [
+    {
+     "path": "tools/mcp_oauth.py",
+     "mode": "exists"
+    }
+   ],
+   "proofs": [],
+   "notes": "Upstream v0.20 file adopted wholesale; survival-metric false positive (no fork content lost)."
+  },
+  {
+   "id": "fp-042",
+   "verdict": "SUPERSEDED_LEGIT",
+   "severity": "NONE",
+   "kind": "superseded",
+   "phase": "in_repo",
+   "introduced_by": [],
+   "docket_item": "agent/lsp/client.py (fork_added=50, survived=0, score=0.0)",
+   "docket_item_sha256_16": "168fca205dc8d8f1",
+   "anchors": [
+    {
+     "path": "agent/lsp/client.py",
+     "mode": "exists"
+    }
+   ],
+   "proofs": [],
+   "notes": "Upstream v0.20 file adopted wholesale; survival-metric false positive (no fork content lost)."
+  },
+  {
+   "id": "fp-043",
+   "verdict": "SUPERSEDED_LEGIT",
+   "severity": "NONE",
+   "kind": "superseded",
+   "phase": "in_repo",
+   "introduced_by": [],
+   "docket_item": "tools/computer_use/cua_backend.py (fork_added=49, survived=0, score=0.0)",
+   "docket_item_sha256_16": "664948e5d6bae497",
+   "anchors": [
+    {
+     "path": "tools/computer_use/cua_backend.py",
+     "mode": "exists"
+    }
+   ],
+   "proofs": [],
+   "notes": "Upstream v0.20 file adopted wholesale; survival-metric false positive (no fork content lost)."
+  },
+  {
+   "id": "fp-044",
+   "verdict": "SUPERSEDED_LEGIT",
+   "severity": "NONE",
+   "kind": "superseded",
+   "phase": "in_repo",
+   "introduced_by": [],
+   "docket_item": "plugins/platforms/google_chat/adapter.py (fork_added=47, survived=0, score=0.0)",
+   "docket_item_sha256_16": "501feeec28951459",
+   "anchors": [
+    {
+     "path": "plugins/platforms/google_chat/adapter.py",
+     "mode": "exists"
+    }
+   ],
+   "proofs": [],
+   "notes": "Upstream v0.20 file adopted wholesale; survival-metric false positive (no fork content lost)."
+  },
+  {
+   "id": "fp-045",
+   "verdict": "SUPERSEDED_LEGIT",
+   "severity": "NONE",
+   "kind": "superseded",
+   "phase": "in_repo",
+   "introduced_by": [],
+   "docket_item": "tools/tts_tool.py (fork_added=45, survived=0, score=0.0)",
+   "docket_item_sha256_16": "650112a62e8ace1c",
+   "anchors": [
+    {
+     "path": "tools/tts_tool.py",
+     "mode": "exists"
+    }
+   ],
+   "proofs": [],
+   "notes": "Upstream v0.20 file adopted wholesale; survival-metric false positive (no fork content lost)."
+  },
+  {
+   "id": "fp-046",
+   "verdict": "SUPERSEDED_LEGIT",
+   "severity": "NONE",
+   "kind": "superseded",
+   "phase": "in_repo",
+   "introduced_by": [],
+   "docket_item": "plugins/memory/mem0/__init__.py (fork_added=43, survived=0, score=0.0)",
+   "docket_item_sha256_16": "f8a9551af6820f26",
+   "anchors": [
+    {
+     "path": "plugins/memory/mem0/__init__.py",
+     "mode": "exists"
+    }
+   ],
+   "proofs": [],
+   "notes": "Upstream v0.20 file adopted wholesale; survival-metric false positive (no fork content lost)."
+  },
+  {
+   "id": "fp-047",
+   "verdict": "SUPERSEDED_LEGIT",
+   "severity": "NONE",
+   "kind": "superseded",
+   "phase": "in_repo",
+   "introduced_by": [],
+   "docket_item": "agent/model_metadata.py (fork_added=41, survived=0, score=0.0)",
+   "docket_item_sha256_16": "f9b8574c04a617e3",
+   "anchors": [
+    {
+     "path": "agent/model_metadata.py",
+     "mode": "exists"
+    }
+   ],
+   "proofs": [],
+   "notes": "Upstream v0.20 file adopted wholesale; survival-metric false positive (no fork content lost)."
+  },
+  {
+   "id": "fp-048",
+   "verdict": "SUPERSEDED_LEGIT",
+   "severity": "NONE",
+   "kind": "superseded",
+   "phase": "in_repo",
+   "introduced_by": [],
+   "docket_item": "hermes_cli/memory_setup.py (fork_added=36, survived=0, score=0.0)",
+   "docket_item_sha256_16": "a46ded7788f8ce0b",
+   "anchors": [
+    {
+     "path": "hermes_cli/memory_setup.py",
+     "mode": "exists"
+    }
+   ],
+   "proofs": [],
+   "notes": "Upstream v0.20 file adopted wholesale; survival-metric false positive (no fork content lost)."
+  },
+  {
+   "id": "fp-049",
+   "verdict": "SUPERSEDED_LEGIT",
+   "severity": "NONE",
+   "kind": "superseded",
+   "phase": "in_repo",
+   "introduced_by": [],
+   "docket_item": "tools/vision_tools.py (fork_added=34, survived=0, score=0.0)",
+   "docket_item_sha256_16": "02593323d7bbc675",
+   "anchors": [
+    {
+     "path": "tools/vision_tools.py",
+     "mode": "exists"
+    }
+   ],
+   "proofs": [],
+   "notes": "Upstream v0.20 file adopted wholesale; survival-metric false positive (no fork content lost)."
+  },
+  {
+   "id": "fp-050",
+   "verdict": "SUPERSEDED_LEGIT",
+   "severity": "NONE",
+   "kind": "superseded",
+   "phase": "in_repo",
+   "introduced_by": [],
+   "docket_item": "plugins/memory/honcho/session.py (fork_added=32, survived=0, score=0.0)",
+   "docket_item_sha256_16": "a101159b65172cc5",
+   "anchors": [
+    {
+     "path": "plugins/memory/honcho/session.py",
+     "mode": "exists"
+    }
+   ],
+   "proofs": [],
+   "notes": "Upstream v0.20 file adopted wholesale; survival-metric false positive (no fork content lost)."
+  },
+  {
+   "id": "fp-051",
+   "verdict": "SUPERSEDED_LEGIT",
+   "severity": "NONE",
+   "kind": "superseded",
+   "phase": "in_repo",
+   "introduced_by": [],
+   "docket_item": "tools/computer_use/tool.py (fork_added=32, survived=0, score=0.0)",
+   "docket_item_sha256_16": "8513a725614261cf",
+   "anchors": [
+    {
+     "path": "tools/computer_use/tool.py",
+     "mode": "exists"
+    }
+   ],
+   "proofs": [],
+   "notes": "Upstream v0.20 file adopted wholesale; survival-metric false positive (no fork content lost)."
+  },
+  {
+   "id": "fp-052",
+   "verdict": "SUPERSEDED_LEGIT",
+   "severity": "NONE",
+   "kind": "superseded",
+   "phase": "in_repo",
+   "introduced_by": [],
+   "docket_item": "agent/memory_manager.py (fork_added=31, survived=0, score=0.0)",
+   "docket_item_sha256_16": "0c3e222c2ebc5b01",
+   "anchors": [
+    {
+     "path": "agent/memory_manager.py",
+     "mode": "exists"
+    }
+   ],
+   "proofs": [],
+   "notes": "Upstream v0.20 file adopted wholesale; survival-metric false positive (no fork content lost)."
+  },
+  {
+   "id": "fp-053",
+   "verdict": "SUPERSEDED_LEGIT",
+   "severity": "NONE",
+   "kind": "superseded",
+   "phase": "in_repo",
+   "introduced_by": [],
+   "docket_item": "hermes_cli/env_loader.py (fork_added=31, survived=0, score=0.0)",
+   "docket_item_sha256_16": "9260b7abf8a233f9",
+   "anchors": [
+    {
+     "path": "hermes_cli/env_loader.py",
+     "mode": "exists"
+    }
+   ],
+   "proofs": [],
+   "notes": "Upstream v0.20 file adopted wholesale; survival-metric false positive (no fork content lost)."
+  },
+  {
+   "id": "fp-054",
+   "verdict": "RELOCATED",
+   "severity": "NONE",
+   "kind": "structural",
+   "phase": "in_repo",
+   "introduced_by": [],
+   "docket_item": "hermes_cli/memory_providers.py (+ tests/hermes_cli/test_memory_providers.py)",
+   "docket_item_sha256_16": "65b192afefafa230",
+   "anchors": [
+    {
+     "path": "plugins/memory/config_schema.py",
+     "mode": "exists"
+    },
+    {
+     "path": "hermes_cli/memory_providers.py",
+     "mode": "absent_or_repurposed"
+    }
+   ],
+   "proofs": [
+    {
+     "test": "tests/plugins/memory/test_config_schema.py::test_unknown_provider_is_none"
+    },
+    {
+     "test": "tests/plugins/memory/test_config_schema.py::test_schemas_are_cached_per_provider"
+    }
+   ],
+   "notes": "memory_providers relocated to plugins.memory.config_schema; old path absent."
+  },
+  {
+   "id": "fp-055",
+   "verdict": "SUPERSEDED_LEGIT",
+   "severity": "NONE",
+   "kind": "superseded",
+   "phase": "in_repo",
+   "introduced_by": [],
+   "docket_item": "tests/hermes_cli/test_xai_oauth_pkce_token_exchange.py",
+   "docket_item_sha256_16": "431befc65abee68d",
+   "anchors": [
+    {
+     "path": "tests/hermes_cli/test_xai_oauth_pkce_token_exchange.py",
+     "mode": "absent_or_repurposed"
+    },
+    {
+     "path": "hermes_cli/auth.py",
+     "mode": "contains",
+     "text": "_xai_oauth_device_code_login"
+    },
+    {
+     "path": "tests/hermes_cli/test_auth_xai_oauth_provider.py",
+     "mode": "exists"
+    }
+   ],
+   "proofs": [],
+   "notes": "PKCE loopback flow replaced by device_code grant; new flow behaviorally tested; ties to the corrected credential-persistence truth table."
+  },
+  {
+   "id": "fp-056",
+   "verdict": "RELOCATED",
+   "severity": "NONE",
+   "kind": "meta",
+   "phase": "in_repo",
+   "introduced_by": [],
+   "docket_item": "tests/test_assistant_ui_tap_compat.py",
+   "docket_item_sha256_16": "953acee534c0c2ea",
+   "anchors": [
+    {
+     "path": "tests-js/assistant-ui-tap-compat.test.ts",
+     "mode": "exists"
+    }
+   ],
+   "proofs": [],
+   "notes": "Relocated py->TS (vitest lane)."
+  },
+  {
+   "id": "fp-057",
+   "verdict": "RELOCATED",
+   "severity": "NONE",
+   "kind": "meta",
+   "phase": "in_repo",
+   "introduced_by": [],
+   "docket_item": "tests/test_dashboard_sidecar_close_on_disconnect.py",
+   "docket_item_sha256_16": "144c27f229216a98",
+   "anchors": [
+    {
+     "path": "web/src/lib/chat-sidebar-session-params.test.ts",
+     "mode": "exists"
+    },
+    {
+     "path": "web/src/components/ChatSidebar.tsx",
+     "mode": "contains",
+     "text": "close_on_disconnect"
+    }
+   ],
+   "proofs": [],
+   "notes": "Relocated py->TS; helper unit-tested in vitest lane."
+  },
+  {
+   "id": "fp-058",
+   "verdict": "RELOCATED",
+   "severity": "NONE",
+   "kind": "meta",
+   "phase": "in_repo",
+   "introduced_by": [],
+   "docket_item": "tests/test_desktop_electron_pin.py",
+   "docket_item_sha256_16": "9b2b4b0882dad0bb",
+   "anchors": [
+    {
+     "path": "apps/desktop/electron/desktop-electron-pin.test.ts",
+     "mode": "exists"
+    }
+   ],
+   "proofs": [],
+   "notes": "Relocated py->TS electron pin agreement test."
+  },
+  {
+   "id": "fp-059",
+   "verdict": "RELOCATED",
+   "severity": "NONE",
+   "kind": "meta",
+   "phase": "in_repo",
+   "introduced_by": [],
+   "docket_item": "tests/test_desktop_mac_entitlements.py",
+   "docket_item_sha256_16": "f9fc5067349d0a7d",
+   "anchors": [
+    {
+     "path": "tests-js/desktop-mac-entitlements.test.ts",
+     "mode": "exists"
+    }
+   ],
+   "proofs": [],
+   "notes": "Relocated py->TS mac entitlements test."
+  },
+  {
+   "id": "fp-060",
+   "verdict": "RELOCATED",
+   "severity": "NONE",
+   "kind": "meta",
+   "phase": "in_repo",
+   "introduced_by": [],
+   "docket_item": "tests/test_package_json_lazy_deps.py",
+   "docket_item_sha256_16": "96b4976f92c020ee",
+   "anchors": [
+    {
+     "path": "tests-js/package-json-lazy-deps.test.ts",
+     "mode": "exists"
+    }
+   ],
+   "proofs": [],
+   "notes": "Relocated py->TS lazy-deps test."
+  },
+  {
+   "id": "fp-061",
+   "verdict": "SUPERSEDED_LEGIT",
+   "severity": "NONE",
+   "kind": "superseded",
+   "phase": "in_repo",
+   "introduced_by": [],
+   "docket_item": "tests/hermes_cli/test_auth_manual_paste.py",
+   "docket_item_sha256_16": "1532d981a400a1fa",
+   "anchors": [
+    {
+     "path": "tests/hermes_cli/test_auth_manual_paste.py",
+     "mode": "absent_or_repurposed"
+    }
+   ],
+   "proofs": [],
+   "notes": "Manual-paste subsystem deleted by sanctioned handoff; device_code flow moots it."
+  },
+  {
+   "id": "fp-062",
+   "verdict": "PRESERVED_EQUIVALENT",
+   "severity": "NONE",
+   "kind": "meta",
+   "phase": "in_repo",
+   "introduced_by": [],
+   "docket_item": "critic:pyproject+uv.lock exact-pin supply-chain policy (mcp==1.28.1, python-multipart==0.0.32, starlette CVE pins)",
+   "docket_item_sha256_16": "e0ed44c93d5e4785",
+   "anchors": [
+    {
+     "path": "pyproject.toml",
+     "mode": "contains",
+     "text": "mcp==1.28.1"
+    },
+    {
+     "path": "tests/security/cve_pin_baseline.txt",
+     "mode": "exists"
+    }
+   ],
+   "proofs": [
+    {
+     "test": "tests/security/test_merge_invariants.py::test_cve_pins_not_dropped"
+    }
+   ],
+   "notes": "Exact-pin supply-chain policy; pin presence testable in-repo, lock policy enforcement is CI-lane."
+  },
+  {
+   "id": "fp-063",
+   "verdict": "PRESERVED_EQUIVALENT",
+   "severity": "NONE",
+   "kind": "meta",
+   "phase": "in_repo",
+   "introduced_by": [],
+   "docket_item": "critic:in-tree systemd units (loki-shipper, slo-alert-check, slo-exporter services+timers) + their observability scripts",
+   "docket_item_sha256_16": "0615e4a7744ed50d",
+   "anchors": [
+    {
+     "path": "packaging/systemd/user/hermes-loki-shipper.service",
+     "mode": "exists"
+    },
+    {
+     "path": "packaging/systemd/user/hermes-slo-alert-check.timer",
+     "mode": "exists"
+    },
+    {
+     "path": "packaging/systemd/user/hermes-slo-exporter.service",
+     "mode": "exists"
+    }
+   ],
+   "proofs": [],
+   "notes": "In-tree systemd units present; live timer/service state is deploy-lane (not asserted here)."
+  },
+  {
+   "id": "fp-064",
+   "verdict": "SUPERSEDED_LEGIT",
+   "severity": "NONE",
+   "kind": "superseded",
+   "phase": "in_repo",
+   "introduced_by": [],
+   "docket_item": "critic:.github workflows fork delta (typecheck.yml gone; lint PLW1514 gate; tests.yml)",
+   "docket_item_sha256_16": "5ae04d72486311e9",
+   "anchors": [
+    {
+     "path": ".github/workflows/typecheck.yml",
+     "mode": "absent_or_repurposed"
+    },
+    {
+     "path": ".github/workflows/js-tests.yml",
+     "mode": "exists"
+    }
+   ],
+   "proofs": [],
+   "notes": "typecheck.yml superseded by js-tests matrix; CI runtime behavior is CI-lane."
+  },
+  {
+   "id": "fp-065",
+   "verdict": "SUPERSEDED_LEGIT",
+   "severity": "NONE",
+   "kind": "superseded",
+   "phase": "in_repo",
+   "introduced_by": [],
+   "docket_item": "critic:skills/ and plugins/ fork-tree additions",
+   "docket_item_sha256_16": "55f0d9517d56014c",
+   "anchors": [
+    {
+     "path": "skills/software-development/dogfood/SKILL.md",
+     "mode": "exists"
+    }
+   ],
+   "proofs": [],
+   "notes": "skills/plugins fork additions upstream-relocated; relocated targets exist."
+  },
+  {
+   "id": "fp-066",
+   "verdict": "PRESERVED_EQUIVALENT",
+   "severity": "NONE",
+   "kind": "meta",
+   "phase": "in_repo",
+   "introduced_by": [],
+   "docket_item": "critic:DEFAULT_CONFIG key closure — fork config.py vs merge config_defaults.py (AST comparison, 627 fork keys)",
+   "docket_item_sha256_16": "14dd1400b3866efd",
+   "anchors": [
+    {
+     "path": "hermes_cli/config_defaults.py",
+     "mode": "contains",
+     "text": "\"disable_paid_api_fallback\": False"
+    },
+    {
+     "path": "hermes_cli/config_defaults.py",
+     "mode": "contains",
+     "text": "\"dispatch_in_gateway\": False"
+    }
+   ],
+   "proofs": [
+    {
+     "test": "tests/security/test_merge_invariants.py::test_c_mcp_inherit_writer_authority_boundary_survives_merge"
+    },
+    {
+     "test": "tests/security/test_fork_parity_guard.py::test_billing_guard_paid_fallback_flag_parses_fail_safe"
+    }
+   ],
+   "notes": "DEFAULT_CONFIG closure: both fork-critical keys pinned (627-key closure was a one-off audit)."
+  },
+  {
+   "id": "fp-067",
+   "verdict": "RELOCATED",
+   "severity": "NONE",
+   "kind": "structural",
+   "phase": "in_repo",
+   "introduced_by": [],
+   "docket_item": "critic:hermes_cli/web_server.py inline-route closure beyond /nexus,/nexus-slice,/api/pulse/graph (84 fork-tree @app routes absent from merge web_server.py)",
+   "docket_item_sha256_16": "9b850944ddb11cad",
+   "anchors": [
+    {
+     "path": "hermes_cli/web_server.py",
+     "mode": "contains",
+     "text": "include_router"
+    }
+   ],
+   "proofs": [
+    {
+     "test": "tests/hermes_cli/test_dashboard_smoke.py::test_dashboard_route_manifest_fixture_matches_live_app"
+    },
+    {
+     "test": "tests/hermes_cli/test_dashboard_smoke.py::test_dashboard_router_expected_count_matches_mounted_routes"
+    }
+   ],
+   "notes": "Inline-route closure via route-manifest fixture + mount-count floor."
+  },
+  {
+   "id": "fp-068",
+   "verdict": "SUPERSEDED_LEGIT",
+   "severity": "NONE",
+   "kind": "superseded",
+   "phase": "in_repo",
+   "introduced_by": [],
+   "docket_item": "critic:fork-original-closure.json non-py closure — 114 of 231 substantive non-py files absent from merge (apps/desktop/electron *.cjs bulk, ui-tui billing/credits, web/package-lock.json, website docs)",
+   "docket_item_sha256_16": "367053763d526b60",
+   "anchors": [
+    {
+     "path": "web/package-lock.json",
+     "mode": "absent_or_repurposed"
+    },
+    {
+     "path": "package-lock.json",
+     "mode": "exists"
+    }
+   ],
+   "proofs": [],
+   "notes": "Non-py closure: workspace lockfile consolidation + ts-ification; provenance-only."
+  },
+  {
+   "id": "fp-069",
+   "verdict": "PRESERVED_EQUIVALENT",
+   "severity": "NONE",
+   "kind": "security_invariant",
+   "phase": "in_repo",
+   "introduced_by": [],
+   "docket_item": "critic:recheck — sec3 backup.py _should_exclude + _QUICK_STATE_FILES verdicts",
+   "docket_item_sha256_16": "5e2b0675d690a572",
+   "anchors": [
+    {
+     "path": "hermes_cli/backup.py",
+     "mode": "contains",
+     "symbol": "_should_exclude"
+    }
+   ],
+   "proofs": [
+    {
+     "test": "tests/security/test_merge_invariants.py::test_backup_should_exclude_recurses_secrets"
+    },
+    {
+     "test": "tests/hermes_cli/test_backup.py::TestQuickSnapshot::test_quick_snapshot_never_copies_planted_secret_files"
+    },
+    {
+     "test": "tests/hermes_cli/test_backup.py::TestBackup::test_full_backup_never_copies_planted_secret_files"
+    }
+   ],
+   "notes": "Critic recheck of fp-028/029 — same anchors, behavioral proofs."
+  },
+  {
+   "id": "fp-070",
+   "verdict": "PRESERVED_EQUIVALENT",
+   "severity": "NONE",
+   "kind": "security_invariant",
+   "phase": "in_repo",
+   "introduced_by": [],
+   "docket_item": "critic:recheck — sec3 credential_pool.select_anthropic_oauth_only + runtime_provider disable_paid_api_fallback billing guard",
+   "docket_item_sha256_16": "3a5c5c55faab3e9f",
+   "anchors": [
+    {
+     "path": "agent/credential_pool.py",
+     "mode": "contains",
+     "symbol": "select_anthropic_oauth_only"
+    },
+    {
+     "path": "hermes_cli/runtime_provider.py",
+     "mode": "contains",
+     "text": "disable_paid_api_fallback"
+    }
+   ],
+   "proofs": [
+    {
+     "test": "tests/hermes_cli/test_runtime_provider.py::test_disable_paid_api_fallback_blocks_anthropic_when_pool_unavailable"
+    },
+    {
+     "test": "tests/hermes_cli/test_runtime_provider_resolution.py::test_resolve_runtime_provider_anthropic_disable_paid_fallback_uses_valid_oauth"
+    },
+    {
+     "test": "tests/agent/test_credential_pool.py::test_anthropic_oauth_only_selection_does_not_rotate_to_api_key"
+    }
+   ],
+   "notes": "Critic recheck of fp-030/031."
+  },
+  {
+   "id": "fp-071",
+   "verdict": "PRESERVED_EQUIVALENT",
+   "severity": "NONE",
+   "kind": "structural",
+   "phase": "in_repo",
+   "introduced_by": [],
+   "docket_item": "critic:recheck — memory_providers RELOCATED to plugins.memory.config_schema",
+   "docket_item_sha256_16": "23f31c9a82ca402a",
+   "anchors": [
+    {
+     "path": "plugins/memory/config_schema.py",
+     "mode": "exists"
+    },
+    {
+     "path": "hermes_cli/memory_providers.py",
+     "mode": "absent_or_repurposed"
+    }
+   ],
+   "proofs": [
+    {
+     "test": "tests/plugins/memory/test_config_schema.py::test_unknown_provider_is_none"
+    }
+   ],
+   "notes": "Critic recheck of fp-054 relocation."
+  }
+ ]
+}

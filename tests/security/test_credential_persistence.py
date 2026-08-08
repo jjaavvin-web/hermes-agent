@@ -29,10 +29,19 @@ from agent.credential_persistence import (
         ("oauth", "minimax-oauth", False),
         ("device_code", "nous", False),
         ("device_code", "openai-codex", False),
-        ("loopback_pkce", "xai-oauth", False),
+        # xAI OAuth is device-code-only since 5ef0b8acb0 ("make xAI Grok
+        # OAuth device-code-only, drop loopback login"): the persistable
+        # pair is (xai-oauth, device_code); retired loopback_pkce state is
+        # borrowed/reference-only and must fail closed at the disk boundary.
+        ("device_code", "xai-oauth", False),
+        ("device_code", "XAI-OAUTH", False),
+        ("loopback_pkce", "xai-oauth", True),
+        ("loopback_pkce", "XAI-OAUTH", True),
+        ("loopback_pkce", None, True),
+        ("oauth", "xai-oauth", True),
         ("hermes_pkce", "nous", True),
+        ("device_code", "anthropic", True),
         ("unknown-source", "anthropic", True),
-        ("loopback_pkce", "XAI-OAUTH", False),
     ),
 )
 def test_is_borrowed_credential_source_truth_table(
@@ -49,6 +58,38 @@ def test_sanitize_borrowed_credential_payload_keeps_owned_manual_secret() -> Non
     result = sanitize_borrowed_credential_payload(payload)
 
     assert result["access_token"] == "raw-abc"
+    assert result == payload
+
+
+def test_sanitize_strips_retired_xai_loopback_pkce_tokens() -> None:
+    """Retired (xai-oauth, loopback_pkce) state may not persist raw secrets."""
+    payload = {
+        "source": "loopback_pkce",
+        "access_token": "raw-loopback-token",
+        "refresh_token": "raw-loopback-refresh",
+        "token_type": "Bearer",
+    }
+
+    result = sanitize_borrowed_credential_payload(payload, provider_id="xai-oauth")
+
+    assert "access_token" not in result
+    assert "refresh_token" not in result
+    assert result["token_type"] == "Bearer"
+    assert re.fullmatch(r"sha256:[0-9a-f]{16}", result["secret_fingerprint"])
+    assert "raw-loopback-token" not in str(result)
+
+
+def test_sanitize_keeps_owned_xai_device_code_tokens_on_disk() -> None:
+    """(xai-oauth, device_code) is the owned pair and passes through intact."""
+    payload = {
+        "source": "device_code",
+        "access_token": "raw-device-token",
+        "refresh_token": "raw-device-refresh",
+        "token_type": "Bearer",
+    }
+
+    result = sanitize_borrowed_credential_payload(payload, provider_id="xai-oauth")
+
     assert result == payload
 
 
