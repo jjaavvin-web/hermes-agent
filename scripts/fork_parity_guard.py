@@ -77,16 +77,27 @@ def _load_lib():
     return module
 
 
+# Must stay byte-identical to fork_parity_lib.GIT_SCRUB_KEYS (the lib is
+# loaded by path at runtime, so the tuple is mirrored here; the focused guard
+# suite pins the two against drift).
+_GIT_SCRUB_KEYS = (
+    "GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE",
+    "GIT_COMMON_DIR", "GIT_OBJECT_DIRECTORY",
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+)
+
+
 def _git_env() -> dict:
     """Environment for git probes with ambient redirection scrubbed.
 
     Inherited GIT_DIR/GIT_WORK_TREE/GIT_INDEX_FILE could make ``git -C repo``
     report an approved HEAD from a DIFFERENT repository while the guard tests
-    other filesystem bytes (external-review negative control)."""
+    other filesystem bytes (external-review negative control). The same scrub
+    is the base env for every decisive pytest subprocess: identical candidate
+    bytes must yield identical dispositions regardless of ambient shell state
+    (disposition-invariance P1, review epoch 20260808T145355Z)."""
     env = dict(os.environ)
-    for key in ("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE",
-                "GIT_COMMON_DIR", "GIT_OBJECT_DIRECTORY",
-                "GIT_ALTERNATE_OBJECT_DIRECTORIES"):
+    for key in _GIT_SCRUB_KEYS:
         env.pop(key, None)
     return env
 
@@ -174,7 +185,7 @@ def _run_suite(
     junit = out_dir / f"junit-{name}.xml"
     provenance = out_dir / f"provenance-{name}.jsonl"
     log_path = out_dir / f"suite-{name}.log"
-    env = dict(os.environ)
+    env = _git_env()
     env["PYTHONDONTWRITEBYTECODE"] = "1"
     env["FORK_PARITY_PROVENANCE_OUT"] = str(provenance)
     # Ambient PYTHONPATH must never decide module resolution for a decisive

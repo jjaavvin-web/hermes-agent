@@ -293,3 +293,77 @@ def test_codex_cwd_confinement_fails_closed(tmp_path):
             _resolve_codex_thread_cwd(SimpleNamespace(session_cwd=None))
     finally:
         reset_active_worktree(orphan_token)
+
+
+# ── Ambient-git disposition invariance (successor to review 20260808T145355Z) ─
+
+
+def _load_guard_runner():
+    import importlib.util
+
+    path = REPO / "scripts" / "fork_parity_guard.py"
+    spec = importlib.util.spec_from_file_location("fork_parity_guard_under_test", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_git_scrub_keys_shared_contract():
+    """Runner and lib must scrub the identical ambient-git key set."""
+    guard = _load_guard_runner()
+    assert guard._GIT_SCRUB_KEYS == fpl.GIT_SCRUB_KEYS
+
+
+@pytest.mark.skipif(_SEALED_FIXTURE, reason="sealed fixture tree has no .git")
+def test_commit_is_ancestor_ambient_git_invariance(tmp_path, monkeypatch):
+    """Hostile GIT_DIR/GIT_WORK_TREE pointed at a foreign repository must not
+    flip lineage eligibility for identical candidate bytes (the ancestry leg
+    of the disposition-invariance P1)."""
+    import subprocess
+
+    base = MANIFEST["target_base_commit"]
+    clean = fpl.commit_is_ancestor(REPO, base)
+    assert clean is True
+
+    foreign = tmp_path / "foreign"
+    foreign.mkdir()
+    env = fpl.scrubbed_git_env()
+    subprocess.run(["git", "-C", str(foreign), "init", "-q"], check=True, env=env)
+    subprocess.run(
+        ["git", "-C", str(foreign), "-c", "user.email=t@t", "-c", "user.name=t",
+         "commit", "-q", "--allow-empty", "-m", "foreign"],
+        check=True, env=env,
+    )
+
+    monkeypatch.setenv("GIT_DIR", str(foreign / ".git"))
+    monkeypatch.setenv("GIT_WORK_TREE", str(foreign))
+    assert fpl.commit_is_ancestor(REPO, base) is True
+
+
+def test_suite_subprocess_env_scrubs_ambient_git(tmp_path, monkeypatch):
+    """Decisive pytest children must never inherit ambient git redirection
+    (the suite leg of the disposition-invariance P1)."""
+    from types import SimpleNamespace
+
+    guard = _load_guard_runner()
+    for key in fpl.GIT_SCRUB_KEYS:
+        monkeypatch.setenv(key, str(tmp_path / "foreign"))
+    monkeypatch.setenv("PYTHONPATH", "/ambient/should/vanish")
+
+    captured = {}
+
+    def fake_run(cmd, **kwargs):
+        captured["env"] = kwargs["env"]
+        return SimpleNamespace(stdout="", stderr="", returncode=1)
+
+    monkeypatch.setattr(guard.subprocess, "run", fake_run)
+    result = guard._run_suite(
+        name="envprobe", pytest_args=["--version"], repo=REPO,
+        python=sys.executable, out_dir=tmp_path,
+    )
+    assert result["exit_code"] == 1
+    env = captured["env"]
+    for key in fpl.GIT_SCRUB_KEYS:
+        assert key not in env
+    assert "PYTHONPATH" not in env
+    assert env["PYTHONDONTWRITEBYTECODE"] == "1"

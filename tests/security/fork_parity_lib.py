@@ -389,19 +389,38 @@ def proof_test_status(repo: Path, proof: Mapping[str, Any]) -> Tuple[bool, str]:
 
 # ── Phase / lineage eligibility ─────────────────────────────────────────────
 
+# Ambient redirection variables that would make ``git -C repo`` answer about a
+# DIFFERENT repository than the one named on the command line. Every git
+# subprocess this library (or the guard runner, or its pytest children)
+# spawns must drop them, or identical candidate bytes can receive different
+# ancestry/phase dispositions depending on inherited shell state.
+GIT_SCRUB_KEYS = (
+    "GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE",
+    "GIT_COMMON_DIR", "GIT_OBJECT_DIRECTORY",
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+)
+
+
+def scrubbed_git_env() -> dict:
+    """os.environ minus the ambient git-redirection variables."""
+    env = dict(os.environ)
+    for key in GIT_SCRUB_KEYS:
+        env.pop(key, None)
+    return env
+
 
 def commit_is_ancestor(repo: Path, commit: str) -> bool | None:
     """True/False from git; None when git cannot answer (no repo/timeout)."""
     try:
         probe = subprocess.run(
             ["git", "-C", str(repo), "cat-file", "-e", f"{commit}^{{commit}}"],
-            capture_output=True, text=True, timeout=30,
+            capture_output=True, text=True, timeout=30, env=scrubbed_git_env(),
         )
         if probe.returncode != 0:
             return False
         result = subprocess.run(
             ["git", "-C", str(repo), "merge-base", "--is-ancestor", commit, "HEAD"],
-            capture_output=True, text=True, timeout=30,
+            capture_output=True, text=True, timeout=30, env=scrubbed_git_env(),
         )
         if result.returncode in (0, 1):
             return result.returncode == 0
