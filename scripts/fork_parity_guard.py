@@ -355,6 +355,11 @@ def main() -> int:
         "--skip-full-suite", action="store_true",
         help="fixture speed knob: guard + corrected files instead of full tests/security/",
     )
+    parser.add_argument(
+        "--expect-head", default="",
+        help="external verification: hard-fail the aggregate gate unless the "
+             "target's discovered HEAD equals this exact commit",
+    )
     args = parser.parse_args()
 
     repo = args.repo.resolve()
@@ -653,6 +658,11 @@ def main() -> int:
     )
     failing = [name for name in gate_names if not verdict["gates"][name]["pass"]]
     binding_reasons = []
+    if args.expect_head and head != args.expect_head:
+        binding_reasons.append(
+            f"HEAD identity mismatch: discovered {head or 'NONE'!r} != "
+            f"expected {args.expect_head!r}"
+        )
     if concealed is not None:
         if concealed.get("mismatch_total") or concealed.get("mismatches"):
             binding_reasons.append(
