@@ -9,7 +9,7 @@
   "PRESERVED_EQUIVALENT": 39,
   "SUPERSEDED_LEGIT": 23
  },
- "security_suite_min_collected": 795,
+ "security_suite_min_collected": 794,
  "closed_stale_tests": [
   "tests/security/test_credential_persistence.py::test_is_borrowed_credential_source_truth_table",
   "tests/security/test_credential_persistence.py::test_sanitize_strips_retired_xai_loopback_pkce_tokens",

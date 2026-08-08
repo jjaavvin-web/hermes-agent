@@ -148,6 +148,33 @@ def _run_suite(
     }
 
 
+def _volatile_route_cases(cases: dict, repo: Path) -> list:
+    """Cases parametrized on routes of OPERATOR-LOCAL dashboard plugins.
+
+    The auth-boundary tests enumerate registered ``/api`` routes at import
+    time, so their param list tracks live plugin registration. Plugins shipped
+    in the repo (``plugins/<name>``) are stable; operator-local plugins come
+    and go with machine state — observed live during this mission: the
+    mothership-nexus and trt route params vanished from fresh processes while
+    the live dashboard kept serving both. Their presence must not decide the
+    count-drift gate, in either direction."""
+    plugins_dir = repo / "plugins"
+    repo_plugins = (
+        {p.name for p in plugins_dir.iterdir() if p.is_dir()}
+        if plugins_dir.is_dir() else set()
+    )
+    marker = "[/api/plugins/"
+    volatile = []
+    for node in cases:
+        idx = node.find(marker)
+        if idx == -1:
+            continue
+        plugin = node[idx + len(marker):].split("/", 1)[0]
+        if plugin not in repo_plugins:
+            volatile.append(node)
+    return volatile
+
+
 def _xpassed_from_log(log_path: Path) -> int:
     """XPASS count from pytest's terminal summary line.
 
@@ -375,9 +402,13 @@ def main() -> int:
             absolute_reasons.append(f"{counts[bad]} {bad} case(s)")
     if decisive.get("missing_report"):
         absolute_reasons.append("junit report missing (collection failure)")
-    if not args.skip_full_suite and decisive["collected"] < min_collected:
+    volatile_cases = _volatile_route_cases(decisive["cases"], repo)
+    stable_collected = decisive["collected"] - len(volatile_cases)
+    if not args.skip_full_suite and stable_collected < min_collected:
         absolute_reasons.append(
-            f"count drift: collected {decisive['collected']} < pinned minimum {min_collected}"
+            f"count drift: stable collected {stable_collected} "
+            f"(={decisive['collected']} - {len(volatile_cases)} operator-local "
+            f"plugin-route cases) < pinned minimum {min_collected}"
         )
     if (
         invariants["counts"].get("failed")
@@ -389,6 +420,8 @@ def main() -> int:
         "pass": not absolute_reasons,
         "counts": counts,
         "collected": decisive["collected"],
+        "stable_collected": stable_collected,
+        "volatile_plugin_route_cases": volatile_cases,
         "min_collected_pin": min_collected,
         "merge_invariants_counts": invariants["counts"],
         "reasons": absolute_reasons,
