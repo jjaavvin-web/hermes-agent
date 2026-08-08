@@ -366,10 +366,16 @@ def main() -> int:
     manifest = lib.load_manifest(manifest_path)
     items = manifest.get("items", [])
 
-    head = _git(repo, "rev-parse", "HEAD")
-    dirty = _git(repo, "status", "--porcelain")
-    # Byte binding applies to lineage-bound targets (a HEAD exists); sealed
-    # git-less fixtures already record reduced custody via ancestry_mode.
+    # A git-less target under a PARENT repository (e.g. a sealed fixture in an
+    # audit dir inside a repo-managed home) must not inherit that parent's
+    # HEAD/status/bytes: git discovery walks upward, so require the target to
+    # be its own toplevel before treating it as lineage-bound.
+    toplevel = _git(repo, "rev-parse", "--show-toplevel")
+    repo_is_git_root = bool(toplevel) and os.path.realpath(toplevel) == os.path.realpath(str(repo))
+    head = _git(repo, "rev-parse", "HEAD") if repo_is_git_root else ""
+    dirty = _git(repo, "status", "--porcelain") if repo_is_git_root else ""
+    # Byte binding applies to lineage-bound targets; git-less fixtures already
+    # record reduced custody via ancestry_mode.
     concealed = _concealed_byte_drift(repo) if head else None
     base_commit = manifest.get("target_base_commit", "")
     base_is_ancestor = lib.commit_is_ancestor(repo, base_commit) if base_commit else None
