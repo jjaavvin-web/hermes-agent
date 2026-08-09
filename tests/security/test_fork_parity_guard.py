@@ -308,10 +308,36 @@ def _load_guard_runner():
     return module
 
 
-def test_git_scrub_keys_shared_contract():
-    """Runner and lib must scrub the identical ambient-git key set."""
+# Representative hostile ambient-git controls: the classic redirect family,
+# the ancestry-flipping shallow file (cert 20260809T024400Z), config
+# injection, and a deliberately UNKNOWN sentinel standing in for whatever git
+# ships next — the prefix scrub must drop all of them without a name list.
+_HOSTILE_GIT_VARS = (
+    "GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_SHALLOW_FILE",
+    "GIT_CEILING_DIRECTORIES", "GIT_NAMESPACE", "GIT_REPLACE_REF_BASE",
+    "GIT_CONFIG_GLOBAL", "GIT_CONFIG_SYSTEM", "GIT_CONFIG_COUNT",
+    "GIT_CONFIG_KEY_0", "GIT_CONFIG_VALUE_0", "GIT_FUTURE_SENTINEL_XYZ",
+)
+
+
+def test_git_scrub_shared_and_prefix_complete(monkeypatch):
+    """ONE shared scrub (guard delegates to the lib) that strips the entire
+    GIT_* prefix — including variables that do not exist yet — while leaving
+    non-git environment untouched (cert 20260809T024400Z requirements #1/#2).
+    """
     guard = _load_guard_runner()
-    assert guard._GIT_SCRUB_KEYS == fpl.GIT_SCRUB_KEYS
+    for key in _HOSTILE_GIT_VARS:
+        monkeypatch.setenv(key, "/hostile")
+    monkeypatch.setenv("KEEP_ME", "yes")
+
+    lib_env = fpl.scrubbed_git_env()
+    guard_env = guard._git_env()
+    for env in (lib_env, guard_env):
+        assert not any(k.startswith("GIT_") for k in env), (
+            "prefix scrub must remove every inherited GIT_* variable"
+        )
+        assert env["KEEP_ME"] == "yes"
+    assert lib_env == guard_env, "guard must delegate to the ONE shared helper"
 
 
 @pytest.mark.skipif(_SEALED_FIXTURE, reason="sealed fixture tree has no .git")
@@ -340,13 +366,35 @@ def test_commit_is_ancestor_ambient_git_invariance(tmp_path, monkeypatch):
     assert fpl.commit_is_ancestor(REPO, base) is True
 
 
+@pytest.mark.skipif(_SEALED_FIXTURE, reason="sealed fixture tree has no .git")
+def test_commit_is_ancestor_shallow_file_invariance(tmp_path, monkeypatch):
+    """A hostile GIT_SHALLOW_FILE containing the candidate HEAD must not make
+    the approved base appear non-ancestral (the exact reproduced P1 of
+    certification epoch 20260809T024400Z: ancestry true→false, 25 docket
+    items PASS→WRONG_PHASE, exit 0→1 on identical bytes)."""
+    base = MANIFEST["target_base_commit"]
+    assert fpl.commit_is_ancestor(REPO, base) is True
+
+    import subprocess
+
+    head_sha = subprocess.run(
+        ["git", "-C", str(REPO), "rev-parse", "HEAD"],
+        capture_output=True, text=True, env=fpl.scrubbed_git_env(),
+    ).stdout.strip()
+    shallow = tmp_path / "hostile-shallow"
+    shallow.write_text(head_sha + "\n", encoding="utf-8")
+
+    monkeypatch.setenv("GIT_SHALLOW_FILE", str(shallow))
+    assert fpl.commit_is_ancestor(REPO, base) is True
+
+
 def test_suite_subprocess_env_scrubs_ambient_git(tmp_path, monkeypatch):
-    """Decisive pytest children must never inherit ambient git redirection
-    (the suite leg of the disposition-invariance P1)."""
+    """Decisive pytest children must never inherit ANY ambient GIT_* control
+    (the suite leg of the disposition-invariance P1s)."""
     from types import SimpleNamespace
 
     guard = _load_guard_runner()
-    for key in fpl.GIT_SCRUB_KEYS:
+    for key in _HOSTILE_GIT_VARS:
         monkeypatch.setenv(key, str(tmp_path / "foreign"))
     monkeypatch.setenv("PYTHONPATH", "/ambient/should/vanish")
 
@@ -363,7 +411,6 @@ def test_suite_subprocess_env_scrubs_ambient_git(tmp_path, monkeypatch):
     )
     assert result["exit_code"] == 1
     env = captured["env"]
-    for key in fpl.GIT_SCRUB_KEYS:
-        assert key not in env
+    assert not any(k.startswith("GIT_") for k in env)
     assert "PYTHONPATH" not in env
     assert env["PYTHONDONTWRITEBYTECODE"] == "1"

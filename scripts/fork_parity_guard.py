@@ -77,29 +77,31 @@ def _load_lib():
     return module
 
 
-# Must stay byte-identical to fork_parity_lib.GIT_SCRUB_KEYS (the lib is
-# loaded by path at runtime, so the tuple is mirrored here; the focused guard
-# suite pins the two against drift).
-_GIT_SCRUB_KEYS = (
-    "GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE",
-    "GIT_COMMON_DIR", "GIT_OBJECT_DIRECTORY",
-    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
-)
+# Cached fork_parity_lib module so _git_env() can delegate to the ONE shared
+# scrub helper (certification 20260809T024400Z requirement #1: no mirrored
+# tuples). _load_lib() re-executes the module; cache it once per process.
+_SHARED_LIB = None
+
+
+def _shared_lib():
+    global _SHARED_LIB
+    if _SHARED_LIB is None:
+        _SHARED_LIB = _load_lib()
+    return _SHARED_LIB
 
 
 def _git_env() -> dict:
-    """Environment for git probes with ambient redirection scrubbed.
+    """Environment for git probes with the FULL ambient GIT_* surface scrubbed.
 
-    Inherited GIT_DIR/GIT_WORK_TREE/GIT_INDEX_FILE could make ``git -C repo``
-    report an approved HEAD from a DIFFERENT repository while the guard tests
-    other filesystem bytes (external-review negative control). The same scrub
-    is the base env for every decisive pytest subprocess: identical candidate
-    bytes must yield identical dispositions regardless of ambient shell state
-    (disposition-invariance P1, review epoch 20260808T145355Z)."""
-    env = dict(os.environ)
-    for key in _GIT_SCRUB_KEYS:
-        env.pop(key, None)
-    return env
+    Delegates to ``fork_parity_lib.scrubbed_git_env`` — prefix-based removal
+    of every inherited ``GIT_*`` variable, because git's env-control surface
+    (redirects, GIT_SHALLOW_FILE, ceilings, namespaces, replace refs, config
+    injection) can alter repository discovery and ancestry for identical
+    candidate bytes (disposition-invariance P1s, review epochs
+    20260808T145355Z and 20260809T024400Z). The same scrub is the base env
+    for every decisive pytest subprocess; deliberate Git controls are
+    re-added explicitly per call site."""
+    return _shared_lib().scrubbed_git_env()
 
 
 def _git(repo: Path, *args: str) -> str:

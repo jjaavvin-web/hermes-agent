@@ -389,24 +389,28 @@ def proof_test_status(repo: Path, proof: Mapping[str, Any]) -> Tuple[bool, str]:
 
 # ── Phase / lineage eligibility ─────────────────────────────────────────────
 
-# Ambient redirection variables that would make ``git -C repo`` answer about a
-# DIFFERENT repository than the one named on the command line. Every git
-# subprocess this library (or the guard runner, or its pytest children)
-# spawns must drop them, or identical candidate bytes can receive different
-# ancestry/phase dispositions depending on inherited shell state.
-GIT_SCRUB_KEYS = (
-    "GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE",
-    "GIT_COMMON_DIR", "GIT_OBJECT_DIRECTORY",
-    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
-)
+def scrubbed_git_env(base: dict | None = None) -> dict:
+    """Copy of the environment with EVERY inherited ``GIT_*`` variable removed.
 
+    Prefix-based on purpose. Git's environment-control surface can alter
+    repository discovery, object, ref, ancestry, and config behavior —
+    the ``GIT_DIR`` redirect family, ``GIT_SHALLOW_FILE``,
+    ``GIT_CEILING_DIRECTORIES``, ``GIT_DISCOVERY_ACROSS_FILESYSTEM``,
+    ``GIT_NAMESPACE``, ``GIT_REPLACE_REF_BASE``, ``GIT_CONFIG_GLOBAL`` /
+    ``GIT_CONFIG_SYSTEM``, dynamic ``GIT_CONFIG_COUNT`` key/value entries,
+    and whatever ships in the next git release. A maintained name list
+    loses that race: certification epoch 20260809T024400Z proved a hostile
+    ``GIT_SHALLOW_FILE`` flips ancestry for identical candidate bytes after
+    the six-name blocklist passed every earlier control. Authority-bearing
+    git subprocesses (and decisive pytest children) therefore start from
+    this scrub, and any deliberate, command-specific Git control must be
+    re-added explicitly by the caller.
 
-def scrubbed_git_env() -> dict:
-    """os.environ minus the ambient git-redirection variables."""
-    env = dict(os.environ)
-    for key in GIT_SCRUB_KEYS:
-        env.pop(key, None)
-    return env
+    This is THE one shared scrub helper — the guard runner delegates here
+    (no mirrored tuples; certification requirement #1).
+    """
+    src = os.environ if base is None else base
+    return {k: v for k, v in src.items() if not k.startswith("GIT_")}
 
 
 def commit_is_ancestor(repo: Path, commit: str) -> bool | None:
