@@ -414,3 +414,89 @@ def test_suite_subprocess_env_scrubs_ambient_git(tmp_path, monkeypatch):
     assert not any(k.startswith("GIT_") for k in env)
     assert "PYTHONPATH" not in env
     assert env["PYTHONDONTWRITEBYTECODE"] == "1"
+
+
+# ── Final post-suite rebind (false-GREEN repair, epoch 20260809T024307Z) ─────
+
+
+def _make_rebind_repo(tmp_path):
+    import subprocess
+
+    repo = tmp_path / "target"
+    repo.mkdir()
+    env = fpl.scrubbed_git_env()
+
+    def run(*a):
+        subprocess.run(a, check=True, env=env, capture_output=True)
+
+    run("git", "-C", str(repo), "init", "-q")
+    (repo / "tracked.txt").write_text("original\n", encoding="utf-8")
+    run("git", "-C", str(repo), "add", "tracked.txt")
+    run("git", "-C", str(repo), "-c", "user.email=t@t", "-c", "user.name=t",
+        "commit", "-q", "-m", "seed")
+    return repo
+
+
+def _initial_binding(guard, repo):
+    head = guard._git(repo, "rev-parse", "HEAD")
+    dirty = guard._git(repo, "status", "--porcelain")
+    concealed = guard._concealed_byte_drift(repo)
+    return head, dirty, concealed
+
+
+def test_final_rebind_passes_when_unchanged(tmp_path):
+    guard = _load_guard_runner()
+    repo = _make_rebind_repo(tmp_path)
+    head, dirty, concealed = _initial_binding(guard, repo)
+    gate = guard._final_rebind_gate(repo, True, head, dirty, concealed)
+    assert gate["pass"] is True and gate["reasons"] == []
+
+
+def test_final_rebind_fails_on_post_bind_tracked_mutation(tmp_path):
+    """The exact reproduced false-GREEN shape (epoch 20260809T024307Z):
+    tracked bytes change after initial binding while the judge keeps
+    running; the verdict-time rebind must fail closed."""
+    guard = _load_guard_runner()
+    repo = _make_rebind_repo(tmp_path)
+    head, dirty, concealed = _initial_binding(guard, repo)
+    (repo / "tracked.txt").write_text("MUTATED DURING SUITES\n", encoding="utf-8")
+    gate = guard._final_rebind_gate(repo, True, head, dirty, concealed)
+    assert gate["pass"] is False
+    joined = " ".join(gate["reasons"])
+    assert "changed during execution" in joined or "drifted" in joined
+
+
+def test_final_rebind_fails_on_head_move(tmp_path):
+    import subprocess
+
+    guard = _load_guard_runner()
+    repo = _make_rebind_repo(tmp_path)
+    head, dirty, concealed = _initial_binding(guard, repo)
+    subprocess.run(
+        ["git", "-C", str(repo), "-c", "user.email=t@t", "-c", "user.name=t",
+         "commit", "-q", "--allow-empty", "-m", "moved"],
+        check=True, env=fpl.scrubbed_git_env(), capture_output=True,
+    )
+    gate = guard._final_rebind_gate(repo, True, head, dirty, concealed)
+    assert gate["pass"] is False
+    assert any("HEAD moved" in r for r in gate["reasons"])
+
+
+def test_final_rebind_fails_on_concealed_post_bind_mutation(tmp_path):
+    """assume-unchanged + mutation after binding: porcelain stays clean, so
+    only the re-hash / flag probes can catch it — they must."""
+    import subprocess
+
+    guard = _load_guard_runner()
+    repo = _make_rebind_repo(tmp_path)
+    head, dirty, concealed = _initial_binding(guard, repo)
+    subprocess.run(
+        ["git", "-C", str(repo), "update-index", "--assume-unchanged",
+         "tracked.txt"],
+        check=True, env=fpl.scrubbed_git_env(), capture_output=True,
+    )
+    (repo / "tracked.txt").write_text("hidden mutation\n", encoding="utf-8")
+    gate = guard._final_rebind_gate(repo, True, head, dirty, concealed)
+    assert gate["pass"] is False
+    joined = " ".join(gate["reasons"])
+    assert "drifted" in joined or "index hiding" in joined

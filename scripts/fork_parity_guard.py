@@ -104,6 +104,84 @@ def _git_env() -> dict:
     return _shared_lib().scrubbed_git_env()
 
 
+def _final_rebind_gate(
+    repo: Path,
+    initially_git_root: bool,
+    initial_head: str,
+    initial_dirty: str,
+    initial_concealed: dict | None,
+) -> dict:
+    """Re-resolve every authority-bearing probe AFTER all suites, fail closed.
+
+    The initial identity/byte binding runs BEFORE the semantic suites, which
+    take minutes; source-assurance verdict 20260809T024307Z reproduced a
+    false GREEN where tracked bytes changed DURING execution and the
+    aggregate still PASSed on the stale pre-suite values. This gate re-runs,
+    immediately before verdict emission: target-root identity, HEAD (the
+    commit pins its tree), index/worktree cleanliness, index-hiding flags,
+    and the recursive tracked-byte re-hash. ANY drift or failed probe fails
+    the aggregate. Git-less sealed fixtures carry reduced custody via
+    ancestry_mode and are recorded, not failed.
+    """
+    reasons: list = []
+    if initially_git_root:
+        final_toplevel = _git(repo, "rev-parse", "--show-toplevel")
+        final_is_root = bool(final_toplevel) and (
+            os.path.realpath(final_toplevel) == os.path.realpath(str(repo))
+        )
+        final_head = _git(repo, "rev-parse", "HEAD") if final_is_root else ""
+        final_dirty = _git(repo, "status", "--porcelain") if final_is_root else ""
+        final_concealed = _concealed_byte_drift(repo) if final_head else None
+        if not final_is_root:
+            reasons.append(
+                "final rebind: target is no longer its own git toplevel"
+            )
+        elif not final_head:
+            reasons.append("final rebind: HEAD unresolvable at verdict time")
+        elif final_head != initial_head:
+            reasons.append(
+                f"final rebind: HEAD moved during execution "
+                f"({initial_head!r} -> {final_head!r})"
+            )
+        if final_dirty != initial_dirty:
+            reasons.append(
+                "final rebind: index/worktree state changed during execution "
+                f"(porcelain {len(initial_dirty.splitlines())} -> "
+                f"{len(final_dirty.splitlines())} row(s))"
+            )
+        if final_concealed is None:
+            if initial_concealed is not None:
+                reasons.append(
+                    "final rebind: tracked-byte probe unavailable at verdict time"
+                )
+        else:
+            if final_concealed.get("mismatch_total") or final_concealed.get("mismatches"):
+                total = final_concealed.get(
+                    "mismatch_total", len(final_concealed["mismatches"])
+                )
+                reasons.append(
+                    f"final rebind: {total} tracked file(s) drifted from HEAD "
+                    f"blobs during execution: {final_concealed['mismatches'][:5]}"
+                )
+            if final_concealed.get("index_hiding_flags"):
+                reasons.append(
+                    "final rebind: index hiding flags appeared during "
+                    f"execution: {final_concealed['index_hiding_flags'][:5]}"
+                )
+    return {
+        "pass": not reasons,
+        "reasons": reasons,
+        "note": (
+            "Post-suite, pre-verdict re-resolution of target root, HEAD/tree, "
+            "index/worktree cleanliness, index-hiding flags, and recursively "
+            "re-hashed tracked bytes; any drift or failed probe fails closed "
+            "(false-GREEN P1, source-assurance epoch 20260809T024307Z). "
+            "Git-less sealed fixtures pass vacuously; their reduced custody "
+            "is recorded via ancestry_mode."
+        ),
+    }
+
+
 def _git(repo: Path, *args: str) -> str:
     try:
         result = subprocess.run(
@@ -664,10 +742,15 @@ def main() -> int:
         "reasons": parity_reasons,
     }
 
+    # ── gate: final post-suite rebind (false-GREEN TOCTOU repair) ──────────
+    verdict["gates"]["final_rebind"] = _final_rebind_gate(
+        repo, repo_is_git_root, head, dirty, concealed,
+    )
+
     # ── gate: merge/integration (aggregate; claims nothing beyond) ─────────
     gate_names = (
         "absolute_suite", "differential", "provenance",
-        "phase_eligibility", "parity_completeness",
+        "phase_eligibility", "parity_completeness", "final_rebind",
     )
     failing = [name for name in gate_names if not verdict["gates"][name]["pass"]]
     binding_reasons = []
