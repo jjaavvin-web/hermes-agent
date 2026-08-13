@@ -210,15 +210,17 @@ class TestAutoTitleSession:
         """A failing auxiliary client leaves the session untouched and returns."""
         db = MagicMock()
         db.get_session_title.return_value = None
+        db.get_session_title_source.return_value = None
         captured = []
         exc = RuntimeError("peer closed connection without complete body")
 
         with patch("agent.title_generator.call_llm", side_effect=exc):
+            # Upstream v0.20.1 dropped the assistant_response parameter —
+            # titles now derive from the user's opening message only.
             auto_title_session(
                 db,
                 "sess-1",
                 "hi",
-                "hello",
                 failure_callback=lambda task, err: captured.append((task, err)),
             )
 
@@ -520,7 +522,9 @@ class TestMaybeAutoTitleForkHardening:
         with patch("agent.title_generator.auto_title_session") as mock_auto:
             called = threading.Event()
             mock_auto.side_effect = lambda *a, **k: called.set()
-            maybe_auto_title(db, "sess-1", "hello", "hi there", history, failure_callback=_cb)
+            # Upstream v0.20.1 dropped the assistant_response parameter —
+            # titles now derive from the user's opening message only.
+            maybe_auto_title(db, "sess-1", "hello", history, failure_callback=_cb)
             # Event-based wait: the fork's fixed 0.3s nap flaked on loaded
             # runners; adopt upstream's sync pattern from test_fires_on_first_exchange.
             assert called.wait(timeout=10), "auto_title thread never ran"
@@ -528,7 +532,6 @@ class TestMaybeAutoTitleForkHardening:
                 db,
                 "sess-1",
                 "hello",
-                "hi there",
                 failure_callback=_cb,
                 main_runtime=None,
                 title_callback=None,
@@ -547,6 +550,7 @@ class TestMaybeAutoTitleForkHardening:
         """Shutdown drains in-flight title work briefly instead of racing teardown."""
         db = MagicMock()
         db.get_session_title.return_value = None
+        db.get_session_title_source.return_value = None
         started = threading.Event()
         release = threading.Event()
 
@@ -561,7 +565,9 @@ class TestMaybeAutoTitleForkHardening:
         ]
 
         with patch("agent.title_generator.generate_title", side_effect=_hung_generate):
-            maybe_auto_title(db, "sess-1", "hello", "hi there", history)
+            # Upstream v0.20.1 dropped the assistant_response parameter —
+            # titles now derive from the user's opening message only.
+            maybe_auto_title(db, "sess-1", "hello", history)
             assert started.wait(timeout=1.0)
             title_generator._drain_title_threads_at_shutdown(timeout=0.05)
             release.set()
@@ -574,6 +580,7 @@ class TestMaybeAutoTitleForkHardening:
         """A teardown-time auxiliary failure is isolated and cleaned up."""
         db = MagicMock()
         db.get_session_title.return_value = None
+        db.get_session_title_source.return_value = None
         captured = []
         history = [
             {"role": "user", "content": "hello"},
@@ -584,11 +591,12 @@ class TestMaybeAutoTitleForkHardening:
             raise RuntimeError("incomplete chunked read")
 
         with patch("agent.title_generator.call_llm", side_effect=_fail):
+            # Upstream v0.20.1 dropped the assistant_response parameter —
+            # titles now derive from the user's opening message only.
             maybe_auto_title(
                 db,
                 "sess-1",
                 "hello",
-                "hi there",
                 history,
                 failure_callback=lambda task, err: captured.append((task, str(err))),
             )

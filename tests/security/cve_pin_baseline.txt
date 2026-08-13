@@ -4,5 +4,9 @@
 requests==2.33.0
 anthropic==0.87.0
 # aiohttp floor RAISED 3.13.4 -> 3.14.1 in the v2026.7.1 merge (upstream CVE-2026-34993 RCE + 47265)
-aiohttp==3.14.1
+# aiohttp floor RAISED 3.14.1 -> 3.14.3 in the v2026.8.13 merge (GHSA-cq5v-8q36-5273 / GHSA-mfx4-hv73-q22v / GHSA-mq44-7p77-q5h7)
+aiohttp==3.14.3
 starlette==1.3.1
+# cryptography floor ADDED in the v2026.8.13 merge (upstream pin: CVE-2026-69247 Bleichenbacher
+# PKCS#7 oracle + GHSA-m2h6-j472-rp4c + GHSA-jwv3-5hgf-82ww; supersedes the fork's 48.0.1 hold)
+cryptography==50.0.0

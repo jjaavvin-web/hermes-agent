@@ -158,7 +158,12 @@ dependencies = [
   # / pywin32 tree) ships only where it's actually used.
   "concurrent-log-handler==0.9.29; sys_platform == 'win32'",
   # First-party lifecycle and shared-metrics runtime. Relay 0.6 is the minimum
-  # lossless provider-codec contract. Managed calls pass request/response data
+  # lossless provider-codec contract. RANGE (not exact pin) is deliberate for
+  # this first-party module: upstream ships coordinated patch releases inside
+  # the <0.8 codec contract and the fork tracks them without a manifest edit;
+  # uv.lock still freezes the exact resolved version (0.7.1) per supply-chain
+  # policy, so the runtime install is pinned regardless.
+  # Managed calls pass request/response data
   # through this native module in-process; shared metrics installs no network
   # exporter and consumes only its bounded projection. Relay publishes wheels
   # only (no sdist), so this marker must stay false anywhere no wheel tag can
@@ -321,7 +326,7 @@ termux-all = [
 ]
 # alibabacloud-tea-openapi pinned to 0.3.16 (transitive of alibabacloud-dingtalk):
 # its 0.4.4 declares cryptography>=3.0.0,<47.0.0, a hard conflict with our
-# cryptography==48.0.1 security pin (GHSA-537c-gmf6-5ccf). 0.3.16 is dingtalk
+# cryptography==50.0.0 security pin (was 48.0.1 pre-v0.20.1). 0.3.16 is dingtalk
 # 2.2.42's own declared floor (>=0.3.16) and carries no cryptography bound, so the
 # resolver lands there anyway — pinning it makes that supply-chain decision visible
 # and stops a silent re-resolution on the next `uv lock`.

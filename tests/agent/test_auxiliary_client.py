@@ -1698,9 +1698,20 @@ class TestStaleFallbackCandidateSkip:
             "Codex auxiliary Responses stream exceeded 120.0s total timeout")
 
     def test_stale_anthropic_fallback_refreshes_and_retries(self, monkeypatch):
-        """401 from the fallback candidate → refresh its creds → retry succeeds."""
+        """401 from the fallback candidate → refresh its creds → retry succeeds.
+
+        Uses an explicit non-sanctioned provider (not literal 'auto' and not
+        the sanctioned openai-codex route): the fork's fail-closed doctrine
+        (burn edc7e0133) only blocks fallback discovery for 'auto'/sanctioned
+        routes — see TestExpiredCodexFallback and the skipped
+        test_401_auth_error_triggers_fallback_in_auto_mode above. An explicit
+        provider's fallback candidate is still discovered via
+        _try_configured_fallback_chain, and _call_fallback_candidate_sync's
+        stale-credential refresh-and-retry (via _get_cached_client) is
+        unconditional on that path.
+        """
         primary_client = MagicMock()
-        primary_client.base_url = "https://chatgpt.com/backend-api/codex"
+        primary_client.base_url = "https://integrate.api.nvidia.com/v1"
         primary_client.chat.completions.create.side_effect = self._timeout_err()
 
         stale_fb = MagicMock()
@@ -1717,14 +1728,12 @@ class TestStaleFallbackCandidateSkip:
             return (primary_client, "gpt-5.5")
 
         with patch("agent.auxiliary_client._resolve_task_provider_model",
-                   return_value=("auto", None, None, None, None)), \
+                   return_value=("nvidia", "gpt-5.5", None, None, None)), \
              patch("agent.auxiliary_client._get_cached_client", side_effect=_cached_client), \
              patch("agent.auxiliary_client._try_configured_fallback_chain",
-                   return_value=(None, None, "")), \
-             patch("agent.auxiliary_client._try_main_fallback_chain",
-                   return_value=(None, None, "")), \
-             patch("agent.auxiliary_client._try_payment_fallback",
                    return_value=(stale_fb, "claude-haiku-4-5-20251001", "anthropic")), \
+             patch("agent.auxiliary_client._try_main_agent_model_fallback",
+                   return_value=(None, None, "")), \
              patch("agent.auxiliary_client._refresh_provider_credentials",
                    return_value=True) as mock_refresh:
             result = call_llm(
@@ -1739,9 +1748,17 @@ class TestStaleFallbackCandidateSkip:
 
     def test_unrefreshable_stale_candidate_is_skipped_to_next(self, monkeypatch):
         """Refresh fails (expired setup token) → candidate quarantined, chain
-        walked again, next candidate serves the request."""
+        walked again, next candidate serves the request.
+
+        Explicit non-sanctioned provider (see doctrine note on the sibling
+        test above). The initial candidate comes from
+        _try_configured_fallback_chain; once _call_fallback_candidate_sync
+        quarantines it (unrefreshable 401), the single discovery-chain
+        re-walk is _try_payment_fallback(reason="stale fallback credential")
+        — the ONLY call site of that helper for an explicit-provider task.
+        """
         primary_client = MagicMock()
-        primary_client.base_url = "https://chatgpt.com/backend-api/codex"
+        primary_client.base_url = "https://integrate.api.nvidia.com/v1"
         primary_client.chat.completions.create.side_effect = self._timeout_err()
 
         stale_fb = MagicMock()
@@ -1752,21 +1769,16 @@ class TestStaleFallbackCandidateSkip:
         healthy_fb.base_url = "https://openrouter.ai/api/v1"
         healthy_fb.chat.completions.create.return_value = _DummyResponse("openrouter-serves")
 
-        fb_walks = [
-            (stale_fb, "claude-haiku-4-5-20251001", "anthropic"),
-            (healthy_fb, "fallback-model", "openrouter"),
-        ]
-
         with patch("agent.auxiliary_client._resolve_task_provider_model",
-                   return_value=("auto", None, None, None, None)), \
+                   return_value=("nvidia", "gpt-5.5", None, None, None)), \
              patch("agent.auxiliary_client._get_cached_client",
                    return_value=(primary_client, "gpt-5.5")), \
              patch("agent.auxiliary_client._try_configured_fallback_chain",
-                   return_value=(None, None, "")), \
-             patch("agent.auxiliary_client._try_main_fallback_chain",
+                   return_value=(stale_fb, "claude-haiku-4-5-20251001", "anthropic")), \
+             patch("agent.auxiliary_client._try_main_agent_model_fallback",
                    return_value=(None, None, "")), \
              patch("agent.auxiliary_client._try_payment_fallback",
-                   side_effect=fb_walks) as mock_fb, \
+                   return_value=(healthy_fb, "fallback-model", "openrouter")) as mock_fb, \
              patch("agent.auxiliary_client._refresh_provider_credentials",
                    return_value=False), \
              patch("agent.auxiliary_client._mark_provider_unhealthy") as mock_mark:
@@ -1776,16 +1788,20 @@ class TestStaleFallbackCandidateSkip:
             )
 
         assert result.choices[0].message.content == "openrouter-serves"
-        assert mock_fb.call_count == 2
-        assert mock_fb.call_args_list[1].kwargs.get("reason") == "stale fallback credential"
+        mock_fb.assert_called_once()
+        assert mock_fb.call_args.kwargs.get("reason") == "stale fallback credential"
         mock_mark.assert_called_once_with("anthropic")
         assert stale_fb.chat.completions.create.call_count == 1
         assert healthy_fb.chat.completions.create.call_count == 1
 
     def test_non_auth_fallback_error_still_raises(self, monkeypatch):
-        """A non-auth error from the fallback candidate propagates unchanged."""
+        """A non-auth error from the fallback candidate propagates unchanged.
+
+        Explicit non-sanctioned provider (see doctrine note above); the
+        broken candidate is the initial discovery-chain hit.
+        """
         primary_client = MagicMock()
-        primary_client.base_url = "https://chatgpt.com/backend-api/codex"
+        primary_client.base_url = "https://integrate.api.nvidia.com/v1"
         primary_client.chat.completions.create.side_effect = self._timeout_err()
 
         broken_fb = MagicMock()
@@ -1793,15 +1809,13 @@ class TestStaleFallbackCandidateSkip:
         broken_fb.chat.completions.create.side_effect = ValueError("malformed response")
 
         with patch("agent.auxiliary_client._resolve_task_provider_model",
-                   return_value=("auto", None, None, None, None)), \
+                   return_value=("nvidia", "gpt-5.5", None, None, None)), \
              patch("agent.auxiliary_client._get_cached_client",
                    return_value=(primary_client, "gpt-5.5")), \
              patch("agent.auxiliary_client._try_configured_fallback_chain",
-                   return_value=(None, None, "")), \
-             patch("agent.auxiliary_client._try_main_fallback_chain",
-                   return_value=(None, None, "")), \
-             patch("agent.auxiliary_client._try_payment_fallback",
-                   return_value=(broken_fb, "claude-haiku-4-5-20251001", "anthropic")):
+                   return_value=(broken_fb, "claude-haiku-4-5-20251001", "anthropic")), \
+             patch("agent.auxiliary_client._try_main_agent_model_fallback",
+                   return_value=(None, None, "")):
             with pytest.raises(ValueError, match="malformed response"):
                 call_llm(
                     task="compression",
@@ -1846,10 +1860,17 @@ class TestAuxiliaryFallbackLayering:
             )
 
         assert result.choices[0].message.content == "from fallback chain"
+        # "invalid provider response" is a model-specific failure (the model
+        # returned malformed choices), so the configured-chain call narrows
+        # its same-provider skip to just that model via failed_model= — see
+        # the _chain_failed_model comment in _call_llm_impl and its sibling
+        # coverage in TestTransientTransportRetry::
+        # test_timeout_forwards_failed_model_to_configured_chain.
         mock_chain.assert_called_once_with(
             "title_generation",
             "nvidia",
             reason="invalid provider response",
+            failed_model="minimaxai/minimax-m3",
         )
         mock_main.assert_not_called()
 
@@ -1879,10 +1900,12 @@ class TestAuxiliaryFallbackLayering:
             )
 
         assert result.choices[0].message.content == "from async fallback"
+        # Same failed_model= narrowing as the sync test above.
         mock_chain.assert_called_once_with(
             "compression",
             "nvidia",
             reason="invalid provider response",
+            failed_model="minimaxai/minimax-m3",
         )
 
     def test_auto_payment_error_fail_closes_no_paid_fallback(self, monkeypatch):
