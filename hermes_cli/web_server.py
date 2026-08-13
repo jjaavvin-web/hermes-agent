@@ -18354,20 +18354,24 @@ try:
     _log.info("Mounted codex sessions dashboard API routes at /api/dashboard/codex-sessions/")
 except Exception as _exc:
     _log.warning("Failed to load dashboard_codex_sessions routes: %s", _exc)
-try:
-    from hermes_cli.dashboard_os import router as _os_router
-    from hermes_cli.dashboard_connectome import router as _connectome_router
-    from hermes_cli.dashboard_nexus import router as _nexus_router
-    from hermes_cli.dashboard_nexus_slice import router as _nexus_slice_router
-    from hermes_cli.dashboard_nexus_actions import router as _nexus_actions_router
-    app.include_router(_os_router)
-    app.include_router(_connectome_router)
-    app.include_router(_nexus_router)
-    app.include_router(_nexus_slice_router)
-    app.include_router(_nexus_actions_router)
+# Fork routers mounted individually: one failing import must not silently
+# drop its healthy siblings (a shared try once hid 4 routers behind a
+# misattributed "dashboard_os" warning when only connectome/nexus needed
+# asyncpg). Each failure is logged under its own name.
+for _mod_name, _label in (
+    ("dashboard_os", "os"),
+    ("dashboard_connectome", "connectome"),
+    ("dashboard_nexus", "nexus"),
+    ("dashboard_nexus_slice", "nexus_slice"),
+    ("dashboard_nexus_actions", "nexus_actions"),
+):
+    try:
+        _fork_mod = __import__(f"hermes_cli.{_mod_name}", fromlist=["router"])
+        app.include_router(_fork_mod.router)
+    except Exception as _exc:
+        _log.warning("Failed to load %s routes: %s", _label, _exc)
+else:
     _log.info("Mounted OS tab dashboard API routes at /api/dashboard/os and /api/dashboard/nexus")
-except Exception as _exc:
-    _log.warning("Failed to load dashboard_os routes: %s", _exc)
 try:
     from hermes_cli.dashboard_learning import router as _learning_router
     app.include_router(_learning_router)
