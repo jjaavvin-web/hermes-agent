@@ -97,7 +97,7 @@ def _worst_status(statuses: list[Status]) -> Status:
 
 
 def _run(cmd: list[str], timeout: float = 3.0) -> subprocess.CompletedProcess:
-    return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+    return subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout)
 
 
 def _state_db_path() -> Path:
@@ -1120,7 +1120,7 @@ def _pid_alive(pid: Any) -> bool:
 
 def _probe_gateway() -> dict:
     state_path = HERMES_HOME / "gateway_state.json"
-    data = json.loads(state_path.read_text())
+    data = json.loads(state_path.read_text(encoding="utf-8"))
     pid = data.get("pid")
     gw_state = data.get("gateway_state", "unknown")
     uptime_s = None
@@ -1188,7 +1188,7 @@ def _probe_gateway_watchdog() -> dict:
     events_path = HERMES_HOME / "state" / "gateway-watchdog" / "events.jsonl"
     if events_path.exists():
         try:
-            lines = events_path.read_text().splitlines()
+            lines = events_path.read_text(encoding="utf-8").splitlines()
             for line in reversed(lines):
                 line = line.strip()
                 if line:
@@ -1349,7 +1349,7 @@ def _probe_openrouter_key() -> dict:
         if not HONCHO_ENV.exists():
             return _item("openrouter_key", "amber",
                          f"honcho .env not found ({HONCHO_ENV})")
-        for line in HONCHO_ENV.read_text().splitlines():
+        for line in HONCHO_ENV.read_text(encoding="utf-8").splitlines():
             stripped = line.strip()
             if stripped.startswith("LLM_OPENROUTER_API_KEY"):
                 parts = stripped.split("=", 1)

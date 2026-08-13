@@ -188,7 +188,7 @@ def _read_run_registry() -> list[RunLock]:
     locks: list[RunLock] = []
     for lock in sorted(registry.glob("*.lock")):
         try:
-            data = json.loads(lock.read_text())
+            data = json.loads(lock.read_text(encoding="utf-8"))
         except (OSError, ValueError):
             continue
         if isinstance(data, dict):
@@ -456,10 +456,10 @@ def _install_hook_into(repo: GitRepo) -> HookResult:
     try:
         hooks_dir.mkdir(parents=True, exist_ok=True)
         hook = hooks_dir / "pre-commit"
-        if hook.exists() and _HOOK_MARKER not in hook.read_text(errors="ignore"):
+        if hook.exists() and _HOOK_MARKER not in hook.read_text(encoding="utf-8", errors="ignore"):
             # Preserve a pre-existing third-party hook before overwriting.
             hook.rename(hook.with_name(f"pre-commit.pre-hermes.{_utc_stamp()}"))
-        hook.write_text(_FALLBACK_HOOK)
+        hook.write_text(_FALLBACK_HOOK, encoding="utf-8")
         hook.chmod(0o755)
     except OSError as exc:
         return {"repo": repo, "mode": "error", "detail": str(exc)}

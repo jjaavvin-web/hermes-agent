@@ -76,7 +76,7 @@ def notify(message: str, *, dry_run: bool) -> int:
     env = os.environ.copy()
     if dry_run:
         env["DISCORD_NOTIFY_DRYRUN"] = "1"
-    proc = subprocess.run([str(NOTIFY), message], text=True, capture_output=True, env=env, check=False, timeout=30)
+    proc = subprocess.run([str(NOTIFY), message], text=True, encoding="utf-8", errors="replace", capture_output=True, env=env, check=False, timeout=30)
     sys.stdout.write(proc.stdout)
     sys.stderr.write(proc.stderr)
     return proc.returncode

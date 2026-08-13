@@ -7608,7 +7608,7 @@ def _ensure_kanban_worktree(
             add.append(branch)            # reuse an existing branch
         else:
             add += ["-b", branch, "HEAD"]  # new branch off live HEAD
-        res = subprocess.run(add, capture_output=True, text=True, check=False)
+        res = subprocess.run(add, capture_output=True, text=True, encoding="utf-8", errors="replace", check=False)
         return res.returncode == 0 and path.is_dir()
     except Exception:
         return False
@@ -8188,7 +8188,7 @@ def _hive_registry_conflict(
     card_id = _task_attr(task, "id")
     for lock in locks:
         try:
-            data = json.loads(lock.read_text())
+            data = json.loads(lock.read_text(encoding="utf-8"))
         except (OSError, ValueError):
             continue
         if not isinstance(data, dict):
@@ -8274,7 +8274,7 @@ def _write_run_lock(
         }
         lock_path = reg / f"{task.id}.lock"
         tmp = lock_path.with_name(lock_path.name + ".tmp")
-        tmp.write_text(json.dumps(payload))
+        tmp.write_text(json.dumps(payload), encoding="utf-8")
         os.replace(tmp, lock_path)  # atomic publish
         return lock_path
     except Exception:

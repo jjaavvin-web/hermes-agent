@@ -9320,7 +9320,7 @@ def _verify_editable_install(
     try:
         import importlib.metadata as md
 
-        direct_url = md.distribution("hermes-agent").read_text("direct_url.json") or ""
+        direct_url = md.distribution("hermes-agent").read_text("direct_url.json") or ""  # windows-footgun: ok — importlib.metadata.Distribution.read_text(filename) is not Path.read_text; it takes only a positional filename (no encoding= kwarg) and always decodes UTF-8 internally
     except Exception:
         return  # missing metadata is not actionable from here
 

@@ -137,7 +137,7 @@ def _probe_hermes() -> dict:
     try:
         t0 = time.monotonic()
         state_path = HERMES_HOME / "gateway_state.json"
-        data = json.loads(state_path.read_text())
+        data = json.loads(state_path.read_text(encoding="utf-8"))
         latency = round((time.monotonic() - t0) * 1000, 1)
         gw_state = data.get("gateway_state", "unknown")
         pid = data.get("pid")
@@ -220,7 +220,7 @@ def _probe_cron() -> dict:
     try:
         t0 = time.monotonic()
         jobs_path = HERMES_HOME / "cron" / "jobs.json"
-        data = json.loads(jobs_path.read_text())
+        data = json.loads(jobs_path.read_text(encoding="utf-8"))
         latency = round((time.monotonic() - t0) * 1000, 1)
         jobs = data.get("jobs", [])
         enabled = [j for j in jobs if j.get("enabled")]
@@ -257,7 +257,7 @@ def _probe_all() -> list[dict]:
 def _run_capture(cmd: list[str], timeout: float = 4.0) -> tuple[int, str]:
     """Run a read-only command; return (returncode, stdout). Never raises."""
     try:
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        result = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout)
         return result.returncode, result.stdout
     except Exception:
         return 1, ""
@@ -484,7 +484,7 @@ def _probe_hive(workdir: Path, tmux_alive_sessions: set[str]) -> dict:
     status_data: dict = {}
     if status_path.exists():
         try:
-            status_data = json.loads(status_path.read_text())
+            status_data = json.loads(status_path.read_text(encoding="utf-8"))
         except Exception:
             pass
 
@@ -502,7 +502,7 @@ def _probe_hive(workdir: Path, tmux_alive_sessions: set[str]) -> dict:
         except Exception:
             pass
         try:
-            text = launch_path.read_text(errors="replace")
+            text = launch_path.read_text(encoding="utf-8", errors="replace")
             for line in text.splitlines():
                 if line.strip().startswith("TRACK_TITLE="):
                     raw = line.split("=", 1)[1].strip().strip('"').strip("'")
@@ -524,7 +524,7 @@ def _probe_hive(workdir: Path, tmux_alive_sessions: set[str]) -> dict:
     obj_path = workdir / "objective.md"
     if obj_path.exists():
         try:
-            raw_obj = obj_path.read_text(errors="replace")
+            raw_obj = obj_path.read_text(encoding="utf-8", errors="replace")
             lines = [ln.strip() for ln in raw_obj.splitlines() if ln.strip() and not ln.strip().startswith("#")]
             if lines:
                 objective_summary = " ".join(lines)[:200]
@@ -538,7 +538,7 @@ def _probe_hive(workdir: Path, tmux_alive_sessions: set[str]) -> dict:
     if report_file.exists():
         final_report_path = str(report_file)
         try:
-            first_lines = report_file.read_text(errors="replace")[:500]
+            first_lines = report_file.read_text(encoding="utf-8", errors="replace")[:500]
             for ln in first_lines.splitlines():
                 ln = ln.strip()
                 if ln.startswith("Status:"):
@@ -907,7 +907,7 @@ def _get_spend(range_str: str) -> dict:
 def _get_recent_sessions(limit: int = 5) -> list[dict]:
     sessions_path = HERMES_HOME / "sessions" / "sessions.json"
     try:
-        raw = json.loads(sessions_path.read_text())
+        raw = json.loads(sessions_path.read_text(encoding="utf-8"))
         if isinstance(raw, dict):
             entries = list(raw.values())
         elif isinstance(raw, list):
@@ -1011,7 +1011,7 @@ def _get_active_model() -> str:
 def _get_next_cron() -> Optional[dict]:
     try:
         jobs_path = HERMES_HOME / "cron" / "jobs.json"
-        data = json.loads(jobs_path.read_text())
+        data = json.loads(jobs_path.read_text(encoding="utf-8"))
         jobs = data.get("jobs", [])
         now_str = datetime.now(timezone.utc).isoformat()
         enabled_with_next = [
@@ -1022,7 +1022,7 @@ def _get_next_cron() -> Optional[dict]:
             # Fall back to staged dream-reflect.cron
             staged_path = HERMES_HOME / "cron.d" / "dream-reflect.cron"
             if staged_path.exists():
-                content = staged_path.read_text()
+                content = staged_path.read_text(encoding="utf-8")
                 for line in content.splitlines():
                     if line.strip() and not line.strip().startswith("#"):
                         parts = line.split()
@@ -1174,7 +1174,7 @@ def _get_last_dream() -> Optional[str]:
         dream_files = sorted(dreams_dir.glob("*.md"), reverse=True)
         if not dream_files:
             return None
-        content = dream_files[0].read_text(errors="replace")
+        content = dream_files[0].read_text(encoding="utf-8", errors="replace")
         # Return first ~300 chars as the brief
         lines = [ln for ln in content.splitlines() if ln.strip() and not ln.startswith("#")]
         brief = " ".join(lines)[:300].strip()
@@ -1587,7 +1587,7 @@ async def get_latest_dream() -> dict:
 
     try:
         latest = dream_files[0]
-        content = latest.read_text(errors="replace")
+        content = latest.read_text(encoding="utf-8", errors="replace")
         date_str = latest.stem  # filename is YYYY-MM-DD.md
         return {"dream": content, "date": date_str, "filename": latest.name}
     except Exception as e:

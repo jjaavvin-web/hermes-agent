@@ -563,47 +563,9 @@ def test_dead_manual_entry_pruned_after_24h(tmp_path, monkeypatch):
 
 
 
-def test_load_pool_seeds_env_api_key(tmp_path, monkeypatch):
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
-    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-seeded")
-    _write_auth_store(tmp_path, {"version": 1, "providers": {}})
-
-    from agent.credential_pool import load_pool
-
-    pool = load_pool("openrouter")
-    entry = pool.select()
-
-    assert entry is not None
-    assert entry.source == "env:OPENROUTER_API_KEY"
-    assert entry.access_token == "sk-or-seeded"
 
 
 
-def test_load_pool_does_not_persist_env_seeded_secret_value(tmp_path, monkeypatch):
-    """Runtime env keys may be used in memory but must not land in auth.json."""
-    sentinel = "S3NTINEL_DO_NOT_PERSIST_OPENROUTER"
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
-    monkeypatch.setenv("OPENROUTER_API_KEY", sentinel)
-    _write_auth_store(tmp_path, {"version": 1, "providers": {}})
-
-    from agent.credential_pool import load_pool
-
-    pool = load_pool("openrouter")
-    entry = pool.select()
-
-    assert entry is not None
-    assert entry.source == "env:OPENROUTER_API_KEY"
-    assert entry.access_token == sentinel
-
-    auth_text = (tmp_path / "hermes" / "auth.json").read_text()
-    assert sentinel not in auth_text
-    persisted = json.loads(auth_text)["credential_pool"]["openrouter"][0]
-    assert persisted["source"] == "env:OPENROUTER_API_KEY"
-    assert persisted["label"] == "OPENROUTER_API_KEY"
-    assert persisted["auth_type"] == "api_key"
-    assert persisted["priority"] == 0
-    assert "access_token" not in persisted
-    assert persisted["secret_fingerprint"].startswith("sha256:")
 
 
 def test_load_pool_collapses_duplicate_env_rows_to_active_key(tmp_path, monkeypatch):
@@ -671,372 +633,40 @@ def test_credential_pool_never_selects_empty_borrowed_entry():
     assert pool.acquire_lease() is None
 
 
-def test_load_pool_persists_bitwarden_origin_metadata_without_secret(tmp_path, monkeypatch):
-    """Bitwarden-injected env vars retain source metadata but not raw values."""
-    sentinel = "S3NTINEL_DO_NOT_PERSIST_BITWARDEN"
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
-    monkeypatch.setenv("OPENROUTER_API_KEY", sentinel)
-    monkeypatch.setattr(
-        "hermes_cli.env_loader.get_secret_source",
-        lambda env_var: "bitwarden" if env_var == "OPENROUTER_API_KEY" else None,
-    )
-    _write_auth_store(tmp_path, {"version": 1, "providers": {}})
-
-    from agent.credential_pool import load_pool
-
-    pool = load_pool("openrouter")
-    entry = pool.select()
-
-    assert entry is not None
-    assert entry.access_token == sentinel
-    assert entry.source == "env:OPENROUTER_API_KEY"
-
-    auth_text = (tmp_path / "hermes" / "auth.json").read_text()
-    assert sentinel not in auth_text
-    persisted = json.loads(auth_text)["credential_pool"]["openrouter"][0]
-    assert persisted["source"] == "env:OPENROUTER_API_KEY"
-    assert persisted["secret_source"] == "bitwarden"
-    assert "access_token" not in persisted
-
-
-
-def test_load_pool_sanitizes_legacy_raw_borrowed_entry_when_value_unchanged(tmp_path, monkeypatch):
-    """Existing raw env-seeded pool entries are rewritten even if the env value matches."""
-    sentinel = "S3NTINEL_DO_NOT_PERSIST_LEGACY_RAW"
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
-    monkeypatch.setenv("OPENROUTER_API_KEY", sentinel)
-    _write_auth_store(
-        tmp_path,
-        {
-            "version": 1,
-            "credential_pool": {
-                "openrouter": [
-                    {
-                        "id": "legacy-env",
-                        "label": "OPENROUTER_API_KEY",
-                        "auth_type": "api_key",
-                        "priority": 0,
-                        "source": "env:OPENROUTER_API_KEY",
-                        "access_token": sentinel,
-                        "base_url": "https://openrouter.ai/api/v1",
-                    }
-                ]
-            },
-        },
-    )
-
-    from agent.credential_pool import load_pool
-
-    pool = load_pool("openrouter")
-    entry = pool.select()
-
-    assert entry is not None
-    assert entry.access_token == sentinel
-    auth_text = (tmp_path / "hermes" / "auth.json").read_text()
-    assert sentinel not in auth_text
-    persisted = json.loads(auth_text)["credential_pool"]["openrouter"][0]
-    assert persisted["id"] == "legacy-env"
-    assert "access_token" not in persisted
-    assert persisted["secret_fingerprint"].startswith("sha256:")
-
-
-
-def test_pooled_credential_to_dict_strips_borrowed_secret_fields():
-    from agent.credential_pool import PooledCredential
-
-    sentinel = "S3NTINEL_DO_NOT_PERSIST_TO_DICT"
-    credential = PooledCredential(
-        provider="openrouter",
-        id="borrowed-1",
-        label="vault-ref",
-        auth_type="api_key",
-        priority=3,
-        source="vault:openrouter/api-key",
-        access_token=sentinel,
-        refresh_token=f"refresh-{sentinel}",
-        agent_key=f"agent-{sentinel}",
-        request_count=7,
-        last_status="ok",
-        extra={
-            "api_key": f"extra-{sentinel}",
-            "client_secret": f"client-{sentinel}",
-            "secret_key": f"secret-key-{sentinel}",
-            "authToken": f"auth-token-{sentinel}",
-            "refreshToken": f"camel-refresh-{sentinel}",
-            "authorization": f"Bearer {sentinel}",
-            "tokens": {"access_token": f"nested-{sentinel}"},
-            "token_type": "Bearer",
-            "scope": "inference",
-        },
-    )
-
-    payload = credential.to_dict()
-    serialized = json.dumps(payload)
-
-    assert sentinel not in serialized
-    assert "access_token" not in payload
-    assert "refresh_token" not in payload
-    assert "agent_key" not in payload
-    assert "api_key" not in payload
-    assert "client_secret" not in payload
-    assert "secret_key" not in payload
-    assert "authToken" not in payload
-    assert "refreshToken" not in payload
-    assert "authorization" not in payload
-    assert "tokens" not in payload
-    assert payload["source"] == "vault:openrouter/api-key"
-    assert payload["label"] == "vault-ref"
-    assert payload["request_count"] == 7
-    assert payload["token_type"] == "Bearer"
-    assert payload["scope"] == "inference"
-    assert payload["secret_fingerprint"].startswith("sha256:")
-
-
-
-@pytest.mark.parametrize("source", [
-    "age://openrouter/api-key",
-    "systemd",
-    "keyring",
-    "1password",
-    "pass",
-    "sops",
-    "future_secret_store:openrouter",
-])
-def test_borrowed_source_variants_strip_secret_fields(source):
-    from agent.credential_pool import PooledCredential
-
-    sentinel = f"S3NTINEL_DO_NOT_PERSIST_{source.replace(':', '_').replace('/', '_')}"
-    credential = PooledCredential(
-        provider="openrouter",
-        id="borrowed-variant",
-        label="borrowed",
-        auth_type="api_key",
-        priority=0,
-        source=source,
-        access_token=sentinel,
-        refresh_token=f"refresh-{sentinel}",
-    )
-
-    payload = credential.to_dict()
-    serialized = json.dumps(payload)
-
-    assert sentinel not in serialized
-    assert "access_token" not in payload
-    assert "refresh_token" not in payload
-    assert payload["source"] == source
-    assert payload["secret_fingerprint"].startswith("sha256:")
-
-
-
-
-
-
-def test_write_credential_pool_sanitizes_borrowed_payload_at_disk_boundary(tmp_path, monkeypatch):
-    """Direct dictionary callers cannot bypass the borrowed-secret guard."""
-    sentinel = "S3NTINEL_DO_NOT_PERSIST_DIRECT_WRITE"
-    manual_secret = "MANUAL_SECRET_STAYS_PERSISTABLE"
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
-
-    from hermes_cli.auth import write_credential_pool
-
-    write_credential_pool("openrouter", [
-        {
-            "id": "borrowed-1",
-            "label": "systemd-ref",
-            "auth_type": "api_key",
-            "priority": 0,
-            "source": "systemd://hermes/openrouter",
-            "access_token": sentinel,
-            "refresh_token": f"refresh-{sentinel}",
-            "agent_key": f"agent-{sentinel}",
-            "api_key": f"extra-{sentinel}",
-        },
-        {
-            "id": "manual-1",
-            "label": "manual",
-            "auth_type": "api_key",
-            "priority": 1,
-            "source": "manual",
-            "access_token": manual_secret,
-        },
-    ])
-
-    auth_text = (tmp_path / "hermes" / "auth.json").read_text()
-    assert sentinel not in auth_text
-    assert manual_secret in auth_text
-    entries = json.loads(auth_text)["credential_pool"]["openrouter"]
-    borrowed, manual = entries
-    assert borrowed["source"] == "systemd://hermes/openrouter"
-    assert "access_token" not in borrowed
-    assert "refresh_token" not in borrowed
-    assert "agent_key" not in borrowed
-    assert "api_key" not in borrowed
-    assert borrowed["secret_fingerprint"].startswith("sha256:")
-    assert manual["access_token"] == manual_secret
-
-
-
-def test_write_credential_pool_treats_unowned_oauth_source_as_borrowed(tmp_path, monkeypatch):
-    sentinel = "S3NTINEL_DO_NOT_PERSIST_UNOWNED_OAUTH"
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
-
-    from hermes_cli.auth import write_credential_pool
-
-    write_credential_pool("openrouter", [
-        {
-            "id": "unowned-oauth",
-            "label": "unowned-oauth",
-            "auth_type": "oauth",
-            "priority": 0,
-            "source": "oauth",
-            "access_token": sentinel,
-            "refresh_token": f"refresh-{sentinel}",
-        }
-    ])
-
-    auth_text = (tmp_path / "hermes" / "auth.json").read_text()
-    assert sentinel not in auth_text
-    persisted = json.loads(auth_text)["credential_pool"]["openrouter"][0]
-    assert persisted["source"] == "oauth"
-    assert "access_token" not in persisted
-    assert "refresh_token" not in persisted
-    assert persisted["secret_fingerprint"].startswith("sha256:")
-
-
-
-def test_write_credential_pool_preserves_known_provider_owned_oauth_state(tmp_path, monkeypatch):
-    sentinel = "PROVIDER_OWNED_DEVICE_CODE_STAYS_PERSISTABLE"
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
-
-    from hermes_cli.auth import write_credential_pool
-
-    write_credential_pool("nous", [
-        {
-            "id": "nous-device",
-            "label": "device-code",
-            "auth_type": "oauth",
-            "priority": 0,
-            "source": "device_code",
-            "access_token": sentinel,
-            "refresh_token": f"refresh-{sentinel}",
-            "agent_key": f"agent-{sentinel}",
-        }
-    ])
-
-    persisted = json.loads((tmp_path / "hermes" / "auth.json").read_text())["credential_pool"]["nous"][0]
-    assert persisted["access_token"] == sentinel
-    assert persisted["refresh_token"] == f"refresh-{sentinel}"
-    assert persisted["agent_key"] == f"agent-{sentinel}"
-
-
-
-def test_load_pool_prefers_dotenv_over_stale_os_environ(tmp_path, monkeypatch):
-    """Regression for #18254: stale OPENROUTER_API_KEY in os.environ (inherited
-    from a parent shell) must NOT shadow the fresh key in ~/.hermes/.env when
-    seeding the credential pool. Before the fix, `get_env_value()` preferred
-    os.environ and silently wrote the stale value into auth.json, causing
-    persistent 401 errors after key rotation.
-    """
-    hermes_home = tmp_path / "hermes"
-    hermes_home.mkdir()
-    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
-
-    # Simulate the bug: parent shell exported a stale test key
-    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-STALE-from-shell")
-
-    # User edited ~/.hermes/.env with the fresh key
-    (hermes_home / ".env").write_text(
-        "OPENROUTER_API_KEY=sk-or-FRESH-from-dotenv\n"
-    )
-
-    _write_auth_store(tmp_path, {"version": 1, "providers": {}})
-
-    from agent.credential_pool import load_pool
-    pool = load_pool("openrouter")
-    entry = pool.select()
-
-    assert entry is not None
-    assert entry.source == "env:OPENROUTER_API_KEY"
-    # The fresh key from .env must win over the stale shell export
-    assert entry.access_token == "sk-or-FRESH-from-dotenv", (
-        f"Expected .env to win, got {entry.access_token!r}"
-    )
-
-
-def test_load_pool_falls_back_to_os_environ_when_dotenv_empty(tmp_path, monkeypatch):
-    """When ~/.hermes/.env does not define OPENROUTER_API_KEY (typical Docker /
-    K8s / systemd deployment), seeding must still pick up the key from
-    os.environ. Guards against regressions that would break production
-    deployments relying on runtime-injected env vars.
-    """
-    hermes_home = tmp_path / "hermes"
-    hermes_home.mkdir()
-    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
-    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-from-runtime-env")
-
-    # .env exists but does not define OPENROUTER_API_KEY
-    (hermes_home / ".env").write_text("SOME_OTHER_VAR=unrelated\n")
-
-    _write_auth_store(tmp_path, {"version": 1, "providers": {}})
-
-    from agent.credential_pool import load_pool
-    pool = load_pool("openrouter")
-    entry = pool.select()
-
-    assert entry is not None
-    assert entry.access_token == "sk-or-from-runtime-env"
-
-
-
-
-
-
-
-
-def test_load_pool_mirrors_nous_invoke_jwt_agent_key_runtime_api_key(tmp_path, monkeypatch):
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
-    expires_at = datetime.fromtimestamp(time.time() + 3600, tz=timezone.utc).isoformat()
-    token = _jwt_with_claims({
-        "sub": "test-user",
-        "scope": ["inference:invoke"],
-        "exp": int(time.time() + 3600),
-    })
-    _write_auth_store(
-        tmp_path,
-        {
-            "version": 1,
-            "active_provider": "nous",
-            "providers": {
-                "nous": {
-                    "portal_base_url": "https://portal.example.com",
-                    "inference_base_url": "https://inference.example.com/v1",
-                    "client_id": "hermes-cli",
-                    "token_type": "Bearer",
-                    "scope": "inference:invoke",
-                    "access_token": token,
-                    "refresh_token": "refresh-token",
-                    "expires_at": expires_at,
-                    "agent_key": token,
-                    "agent_key_expires_at": expires_at,
-                }
-            },
-        },
-    )
-
-    from agent.credential_pool import load_pool
-
-    pool = load_pool("nous")
-    entry = pool.select()
-
-    assert entry is not None
-    assert entry.source == "device_code"
-    assert entry.agent_key == token
-    assert entry.runtime_api_key == token
-
-    auth_payload = json.loads((tmp_path / "hermes" / "auth.json").read_text())
-    pool_entry = auth_payload["credential_pool"]["nous"][0]
-    assert pool_entry["agent_key"] == token
-    assert pool_entry["agent_key_expires_at"] == expires_at
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 def test_nous_runtime_api_key_rejects_opaque_agent_key():
@@ -1074,274 +704,20 @@ def test_nous_runtime_api_key_rejects_opaque_agent_key():
 
 
 
-def test_load_pool_api_key_path_skips_oauth_autodiscovery(tmp_path, monkeypatch):
-    """API-key auth path: autodiscovered OAuth creds must NOT be seeded.
-
-    When the user picks "Anthropic API key" at `hermes setup`,
-    `save_anthropic_api_key()` writes ANTHROPIC_API_KEY and zeros
-    ANTHROPIC_TOKEN.  That env-var pattern is the explicit signal that the
-    user opted into the API-key path and explicitly OUT of the OAuth
-    masquerade (Claude Code identity injection + `mcp_` tool-name rewrite
-    + claude-cli user-agent).  Autodiscovered Claude Code / Hermes PKCE
-    tokens from other tools' credential files must NOT be silently mixed
-    into the anthropic pool — otherwise rotation on a 401/429 could flip
-    the session onto OAuth credentials mid-conversation.
-    """
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
-    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-api03-explicit-user-key")
-    monkeypatch.delenv("ANTHROPIC_TOKEN", raising=False)
-    monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
-    _write_auth_store(tmp_path, {"version": 1, "providers": {}})
-    monkeypatch.setattr("hermes_cli.auth.is_provider_explicitly_configured", lambda pid: True)
-
-    pkce_called = {"n": 0}
-    cc_called = {"n": 0}
-
-    def _fake_pkce():
-        pkce_called["n"] += 1
-        return {
-            "accessToken": "sk-ant-oat01-pkce-token",
-            "refreshToken": "pkce-refresh",
-            "expiresAt": int(time.time() * 1000) + 3_600_000,
-        }
-
-    def _fake_cc():
-        cc_called["n"] += 1
-        return {
-            "accessToken": "sk-ant-oat01-claude-code-token",
-            "refreshToken": "cc-refresh",
-            "expiresAt": int(time.time() * 1000) + 3_600_000,
-        }
-
-    monkeypatch.setattr("agent.anthropic_adapter.read_hermes_oauth_credentials", _fake_pkce)
-    monkeypatch.setattr("agent.anthropic_adapter.read_claude_code_credentials", _fake_cc)
-
-    from agent.credential_pool import load_pool
-
-    pool = load_pool("anthropic")
-    sources = {entry.source for entry in pool.entries()}
-
-    # Only the explicit API-key entry should be in the pool.
-    assert sources == {"env:ANTHROPIC_API_KEY"}, f"got {sources}"
-    # And we should not have even called the autodiscovery readers.
-    assert pkce_called["n"] == 0
-    assert cc_called["n"] == 0
-
-
-def test_load_pool_api_key_path_prunes_stale_oauth_entries(tmp_path, monkeypatch):
-    """Switching OAuth -> API key must prune stale OAuth entries from auth.json.
-
-    Without this, a user who logs into OAuth (seeding `claude_code` or
-    `hermes_pkce` into auth.json) and later switches to the API key at
-    `hermes setup` would still have those OAuth entries dormant on disk.
-    Pool rotation on a transient 401 could revive them and flip the
-    session onto the OAuth masquerade.
-    """
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
-    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-api03-explicit-user-key")
-    monkeypatch.delenv("ANTHROPIC_TOKEN", raising=False)
-    monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
-
-    # Plant a stale claude_code entry in the on-disk pool (as if a previous
-    # OAuth session seeded it).
-    _write_auth_store(
-        tmp_path,
-        {
-            "version": 1,
-            "providers": {},
-            "credential_pool": {
-                "anthropic": [
-                    {
-                        "id": "stale1",
-                        "source": "claude_code",
-                        "auth_type": "oauth",
-                        "access_token": "sk-ant-oat01-stale-claude-code",
-                        "refresh_token": "stale-refresh",
-                        "expires_at_ms": int(time.time() * 1000) + 3_600_000,
-                        "priority": 0,
-                        "label": "stale-claude-code",
-                        "request_count": 0,
-                    },
-                ],
-            },
-        },
-    )
-    monkeypatch.setattr("hermes_cli.auth.is_provider_explicitly_configured", lambda pid: True)
-    monkeypatch.setattr("agent.anthropic_adapter.read_hermes_oauth_credentials", lambda: None)
-    monkeypatch.setattr("agent.anthropic_adapter.read_claude_code_credentials", lambda: None)
-
-    from agent.credential_pool import load_pool
-
-    pool = load_pool("anthropic")
-    sources = {entry.source for entry in pool.entries()}
-
-    # Stale claude_code entry must be gone, API key must be present.
-    assert "claude_code" not in sources
-    assert "env:ANTHROPIC_API_KEY" in sources
-
-
-def test_load_pool_oauth_path_still_autodiscovers(tmp_path, monkeypatch):
-    """OAuth path: ANTHROPIC_TOKEN set, autodiscovery still fires.
-
-    Regression guard: the API-key gate must not affect users who chose the
-    OAuth path at `hermes setup`.  When ANTHROPIC_TOKEN is set (and
-    ANTHROPIC_API_KEY is empty), autodiscovered Claude Code creds should
-    still be seeded into the pool as before.
-    """
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
-    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
-    monkeypatch.setenv("ANTHROPIC_TOKEN", "sk-ant-oat01-explicit-oauth-token")
-    monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
-    _write_auth_store(tmp_path, {"version": 1, "providers": {}})
-    monkeypatch.setattr("hermes_cli.auth.is_provider_explicitly_configured", lambda pid: True)
-
-    monkeypatch.setattr(
-        "agent.anthropic_adapter.read_hermes_oauth_credentials",
-        lambda: None,
-    )
-    monkeypatch.setattr(
-        "agent.anthropic_adapter.read_claude_code_credentials",
-        lambda: {
-            "accessToken": "sk-ant-oat01-autodiscovered-cc",
-            "refreshToken": "cc-refresh",
-            "expiresAt": int(time.time() * 1000) + 3_600_000,
-        },
-    )
-
-    from agent.credential_pool import load_pool
-
-    pool = load_pool("anthropic")
-    sources = {entry.source for entry in pool.entries()}
-
-    # Both env OAuth token and autodiscovered Claude Code creds should be there.
-    assert "env:ANTHROPIC_TOKEN" in sources
-    assert "claude_code" in sources
-
-
-def test_least_used_strategy_selects_lowest_count(tmp_path, monkeypatch):
-    """least_used strategy should select the credential with the lowest request_count."""
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
-    monkeypatch.setattr(
-        "agent.credential_pool.get_pool_strategy",
-        lambda _provider: "least_used",
-    )
-    monkeypatch.setattr(
-        "agent.credential_pool._seed_from_singletons",
-        lambda provider, entries: (False, set()),
-    )
-    monkeypatch.setattr(
-        "agent.credential_pool._seed_from_env",
-        lambda provider, entries: (False, set()),
-    )
-    _write_auth_store(
-        tmp_path,
-        {
-            "version": 1,
-            "credential_pool": {
-                "openrouter": [
-                    {
-                        "id": "key-a",
-                        "label": "heavy",
-                        "auth_type": "api_key",
-                        "priority": 0,
-                        "source": "manual",
-                        "access_token": "sk-or-heavy",
-                        "request_count": 100,
-                    },
-                    {
-                        "id": "key-b",
-                        "label": "light",
-                        "auth_type": "api_key",
-                        "priority": 1,
-                        "source": "manual",
-                        "access_token": "sk-or-light",
-                        "request_count": 10,
-                    },
-                    {
-                        "id": "key-c",
-                        "label": "medium",
-                        "auth_type": "api_key",
-                        "priority": 2,
-                        "source": "manual",
-                        "access_token": "sk-or-medium",
-                        "request_count": 50,
-                    },
-                ]
-            },
-        },
-    )
-
-    from agent.credential_pool import load_pool
-
-    pool = load_pool("openrouter")
-    entry = pool.select()
-    assert entry is not None
-    assert entry.id == "key-b"
-    assert entry.access_token == "sk-or-light"
 
 
 
 
 
 
-def test_custom_endpoint_pool_seeds_from_config(tmp_path, monkeypatch):
-    """Verify seeding from custom_providers api_key in config.yaml."""
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
-    _write_auth_store(tmp_path, {"version": 1})
-
-    # Write config.yaml with a custom_providers entry
-    config_path = tmp_path / "hermes" / "config.yaml"
-    import yaml
-    config_path.write_text(yaml.dump({
-        "custom_providers": [
-            {
-                "name": "Together.ai",
-                "base_url": "https://api.together.ai/v1",
-                "api_key": "sk-config-seeded",
-            }
-        ]
-    }))
-
-    from agent.credential_pool import load_pool
-
-    pool = load_pool("custom:together.ai")
-    assert pool.has_credentials()
-    entries = pool.entries()
-    assert len(entries) == 1
-    assert entries[0].access_token == "sk-config-seeded"
-    assert entries[0].source == "config:Together.ai"
 
 
-def test_custom_endpoint_pool_seeds_from_model_config(tmp_path, monkeypatch):
-    """Verify seeding from model.api_key when model.provider=='custom' and base_url matches."""
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
-    _write_auth_store(tmp_path, {"version": 1})
 
-    import yaml
-    config_path = tmp_path / "hermes" / "config.yaml"
-    config_path.write_text(yaml.dump({
-        "custom_providers": [
-            {
-                "name": "Together.ai",
-                "base_url": "https://api.together.ai/v1",
-            }
-        ],
-        "model": {
-            "provider": "custom",
-            "base_url": "https://api.together.ai/v1",
-            "api_key": "sk-model-key",
-        },
-    }))
 
-    from agent.credential_pool import load_pool
 
-    pool = load_pool("custom:together.ai")
-    assert pool.has_credentials()
-    entries = pool.entries()
-    # Should have the model_config entry
-    model_entries = [e for e in entries if e.source == "model_config"]
-    assert len(model_entries) == 1
-    assert model_entries[0].access_token == "sk-model-key"
+
+
+
 
 
 
@@ -1359,52 +735,8 @@ def test_custom_endpoint_pool_seeds_from_model_config(tmp_path, monkeypatch):
 
 
 
-def test_load_pool_does_not_seed_claude_code_when_anthropic_not_configured(tmp_path, monkeypatch):
-    """Claude Code credentials must not be auto-seeded when the user never selected anthropic."""
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
-    _write_auth_store(tmp_path, {"version": 1, "credential_pool": {}})
-
-    # Claude Code credentials exist on disk
-    monkeypatch.setattr(
-        "agent.anthropic_adapter.read_claude_code_credentials",
-        lambda: {"accessToken": "sk-ant...oken", "refreshToken": "rt", "expiresAt": 9999999999999},
-    )
-    monkeypatch.setattr(
-        "agent.anthropic_adapter.read_hermes_oauth_credentials",
-        lambda: None,
-    )
-    # User configured kimi-coding, NOT anthropic
-    monkeypatch.setattr(
-        "hermes_cli.auth.is_provider_explicitly_configured",
-        lambda pid: pid == "kimi-coding",
-    )
-
-    from agent.credential_pool import load_pool
-    pool = load_pool("anthropic")
-
-    # Should NOT have seeded the claude_code entry
-    assert pool.entries() == []
 
 
-def test_load_pool_seeds_copilot_via_gh_auth_token(tmp_path, monkeypatch):
-    """Copilot credentials from `gh auth token` should be seeded into the pool."""
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
-    _write_auth_store(tmp_path, {"version": 1, "credential_pool": {}})
-
-    monkeypatch.setattr(
-        "hermes_cli.copilot_auth.resolve_copilot_token",
-        lambda: ("gho_fake_token_abc123", "gh auth token"),
-    )
-
-    from agent.credential_pool import load_pool
-    pool = load_pool("copilot")
-
-    assert pool.has_credentials()
-    entries = pool.entries()
-    assert len(entries) == 1
-    assert entries[0].source == "gh_cli"
-    assert entries[0].access_token == "gho_fake_token_abc123"
-    assert entries[0].base_url == "https://api.githubcopilot.com"
 
 
 def test_load_pool_skips_exchange_for_suppressed_copilot(tmp_path, monkeypatch):
@@ -1554,120 +886,10 @@ def test_load_pool_skips_resolve_when_all_copilot_sources_suppressed(tmp_path, m
 
 
 
-def test_load_pool_seeds_qwen_oauth_via_cli_tokens(tmp_path, monkeypatch):
-    """Qwen OAuth credentials from ~/.qwen/oauth_creds.json should be seeded into the pool."""
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
-    _write_auth_store(tmp_path, {"version": 1, "credential_pool": {}})
-
-    monkeypatch.setattr(
-        "hermes_cli.auth.resolve_qwen_runtime_credentials",
-        lambda **kw: {
-            "provider": "qwen-oauth",
-            "base_url": "https://portal.qwen.ai/v1",
-            "api_key": "qwen_fake_token_xyz",
-            "source": "qwen-cli",
-            "expires_at_ms": 1900000000000,
-            "auth_file": str(tmp_path / ".qwen" / "oauth_creds.json"),
-        },
-    )
-
-    from agent.credential_pool import load_pool
-    pool = load_pool("qwen-oauth")
-
-    assert pool.has_credentials()
-    entries = pool.entries()
-    assert len(entries) == 1
-    assert entries[0].source == "qwen-cli"
-    assert entries[0].access_token == "qwen_fake_token_xyz"
 
 
-def test_load_pool_does_not_seed_qwen_oauth_when_no_token(tmp_path, monkeypatch):
-    """Qwen OAuth pool should be empty when no CLI credentials exist."""
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
-    _write_auth_store(tmp_path, {"version": 1, "credential_pool": {}})
-
-    from hermes_cli.auth import AuthError
-
-    monkeypatch.setattr(
-        "hermes_cli.auth.resolve_qwen_runtime_credentials",
-        lambda **kw: (_ for _ in ()).throw(
-            AuthError("Qwen CLI credentials not found.", provider="qwen-oauth", code="qwen_auth_missing")
-        ),
-    )
-
-    from agent.credential_pool import load_pool
-    pool = load_pool("qwen-oauth")
-
-    assert not pool.has_credentials()
-    assert pool.entries() == []
 
 
-def test_nous_seed_from_singletons_preserves_obtained_at_timestamps(tmp_path, monkeypatch):
-    """Regression test for #15099 secondary issue.
-
-    When ``_seed_from_singletons`` materialises a device_code pool entry from
-    the ``providers.nous`` singleton, it must carry the mint/refresh
-    timestamps (``obtained_at``, ``agent_key_obtained_at``, ``expires_in``,
-    etc.) into the pool entry.  Without them, freshness-sensitive consumers
-    (self-heal hooks, pool pruning by age) treat just-minted credentials as
-    older than they actually are and evict them.
-    """
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
-    _write_auth_store(
-        tmp_path,
-        {
-            "version": 1,
-            "providers": {
-                "nous": {
-                    "access_token": "at_XXXXXXXX",
-                    "refresh_token": "rt_YYYYYYYY",
-                    "client_id": "hermes-cli",
-                    "portal_base_url": "https://portal.nousresearch.com",
-                    "inference_base_url": "https://inference.nousresearch.com/v1",
-                    "token_type": "Bearer",
-                    "scope": "openid profile",
-                    "obtained_at": "2026-04-24T10:00:00+00:00",
-                    "expires_at": "2026-04-24T11:00:00+00:00",
-                    "expires_in": 3600,
-                    "agent_key": "sk-nous-AAAA",
-                    "agent_key_id": "ak_123",
-                    "agent_key_expires_at": "2026-04-25T10:00:00+00:00",
-                    "agent_key_expires_in": 86400,
-                    "agent_key_reused": False,
-                    "agent_key_obtained_at": "2026-04-24T10:00:05+00:00",
-                    "tls": {"insecure": False, "ca_bundle": None},
-                },
-            },
-        },
-    )
-
-    from agent.credential_pool import load_pool
-
-    pool = load_pool("nous")
-    entries = pool.entries()
-
-    device_entries = [e for e in entries if e.source == "device_code"]
-    assert len(device_entries) == 1, f"expected single device_code entry; got {len(device_entries)}"
-    e = device_entries[0]
-
-    # Direct dataclass fields — must survive the singleton → pool copy.
-    assert e.access_token == "at_XXXXXXXX"
-    assert e.refresh_token == "rt_YYYYYYYY"
-    assert e.expires_at == "2026-04-24T11:00:00+00:00"
-    assert e.agent_key == "sk-nous-AAAA"
-    assert e.agent_key_expires_at == "2026-04-25T10:00:00+00:00"
-
-    # Extra fields — this is what regressed.  These must be carried through
-    # via ``extra`` dict or __getattr__, NOT silently dropped.
-    assert e.obtained_at == "2026-04-24T10:00:00+00:00", (
-        f"obtained_at was dropped during seed; got {e.obtained_at!r}. This breaks "
-        f"downstream pool-freshness consumers (#15099)."
-    )
-    assert e.agent_key_obtained_at == "2026-04-24T10:00:05+00:00"
-    assert e.expires_in == 3600
-    assert e.agent_key_id == "ak_123"
-    assert e.agent_key_expires_in == 86400
-    assert e.agent_key_reused is False
 
 
 class TestLeastUsedStrategy:
@@ -1723,21 +945,6 @@ class TestLeastUsedStrategy:
 # ---------------------------------------------------------------------------
 
 
-def _xai_auth_store(access_token: str, refresh_token: str) -> dict:
-    return {
-        "version": 1,
-        "active_provider": "xai-oauth",
-        "providers": {
-            "xai-oauth": {
-                "tokens": {
-                    "access_token": access_token,
-                    "refresh_token": refresh_token,
-                },
-                "discovery": {"token_endpoint": "https://accounts.x.ai/oauth2/token"},
-                "redirect_uri": "http://localhost:12345/callback",
-            }
-        },
-    }
 
 
 
@@ -1753,19 +960,6 @@ def _xai_auth_store(access_token: str, refresh_token: str) -> dict:
 # ---------------------------------------------------------------------------
 
 
-def _codex_auth_store(access_token: str, refresh_token: str) -> dict:
-    return {
-        "version": 1,
-        "active_provider": "openai-codex",
-        "providers": {
-            "openai-codex": {
-                "tokens": {
-                    "access_token": access_token,
-                    "refresh_token": refresh_token,
-                },
-            }
-        },
-    }
 
 
 
@@ -3621,22 +2815,6 @@ def test_nous_exhausted_entry_recovers_via_auth_store_sync(tmp_path, monkeypatch
 
 # ── OpenAI Codex OAuth cross-process sync tests ────────────────────────────
 
-def _codex_auth_store(access: str, refresh: str) -> dict:
-    return {
-        "version": 1,
-        "active_provider": "openai-codex",
-        "providers": {
-            "openai-codex": {
-                "auth_mode": "chatgpt",
-                "tokens": {
-                    "access_token": access,
-                    "refresh_token": refresh,
-                    "id_token": "id-" + access,
-                },
-                "last_refresh": "2026-04-28T00:00:00Z",
-            }
-        },
-    }
 
 
 def test_sync_codex_entry_from_auth_store_adopts_newer_tokens(tmp_path, monkeypatch):

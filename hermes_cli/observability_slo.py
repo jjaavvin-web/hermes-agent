@@ -199,7 +199,7 @@ def _fetch_turn_rows(con: sqlite3.Connection, since_epoch: float) -> list[dict[s
 
 
 def _run(cmd: list[str], timeout: float = 8.0) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, check=False)
+    return subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout, check=False)
 
 
 def journalctl_lines(unit: str, since_epoch: float, *, limit: int = 2000) -> list[str]:

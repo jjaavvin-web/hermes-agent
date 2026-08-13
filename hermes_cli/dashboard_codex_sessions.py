@@ -239,7 +239,7 @@ def _build_git_health() -> dict:
 
     def _git(wt: str, *args: str):
         try:
-            r = _sp.run(["git", "-C", wt, *args], capture_output=True, text=True, timeout=15)
+            r = _sp.run(["git", "-C", wt, *args], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=15)
             return r.stdout.strip() if r.returncode == 0 else None
         except Exception:
             return None
@@ -396,7 +396,7 @@ def _build_git_graph() -> dict:
 
     def _git(wt: str, *args: str):
         try:
-            r = _sp.run(["git", "-C", wt, *args], capture_output=True, text=True, timeout=15)
+            r = _sp.run(["git", "-C", wt, *args], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=15)
             return r.stdout.strip() if r.returncode == 0 else None
         except Exception:
             return None
@@ -547,7 +547,7 @@ _RIVER_LOCK = threading.Lock()
 def _git_out(repo: str, *args: str, timeout: float = 20.0):
     import subprocess as _sp
     try:
-        r = _sp.run(["git", "-C", repo, *args], capture_output=True, text=True, timeout=timeout)
+        r = _sp.run(["git", "-C", repo, *args], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout)
         return r.stdout if r.returncode == 0 else None
     except Exception:
         return None

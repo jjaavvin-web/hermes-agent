@@ -760,7 +760,7 @@ class WebhookAdapter(BasePlatformAdapter):
                 add_cmd.append(self._wt_branch)
             else:
                 add_cmd += ["-b", self._wt_branch, self._wt_base_branch]
-            res = subprocess.run(add_cmd, capture_output=True, text=True, timeout=25)
+            res = subprocess.run(add_cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=25)
             if res.returncode != 0 or not wt_dir.is_dir():
                 logger.error(
                     "[webhook] relay worktree add failed rc=%s: %s",

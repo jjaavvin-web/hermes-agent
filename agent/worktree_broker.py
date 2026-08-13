@@ -296,7 +296,7 @@ class WorktreeBroker:
         if lock_type == "pnpm":
             workspace_yaml = wt_path / "pnpm-workspace.yaml"
             if workspace_yaml.exists():
-                content = workspace_yaml.read_text(errors="replace")
+                content = workspace_yaml.read_text(encoding="utf-8", errors="replace")
                 if "enableGlobalVirtualStore" not in content:
                     log.info(
                         "Project uses pnpm. Adding enableGlobalVirtualStore: "
@@ -746,7 +746,7 @@ class WorktreeBroker:
         live_sids: set[str] = set()
         if sessions_path.exists():
             try:
-                raw = json.loads(sessions_path.read_text())
+                raw = json.loads(sessions_path.read_text(encoding="utf-8"))
                 # codex_sessions.json may be a dict or list; extract keys/ids
                 if isinstance(raw, dict):
                     live_sids = set(raw.keys())
