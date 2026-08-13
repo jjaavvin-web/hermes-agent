@@ -238,7 +238,11 @@ def test_worker_guidance_distinguishes_same_card_and_downstream_review() -> None
     assert "metadata=..." in KANBAN_GUIDANCE
     kanban_defaults = DEFAULT_CONFIG["kanban"]
     assert isinstance(kanban_defaults, dict)
-    assert kanban_defaults["review_dispatch"] is True
+    # FORK-LOCAL INVARIANT (v0.20.1 merge): upstream defaults review_dispatch
+    # to True; the fork defaults False for the same fail-closed reason as
+    # dispatch_in_gateway — auto-claim + profile spawn is an autonomous
+    # dispatch path and must be opted into explicitly in config.yaml.
+    assert kanban_defaults["review_dispatch"] is False
 
     repo_root = Path(__file__).resolve().parents[2]
     review_skill = repo_root / "skills" / "devops" / "sdlc-review" / "SKILL.md"

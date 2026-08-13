@@ -340,7 +340,14 @@ def test_specialist_main_guards_startup_side_effects():
 
     source = Path(main.__file__).read_text(encoding="utf-8")
     assert 'if not specialist_authority and _termux_should_prefetch_update_check()' in source
-    assert 'if not specialist_authority:\n        try:\n            _sync_bundled_skills_for_startup()' in source
+    # v0.20.1 moved the skills sync into a background thread; pin the GUARD
+    # relationship (sync reachable only under `if not specialist_authority:`)
+    # rather than the exact statement layout.
+    import re as _re
+    assert _re.search(
+        r"if not specialist_authority:\n(?:[^\n]*\n){0,14}?[^\n]*_sync_bundled_skills_for_startup\(\)",
+        source,
+    ), "skills-sync no longer guarded by specialist_authority"
     assert 'if not specialist_authority:\n        _pin_kanban_board_env()' in source
 
 

@@ -470,7 +470,11 @@ class TestOwnershipIntegration:
                 _policy(plugin_id="other"), plugin_id="other", requested_task="classifier"
             )
 
-    def test_auto_task_reports_configured_fallback_provider_and_model(self, tmp_path, monkeypatch):
+    def test_auto_task_fails_closed_to_sanctioned_provider(self, tmp_path, monkeypatch):
+        # FORK RAIL (no-paid-fallback): provider "auto" is NOT a discovery
+        # chain. Upstream's version of this test asserted the configured
+        # fallback_chain wins; the fork's _resolve_auto_route resolves ONLY
+        # the sanctioned openai-codex/gpt-5.5 subscription route.
         from agent import auxiliary_client as auxiliary_mod
         from hermes_cli import config as config_mod
 
@@ -522,10 +526,10 @@ auxiliary:
         )
 
         assert (captured["provider"], captured["model"]) == (
-            "fallback-provider", "fallback-model"
+            "openai-codex", "gpt-5.5"
         )
         assert (result.provider, result.model) == (
-            "fallback-provider", "fallback-model"
+            "openai-codex", "gpt-5.5"
         )
 
     def test_async_auto_resolution_preserves_route_provider(self, monkeypatch):
