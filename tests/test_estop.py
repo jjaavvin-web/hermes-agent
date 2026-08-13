@@ -1,8 +1,8 @@
-"""Global emergency stop (`hermes pause` / `hermes resume`) — agent/estop.py.
+"""Global emergency stop (`hermes pause` / `hermes unpause`) — agent/estop.py.
 
 The ESTOP sentinel is a resumable pause for NEW work only: cron dispatch,
 kanban dispatch, and new gateway turns are halted while it is engaged; work
-already in flight is never touched. Removing the sentinel (`hermes resume`)
+already in flight is never touched. Removing the sentinel (`hermes unpause`)
 restores normal operation with no restart.
 
 Ported from: gastownhall/gastown estop.go (MIT); related prior art: #26778
@@ -85,7 +85,7 @@ def test_paused_reply_surfaces_reason_and_resume_hint(hermes_home):
     assert notice is not None
     assert "paused" in notice.lower()
     assert "deploy window" in notice
-    assert "hermes resume" in notice
+    assert "hermes unpause" in notice
 
 
 def test_paused_reply_without_reason(hermes_home):
@@ -93,7 +93,7 @@ def test_paused_reply_without_reason(hermes_home):
     notice = estop.paused_reply()
     assert notice is not None
     assert "paused" in notice.lower()
-    assert "hermes resume" in notice
+    assert "hermes unpause" in notice
 
 
 # ── check_paused: cheap gate + log-once ─────────────────────────────────────
@@ -225,7 +225,7 @@ async def test_gateway_internal_events_bypass_estop(hermes_home):
     assert reply is None or "paused" not in (reply or "").lower()
 
 
-# ── CLI: hermes pause / hermes resume ───────────────────────────────────────
+# ── CLI: hermes pause / hermes unpause ───────────────────────────────────────
 
 
 def test_cli_pause_engages_with_reason(hermes_home, capsys):

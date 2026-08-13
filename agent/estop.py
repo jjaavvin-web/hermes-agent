@@ -1,7 +1,7 @@
 """Global emergency stop (ESTOP) — a resumable pause for NEW work only.
 
 ``hermes pause`` writes a sentinel file at ``$HERMES_HOME/ESTOP``;
-``hermes resume`` removes it. While the sentinel exists:
+``hermes unpause`` removes it. While the sentinel exists:
 
 * the cron scheduler skips dispatching due jobs (``cron/scheduler.py:tick``),
 * the embedded kanban dispatcher skips spawning workers
@@ -131,11 +131,11 @@ def paused_reply() -> Optional[str]:
     if reason:
         return (
             f"⏸️ Hermes is paused ({reason}). New work is on hold; "
-            "run `hermes resume` to pick things back up."
+            "run `hermes unpause` to pick things back up."
         )
     return (
         "⏸️ Hermes is paused. New work is on hold; "
-        "run `hermes resume` to pick things back up."
+        "run `hermes unpause` to pick things back up."
     )
 
 
@@ -160,7 +160,7 @@ def check_paused(component: str, logger: logging.Logger) -> bool:
         suffix = f" (reason: {reason})" if reason else ""
         logger.info(
             "%s dispatch paused by global emergency stop%s — remove with "
-            "`hermes resume` (%s)",
+            "`hermes unpause` (%s)",
             component,
             suffix,
             sentinel_path(),

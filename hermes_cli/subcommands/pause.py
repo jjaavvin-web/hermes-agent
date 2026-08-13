@@ -1,8 +1,8 @@
-"""``hermes pause`` / ``hermes resume`` — the global emergency stop.
+"""``hermes pause`` / ``hermes unpause`` — the global emergency stop.
 
 ``hermes pause`` writes the ESTOP sentinel at ``$HERMES_HOME/ESTOP``, which
 halts cron dispatch, kanban dispatch, and new gateway turns on their next
-check. In-flight work is never killed. ``hermes resume`` removes the
+check. In-flight work is never killed. ``hermes unpause`` removes the
 sentinel and normal operation resumes on the next tick — no restart needed.
 
 Ported from: gastownhall/gastown estop.go (MIT); related prior art:
@@ -28,7 +28,7 @@ def cmd_pause(args: argparse.Namespace) -> int:
     print(f"    sentinel: {path}")
     print(
         "    Cron dispatch, kanban dispatch, and new gateway turns are on hold.\n"
-        "    In-flight work keeps running. Run `hermes resume` to lift the pause."
+        "    In-flight work keeps running. Run `hermes unpause` to lift the pause."
     )
     return 0
 
@@ -52,7 +52,7 @@ def build_pause_parser(subparsers) -> None:
         description=(
             "Engage the global emergency stop. Halts NEW work only — cron "
             "dispatch, kanban dispatch, and new gateway turns — until "
-            "`hermes resume`. In-flight work is never killed."
+            "`hermes unpause`. In-flight work is never killed."
         ),
     )
     pause_parser.add_argument(
@@ -62,8 +62,11 @@ def build_pause_parser(subparsers) -> None:
     )
     pause_parser.set_defaults(func=cmd_pause)
 
+    # FORK (v0.20.1 merge): upstream names this subcommand `resume`, which
+    # collides with the fork's long-standing `hermes resume` session-pickup
+    # command (hermes_cli/resume.py). The ESTOP lift is `unpause` here.
     resume_parser = subparsers.add_parser(
-        "resume",
+        "unpause",
         help="Lift the emergency stop set by `hermes pause`",
         description="Remove the ESTOP sentinel; dispatch resumes on the next tick.",
     )
