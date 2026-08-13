@@ -20,6 +20,7 @@ from hermes_cli.main import (
     _finalize_update_output,
     _install_hangup_protection,
     _log_only_write,
+    _print_update_completion,
     _run_logged_subprocess,
 )
 
@@ -63,6 +64,25 @@ def _isolate_update_marker_home(tmp_path, monkeypatch):
         "update hangup tests mutated marker artifacts in the real Hermes home: "
         f"before={before!r} after={after!r}"
     )
+
+
+def test_update_completion_includes_bounded_action_identity(monkeypatch, capsys):
+    monkeypatch.setenv("HERMES_ACTION_ID", "a" * 32)
+
+    _print_update_completion("✓ Update complete!")
+
+    assert capsys.readouterr().out.splitlines() == [
+        "✓ Update complete!",
+        f"=== hermes-update completed {'a' * 32} ===",
+    ]
+
+
+def test_update_completion_rejects_untrusted_action_identity(monkeypatch, capsys):
+    monkeypatch.setenv("HERMES_ACTION_ID", "not-safe\nforged")
+
+    _print_update_completion("✓ Update complete!")
+
+    assert capsys.readouterr().out == "✓ Update complete!\n"
 
 
 # -----------------------------------------------------------------------------
