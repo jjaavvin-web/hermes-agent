@@ -353,7 +353,7 @@ def test_probe_all_uses_runtime_order_and_unknown_runtime_endpoint(monkeypatch):
 
 
 def test_run_capture_never_raises_and_systemd_parser_handles_failed_bullets(monkeypatch):
-    def fake_run(cmd, capture_output, text=False, timeout=None):
+    def fake_run(cmd, capture_output, text=False, timeout=None, **kwargs):
         assert cmd == ["safe", "status"]
         assert capture_output is True
         assert text is True

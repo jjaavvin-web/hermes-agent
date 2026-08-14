@@ -2281,7 +2281,9 @@ def _endpoint_speaks_anthropic_messages(base_url: str) -> bool:
     normalized = (base_url or "").strip().lower().rstrip("/")
     if not normalized:
         return False
-    if normalized.endswith("/anthropic"):
+    # /anthropic and /anthropic/v1 both mirror runtime_provider's
+    # _detect_api_mode_for_url — keep the two in sync (the test suite pins it).
+    if normalized.endswith("/anthropic") or normalized.endswith("/anthropic/v1"):
         return True
     hostname = base_url_hostname(normalized)
     if hostname == "api.anthropic.com":

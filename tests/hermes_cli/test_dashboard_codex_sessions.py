@@ -291,7 +291,7 @@ def test_git_health_reuses_cached_shortstats(monkeypatch, tmp_path):
     monkeypatch.setattr(mod, "_GIT_HEALTH_CACHE", None, raising=False)
     calls = []
 
-    def fake_run(args, capture_output, text, timeout):
+    def fake_run(args, capture_output, text, timeout, **kwargs):
         calls.append(tuple(args))
         if args[3:] == ("status", "--porcelain"):
             return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
@@ -341,7 +341,7 @@ def test_git_graph_reuses_cached_lane_shortstats(monkeypatch, tmp_path):
     monkeypatch.setattr(mod, "_GIT_GRAPH_CACHE", None, raising=False)
     calls = []
 
-    def fake_run(args, capture_output, text, timeout):
+    def fake_run(args, capture_output, text, timeout, **kwargs):
         calls.append(tuple(args))
         git_args = tuple(args[3:])
         if git_args == ("rev-parse", "--verify", "main"):
