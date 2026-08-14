@@ -224,7 +224,10 @@ async def test_dispatcher_routes_learn_to_agent_prompt(monkeypatch):
 
     assert result == "agent handled learn"
     assert "[/learn]" in captured["text"]
-    assert "WHAT TO LEARN FROM:\nthe release checklist" in captured["text"]
+    # Upstream's /learn prompt rewrite (adds knowledge-base skill authoring
+    # support) renamed the request-echo heading from "WHAT TO LEARN FROM:" to
+    # "THE REQUEST:" -- see agent/learn_prompt.py::build_learn_prompt.
+    assert "THE REQUEST:\nthe release checklist" in captured["text"]
     assert "skill_manage" in captured["text"]
     adapter = runner.adapters[Platform.TELEGRAM]
     adapter.send.assert_awaited_once()

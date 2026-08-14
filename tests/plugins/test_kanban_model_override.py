@@ -9,6 +9,7 @@ PATCH/bulk/model-options surfaces.
 from __future__ import annotations
 
 import importlib.util
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -131,6 +132,21 @@ def _spawn_and_capture(monkeypatch, tmp_path, task):
     monkeypatch.setattr(subprocess, "Popen", fake_popen)
     workspace = tmp_path / "ws"
     workspace.mkdir(exist_ok=True)
+    # HERMES_WORKER_AUTHORITY rail: _default_spawn resolves the assignee to a
+    # real on-disk profile (resolve_profile_env) and pins the worker's CLI
+    # toolsets from that profile's config.yaml (platform_toolsets.cli must be
+    # an explicit, non-empty, known allowlist) — both fail closed with
+    # WorkerAuthorityResolutionError otherwise. Create a minimally valid
+    # profile under HERMES_HOME (set by the kanban_home fixture) so the
+    # resolution step these tests aren't exercising doesn't block spawn.
+    hermes_home = Path(os.environ["HERMES_HOME"])
+    profile_dir = hermes_home / "profiles" / task.assignee
+    if not profile_dir.is_dir():
+        profile_dir.mkdir(parents=True)
+        (profile_dir / "config.yaml").write_text(
+            "platform_toolsets:\n  cli: [terminal, kanban]\n",
+            encoding="utf-8",
+        )
     kb._default_spawn(task, str(workspace))
     return captured["cmd"]
 

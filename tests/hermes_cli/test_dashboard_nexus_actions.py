@@ -21,6 +21,17 @@ from fastapi.testclient import TestClient
 from hermes_cli import dashboard_nexus_actions as actions
 from hermes_cli import nexus_action_registry as registry
 
+# Import eagerly at collection time, before any per-test fixture below
+# monkeypatches the process-wide ``subprocess.Popen`` (see
+# ``_guard_dashboard_nexus_actions_loki_send`` in conftest.py). web_server's
+# ``_WhatsAppOnboardingSession`` dataclass has a bare (non-``__future__``)
+# ``proc: subprocess.Popen | None`` annotation that is evaluated the moment
+# the module is *first* imported; importing here guarantees that happens
+# while ``subprocess.Popen`` is still the real class, so a later lazy
+# ``from hermes_cli import web_server`` inside a test body is just a
+# sys.modules cache hit rather than a fresh class-body execution.
+from hermes_cli import web_server  # noqa: E402,F401 (import-order deliberate; see above)
+
 
 @pytest.fixture(autouse=True)
 def isolated_home(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:

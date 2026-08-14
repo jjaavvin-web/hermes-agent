@@ -40,6 +40,7 @@ def _bare_pool(entries):
     pool._current_id = None
     pool._max_concurrent = 2
     pool._unmatched_rotation_streak = 0
+    pool._selection_auth_type = None
     pool.provider = "anthropic"
     return pool
 
@@ -53,7 +54,7 @@ def _wire_deferred_refresh(pool, *, refresh_succeeds: bool = True):
         if refresh_succeeds:
             state["needs_refresh"] = False
 
-    def fake_available(clear_expired=False, refresh=False):
+    def fake_available(clear_expired=False, refresh=False, auth_type=None):
         if state["needs_refresh"]:
             # Pending a refresh -> not yet available.
             pending = [(e.id, "tok") for e in pool._entries] if refresh else []

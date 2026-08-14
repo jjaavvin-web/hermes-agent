@@ -50,10 +50,18 @@ _BRANCH_NAMESPACE = "hermes-subagent"
 
 
 def _run_git(args, cwd: str, timeout: int = _GIT_TIMEOUT):
-    """Run a git command, capturing output. Never raises on non-zero exit."""
+    """Run a git command, capturing output. Never raises on non-zero exit.
+
+    Can raise ``WorktreeConfinementError`` (a ``RuntimeError``) when worktree
+    confinement is required for this turn and ``cwd`` falls outside the
+    bound worktree — every caller here already wraps ``_run_git`` in a broad
+    ``except Exception``, so that fails closed the same way any other git
+    error does.
+    """
+    from agent.codex_session_context import resolve_confined_cwd
     return subprocess.run(
         ["git", *args],
-        cwd=cwd,
+        cwd=resolve_confined_cwd(cwd),
         capture_output=True,
         text=True,
         encoding="utf-8",

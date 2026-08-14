@@ -1335,7 +1335,12 @@ class TestEventBridgePollE2E:
             "id": 2, "role": "assistant", "content": "arrived after start",
             "timestamp": "2026-03-29T15:05:00",
         })
-        os.utime(db_path, None)  # bump mtime so the poll gate opens
+        # Force mtime strictly forward rather than os.utime(path, None): on this
+        # filesystem's clock granularity, "now" can tie with the mtime already
+        # recorded by _establish_baseline() a few instructions earlier, leaving
+        # the poll's mtime-change gate closed and the test flaky.
+        bumped = db_path.stat().st_mtime + 1.0
+        os.utime(db_path, (bumped, bumped))
         bridge._poll_once(DB())
         events = bridge.poll_events(after_cursor=0)["events"]
         assert len(events) == 1
@@ -1373,7 +1378,10 @@ class TestEventBridgePollE2E:
             "id": 1, "role": "user", "content": "hello after baseline",
             "timestamp": "2026-03-29T15:10:00",
         }]
-        os.utime(db_path, None)
+        # Force mtime strictly forward — see the sibling test above for why
+        # os.utime(path, None) alone can tie with the baseline mtime here.
+        bumped = db_path.stat().st_mtime + 1.0
+        os.utime(db_path, (bumped, bumped))
         bridge._poll_once(DB())
 
         events = bridge.poll_events(after_cursor=0)["events"]

@@ -459,7 +459,17 @@ class TestContinuousRecordingLoop:
         assert voice_module.is_continuous_active() is False
 
 
+@pytest.mark.real_audio_playback
 class TestSpeakTextTtsHandling:
+    """Exercise the real ``speak_text`` synth/playback pipeline.
+
+    Every test in this file runs under the autouse ``_audio_playback_guard``
+    (tests/conftest.py), which stubs ``voice.speak_text`` to a no-op for
+    every OTHER test class here so no test ever opens real speakers. This
+    class is specifically testing that pipeline's own behavior, so it opts
+    back into the real function with the documented escape hatch.
+    """
+
     @pytest.mark.parametrize("text", ["", "   ", "\n\t"])
     def test_empty_text_is_noop(self, voice_module, text):
         assert voice_module.speak_text(text) is None
@@ -493,15 +503,32 @@ class TestSpeakTextTtsHandling:
         )
 
         expected_path = fake_tmp / "hermes_voice" / "tts_20260102_030405.mp3"
+        # Sanitization now runs through the shared tools.tts_text_normalize
+        # cleaner (prepare_spoken_text) instead of speak_text's old inline
+        # regex pipeline — it also normalizes line breaks into
+        # comma-joined, period-terminated speakable sentences rather than
+        # preserving raw newlines (#58930).
         assert calls == [
-            ("Title\nbold link code", str(expected_path)),
+            ("Title, bold link code.", str(expected_path)),
         ]
         assert played == [str(expected_path)]
         assert not expected_path.exists()
         assert not expected_path.with_suffix(".ogg").exists()
         assert voice_module._tts_playing.is_set()
 
-    def test_speak_text_truncates_before_synthesis(self, voice_module, monkeypatch, tmp_path):
+    def test_speak_text_forwards_long_text_unsliced_to_the_tts_tool(
+        self, voice_module, monkeypatch, tmp_path
+    ):
+        """speak_text no longer truncates long text itself (#58930).
+
+        The old cap silently dropped everything past 4000 chars before
+        synthesis. That responsibility moved downstream to
+        ``text_to_speech_tool``, which normalizes with ``max_chars=None``
+        and instead splits long-form text into provider-safe chunks "without
+        silent truncation" (its own docstring) — no content is lost either
+        way, so speak_text's job is just to hand the full cleaned text
+        through untouched.
+        """
         fake_tmp = tmp_path / "voice-tmp"
         fake_tmp.mkdir()
         monkeypatch.setattr(tempfile, "gettempdir", lambda: str(fake_tmp))
@@ -520,7 +547,7 @@ class TestSpeakTextTtsHandling:
 
         voice_module.speak_text("x" * 4100)
 
-        assert len(captured["text"]) == 4000
+        assert len(captured["text"]) == 4100
 
     @pytest.mark.parametrize(
         "exc",

@@ -18,6 +18,10 @@ _ALLOWED_FILES = {
     "agent/claude_cli_runtime.py",  # Claude CLI runner has its own confinement checks
     "agent/context_references.py",  # read-only git context extraction against explicit repos
     "agent/skill_preprocessing.py",  # read-only skill preprocessing helper
+    "tools/specialist_test_tool.py",  # cwd is a disposable copy inside a freshly
+                                       # created tempfile.TemporaryDirectory(), never
+                                       # the session/runtime cwd; the child also runs
+                                       # namespace-isolated via unshare(1)
 }
 
 

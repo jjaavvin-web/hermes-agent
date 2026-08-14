@@ -3055,11 +3055,28 @@ def terminal_tool(
         if env_type == "local":
             from tools.self_repo_guard import detect_self_repo_git_mutation
 
-            guard_cwd = _resolve_command_cwd(
-                workdir=workdir,
-                default_cwd=cwd,
-                session_key=session_key,
-            )
+            # Same fail-closed handling as the other _resolve_command_cwd call
+            # sites in this function: under required worktree confinement this
+            # resolver RAISES rather than falling back to the live tree. This
+            # call site was carried over verbatim from the upstream merge
+            # (upstream has no worktree-confinement concept), so without this
+            # except it fell through to the generic exception handler below
+            # and surfaced as an unhandled "error" instead of a "blocked"
+            # result — losing the fork's fail-closed status contract.
+            try:
+                guard_cwd = _resolve_command_cwd(
+                    workdir=workdir,
+                    default_cwd=cwd,
+                    session_key=session_key,
+                    env_type=env_type,
+                )
+            except _WorktreeConfinementError as e:
+                return json.dumps({
+                    "output": "",
+                    "exit_code": -1,
+                    "error": str(e),
+                    "status": "blocked",
+                }, ensure_ascii=False)
             _self_repo_hit, _self_repo_msg = detect_self_repo_git_mutation(
                 command, guard_cwd
             )

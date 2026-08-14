@@ -169,7 +169,7 @@ def _patch_pipeline_capture(monkeypatch, *, success=True, output="out",
     delivered: list[str] = []
     marks: list[tuple] = []
 
-    def fake_run_job(job):
+    def fake_run_job(job, *, defer_agent_teardown=None, **kw):
         return (success, output, final, error)
 
     def fake_save(jid, out):

@@ -121,6 +121,13 @@ def test_cmd_setup_downloads_missing_binary_then_prompts_for_project(monkeypatch
     calls = {"install": 0, "fetch": None}
     inputs = iter(["1", "2"])
 
+    # This test exercises the interactive region/project prompts, so it
+    # must present as a TTY — otherwise the non-interactive guard (added
+    # to stop `hermes secrets bitwarden setup` from hanging on a prompt
+    # when there's no TTY to answer it) short-circuits with rc=1 before
+    # any of the mocked prompts below are reached.
+    monkeypatch.setattr(secrets_cli.sys, "stdin", SimpleNamespace(isatty=lambda: True))
+
     monkeypatch.setattr(secrets_cli.bw, "find_bws", lambda install_if_missing=False: None)
 
     def fake_install_bws():

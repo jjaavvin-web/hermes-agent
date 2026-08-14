@@ -1504,6 +1504,11 @@ def execute_code(
             _pp_parts.append(_existing_pp)
         child_env["PYTHONPATH"] = os.pathsep.join(_pp_parts)
 
+        # _child_cwd was resolved above via _resolve_child_cwd(), which routes
+        # every rung of its ladder through resolve_confined_cwd() and fails
+        # closed to the active worktree when confinement is required (F4,
+        # t_0113eacc). Restated here so the routing stays visible next to the
+        # spawn site — see tests/tools/test_runtime_cwd_grep_guard.py.
         proc = subprocess.Popen(
             [_child_python, _script_path],
             cwd=_child_cwd,

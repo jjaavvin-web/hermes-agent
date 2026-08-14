@@ -7299,8 +7299,19 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 buffer.text = ""
             except Exception:
                 pass
+        return
 
-
+        # --- Dead code below: leftover from the god-file decomposition that
+        # extracted this logic into CLIAgentSetupMixin._ensure_runtime_credentials
+        # (hermes_cli/cli_agent_setup_mixin.py). The `def _ensure_runtime_credentials`
+        # header that used to open this block was dropped, splicing its body onto
+        # `_reset_input_buffer` instead. Left in place (behind an unconditional
+        # `return`) rather than deleted, per the "minimal production fix" mandate —
+        # the real, currently-used implementation is the mixin's, invoked at every
+        # `self._ensure_runtime_credentials()` call site; this stub never ran that
+        # path correctly since `resolve_runtime_provider`/`format_runtime_provider_error`
+        # are not imported at cli.py module scope, so it always raised NameError
+        # when reached before this fix.
         _primary_exc = None
         runtime = None
         try:

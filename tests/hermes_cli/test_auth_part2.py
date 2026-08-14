@@ -238,7 +238,10 @@ def test_xai_oauth_runtime_credentials_happy_path_and_shape(hermes_home: Path, m
         "api_key": "xai-access",
         "source": "hermes-auth-store",
         "last_refresh": "2026-06-02T00:00:00Z",
-        "auth_mode": "oauth_pkce",
+        # Device-code is the only supported xAI OAuth flow; resolve_*
+        # reports it unconditionally even when the auth store still
+        # carries a legacy "oauth_pkce" label (display/telemetry only).
+        "auth_mode": "oauth_device_code",
     }
 
 
@@ -397,7 +400,14 @@ def test_nous_runtime_credentials_happy_path_uses_invoke_jwt_shape(
             "nous",
             {
                 "portal_base_url": "https://portal.example.test",
-                "inference_base_url": "https://inference.example.test/v1",
+                # Must be on the Nous inference host allowlist (see
+                # _ALLOWED_NOUS_INFERENCE_HOSTS) — persisted values are
+                # re-validated against it on every load as defense-in-depth
+                # against a poisoned auth store redirecting the bearer
+                # token, so an off-allowlist test host would silently heal
+                # to DEFAULT_NOUS_INFERENCE_URL instead of exercising the
+                # plumbing this test means to cover.
+                "inference_base_url": "https://inference-api.nousresearch.com/v2",
                 "client_id": "hermes-cli",
                 "scope": auth.NOUS_INFERENCE_INVOKE_SCOPE,
                 "access_token": access_token,
@@ -412,7 +422,7 @@ def test_nous_runtime_credentials_happy_path_uses_invoke_jwt_shape(
     creds = auth.resolve_nous_runtime_credentials()
 
     assert creds["provider"] == "nous"
-    assert creds["base_url"] == "https://inference.example.test/v1"
+    assert creds["base_url"] == "https://inference-api.nousresearch.com/v2"
     assert creds["api_key"] == access_token
     assert creds["source"] == auth.NOUS_AUTH_PATH_INVOKE_JWT
     assert creds["auth_path"] == auth.NOUS_AUTH_PATH_INVOKE_JWT

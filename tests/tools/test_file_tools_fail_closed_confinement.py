@@ -101,7 +101,11 @@ def test_deleted_bound_worktree_relative_write_denied_no_side_effect(tmp_path, m
     decoy_cwd = tmp_path / "decoy-cwd"
     decoy_cwd.mkdir()
     monkeypatch.chdir(decoy_cwd)
-    monkeypatch.setattr(ft, "_get_live_tracking_cwd", lambda task_id="default": None)
+    # Current fallback-chain entry point (post v0.20 _resolve_base_dir
+    # refactor) is _authoritative_workspace_root, not the old
+    # _get_live_tracking_cwd hook. Mock it unavailable, same intent as the
+    # original "no live tracking cwd" case.
+    monkeypatch.setattr(ft, "_authoritative_workspace_root", lambda task_id="default": None)
     token = ctx.set_active_worktree(str(worktree))
     worktree.rmdir()
     try:
@@ -124,10 +128,15 @@ def test_marker_true_missing_bind_denies_without_tier2_or_tier3_fallback(tmp_pat
     monkeypatch.chdir(cwd_poison)
     monkeypatch.setenv("TERMINAL_CWD", str(env_poison))
 
-    def _poison_live_tracking(task_id="default"):
-        raise AssertionError("tier-2 live cwd fallback was used")
+    # _resolve_base_dir is the current single entry point for the whole
+    # cwd fallback chain (session-record -> registered override ->
+    # TERMINAL_CWD -> process cwd; see its docstring in tools/file_tools.py).
+    # Poisoning it proves the fail-closed confinement denial short-circuits
+    # BEFORE any tier of that chain is ever consulted.
+    def _poison_fallback_chain(*args, **kwargs):
+        raise AssertionError("cwd fallback chain (_resolve_base_dir) was used")
 
-    monkeypatch.setattr(ft, "_get_live_tracking_cwd", _poison_live_tracking)
+    monkeypatch.setattr(ft, "_resolve_base_dir", _poison_fallback_chain)
     active_token = ctx._active_worktree_var.set(None)
     required_token = ctx._confinement_required_var.set(True)
     try:
@@ -145,7 +154,10 @@ def test_marker_true_missing_bind_denies_without_tier2_or_tier3_fallback(tmp_pat
 def test_legacy_unbound_relative_write_still_uses_existing_fallback_chain(tmp_path, monkeypatch):
     legacy_base = tmp_path / "legacy-base"
     legacy_base.mkdir()
-    monkeypatch.setattr(ft, "_get_live_tracking_cwd", lambda task_id="default": str(legacy_base))
+    # Tier-1 of the current fallback chain (session cwd record, surfaced via
+    # _authoritative_workspace_root) replaces the old _get_live_tracking_cwd
+    # hook this test used to poke directly.
+    monkeypatch.setattr(ft, "_authoritative_workspace_root", lambda task_id="default": str(legacy_base))
 
     out = _json(ft.write_file_tool("legacy.txt", "legacy-ok", task_id="legacy"))
 
@@ -162,7 +174,10 @@ def test_valid_bound_worktree_relative_and_absolute_writes_allowed_and_sensitive
     decoy_cwd = tmp_path / "decoy-cwd"
     decoy_cwd.mkdir()
     monkeypatch.chdir(decoy_cwd)
-    monkeypatch.setattr(ft, "_get_live_tracking_cwd", lambda task_id="default": str(decoy_cwd))
+    # Arm the fallback-chain entry point to point at decoy_cwd so a passing
+    # test proves the bound worktree wins over it, not merely that nothing
+    # else was configured.
+    monkeypatch.setattr(ft, "_authoritative_workspace_root", lambda task_id="default": str(decoy_cwd))
     token = ctx.set_active_worktree(str(worktree))
     try:
         rel_out = _json(ft.write_file_tool("rel.txt", "rel-ok", task_id="bound-positive"))
@@ -192,7 +207,7 @@ def test_patch_replace_deleted_worktree_denied_no_side_effect(tmp_path, monkeypa
     decoy_cwd.mkdir()
     (decoy_cwd / "patch_target.txt").write_text("old\n", encoding="utf-8")
     monkeypatch.chdir(decoy_cwd)
-    monkeypatch.setattr(ft, "_get_live_tracking_cwd", lambda task_id="default": str(decoy_cwd))
+    monkeypatch.setattr(ft, "_authoritative_workspace_root", lambda task_id="default": str(decoy_cwd))
     token = ctx.set_active_worktree(str(worktree))
     worktree.rmdir()
     try:

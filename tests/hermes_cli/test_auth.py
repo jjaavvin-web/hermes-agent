@@ -425,15 +425,15 @@ def test_xai_oauth_runtime_credentials_refresh_semantics(isolated_auth_paths, mo
 
 def test_generic_status_dispatch_for_oauth_status_surfaces(isolated_auth_paths, monkeypatch):
     qwen_status = {"logged_in": True, "provider": "qwen-oauth"}
-    gemini_status = {"logged_in": False, "provider": "google-gemini-cli"}
+    xai_status = {"logged_in": False, "provider": "xai-oauth"}
     spotify_status = {"logged_in": True, "provider": "spotify"}
 
     monkeypatch.setattr(auth, "get_qwen_auth_status", lambda: qwen_status)
-    monkeypatch.setattr(auth, "get_gemini_oauth_auth_status", lambda: gemini_status)
+    monkeypatch.setattr(auth, "get_xai_oauth_auth_status", lambda: xai_status)
     monkeypatch.setattr(auth, "get_spotify_auth_status", lambda: spotify_status)
 
     assert auth.get_auth_status("qwen-oauth") is qwen_status
-    assert auth.get_auth_status("google-gemini-cli") is gemini_status
+    assert auth.get_auth_status("xai-oauth") is xai_status
     assert auth.get_auth_status("spotify") is spotify_status
     assert auth.get_auth_status("unknown-provider") == {"logged_in": False}
 

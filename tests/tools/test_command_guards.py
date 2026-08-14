@@ -221,9 +221,16 @@ class TestCombinedWarnings:
            return_value=_tirith_result("warn",
                                        [{"rule_id": "homograph_url"}],
                                        "homograph URL"))
-    def test_combined_cli_always_persists_pattern_but_not_tirith(self, mock_tirith):
-        """Choosing Always on a mixed prompt permanently allowlists the
-        dangerous-pattern key while the tirith key stays session-scoped."""
+    def test_combined_cli_always_downgrades_destructive_pattern_and_tirith(self, mock_tirith):
+        """Choosing Always on a mixed prompt session-approves both keys, but
+        neither reaches the permanent allowlist here: the tirith key is
+        session-max by design, and "pipe remote content to shell" is itself
+        a destructive-class pattern (DESTRUCTIVE_APPROVAL_PATTERN_KEYS), so
+        _apply_always_choice() downgrades its persistence to session-only
+        per the R5a / t_ec1d82e1 rail (security.allow_permanent_destructive_approvals
+        defaults False). See TestAlwaysVisibility below for a non-destructive
+        dangerous pattern that DOES persist permanently on Always.
+        """
         os.environ["HERMES_INTERACTIVE"] = "1"
         cb = MagicMock(return_value="always")
         result = check_all_command_guards(
@@ -234,8 +241,11 @@ class TestCombinedWarnings:
         # tirith key: session only, never permanent
         assert is_approved(session_key, "tirith:homograph_url")
         assert "tirith:homograph_url" not in _mod._permanent_approved
-        # dangerous-pattern key: permanent
-        assert "pipe remote content to shell" in _mod._permanent_approved
+        # dangerous-pattern key: destructive class -> session-approved but
+        # downgraded from permanent persistence.
+        assert is_approved(session_key, "pipe remote content to shell")
+        assert "pipe remote content to shell" not in _mod._permanent_approved
+        assert "not saved to the permanent allowlist" in (result["message"] or "")
 
 
 # ---------------------------------------------------------------------------

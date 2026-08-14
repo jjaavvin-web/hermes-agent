@@ -101,10 +101,17 @@ async def test_sol_intake_forces_sol_board_triage_and_subscribes(kanban_home):
             "task_id": task_id,
             "platform": "discord",
             "chat_id": "channel-1",
-            "chat_type": None,
             "thread_id": "thread-1",
             "user_id": "user-1",
+            # /sol's add_notify_sub call doesn't pass user_id_alt/chat_type/
+            # delivery_mode, so upstream's active-wake delivery-mode columns
+            # (kanban_db.add_notify_sub) land on their defaults: chat_type
+            # falls back to "dm", delivery_mode to "notify" (non-api_server
+            # platform), user_id_alt stays unset.
+            "user_id_alt": None,
+            "chat_type": "dm",
             "notifier_profile": "gateway-profile",
+            "delivery_mode": "notify",
             "delivery_metadata": {},
             "created_at": subs[0]["created_at"],
             "last_event_id": 1,

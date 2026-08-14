@@ -725,6 +725,13 @@ class TestDiscordVoiceChannelMethods:
         adapter._voice_input_callback = None
         adapter._allowed_user_ids = set()
         adapter._running = True
+        # Match DiscordAdapter.__init__'s defaults for the Codex P3.5/P5.1
+        # watchers: disconnect() unconditionally reads both before tearing
+        # anything else down, so a bare object.__new__() double needs them
+        # set (even to their idle "not running" value of None) or the
+        # attribute lookup itself raises before disconnect() does anything.
+        adapter._codex_merge_watcher = None
+        adapter._codex_gc_watcher = None
         return adapter
 
     def test_is_in_voice_channel_true(self):

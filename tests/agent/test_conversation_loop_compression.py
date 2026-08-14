@@ -117,7 +117,13 @@ class _FakeAgent:
         self.tools = []
         self.valid_tool_names = set()
         self.prefill_messages = []
-        self.client = Mock()
+        # spec=[] so unconfigured attribute access raises AttributeError (like a
+        # real API client) instead of auto-vivifying truthy Mock attributes —
+        # a bare Mock() makes `getattr(client, "last_aggregator_slot", None)`
+        # return a Mock instead of None, which the MoA aggregator-cost lookup
+        # in conversation_loop.py then subscripts, raising a spurious
+        # TypeError unrelated to anything this test exercises.
+        self.client = Mock(spec=[])
         self.max_tokens = 4096
         self._api_max_retries = 3
         self._force_ascii_payload = False
@@ -209,6 +215,8 @@ class _FakeAgent:
     def _clear_status_buffer(self): pass
     def _touch_activity(self, *_a, **_k): pass
     def _drain_pending_steer(self): return None
+    def _drain_pending_redirect(self): return None
+    def _has_pending_redirect(self): return False
     def _reset_stream_delivery_tracking(self): pass
     def _reapply_reasoning_echo_for_provider(self, *_a, **_k): pass
     def _api_request_payload_for_hook(self, *_a, **_k): return {}
@@ -246,8 +254,10 @@ class _FakeAgent:
     def _try_refresh_anthropic_client_credentials(self): return False
     def _try_recover_primary_transport(self, *_a, **_k): return False
     def _try_activate_fallback(self, *_, **__): return False
+    def _emit_pending_fallback_notice(self): pass
     def _has_pending_fallback(self): return False
     def _is_openrouter_url(self): return "openrouter.ai" in self.base_url
+    def _is_copilot_url(self): return False
     def _summarize_api_error(self, error): return str(error)
     def _clean_error_message(self, error): return str(error)
     def _dump_api_request_debug(self, *_a, **_k): pass
@@ -270,6 +280,7 @@ class _FakeAgent:
     def _save_trajectory(self, *_a, **_k): pass
     def _cleanup_task_resources(self, task_id): self.cleaned.append(task_id)
     def _persist_session(self, messages, conversation_history=None): self.persisted.append(list(messages))
+    def _flush_messages_to_session_db(self, messages, conversation_history=None): pass
     def _turn_completion_explainer_enabled(self): return False
     def _file_mutation_verifier_enabled(self): return False
     def _format_file_mutation_failure_footer(self, _failed): return ""
@@ -345,7 +356,14 @@ def test_context_overflow_with_auto_compaction_disabled_returns_terminal_error_w
     assert agent.error_hooks[-1]["reason"] == "context_overflow"
 
 
-def test_context_overflow_output_cap_error_retries_with_ephemeral_max_tokens_without_compressing():
+def test_context_overflow_output_cap_error_retries_with_ephemeral_max_tokens_and_compresses_history():
+    # (#55546) When the provider's error text yields a parseable
+    # available-output-tokens budget, the retry both caps max_tokens AND
+    # compresses the message history in the same pass — an ephemeral-cap-only
+    # retry can keep re-hitting the identical output-cap error and death-loop
+    # until "cannot compress further"; folding a compression attempt in here
+    # breaks that loop. context_length itself is untouched (this is an output
+    # cap, not an input/window overflow).
     error = _ApiError(
         "max_tokens: 32768 > context_window: 200000 - input_tokens: 190000 = available_tokens: 10000",
         status_code=400,
@@ -358,7 +376,9 @@ def test_context_overflow_output_cap_error_retries_with_ephemeral_max_tokens_wit
 
     assert result["completed"] is True
     assert result["final_response"] == "recovered"
-    assert agent.compression_calls == []
+    assert len(agent.compression_calls) == 1
+    assert agent.compression_calls[0]["approx_tokens"] is not None
+    assert agent.compression_calls[0]["task_id"] == "task-1"
     assert agent._ephemeral_max_output_tokens == 9_936
     assert agent.ephemeral_caps[-1] == 9_936
     assert agent.context_compressor.context_length == 200_000

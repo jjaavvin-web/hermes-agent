@@ -107,12 +107,14 @@ def _run_phase_command(
     timeout: float,
     on_output: Callable[[str], None] | None = None,
 ) -> PhaseResult:
+    from agent.codex_session_context import WorktreeConfinementError, resolve_confined_cwd
+
     started = time.monotonic()
     try:
         proc = subprocess.run(
             command,
             shell=True,  # project-authored commands; see module docstring
-            cwd=str(root),
+            cwd=resolve_confined_cwd(str(root)),
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             timeout=timeout,
@@ -130,6 +132,13 @@ def _run_phase_command(
             output = raw or ""
         exit_code = None
         timed_out = True
+    except WorktreeConfinementError as exc:
+        # Worktree confinement is required for this turn and `root` is
+        # outside the bound worktree — fail the phase closed with the
+        # denial reason instead of letting it escape as an exit code 0.
+        output = str(exc)
+        exit_code = None
+        timed_out = False
     duration = time.monotonic() - started
     if on_output and output:
         on_output(output)
@@ -205,14 +214,26 @@ def _run_start_phase(
     ready_timeout: float,
     port_override: int | None = None,
 ) -> ReadinessResult:
+    from agent.codex_session_context import WorktreeConfinementError, resolve_confined_cwd
+
     assert recipe.start is not None
     port = port_override or recipe.port or 8000
     url = f"http://127.0.0.1:{port}{recipe.readiness_path}"
     started = time.monotonic()
+    try:
+        confined_root = resolve_confined_cwd(str(root))
+    except WorktreeConfinementError as exc:
+        # Worktree confinement is required for this turn and `root` is
+        # outside the bound worktree — fail closed before ever spawning the
+        # start command.
+        return ReadinessResult(
+            url=url, ready=False, status_code=None,
+            duration=time.monotonic() - started, error=str(exc),
+        )
     proc = subprocess.Popen(
         recipe.start,
         shell=True,  # project-authored command; see module docstring
-        cwd=str(root),
+        cwd=confined_root,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         start_new_session=True,  # own process group for clean teardown

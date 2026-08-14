@@ -223,12 +223,18 @@ def test_scheduled_orphan_reap_closes_only_still_detached_sessions(server, monke
 
     closed: list[tuple[str, str]] = []
 
-    def close_session(sid, *, end_reason):
+    # The reap closure is resume-race-sensitive (#39591), so it pops under
+    # _session_resume_lock itself and calls _teardown_popped_session directly
+    # rather than the _close_session_by_id convenience wrapper (that wrapper
+    # is for callers with no resume race to guard against). Mock the function
+    # actually on this path -- the real (unmocked) _pop_session_by_id already
+    # removes the session from server._sessions and stamps "_sid" onto it.
+    def teardown_popped(session, *, end_reason):
+        sid = (session or {}).get("_sid")
         closed.append((sid, end_reason))
-        server._sessions.pop(sid, None)
         return True
 
-    monkeypatch.setattr(server, "_close_session_by_id", close_session)
+    monkeypatch.setattr(server, "_teardown_popped_session", teardown_popped)
     server._sessions["orphan"] = {
         "transport": server._detached_ws_transport,
         "running": False,
@@ -279,6 +285,13 @@ def test_close_session_by_id_runs_idempotent_teardown_cleanup(server, monkeypatc
             calls.append(("worker.close", str(self.closed)))
 
     class FakeDB:
+        def get_session(self, session_id):
+            # _finalize_session checks the row's source before ending it, so
+            # a TUI viewer never ends a gateway-owned session's lifecycle
+            # (#60609). No row -> source "" -> not gateway-owned -> proceeds
+            # to end_session below, matching this test's plain local session.
+            return None
+
         def end_session(self, session_id, end_reason):
             calls.append(("db.end_session", f"{session_id}:{end_reason}"))
 
@@ -289,7 +302,11 @@ def test_close_session_by_id_runs_idempotent_teardown_cleanup(server, monkeypatc
     monkeypatch.setattr(
         server,
         "_notify_session_boundary",
-        lambda event, session_id: calls.append((event, session_id)),
+        # _notify_session_boundary now takes a positional `platform` too (the
+        # session's source, for CLI-parity lifecycle hooks) -- accept and
+        # ignore it here since this test only cares about the event/session
+        # pairing.
+        lambda event, session_id, platform=None: calls.append((event, session_id)),
     )
     monkeypatch.setattr(server, "_get_db", lambda: FakeDB())
 

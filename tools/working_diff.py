@@ -32,9 +32,16 @@ VALID_MODES = ("working", "staged", "all")
 
 def _run(args: List[str], cwd: str, timeout: int = _GIT_TIMEOUT):
     """Run git, returning (returncode, stdout). Never raises on git failure."""
+    from agent.codex_session_context import WorktreeConfinementError, resolve_confined_cwd
+    try:
+        confined_cwd = resolve_confined_cwd(cwd)
+    except WorktreeConfinementError:
+        # Fail closed the same way a git failure would: worktree confinement
+        # is required for this turn and `cwd` is outside the bound worktree.
+        return 1, ""
     proc = subprocess.run(
         ["git", "-c", "core.quotePath=false", *args],
-        cwd=cwd, capture_output=True, text=True, timeout=timeout,
+        cwd=confined_cwd, capture_output=True, text=True, timeout=timeout,
         encoding="utf-8", errors="replace",
     )
     return proc.returncode, proc.stdout

@@ -774,7 +774,18 @@ class TestGetModelContextLength:
         mock_fetch.return_value = {}
         cache_file = tmp_path / "cache.yaml"
         base_url = "http://local"
-        with patch("agent.model_metadata._get_context_cache_path", return_value=cache_file):
+        # base_url="http://local" is an unqualified hostname, so
+        # is_local_endpoint() correctly routes this through
+        # _reconcile_local_cached_context_length(), which live-probes the
+        # server before trusting the cache. Mock the probe (as the other
+        # local-endpoint tests in this file do) so the assertion exercises
+        # the cache-respecting fallback instead of making a real network
+        # call — an unresolvable host here otherwise blocks on DNS well
+        # past the per-test timeout.
+        with (
+            patch("agent.model_metadata._get_context_cache_path", return_value=cache_file),
+            patch("agent.model_metadata._query_local_context_length", return_value=None),
+        ):
             save_context_length("qwen3.5:27b", base_url, 32768)
             result = get_model_context_length(
                 "qwen3.5:27b",
@@ -1218,7 +1229,20 @@ class TestContextLengthCache:
         invalidated at step 1 and re-resolved instead of returned."""
         mock_fetch.return_value = {}
         cache_file = tmp_path / "cache.yaml"
-        with patch("agent.model_metadata._get_context_cache_path", return_value=cache_file):
+        # base_url="http://x" is an unqualified hostname, so once the poison
+        # cache entry is dropped, resolution falls through to the
+        # custom/local-endpoint probes (_resolve_endpoint_context_length,
+        # _query_local_context_length, _query_ollama_api_show) — mock them
+        # the same way test_custom_endpoint_falls_back_to_hardcoded_catalog
+        # does so the re-resolution assertion doesn't depend on a real
+        # network probe of an unresolvable host.
+        with (
+            patch("agent.model_metadata._get_context_cache_path", return_value=cache_file),
+            patch("agent.model_metadata._resolve_endpoint_context_length", return_value=None),
+            patch("agent.model_metadata._query_ollama_api_show", return_value=None),
+            patch("agent.model_metadata._query_local_context_length", return_value=None),
+            patch("agent.model_metadata.is_local_endpoint", return_value=False),
+        ):
             # Write the poison entry directly — save_context_length now refuses it.
             cache_file.write_text(
                 "context_lengths:\n  test/model@http://x: 0\n", encoding="utf-8"
@@ -1258,7 +1282,15 @@ class TestContextLengthCache:
     def test_cached_value_takes_priority(self, mock_fetch, tmp_path):
         mock_fetch.return_value = {}
         cache_file = tmp_path / "cache.yaml"
-        with patch("agent.model_metadata._get_context_cache_path", return_value=cache_file):
+        # base_url="http://local" is an unqualified hostname, so the cached
+        # value is reconciled against a live local probe before being
+        # trusted (_reconcile_local_cached_context_length). Mock the probe
+        # to "unreachable" so the assertion exercises cache-priority
+        # behavior without a real network call to an unresolvable host.
+        with (
+            patch("agent.model_metadata._get_context_cache_path", return_value=cache_file),
+            patch("agent.model_metadata._query_local_context_length", return_value=None),
+        ):
             save_context_length("unknown/model", "http://local", 65536)
             assert get_model_context_length("unknown/model", base_url="http://local") == 65536
 

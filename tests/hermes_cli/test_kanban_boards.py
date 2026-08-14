@@ -257,6 +257,21 @@ class TestWorkerSpawnEnv:
         monkeypatch.setattr(subprocess, "Popen", fake_popen)
         kb.create_board("spawntest")
 
+        # HERMES_WORKER_AUTHORITY rail: _default_spawn resolves the assignee
+        # to a real on-disk profile via resolve_profile_env() and pins the
+        # worker's CLI toolsets from that profile's config.yaml
+        # (platform_toolsets.cli must be an explicit, non-empty, known
+        # allowlist) — both fail closed with WorkerAuthorityResolutionError
+        # otherwise. Create a minimally valid "teknium" profile under
+        # fresh_home so the resolution step this test isn't exercising
+        # doesn't block it (see test_kanban_worker_spawn_toolsets.py).
+        teknium_profile = fresh_home / "profiles" / "teknium"
+        teknium_profile.mkdir(parents=True)
+        (teknium_profile / "config.yaml").write_text(
+            "platform_toolsets:\n  cli: [terminal, kanban]\n",
+            encoding="utf-8",
+        )
+
         task = kb.Task(
             id="t_abc",
             title="worker test",

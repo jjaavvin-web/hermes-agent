@@ -32,6 +32,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from gateway import restart_loop_guard
 from gateway.config import GatewayConfig, HomeChannel, Platform
 from gateway.platforms.base import MessageEvent, MessageType, SendResult
 from gateway.run import (
@@ -50,9 +51,49 @@ from tests.gateway.restart_test_helpers import (
 )
 
 
+@pytest.fixture(autouse=True)
+def _reset_restart_loop_guard():
+    """Clear the (#30719) SIGTERM-respawn breaker's persisted boot log.
+
+    ``_schedule_resume_pending_sessions`` records a "restart-interrupted
+    boot" via ``restart_loop_guard.check_and_record`` on every call that
+    has resume-pending candidates, and the guard's state file lives under
+    ``HERMES_HOME`` — one directory for this WHOLE test process, shared by
+    every test in this file. Without a reset, boots recorded by earlier
+    tests in this module (e.g. ``test_startup_auto_resume_skips_unauthorized_owner``,
+    ``test_reconnect_reschedule_is_platform_scoped``) accumulate toward the
+    default threshold of 3 and silently trip the breaker for a LATER test,
+    making ``_schedule_resume_pending_sessions`` return 0 regardless of that
+    test's own setup. ``restart_loop_guard.clear()`` exists precisely for
+    this ("used on clean shutdown / by tests" per its docstring).
+    """
+    restart_loop_guard.clear()
+    yield
+    restart_loop_guard.clear()
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+
+async def _wait_until(predicate, message: str, timeout: float = 2.0) -> None:
+    """Poll ``predicate`` until true, failing loudly instead of hanging.
+
+    ``_schedule_resume_pending_sessions`` dispatches through
+    ``_run_startup_resume_event``, which awaits the (off-loop, thread-pool)
+    in-flight crash-marker write before calling ``adapter.handle_message`` —
+    that cross-thread round trip needs more than a single scheduling tick to
+    resolve. A bare ``await asyncio.sleep(0)`` observes the dispatch mid-flight
+    every time and races the assertion; poll with a bound instead so a real
+    regression still fails fast (pytest-timeout) rather than leaking a
+    permanently-pending background task that never gets cancelled.
+    """
+    deadline = asyncio.get_running_loop().time() + timeout
+    while not predicate():
+        if asyncio.get_running_loop().time() >= deadline:
+            pytest.fail(message)
+        await asyncio.sleep(0.01)
 
 
 def test_resume_pending_is_cleared_only_after_successful_turn():
@@ -712,7 +753,10 @@ async def test_reconnect_reschedule_is_platform_scoped():
     runner.adapters = {Platform.TELEGRAM: adapter}
 
     scheduled = runner._schedule_resume_pending_sessions(platform=Platform.TELEGRAM)
-    await asyncio.sleep(0)
+    await _wait_until(
+        lambda: adapter.handle_message.await_count > 0,
+        "resume dispatch never reached adapter.handle_message",
+    )
 
     # Only the telegram session is resumed; the discord session waits for its
     # own reconnect.
@@ -759,7 +803,10 @@ async def test_startup_restore_waits_for_resume_before_draining_inbound():
     adapter.handle_message = fake_handle_message
 
     scheduled = runner._schedule_resume_pending_sessions()
-    await asyncio.sleep(0)
+    await _wait_until(
+        lambda: seen == ["resume-start"],
+        "resume dispatch never reached adapter.handle_message",
+    )
 
     inbound = MessageEvent(
         text="hello",

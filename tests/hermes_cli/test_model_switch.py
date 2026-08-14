@@ -134,6 +134,15 @@ def picker_registry(monkeypatch):
     monkeypatch.setattr(model_mod, "fetch_ollama_cloud_models", lambda: [], raising=False)
     monkeypatch.setattr(model_mod, "CANONICAL_PROVIDERS", [], raising=False)
     monkeypatch.setattr(model_mod, "fetch_api_models", lambda *_args, **_kwargs: pytest.fail("network fetch_api_models called"), raising=False)
+    # cached_fetch_api_models (disk-cached wrapper around fetch_api_models,
+    # added for custom-endpoint discovery) is now called unconditionally for
+    # any user/custom provider row with a base_url and discover_models !=
+    # False — including dict-shaped `models:` metadata rows, which used to
+    # suppress probing entirely before _models_config_is_allowlist stopped
+    # treating per-model context_length metadata as a user-narrowed
+    # allowlist. Stub it to a clean cache-miss (None) so grouping/aggregation
+    # tests still exercise no real network I/O.
+    monkeypatch.setattr(model_mod, "cached_fetch_api_models", lambda *_args, **_kwargs: None, raising=False)
     monkeypatch.setattr(provider_mod, "HERMES_OVERLAYS", {}, raising=False)
 
 
@@ -233,6 +242,12 @@ def test_resolve_alias_reverse_matches_direct_alias_model_id_case_insensitively(
 
 
 def test_resolve_alias_picks_latest_aggregator_model_from_catalog(monkeypatch):
+    """Multiple aggregator-catalog matches must NOT be silently resolved —
+    resolve_alias raises AmbiguousAliasError with the latest version first
+    (see hermes_cli.model_switch.AmbiguousAliasError: version-sort heuristics
+    have repeatedly guessed wrong, so ambiguity is surfaced to the caller
+    instead of auto-picked)."""
+    monkeypatch.setattr("hermes_cli.models._PROVIDER_MODELS", {})
     monkeypatch.setattr(ms, "_load_direct_aliases", lambda: {})
     monkeypatch.setattr(ms, "is_aggregator", lambda provider: provider == "openrouter")
     monkeypatch.setattr(
@@ -247,14 +262,23 @@ def test_resolve_alias_picks_latest_aggregator_model_from_catalog(monkeypatch):
         else [],
     )
 
-    assert ms.resolve_alias("sonnet", "openrouter") == (
-        "openrouter",
+    with pytest.raises(ms.AmbiguousAliasError) as exc:
+        ms.resolve_alias("sonnet", "openrouter")
+    assert exc.value.alias == "sonnet"
+    assert exc.value.provider == "openrouter"
+    # Best-guess-first ordering: the latest version still sorts first even
+    # though resolve_alias no longer auto-picks it.
+    assert exc.value.candidates[0] == "anthropic/claude-sonnet-4-6"
+    assert set(exc.value.candidates) == {
+        "anthropic/claude-sonnet-4-1",
         "anthropic/claude-sonnet-4-6",
-        "sonnet",
-    )
+    }
 
 
 def test_resolve_alias_picks_highest_quality_non_aggregator_model(monkeypatch):
+    """Multiple non-aggregator catalog matches must NOT be silently resolved —
+    same AmbiguousAliasError contract as the aggregator case above."""
+    monkeypatch.setattr("hermes_cli.models._PROVIDER_MODELS", {})
     monkeypatch.setattr(ms, "_load_direct_aliases", lambda: {})
     monkeypatch.setattr(ms, "is_aggregator", lambda _provider: False)
     monkeypatch.setattr(
@@ -263,6 +287,28 @@ def test_resolve_alias_picks_highest_quality_non_aggregator_model(monkeypatch):
         lambda provider: ["mimo-v2.4-max", "mimo-v2.5", "mimo-v2.5-pro"]
         if provider == "xiaomi"
         else [],
+    )
+
+    with pytest.raises(ms.AmbiguousAliasError) as exc:
+        ms.resolve_alias("mimo", "xiaomi")
+    assert exc.value.alias == "mimo"
+    assert exc.value.provider == "xiaomi"
+    assert exc.value.candidates[0] == "mimo-v2.5-pro"
+    assert set(exc.value.candidates) == {
+        "mimo-v2.4-max", "mimo-v2.5", "mimo-v2.5-pro",
+    }
+
+
+def test_resolve_alias_single_catalog_match_still_resolves(monkeypatch):
+    """Exactly one family match on the catalog still auto-resolves — the
+    AmbiguousAliasError rail only fires when there is a real choice to make."""
+    monkeypatch.setattr("hermes_cli.models._PROVIDER_MODELS", {})
+    monkeypatch.setattr(ms, "_load_direct_aliases", lambda: {})
+    monkeypatch.setattr(ms, "is_aggregator", lambda _provider: False)
+    monkeypatch.setattr(
+        ms,
+        "list_provider_models",
+        lambda provider: ["mimo-v2.5-pro"] if provider == "xiaomi" else [],
     )
 
     assert ms.resolve_alias("mimo", "xiaomi") == ("xiaomi", "mimo-v2.5-pro", "mimo")
@@ -767,6 +813,7 @@ def test_prewarm_picker_cache_async_runs_once_and_uses_picker_context(monkeypatc
             current_model="openai/gpt-5",
             user_providers={"local": {}},
             custom_providers=[{"name": "Local"}],
+            excluded_providers=["copilot"],
         ),
     )
     monkeypatch.setitem(sys.modules, "hermes_cli.inventory", fake_inventory)
@@ -785,7 +832,7 @@ def test_prewarm_picker_cache_async_runs_once_and_uses_picker_context(monkeypatc
             "current_model": "openai/gpt-5",
             "user_providers": {"local": {}},
             "custom_providers": [{"name": "Local"}],
-            "max_models": 50,
+            "excluded_providers": ["copilot"],
         }
     ]
 

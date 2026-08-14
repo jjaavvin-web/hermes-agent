@@ -160,13 +160,18 @@ def build_trace_jsonl(
     try:
         import subprocess
         if cwd:
+            from agent.codex_session_context import resolve_confined_cwd
             r = subprocess.run(
                 ["git", "rev-parse", "--abbrev-ref", "HEAD"],
-                capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=3, cwd=cwd,
+                capture_output=True, text=True, encoding="utf-8", errors="replace",
+                timeout=3, cwd=resolve_confined_cwd(cwd),
             )
             if r.returncode == 0:
                 git_branch = r.stdout.strip()
     except Exception:
+        # Covers git failures as well as WorktreeConfinementError (fails
+        # closed when worktree confinement is required and cwd is outside
+        # the bound worktree) — either way, git_branch just stays empty.
         git_branch = ""
 
     def _common(turn_uuid: str) -> Dict[str, Any]:

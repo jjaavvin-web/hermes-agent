@@ -199,12 +199,22 @@ class TestDetectAudioEnvironment:
         assert any("SSH" in n for n in result.get("notices", []))
 
     def test_wsl_without_pulse_blocks_voice(self, monkeypatch, tmp_path):
-        """WSL without PULSE_SERVER should block voice mode."""
+        """WSL without PULSE_SERVER or the PowerShell TTS fallback should
+        block voice mode.
+
+        The PowerShell/ffmpeg fallback check (_wsl_powershell_tts_available)
+        does a real shutil.which() probe of the host, so it must be pinned
+        False here -- otherwise this test is flaky depending on whether the
+        machine running it happens to have both powershell.exe and ffmpeg on
+        PATH (true on this dev box), which downgrades the missing-bridge
+        case from a hard block to a notice.
+        """
         monkeypatch.delenv("SSH_CLIENT", raising=False)
         monkeypatch.delenv("SSH_TTY", raising=False)
         monkeypatch.delenv("SSH_CONNECTION", raising=False)
         monkeypatch.delenv("PULSE_SERVER", raising=False)
         monkeypatch.setattr("tools.voice_mode._pulse_socket_reachable", lambda: False)
+        monkeypatch.setattr("tools.voice_mode._wsl_powershell_tts_available", lambda: False)
         monkeypatch.setattr("tools.voice_mode._import_audio",
                             lambda: (MagicMock(), MagicMock()))
 

@@ -281,7 +281,13 @@ class TestTimingAlignmentBranches:
                     "hermes-gateway.service",
                     "--property=TimeoutStopUSec",
                 ],
-                {"capture_output": True, "text": True, "timeout": 2.0},
+                {
+                    "capture_output": True,
+                    "text": True,
+                    "encoding": "utf-8",
+                    "errors": "replace",
+                    "timeout": 2.0,
+                },
             )
         ]
 

@@ -127,12 +127,23 @@ def test_session_create_returns_lightweight_handshake_without_building_agent(mon
     assert session["pending_title"] == "seed title"
     assert session["model_override"] == {"model": "chosen/model", "provider": "custom:chosen"}
     assert session["create_service_tier_override"] == "priority"
-    assert session["active_session_lease"] == "lease-token"
+    # session.create deliberately does NOT claim an active-session slot —
+    # only the first real turn does, via _ensure_active_session_slot (see its
+    # docstring: idle desktop tiles/reconnect-resume/abandoned drafts all
+    # call session.create just to paint a composer, so claiming here starved
+    # the shared session cap). The mocked _claim_active_session_slot above is
+    # therefore never invoked on this path; its lease stays unset.
+    assert session["active_session_lease"] is None
     assert session["agent"] is None
     assert session["agent_ready"] is not None and not session["agent_ready"].is_set()
-    assert len(created_timers) == 1
+    # session.create schedules two off-response-path timers: the deferred
+    # agent build (_schedule_agent_build, 0.05s) and the LRU session-cap
+    # sweep (_schedule_session_cap_enforcement, 0.1s), in that order.
+    assert len(created_timers) == 2
     assert created_timers[0].interval == pytest.approx(0.05)
     assert created_timers[0].started is True
+    assert created_timers[1].interval == pytest.approx(0.1)
+    assert created_timers[1].started is True
 
 
 def test_disconnect_reaps_close_on_disconnect_and_parks_reconnectable_sessions(monkeypatch):
@@ -179,7 +190,17 @@ def test_orphan_reap_timer_closes_only_still_detached_sessions(monkeypatch):
     closed = []
     monkeypatch.setattr(server_mod.threading, "Timer", FakeTimer)
     monkeypatch.setattr(server_mod, "_WS_ORPHAN_REAP_GRACE_S", 0.25)
-    monkeypatch.setattr(server_mod, "_close_session_by_id", lambda sid, **_k: closed.append((sid, _k.get("end_reason"))) or True)
+    # The reap closure is resume-race-sensitive (#39591), so it pops under
+    # _session_resume_lock itself and calls _teardown_popped_session directly
+    # rather than the _close_session_by_id convenience wrapper (that wrapper
+    # is for callers with no resume race to guard against). Mock the function
+    # actually on this path; _pop_session_by_id stamps "_sid" onto the popped
+    # record before handing it to the teardown step.
+    monkeypatch.setattr(
+        server_mod,
+        "_teardown_popped_session",
+        lambda session, **_k: closed.append((session.get("_sid"), _k.get("end_reason"))) or True,
+    )
 
     live_transport = DummyTransport("reattached")
     server_mod._sessions["sid"] = _base_session("key", server_mod._detached_ws_transport)

@@ -97,14 +97,17 @@ def test_set_current_session_id_writes_os_environ_and_contextvar(
     )
 
 
-def test_set_session_vars_returns_fifteen_reset_tokens() -> None:
+def test_set_session_vars_returns_seventeen_reset_tokens() -> None:
+    # 15 base ContextVars + upstream's ``user_id_alt``/``scope_id`` additions
+    # (see the ``_SESSION_USER_ID_ALT``/``_SESSION_SCOPE_ID`` vars and their
+    # ``.set()`` calls in ``set_session_vars``) = 17 tokens returned.
     def set_and_return_tokens() -> list[object]:
         return set_session_vars()
 
     result = contextvars.copy_context().run(set_and_return_tokens)
 
     assert isinstance(result, list)
-    assert len(result) == 15
+    assert len(result) == 17
 
 
 def test_unknown_names_use_default_and_cron_names_route_to_context_map(

@@ -386,7 +386,7 @@ class TestHistoryDisplay:
         assert "Learning a skill from what you described" in output
         queued = cli._pending_input.get_nowait()
         assert "[/learn]" in queued
-        assert "WHAT TO LEARN FROM:\nthe release checklist" in queued
+        assert "THE REQUEST:\nthe release checklist" in queued
         assert "skill_manage" in queued
 
 

@@ -28,6 +28,11 @@ def _base(monkeypatch):
     monkeypatch.delenv("PIPEWIRE_REMOTE", raising=False)
     monkeypatch.setattr("hermes_constants.is_container", lambda: False)
     monkeypatch.setattr("tools.voice_mode._pulse_socket_reachable", lambda: False)
+    # _wsl_powershell_tts_available() does a real shutil.which() probe of the
+    # host for powershell.exe/ffmpeg. Pin it False so the "no forwarding"
+    # test below deterministically hits the hard-block branch instead of
+    # depending on whether this machine happens to have both on PATH.
+    monkeypatch.setattr("tools.voice_mode._wsl_powershell_tts_available", lambda: False)
     sd = MagicMock(); sd.query_devices.return_value = [{"name": "dev"}]
     monkeypatch.setattr("tools.voice_mode._import_audio", lambda: (sd, MagicMock()))
 

@@ -48,12 +48,12 @@ def _fake_protected_roots(monkeypatch, protected_root):
 def test_bound_worktree_without_workdir_resolves_to_bound_worktree(tmp_path):
     wt = tmp_path / "lane-wt"
     wt.mkdir()
-    env = SimpleNamespace(cwd="/legacy/live")
     token = _bind_worktree(wt)
     try:
+        # No ``env=`` kwarg in the current signature — a bound worktree wins
+        # unconditionally over the legacy cwd chain.
         assert terminal_tool._resolve_command_cwd(
             workdir=None,
-            env=env,
             default_cwd="/legacy/default",
         ) == str(wt.resolve())
     finally:
@@ -130,22 +130,29 @@ def test_bound_worktree_rejects_absolute_cd_into_protected_root(monkeypatch, tmp
     assert calls == []
 
 
-def test_no_bound_worktree_preserves_legacy_cwd_resolution():
-    env = SimpleNamespace(cwd="/legacy/live")
+def test_no_bound_worktree_preserves_legacy_cwd_resolution(monkeypatch):
+    # v0.20 replaced the ``env.cwd`` read with the per-session cwd RECORD
+    # (``get_session_cwd``/``record_session_cwd``) — ``_resolve_command_cwd``
+    # no longer takes an ``env=`` kwarg at all. Same "live session cwd wins
+    # unless an explicit workdir/no record" intent, expressed through the
+    # current session_key-keyed record instead.
+    monkeypatch.setattr(terminal_tool, "_session_cwd", {})
+    session_key = "legacy-session"
+    terminal_tool.record_session_cwd(session_key, "/legacy/live")
 
     assert terminal_tool._resolve_command_cwd(
         workdir="/explicit/workdir",
-        env=env,
+        session_key=session_key,
         default_cwd="/legacy/default",
     ) == "/explicit/workdir"
     assert terminal_tool._resolve_command_cwd(
         workdir=None,
-        env=env,
+        session_key=session_key,
         default_cwd="/legacy/default",
     ) == "/legacy/live"
     assert terminal_tool._resolve_command_cwd(
         workdir=None,
-        env=SimpleNamespace(cwd=""),
+        session_key="no-record-session",
         default_cwd="/legacy/default",
     ) == "/legacy/default"
 
@@ -253,9 +260,11 @@ def test_bound_worktree_relative_workdir_resolves_under_bound_worktree(tmp_path)
     wt.mkdir()
     token = _bind_worktree(wt)
     try:
+        # No ``env=`` kwarg in the current signature — a bound worktree wins
+        # over the legacy cwd chain unconditionally, so there is nothing left
+        # for a poisoned ``env`` to override here.
         resolved = terminal_tool._resolve_command_cwd(
             workdir="sub/dir",
-            env=SimpleNamespace(cwd="/legacy/live"),
             default_cwd="/legacy/default",
         )
     finally:

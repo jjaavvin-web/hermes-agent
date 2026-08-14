@@ -55,7 +55,17 @@ def test_on_pre_compress_result_reaches_compressor_with_existing_options():
         focus_topic=None,
         force=False,
         memory_context="",
+        **_kwargs,
     ):
+        # inspect.signature() on a bare MagicMock method reports a generic
+        # (*args, **kwargs) shape, so _supported_compression_kwargs() treats
+        # this engine as accepting every candidate — including the fork's
+        # preservation_context channel (same payload as memory_context; see
+        # conversation_compression._supported_compression_kwargs). Accept and
+        # discard it via **_kwargs rather than asserting its absence — this
+        # test's contract is "the existing options reach the compressor",
+        # not "unknown future options are rejected" (that's covered by
+        # test_legacy_engine_receives_only_supported_compression_arguments).
         received.update(
             current_tokens=current_tokens,
             focus_topic=focus_topic,

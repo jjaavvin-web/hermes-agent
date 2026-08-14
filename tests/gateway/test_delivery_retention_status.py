@@ -25,8 +25,15 @@ def test_runtime_status_exposes_retained_dirty_deliveries(tmp_path, monkeypatch)
     delivery = home / "relay-wt" / "deliveries" / "wh-loki3-test"
     delivery.mkdir(parents=True)
     (delivery / ".dirty").write_text("awaiting harvest", encoding="utf-8")
-    monkeypatch.setattr("gateway.status.get_hermes_home", lambda: home)
-    monkeypatch.setattr("gateway.delivery_retention.get_hermes_home", lambda: home)
+    # write_runtime_status() resolves its target file via the process-level
+    # HERMES_HOME (gateway.status._get_process_hermes_home), which reads the
+    # HERMES_HOME env var directly and deliberately bypasses
+    # hermes_constants.get_hermes_home()'s context-local override (see
+    # gateway/status.py::_get_process_hermes_home, issue #56986). Patching
+    # get_hermes_home() alone never touches that write path -- the env var
+    # itself has to move, which also satisfies get_hermes_home() (no
+    # override active) for delivery_retention's scan.
+    monkeypatch.setenv("HERMES_HOME", str(home))
 
     write_runtime_status(gateway_state="running", active_agents=0)
 

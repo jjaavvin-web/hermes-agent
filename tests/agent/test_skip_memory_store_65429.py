@@ -28,6 +28,15 @@ def _make_agent(monkeypatch, enabled_toolsets=None, skip_memory=True):
     monkeypatch.setattr("run_agent.get_tool_definitions", lambda **kw: [])
     monkeypatch.setattr("run_agent.check_toolset_requirements", lambda: {})
     monkeypatch.setattr("run_agent.OpenAI", _FakeOpenAI)
+    # base_url="http://test" has no dot, so agent_init's is_local_endpoint()
+    # heuristic (Docker/Compose-style unqualified hostnames are local by
+    # definition) classifies it as a local Ollama-style endpoint and
+    # agent_init unconditionally probes it for num_ctx via a real HTTP call
+    # (agent/model_metadata.py: detect_local_server_type -> GET /v1/props).
+    # That's unrelated to what this test exercises (skip_memory + memory
+    # toolset wiring) and would otherwise hang on DNS resolution for the
+    # fake host in a network-denied test run. Stub the probe out entirely.
+    monkeypatch.setattr("agent.agent_init.query_ollama_num_ctx", lambda *a, **k: None)
     return AIAgent(
         api_key="test-key",
         base_url="http://test",
