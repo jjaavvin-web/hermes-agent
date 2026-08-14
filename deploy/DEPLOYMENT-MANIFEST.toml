@@ -1,0 +1,109 @@
+# DEPLOYMENT-MANIFEST.toml
+#
+# Single source of truth read by scripts/build_deployment.sh: the
+# machine-local recipe for building an immutable hermes-agent deployment
+# directory from a verified commit. This generalizes the one-off recipe
+# used to build the v0.20.1 upstream-merge candidate deployment
+# (~/.hermes/audits/v0201-upstream-merge-20260813/build-v0201-deployment.sh)
+# so future candidates read the recipe from here instead of a hardcoded,
+# throwaway script. Bump extras, gates, or out-of-band packages HERE — the
+# build script keeps no hardcoded copy of any of these lists.
+
+[venv]
+# Extras passed to `uv sync --frozen --extra <name> ...`. Mirrors the live
+# v020 venv, including `matrix` (pulls in asyncpg — the dashboard
+# connectome/nexus tabs import it even though the extra name suggests
+# chat-only messaging).
+extras = [
+  "dev",
+  "messaging",
+  "dingtalk",
+  "slack",
+  "matrix",
+  "anthropic",
+  "edge-tts",
+  "honcho",
+  "acp",
+  "feishu",
+  "google",
+  "modal",
+  "fal",
+  "bedrock",
+  "youtube",
+]
+
+# Load-bearing. The build script MUST use `uv sync --frozen` and must NEVER
+# fall back to `uv pip install -e`: the latter re-resolves version ranges
+# fresh against PyPI at build time instead of pinning to uv.lock. On
+# 2026-08-13 that silently pulled fastapi 0.141.1 against the lock's pinned
+# 0.133.1 and broke FastAPI's include_router. The build script has no
+# non-frozen install path at all — if this flag is ever flipped to false it
+# aborts rather than silently changing install strategy underneath you.
+lock_enforced = true
+
+[venv.version_gates]
+# Installed version MUST equal this after `uv sync --frozen`, checked via
+# `uv pip list`; a mismatch aborts the build. Bump deliberately, together
+# with the lock (`uv lock`) — never bump the gate without regenerating
+# uv.lock first, and never regenerate uv.lock without bumping the gate.
+fastapi = "0.133.1"
+
+[venv.out_of_band]
+# Fork-operational browser stack: present in the live v020 venv but not
+# declared as a pyproject extra, so a plain `uv sync` never installs it.
+# Installed after the frozen sync with
+# `uv pip install -p .venv/bin/python <pkg>...`.
+packages = [
+  "brotli==1.2.0",
+  "ddgs==9.14.4",
+  "fake-useragent==2.2.0",
+  "lxml==6.1.1",
+  "primp==1.3.1",
+]
+
+[node]
+# Run from inside the exported deployment directory. --ignore-scripts:
+# never execute postinstall scripts from an unreviewed lockfile.
+install = "npm ci --ignore-scripts"
+
+[layout]
+# Deployments live under this root, one directory per build, named
+# v<project-version>-<short-sha>-<UTC build timestamp>. `current_symlink`
+# is the name of the atomic symlink that `--activate` repoints at the
+# newest build inside deployments_root. Repointing it never restarts any
+# service by itself — that stays a separate, human-gated step.
+deployments_root = "~/.local/share/hermes-agent-deployments"
+current_symlink = "current"
+
+# -----------------------------------------------------------------------
+# Runtime pin files (informational — NOT touched by build_deployment.sh)
+# -----------------------------------------------------------------------
+# As of 2026-08-13 these still hardcode a specific deployment path rather
+# than following [layout] current_symlink above. Migrating each one to
+# point at "$deployments_root/$current_symlink" instead is a one-time,
+# separately gated cutover (see kanban card / handoff for the v0.20.1
+# upstream-merge candidate) — until that migration lands, `--activate`
+# repoints the symlink but the running services keep using whatever path
+# they were last pinned to. The five files that need that migration:
+#
+#   1. CLI wrapper: ~/.local/bin/hermes
+#      — currently invokes a specific deployment's .venv/bin/hermes
+#        directly; should exec through the current symlink instead.
+#
+#   2. hermes-gateway.service (systemd --user unit)
+#      — ExecStart, ExecStopPost, PATH, and VIRTUAL_ENV all currently
+#        reference a specific deployment directory.
+#
+#   3. hermes-gateway.service.d/60-pythonpath.conf (drop-in)
+#      — the site-packages shadow-guard drop-in; its PYTHONPATH entries
+#        are pinned to a specific deployment's site-packages. Load-bearing
+#        — never remove, only repoint once the migration is scoped.
+#
+#   4. hermes-dashboard.service (systemd --user unit, its own unit —
+#      restarting it does NOT restart hermes-gateway.service)
+#      — WorkingDirectory and PYTHONPATH currently reference a specific
+#        deployment directory.
+#
+#   5. ~/.hermes/scripts/cockpit-dashboard.sh
+#      — launches the dashboard process for local/manual use; currently
+#        hardcodes a specific deployment's venv interpreter path.

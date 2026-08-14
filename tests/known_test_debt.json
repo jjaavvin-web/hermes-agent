@@ -1,0 +1,14 @@
+[
+  {
+    "target": "tests/tools/test_file_tools_fail_closed_confinement.py",
+    "reason": "Pre-existing failure at fork base 65792936eefc (byte-identical test file vs. base — not touched by the v0.20.1 upstream merge). Fork fail-closed confinement rails pass a stale env= kwarg that upstream's fixtures don't expect, so the test file fails independent of the merge.",
+    "recorded": "2026-08-13",
+    "evidence": "v0201-upstream-merge-20260813 merge audit: `git diff 65792936eefc -- tests/tools/test_file_tools_fail_closed_confinement.py` is empty (file byte-identical at fork base); failure reproduces on 65792936eefc alone via `venv/bin/pytest tests/tools/test_file_tools_fail_closed_confinement.py`, traced to a stale env= kwarg on the confinement fixture."
+  },
+  {
+    "target": "tests/tools/test_terminal_worktree_confinement.py",
+    "reason": "Pre-existing failure at fork base 65792936eefc (byte-identical test file vs. base — not touched by the v0.20.1 upstream merge). Fork's terminal confinement fixture calls a _get_live_tracking_cwd helper that is missing at the fork base, so the test file fails independent of the merge.",
+    "recorded": "2026-08-13",
+    "evidence": "v0201-upstream-merge-20260813 merge audit: `git diff 65792936eefc -- tests/tools/test_terminal_worktree_confinement.py` is empty (file byte-identical at fork base); failure reproduces on 65792936eefc alone via `venv/bin/pytest tests/tools/test_terminal_worktree_confinement.py`, traced to a missing _get_live_tracking_cwd helper referenced by the confinement fixture."
+  }
+]
