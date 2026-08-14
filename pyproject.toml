@@ -250,6 +250,14 @@ honcho = ["honcho-ai==2.2.0"]
 # can't break fresh installs.
 supermemory = ["supermemory==3.50.0"]
 mem0 = ["mem0ai==2.0.10"]
+# On-box semantic embeddings (bge-m3) for the MVMS MCP servers
+# (~/.hermes/mcp/mvms-*) which run out of the operator venv. FORK addition.
+# 2026-07-25: an unpinned uv operation downgraded huggingface-hub under the
+# then-untracked sentence-transformers install and silently killed MVMS
+# semantic recall for three weeks (restored + backfilled 2026-08-14). These
+# exact pins freeze that proven-working set so `uv sync` can never silently
+# break it again. Deliberately excluded from [all]: pulls the torch tree.
+embeddings = ["sentence-transformers==5.5.0", "huggingface-hub==1.27.0", "transformers==5.8.1"]
 # Image resize recovery for the vision tools. Pillow is now a CORE dependency
 # (see the main `dependencies` list above) since the byte/pixel shrink paths are on
 # the default vision-embed path and the mid-session lazy install deadlocked the
