@@ -45,6 +45,14 @@ def fresh_home(tmp_path, monkeypatch):
     """
     home = tmp_path / "hermes_home"
     home.mkdir()
+    profile = home / "profiles" / "teknium"
+    profile.mkdir(parents=True)
+    profile.joinpath("config.yaml").write_text(
+        "platform_toolsets:\n  cli: [file, terminal, kanban]\n", encoding="utf-8"
+    )
+    home.joinpath("config.yaml").write_text(
+        "platform_toolsets:\n  cli: [file, terminal, kanban]\n", encoding="utf-8"
+    )
     monkeypatch.setenv("HERMES_HOME", str(home))
     for var in (
         "HERMES_KANBAN_DB",

@@ -16,6 +16,8 @@ spec.loader.exec_module(slo_exporter)
 
 def make_state_db(path: Path, *, count: int = 100, start_ts: float = 1_720_141_200.0) -> None:
     con = sqlite3.connect(path)
+    con.execute("CREATE TABLE sessions (id TEXT PRIMARY KEY, source TEXT NOT NULL)")
+    con.execute("INSERT INTO sessions (id, source) VALUES ('s', 'discord')")
     con.execute(
         """
         CREATE TABLE turn_usage (
@@ -154,16 +156,69 @@ def test_synthetic_failed_turn_marker_still_counts(tmp_path: Path):
     assert snapshot["journal_counts"]["diagnostic_error_line_events"] == 1
 
 
-# The four REAL failure formats, shaped exactly like their production logger
+def test_failed_turn_numerator_excludes_rendered_help_and_subagents_and_deduplicates() -> None:
+    lines = [
+        "2026-07-27T13:52:18-07:00 FRESH python[8506]: ERROR agent.conversation_loop: Non-retryable client error: blocked",
+        "2026-07-27T13:52:18-07:00 FRESH python[8506]: ERROR agent.conversation_loop: Non-retryable client error: blocked",
+        "2026-07-27T13:52:18-07:00 FRESH python[8506]: [subagent-0] ❌ Non-retryable client error (HTTP None). Aborting.",
+        "2026-07-27T13:52:18-07:00 FRESH python[8506]: [subagent-0] ERROR agent.conversation_loop: Non-retryable client error: blocked",
+        "2026-07-27T13:52:18-07:00 FRESH python[8506]: ❌ Non-retryable client error (HTTP None). Aborting.",
+        "2026-07-27T13:52:18.909338-07:00 FRESH python[8506]:       • Configure a fallback provider so future blocks route automatically:ERROR agent.conversation_loop: Non-retryable client error: blocked",
+    ]
+
+    counts = slo_exporter.parse_journal_counts(lines)
+
+    assert counts.turn_error_events == 1
+
+
+def test_fallback_numerator_counts_activation_not_advice() -> None:
+    lines = [
+        "2026-07-27T13:52:18-07:00 FRESH python[8506]: Configure a fallback provider so future blocks route automatically:",
+        "2026-07-27T13:52:18-07:00 FRESH python[8506]: hermes fallback add (interactive picker)",
+        "2026-07-27T14:01:00-07:00 FRESH python[8506]: INFO agent.chat_completion_helpers: Fallback activated: gpt-primary → gpt-backup (openai-codex)",
+        "2026-07-27T14:01:00-07:00 FRESH python[8506]: INFO agent.chat_completion_helpers: Fallback activated: gpt-primary → gpt-backup (openai-codex)",
+    ]
+
+    counts = slo_exporter.parse_journal_counts(lines)
+
+    assert counts.fallback_events == 1
+
+
+def test_same_second_distinct_structured_events_are_not_merged() -> None:
+    lines = [
+        "2026-07-27T14:01:00.100000-07:00 FRESH python[8506]: ERROR agent.conversation_loop: Non-retryable client error: blocked",
+        "2026-07-27T14:01:00.200000-07:00 FRESH python[8506]: ERROR agent.conversation_loop: Non-retryable client error: blocked",
+        "2026-07-27T14:02:00.100000-07:00 FRESH python[8506]: INFO agent.chat_completion_helpers: Fallback activated: gpt-primary → gpt-backup (openai-codex)",
+        "2026-07-27T14:02:00.200000-07:00 FRESH python[8506]: INFO agent.chat_completion_helpers: Fallback activated: gpt-primary → gpt-backup (openai-codex)",
+    ]
+
+    counts = slo_exporter.parse_journal_counts(lines)
+
+    assert counts.turn_error_events == 2
+    assert counts.fallback_events == 2
+
+
+def test_recoverable_outer_loop_exception_is_diagnostic_not_page_bearing() -> None:
+    lines = [
+        "2026-07-27T14:03:00.100000-07:00 FRESH python[8506]: ERROR agent.conversation_loop: Outer loop error in API call #3",
+        "2026-07-27T14:03:01.100000-07:00 FRESH python[8506]: INFO agent.turn_finalizer: Turn ended: reason=text_response(finish_reason=stop)",
+    ]
+
+    counts = slo_exporter.parse_journal_counts(lines)
+
+    assert counts.turn_error_events == 0
+    assert counts.diagnostic_error_line_events == 1
+
+
+# The three terminal failure formats, shaped exactly like their production logger
 # calls (gateway/run.py "Agent error in session %s"; agent/conversation_loop.py
-# outer-loop / non-retryable / invalid-response-after-retries). This test is
+# non-retryable / invalid-response-after-retries). This test is
 # the anti-tautology guard for the page-bearing numerator: the fixture text is
 # sourced from the call sites, NOT from _FAILED_TURN_RE's own vocabulary, so a
 # regression to invented-marker-only matching (reviewer BLOCKER, 2026-07-05:
 # old code counted these 4 as errors, first calibration counted 0) fails here.
 REAL_FAILED_TURN_LINES = [
     "2026-07-05T09:01:02-07:00 FRESH python[1291]: ERROR gateway.run: Agent error in session discord:1509954103638233189:987654",
-    "2026-07-05T09:02:10-07:00 FRESH python[1291]: ERROR agent.conversation_loop: Outer loop error in API call #3",
     "2026-07-05T09:03:20-07:00 FRESH python[1291]: ERROR agent.conversation_loop: [sess-1] Non-retryable client error: BadRequestError(status=400)",
     "2026-07-05T09:04:30-07:00 FRESH python[1291]: ERROR agent.conversation_loop: [sess-1] Invalid API response after 2 retries.",
 ]
@@ -175,9 +230,7 @@ def test_real_call_site_failure_lines_are_page_bearing(tmp_path: Path):
     canary = tmp_path / "recall-canary.jsonl"
     service = tmp_path / "recall-events.jsonl"
 
-    # Anti-tautology cross-check: the pre-K4 broad filter also saw all four
-    # (this is the reviewer's empirical "old counts 4" baseline).
-    assert sum(slo_exporter._base._is_counted_gateway_error(line) for line in REAL_FAILED_TURN_LINES) == 4
+    assert sum(slo_exporter._base._is_counted_gateway_error(line) for line in REAL_FAILED_TURN_LINES) == 3
 
     snapshot = slo_exporter.build_slo_snapshot(
         state_db=db,
@@ -190,12 +243,40 @@ def test_real_call_site_failure_lines_are_page_bearing(tmp_path: Path):
         recall_service_path=service,
     )
 
-    assert snapshot["journal_counts"]["turn_error_events"] == 4
-    assert snapshot["metrics"]["turn_error_rate"] == 0.04
+    assert snapshot["journal_counts"]["turn_error_events"] == 3
+    assert snapshot["metrics"]["turn_error_rate"] == 0.03
     # error_events keeps its PRE-K4 broad semantics (name never silently narrows).
-    assert snapshot["journal_counts"]["error_events"] == 4
+    assert snapshot["journal_counts"]["error_events"] == 3
     # Real failures are page-bearing, not buried in the diagnostic bucket.
     assert snapshot["journal_counts"]["diagnostic_error_line_events"] == 0
+
+
+def test_primary_turn_denominator_excludes_subagents_but_keeps_unmatched_rows(tmp_path: Path):
+    db = tmp_path / "state.db"
+    make_state_db(db, count=5)
+    con = sqlite3.connect(db)
+    con.execute("INSERT INTO sessions (id, source) VALUES ('sub', 'subagent')")
+    con.execute("UPDATE turn_usage SET session_id='sub' WHERE turn_id IN ('t2', 't3')")
+    con.execute("UPDATE turn_usage SET session_id='legacy-unmatched' WHERE turn_id='t4'")
+    con.commit()
+    con.close()
+
+    snapshot = slo_exporter.build_slo_snapshot(
+        state_db=db,
+        output_dir=tmp_path,
+        now=1_720_142_000.0,
+        window_seconds=10_000,
+        gateway_lines=[
+            "2026-07-05T09:01:02.100000-07:00 FRESH python[1291]: ERROR gateway.run: Agent error in session discord:main"
+        ],
+        watchdog_lines=[],
+        recall_canary_path=tmp_path / "recall-canary.jsonl",
+        recall_service_path=tmp_path / "recall-events.jsonl",
+    )
+
+    assert snapshot["turn_count"] == 3
+    assert snapshot["metrics"]["turn_error_rate"] == 1 / 3
+    assert sum(bucket["turn_count"] for bucket in snapshot["series"]) == 3
 
 
 def test_error_events_keeps_broad_semantics_on_noise(tmp_path: Path):

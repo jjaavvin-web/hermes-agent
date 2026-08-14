@@ -8,6 +8,7 @@ write state.db and it does not require Prometheus/Grafana.
 from __future__ import annotations
 
 import argparse
+import http.client
 import json
 import os
 import subprocess
@@ -18,6 +19,7 @@ from pathlib import Path
 from typing import Any
 
 HERMES_HOME = Path(os.environ.get("HERMES_HOME", Path.home() / ".hermes")).expanduser()
+TRANSIENT_HTTP_STATUSES = {429, 500, 502, 503, 504}
 DEFAULT_LOG_FILES = [
     HERMES_HOME / "logs" / "gateway.log",
     HERMES_HOME / "logs" / "agent.log",
@@ -80,10 +82,8 @@ def build_streams(entries: list[tuple[int, str, dict[str, str]]]) -> list[dict[s
     return [{"stream": labels_by_key[key], "values": values} for key, values in grouped.items()]
 
 
-def push_loki(loki_url: str, streams: list[dict[str, Any]], *, dry_run: bool = False) -> dict[str, Any]:
+def _push_loki_once(loki_url: str, streams: list[dict[str, Any]]) -> dict[str, Any]:
     payload = {"streams": streams}
-    if dry_run:
-        return {"dry_run": True, "streams": len(streams), "entries": sum(len(s["values"]) for s in streams)}
     url = loki_url.rstrip("/") + "/loki/api/v1/push"
     body = json.dumps(payload).encode("utf-8")
     req = urllib.request.Request(url, data=body, method="POST", headers={"Content-Type": "application/json"})
@@ -91,8 +91,41 @@ def push_loki(loki_url: str, streams: list[dict[str, Any]], *, dry_run: bool = F
         with urllib.request.urlopen(req, timeout=20) as resp:
             return {"status": resp.status, "reason": resp.reason, "streams": len(streams), "entries": sum(len(s["values"]) for s in streams)}
     except urllib.error.HTTPError as exc:
-        detail = exc.read(1000).decode("utf-8", "replace")
+        try:
+            raw_detail = exc.read(1000)
+        except http.client.IncompleteRead as read_exc:
+            raw_detail = read_exc.partial
+        except (http.client.HTTPException, OSError) as read_exc:
+            raw_detail = f"{type(read_exc).__name__}: {read_exc}".encode("utf-8", "replace")
+        detail = raw_detail.decode("utf-8", "replace")
         return {"status": exc.code, "error": detail, "streams": len(streams), "entries": sum(len(s["values"]) for s in streams)}
+    except (urllib.error.URLError, http.client.HTTPException, TimeoutError, OSError) as exc:
+        return {"status": 0, "error": f"{type(exc).__name__}: {exc}", "streams": len(streams), "entries": sum(len(s["values"]) for s in streams)}
+
+
+def push_loki(
+    loki_url: str,
+    streams: list[dict[str, Any]],
+    *,
+    dry_run: bool = False,
+    max_attempts: int = 3,
+    retry_delay: float = 2.0,
+) -> dict[str, Any]:
+    """Push once, retrying only transient readiness/transport failures."""
+    if dry_run:
+        return {"dry_run": True, "attempts": 0, "streams": len(streams), "entries": sum(len(s["values"]) for s in streams)}
+    max_attempts = max(1, int(max_attempts))
+    result: dict[str, Any] = {}
+    for attempt in range(1, max_attempts + 1):
+        result = _push_loki_once(loki_url, streams)
+        result["attempts"] = attempt
+        status = int(result.get("status") or 0)
+        if status in (200, 204):
+            return result
+        if attempt >= max_attempts or (status not in TRANSIENT_HTTP_STATUSES and status != 0):
+            return result
+        time.sleep(max(0.0, retry_delay))
+    return result
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -101,6 +134,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--journal-unit", action="append", default=["hermes-gateway.service"])
     parser.add_argument("--limit", type=int, default=200)
     parser.add_argument("--log-file", action="append", default=[])
+    parser.add_argument("--max-attempts", type=int, default=3)
+    parser.add_argument("--retry-delay", type=float, default=2.0)
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args(argv)
 
@@ -111,9 +146,15 @@ def main(argv: list[str] | None = None) -> int:
     for path in files:
         entries.extend(file_entries(path, args.limit))
     streams = build_streams(entries)
-    result = push_loki(args.loki_url, streams, dry_run=args.dry_run)
+    result = push_loki(
+        args.loki_url,
+        streams,
+        dry_run=args.dry_run,
+        max_attempts=args.max_attempts,
+        retry_delay=args.retry_delay,
+    )
     print(json.dumps(result, sort_keys=True))
-    if result.get("status") not in (None, 200, 204) and not result.get("dry_run"):
+    if not result.get("dry_run") and result.get("status") not in (200, 204):
         return 1
     return 0
 

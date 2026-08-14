@@ -60,8 +60,12 @@ def test_terminal_cwd_pinned_to_workspace(monkeypatch, tmp_path):
     """A real, absolute workspace dir is pinned as TERMINAL_CWD."""
     root = tmp_path / ".hermes"
     (root / "profiles" / "w").mkdir(parents=True)
-    (root / "profiles" / "w" / "config.yaml").write_text("toolsets:\n  - kanban\n", encoding="utf-8")
-    root.joinpath("config.yaml").write_text("toolsets:\n  - kanban\n", encoding="utf-8")
+    (root / "profiles" / "w" / "config.yaml").write_text(
+        "platform_toolsets:\n  cli: [file, terminal, kanban]\n", encoding="utf-8"
+    )
+    root.joinpath("config.yaml").write_text(
+        "platform_toolsets:\n  cli: [file, terminal, kanban]\n", encoding="utf-8"
+    )
     monkeypatch.setenv("HERMES_HOME", str(root))
 
     from hermes_cli import kanban_db as kb
@@ -86,8 +90,12 @@ def test_terminal_cwd_not_pinned_for_nonexistent_workspace(monkeypatch, tmp_path
     """
     root = tmp_path / ".hermes"
     (root / "profiles" / "w").mkdir(parents=True)
-    (root / "profiles" / "w" / "config.yaml").write_text("toolsets:\n  - kanban\n", encoding="utf-8")
-    root.joinpath("config.yaml").write_text("toolsets:\n  - kanban\n", encoding="utf-8")
+    (root / "profiles" / "w" / "config.yaml").write_text(
+        "platform_toolsets:\n  cli: [file, terminal, kanban]\n", encoding="utf-8"
+    )
+    root.joinpath("config.yaml").write_text(
+        "platform_toolsets:\n  cli: [file, terminal, kanban]\n", encoding="utf-8"
+    )
     monkeypatch.setenv("HERMES_HOME", str(root))
     monkeypatch.setenv("TERMINAL_CWD", "/pre/existing/anchor")
 

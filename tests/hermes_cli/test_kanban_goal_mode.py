@@ -26,6 +26,9 @@ from hermes_cli import goals
 def kanban_home(tmp_path, monkeypatch):
     home = tmp_path / ".hermes"
     home.mkdir()
+    home.joinpath("config.yaml").write_text(
+        "platform_toolsets:\n  cli: [file, terminal]\n", encoding="utf-8"
+    )
     monkeypatch.setenv("HERMES_HOME", str(home))
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     kb.init_db()

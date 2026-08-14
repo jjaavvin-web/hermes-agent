@@ -33,6 +33,15 @@ from hermes_cli.kanban import run_slash
 def kanban_home(tmp_path, monkeypatch):
     home = tmp_path / ".hermes"
     home.mkdir()
+    home.joinpath("config.yaml").write_text(
+        "platform_toolsets:\n  cli: [file, terminal, kanban]\n", encoding="utf-8"
+    )
+    for name in ("some-profile", "ops", "linguist", "x"):
+        profile = home / "profiles" / name
+        profile.mkdir(parents=True)
+        profile.joinpath("config.yaml").write_text(
+            "platform_toolsets:\n  cli: [file, terminal, kanban]\n", encoding="utf-8"
+        )
     monkeypatch.setenv("HERMES_HOME", str(home))
     # Existing crash-detection tests pre-date the grace window; pin to 0
     # so they keep their immediate-reclaim semantics.

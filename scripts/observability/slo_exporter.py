@@ -11,9 +11,11 @@ from __future__ import annotations
 
 import json
 import re
+import sqlite3
 import time
 from collections import defaultdict
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable, Sequence
 
@@ -24,6 +26,10 @@ SLO_DEFINITIONS: dict[str, dict[str, Any]] = {
     "turn_error_rate": {
         **_base.SLO_DEFINITIONS["turn_error_rate"],
         "source": "explicit failed-turn journal markers divided by turn_usage turns; process exits, reconnect churn, and watchdog kills are split into diagnostic counters",
+    },
+    "fallback_trigger_rate": {
+        **_base.SLO_DEFINITIONS["fallback_trigger_rate"],
+        "source": "distinct successful provider/model failover transitions logged as 'Fallback activated:', divided by turn_usage turns; fallback advice and CLI help text are excluded",
     },
     "gateway_restart_count": {
         "target": "diagnostic",
@@ -91,23 +97,28 @@ SLO_DEFINITIONS: dict[str, dict[str, Any]] = {
     },
 }
 
-# Every alternative in the first group must correspond to a REAL logger call
-# that fires only when a user turn fails to produce a normal response:
+# Every alternative must correspond to a REAL logger call that fires only when
+# a user turn fails to produce a normal response:
 #   "Agent error in session"            gateway/run.py — outermost per-turn
 #       handler; the try's success path returns the response, so this fires
 #       only after every tool/provider recovery layer deeper in the loop
-#   "Outer loop error in API call #"    agent/conversation_loop.py
 #   "Non-retryable client error"        agent/conversation_loop.py (terminal,
 #       logged when no fallback rescues the call)
 #   "Invalid API response after N retries."  agent/conversation_loop.py
+# "Outer loop error in API call #" is deliberately excluded: that handler
+# normally repairs message state and continues to a later API call.
 # Patterns that can also match tool-level or expected-backend noise belong in
 # the diagnostic buckets, never here (this regex feeds the page-bearing rate).
 _FAILED_TURN_RE = re.compile(
-    r"Agent error in session |Outer loop error in API call #"
-    r"|Non-retryable client error|Invalid API response after \d+ retries"
-    r"|\b(?:TURN_FAILED|turn failed|failed turn|terminal turn failure|terminal_error=.*after retries exhausted|returned error to user)\b",
+    r"(?:^|:\s+)ERROR\s+(?:"
+    r"gateway\.run:\s+Agent error in session\s+"
+    r"|agent\.conversation_loop:\s+(?!\[subagent-)(?:\[[^\]]+\]\s*)?"
+    r"(?:Non-retryable client error|Invalid API response after \d+ retries)"
+    r"|agent\.turn:.*\b(?:TURN_FAILED|turn failed|failed turn|terminal turn failure|terminal_error=.*after retries exhausted|returned error to user)\b"
+    r")",
     re.I,
 )
+_REAL_FALLBACK_RE = re.compile(r"\bFallback activated:\s+.+?\s+(?:→|->)\s+.+?\s+\([^)]+\)", re.I)
 _GATEWAY_UNIT_RE = re.compile(r"hermes-gateway\.service", re.I)
 _GATEWAY_EXIT_RE = re.compile(
     r"Main process exited, code=.*status=.*(?:FAILURE|ABRT)|Failed with result ['\"](?:exit-code|signal)['\"]|Scheduled restart job",
@@ -120,6 +131,10 @@ _WATCHDOG_KILL_RE = re.compile(
 _RECONNECT_RE = re.compile(r"reconnect|reconnecting|connection lost|keepalive failed", re.I)
 _MCP_RECONNECT_RE = re.compile(r"tools\.mcp_tool|MCP server", re.I)
 _DISCORD_RECONNECT_RE = re.compile(r"discord\.client|Discord", re.I)
+_PRECISE_TS_PREFIX_RE = re.compile(
+    r"^(?P<ts>\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?)"
+    r"(?P<tz>Z|[+-]\d{2}:?\d{2})?"
+)
 
 
 @dataclass(frozen=True)
@@ -153,7 +168,30 @@ class CalibratedJournalCounts:
 
 
 def _line_epoch(line: str) -> float | None:
-    return _base._line_epoch(line)  # type: ignore[attr-defined]
+    match = _PRECISE_TS_PREFIX_RE.match(line)
+    if not match:
+        return None
+    raw = match.group("ts") + (match.group("tz") or "+00:00")
+    if raw.endswith("Z"):
+        raw = raw[:-1] + "+00:00"
+    if re.search(r"[+-]\d{4}$", raw):
+        raw = raw[:-2] + ":" + raw[-2:]
+    try:
+        return datetime.fromisoformat(raw).timestamp()
+    except ValueError:
+        return None
+
+
+def _journalctl_lines_precise(unit: str, since_epoch: float, *, limit: int = 2000) -> list[str]:
+    """Read journald without discarding event identity below one second."""
+    since = datetime.fromtimestamp(since_epoch, tz=timezone.utc).isoformat()
+    proc = _base._run([  # type: ignore[attr-defined]
+        "journalctl", "--user", "-u", unit, "--since", since,
+        "-n", str(limit), "--no-pager", "-o", "short-iso-precise",
+    ], timeout=12.0)
+    if proc.returncode != 0:
+        return []
+    return [line for line in proc.stdout.splitlines() if line.strip()]
 
 
 def _collapse_times(times: Sequence[float], *, window_seconds: int) -> int:
@@ -169,7 +207,29 @@ def _collapse_times(times: Sequence[float], *, window_seconds: int) -> int:
 
 
 def _is_failed_turn_marker(line: str) -> bool:
+    # Subagent failures are measured by their own delegation/run contracts; do
+    # not charge the parent gateway turn for a leaf's terminal event.  The
+    # prefix appears before the structured logger token in journal output, so
+    # this exclusion must apply to the whole line rather than one regex branch.
+    if re.search(r"\[subagent-[^\]]+\]", line, re.I):
+        return False
     return bool(_FAILED_TURN_RE.search(line))
+
+
+def _event_key(line: str, *, family: str) -> tuple[str, float | None, str]:
+    """Collapse duplicate renderings of one structured journal event.
+
+    Buffered status output can replay the exact same journal event. Preserve
+    sub-second identity so distinct turns/failovers in one second are not merged.
+    """
+    epoch = _line_epoch(line)
+    message = line.split(": ", 1)[-1].strip()
+    message = re.sub(r"\s+", " ", message)
+    return family, epoch, message
+
+
+def _is_real_fallback_event(line: str) -> bool:
+    return bool(_REAL_FALLBACK_RE.search(line))
 
 
 def _is_gateway_exit_line(line: str) -> bool:
@@ -200,12 +260,12 @@ def _event_time(line: str, fallback_index: int) -> float:
 def parse_journal_counts(gateway_lines: Iterable[str], watchdog_lines: Iterable[str] = ()) -> CalibratedJournalCounts:
     gateway = list(gateway_lines)
     watchdog = list(watchdog_lines)
-    fallback_events = 0
+    fallback_event_keys: set[tuple[str, float | None, str]] = set()
     tool_config_errors = 0
     tool_backend_errors = 0
     tool_guardrail_denials = 0
     auxiliary_fallbacks = 0
-    turn_errors = 0
+    turn_error_keys: set[tuple[str, float | None, str]] = set()
     diagnostic_errors = 0
     gateway_exit_times: list[float] = []
     watchdog_kill_times: list[float] = []
@@ -230,11 +290,11 @@ def parse_journal_counts(gateway_lines: Iterable[str], watchdog_lines: Iterable[
             tool_guardrail_denials += 1
         if _base._FALLBACK_RE.search(line) and _base._AUXILIARY_FALLBACK_RE.search(line):  # type: ignore[attr-defined]
             auxiliary_fallbacks += 1
-        if _base._is_counted_fallback(line):  # type: ignore[attr-defined]
-            fallback_events += 1
+        if _is_real_fallback_event(line):
+            fallback_event_keys.add(_event_key(line, family="fallback"))
 
         if _is_failed_turn_marker(line):
-            turn_errors += 1
+            turn_error_keys.add(_event_key(line, family="turn_error"))
             continue
         if _is_gateway_exit_line(line):
             gateway_exit_lines += 1
@@ -260,13 +320,13 @@ def parse_journal_counts(gateway_lines: Iterable[str], watchdog_lines: Iterable[
     base_watchdogs = _base.parse_journal_counts([], watchdog).watchdog_restart_events
     return CalibratedJournalCounts(
         error_events=legacy_error_lines,
-        fallback_events=fallback_events,
+        fallback_events=len(fallback_event_keys),
         watchdog_restart_events=base_watchdogs,
         tool_config_error_events=tool_config_errors,
         tool_backend_error_events=tool_backend_errors,
         tool_guardrail_denial_events=tool_guardrail_denials,
         auxiliary_fallback_events=auxiliary_fallbacks,
-        turn_error_events=turn_errors,
+        turn_error_events=len(turn_error_keys),
         gateway_restart_events=_collapse_times(gateway_exit_times, window_seconds=5),
         gateway_restart_line_events=gateway_exit_lines,
         watchdog_kill_events=_collapse_times(watchdog_kill_times, window_seconds=120),
@@ -281,6 +341,36 @@ def parse_journal_counts(gateway_lines: Iterable[str], watchdog_lines: Iterable[
     )
 
 
+def _fetch_turn_rows_with_source(con: Any, since_epoch: float) -> list[dict[str, Any]]:
+    """Fetch turns with session source for coherent primary-turn rates."""
+    con.row_factory = sqlite3.Row
+    try:
+        rows = con.execute(
+            """
+            SELECT t.ts, t.provider, t.model, t.latency_ms, t.retry_count,
+                   t.estimated_cost_usd, t.cost_status, t.total_tokens,
+                   t.input_tokens, t.output_tokens, t.tool_count,
+                   t.turn_id, t.session_id, s.source AS session_source
+              FROM turn_usage AS t
+              LEFT JOIN sessions AS s ON s.id = t.session_id
+             WHERE t.ts >= ?
+             ORDER BY t.ts ASC
+            """,
+            (since_epoch,),
+        ).fetchall()
+    except sqlite3.OperationalError as exc:
+        # Compatibility for old fixture/legacy stores that predate sessions.
+        if "no such table: sessions" not in str(exc).lower():
+            raise
+        return _base._fetch_turn_rows(con, since_epoch)  # type: ignore[attr-defined]
+    return [dict(row) for row in rows]
+
+
+def _is_primary_turn_row(row: dict[str, Any]) -> bool:
+    # Keep unmatched legacy rows: only explicit source='subagent' is excluded.
+    return str(row.get("session_source") or "").lower() != "subagent"
+
+
 def build_bucket_series(rows: list[dict[str, Any]], gateway_lines: Iterable[str], *, bucket_seconds: int = _base.BUCKET_SECONDS) -> list[dict[str, Any]]:
     buckets: dict[int, dict[str, Any]] = defaultdict(lambda: {
         "turn_count": 0,
@@ -292,12 +382,16 @@ def build_bucket_series(rows: list[dict[str, Any]], gateway_lines: Iterable[str]
     for row in rows:
         bucket = _base._bucket_start(float(row["ts"]), bucket_seconds)  # type: ignore[attr-defined]
         item = buckets[bucket]
+        # Cost is workforce-wide; primary-turn reliability is not. Preserve
+        # leaf spend while excluding leaf turns from gateway rate denominators.
+        item["cost_usd"] += float(row.get("estimated_cost_usd") or 0.0)
+        if not _is_primary_turn_row(row):
+            continue
         item["turn_count"] += 1
         if row.get("latency_ms") is not None and float(row["latency_ms"]) <= _base.MAX_PLAUSIBLE_LATENCY_MS:
             item["latencies_ms"].append(float(row["latency_ms"]))
         if int(row.get("retry_count") or 0) > 0:
             item["retry_turns"] += 1
-        item["cost_usd"] += float(row.get("estimated_cost_usd") or 0.0)
     for line in gateway_lines:
         epoch = _line_epoch(line)
         if epoch is None:
@@ -336,18 +430,21 @@ def build_slo_snapshot(
     now = time.time() if now is None else now
     since = now - window_seconds
     with _base.open_state_db_readonly(state_db) as con:
-        rows = _base._fetch_turn_rows(con, since)  # type: ignore[attr-defined]
+        rows = _fetch_turn_rows_with_source(con, since)
+    primary_rows = [row for row in rows if _is_primary_turn_row(row)]
     if gateway_lines is None:
-        gateway_lines = _base.journalctl_lines("hermes-gateway.service", since)
+        gateway_lines = _journalctl_lines_precise("hermes-gateway.service", since)
     if watchdog_lines is None:
-        watchdog_lines = _base.journalctl_lines("hermes-gateway-watchdog.service", since)
+        watchdog_lines = _journalctl_lines_precise("hermes-gateway-watchdog.service", since)
     counts = parse_journal_counts(gateway_lines, watchdog_lines)
     latencies = [
-        float(row["latency_ms"]) for row in rows
+        float(row["latency_ms"]) for row in primary_rows
         if row.get("latency_ms") is not None and float(row["latency_ms"]) <= _base.MAX_PLAUSIBLE_LATENCY_MS
     ]
-    turn_count = len(rows)
-    retry_turns = sum(1 for row in rows if int(row.get("retry_count") or 0) > 0)
+    turn_count = len(primary_rows)
+    retry_turns = sum(1 for row in primary_rows if int(row.get("retry_count") or 0) > 0)
+    # Cost burn remains workforce-wide even though reliability rates are scoped
+    # to primary gateway turns.
     total_cost = sum(float(row.get("estimated_cost_usd") or 0.0) for row in rows)
     recall = _base.read_recall_hit_rate(
         recall_canary_path, since_epoch=since, service_events_path=recall_service_path

@@ -377,6 +377,27 @@ def test_claim_once_wins_second_loses(kanban_home):
         assert second is None
 
 
+def test_sol_claim_fails_closed_without_ready_spec(tmp_path, monkeypatch):
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    home.joinpath("config.yaml").write_text(
+        "platform_toolsets:\n  cli: [file]\n", encoding="utf-8"
+    )
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    kb._INITIALIZED_PATHS.clear()
+    kb.init_db(board="sol")
+    with kb.connect(board="sol") as conn:
+        tid = kb.create_task(conn, title="invalid Sol ready", assignee="default", board="sol")
+        assert kb.claim_task(conn, tid) is None
+        task = kb.get_task(conn, tid)
+        assert task is not None and task.status == "ready"
+        assert conn.execute(
+            "SELECT COUNT(*) FROM task_events WHERE task_id=? AND kind='ready_spec.skipped'",
+            (tid,),
+        ).fetchone()[0] == 1
+
+
 def test_claim_uses_env_default_ttl(kanban_home, monkeypatch):
     monkeypatch.setenv("HERMES_KANBAN_CLAIM_TTL_SECONDS", "3600")
     with kb.connect() as conn:
@@ -2912,6 +2933,12 @@ class TestSharedBoardPaths:
         # `-p <profile>` flag rewrites HERMES_HOME.
         default_home = tmp_path / ".hermes"
         default_home.mkdir()
+        profile = default_home / "profiles" / "coder"
+        profile.mkdir(parents=True)
+        profile.joinpath("config.yaml").write_text(
+            "platform_toolsets:\n  cli:\n    - terminal\n    - kanban\n    - no_mcp\n",
+            encoding="utf-8",
+        )
         self._set_home(monkeypatch, tmp_path, default_home)
 
         captured = {}

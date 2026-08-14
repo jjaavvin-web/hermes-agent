@@ -3381,6 +3381,32 @@ def claim_task(
     Returns the claimed ``Task`` on success, ``None`` if the task was
     already claimed (or is not in ``ready`` status).
     """
+    # Sol defines READY as executable, so every ready -> running path must
+    # pass the same fail-closed READY_SPEC policy. This lives at the transition
+    # boundary so the public ``hermes kanban claim`` command cannot bypass it.
+    if _connection_is_board(conn, "sol"):
+        try:
+            decision, event = ready_spec_evaluate(conn, task_id, "sol", "enforce")
+        except Exception:
+            _log.debug("ready_spec claim gate error on %s", task_id, exc_info=True)
+            event = {
+                "kind": "ready_spec.skipped",
+                "codes": ["ready_spec_gate_error"],
+                "payload": {
+                    "codes": ["ready_spec_gate_error"],
+                    "mode": "enforce",
+                    "errors": [{
+                        "code": "ready_spec_gate_error",
+                        "message": "claim gate raised; failing closed",
+                    }],
+                },
+            }
+            decision = "skip"
+        if event is not None:
+            _ready_spec_emit(conn, task_id, event)
+        if decision == "skip":
+            return None
+
     now = int(time.time())
     lock = claimer or _claimer_id()
     expires = now + _resolve_claim_ttl_seconds(ttl_seconds)
@@ -7196,20 +7222,16 @@ def _ready_spec_board_policy(board: Optional[str]) -> dict:
     policy: dict = {
         "audits_prefix": os.path.expanduser("~/.hermes/audits"),
         "repo_root": os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-        "default_verifier": "h2reviewer",
+        "default_verifier": "default",
     }
     try:
         from hermes_cli.profiles import profile_exists as _pe
         policy["verifier_resolver"] = _pe
-    except Exception:
-        # profiles unavailable -> do NOT silently skip the check (that is a fail-open).
-        # Degrade to a conservative known set so unknown verifiers still fail closed.
-        _log.warning(
-            "ready_spec: profiles import failed; verifier resolution degraded to fallback set"
-        )
-        policy["known_profiles"] = {
-            "h2reviewer", "h2librarian", "h2coder", "h2patcher", "h2governor",
-        }
+    except Exception as exc:
+        # Identity resolution is part of the trust boundary.  Do not invent a
+        # hard-coded profile set when discovery itself is unavailable.
+        _log.warning("ready_spec: profile resolver unavailable; failing closed: %s", exc)
+        policy["verifier_resolver"] = lambda _name: False
     return policy
 
 
@@ -7475,9 +7497,18 @@ def _dispatch_once_locked(
             # bucket it as nonspawnable if the profile genuinely isn't
             # there, with the existing diagnostic.
             _default_assignee_resolved = True
-    # READY_SPEC enforcement mode is fixed for the whole tick — read ONCE here, not
-    # per-card, so a mid-tick env change can't evaluate cards under different modes.
-    _rs_mode = _ready_spec_mode()
+    # Bind policy to the database actually being dispatched, not optional caller
+    # metadata. This closes the valid ``connect(board='sol'); dispatch_once(conn)``
+    # path where board/current state could otherwise disagree with the connection.
+    _explicit_board = _normalize_board_slug(board)
+    if _explicit_board is not None:
+        expected_path = kanban_db_path(board=_explicit_board).resolve()
+        actual_path = _connection_db_path(conn)
+        if actual_path is not None and actual_path != expected_path:
+            raise ValueError(
+                f"dispatch board {_explicit_board!r} does not match connection {actual_path}"
+            )
+    _rs_mode = "enforce" if _connection_is_board(conn, "sol") else _ready_spec_mode()
     for row in ready_rows:
         if max_spawn is not None and running_count + spawned >= max_spawn:
             break
@@ -8023,38 +8054,132 @@ def _worker_terminal_timeout_env(
     return str(desired)
 
 
-def _resolve_worker_cli_toolsets(hermes_home: Optional[str]) -> Optional[list[str]]:
-    """Return the assigned profile's effective CLI toolsets for a worker.
+def _connection_db_path(conn: sqlite3.Connection) -> Optional[Path]:
+    """Return the main SQLite path for policy binding, if file-backed."""
+    row = conn.execute("PRAGMA database_list").fetchone()
+    if row is None:
+        return None
+    raw = row[2]
+    return Path(raw).resolve() if raw else None
 
-    Dispatcher-spawned workers are launched from a long-lived gateway process,
-    then the child re-enters the CLI with ``-p <assignee>``. Resolve the
-    assignee profile's CLI tool surface at dispatch time and pass it as an
-    explicit ``--toolsets`` pin so worker startup cannot fall back to a stale
-    root/active-profile config or a profile whose top-level ``toolsets`` entry
-    is only the kanban orchestrator surface. ``model_tools`` still appends the
-    task-scoped kanban lifecycle tools when ``HERMES_KANBAN_TASK`` is set.
+
+def _connection_is_board(conn: sqlite3.Connection, board: str) -> bool:
+    actual = _connection_db_path(conn)
+    if actual is None:
+        return False
+    return actual == kanban_db_path(board=board).resolve()
+
+
+class WorkerAuthorityResolutionError(RuntimeError):
+    """Assigned worker authority could not be resolved exactly.
+
+    This is a pre-spawn hard stop: a dispatcher must never omit the explicit
+    ``--toolsets`` pin and let worker startup inherit broader/default tools.
+    """
+
+
+def _resolve_worker_cli_toolsets(hermes_home: Optional[str]) -> list[str]:
+    """Return the assigned profile's explicitly configured CLI toolsets.
+
+    Worker authority is an allowlist, not a convenience default.  Missing,
+    malformed, unknown, empty, or otherwise unresolved declarations raise
+    :class:`WorkerAuthorityResolutionError`; callers must not spawn.
     """
     if not hermes_home:
-        return None
-    try:
-        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
-        from hermes_cli.config import load_config
-        from hermes_cli.tools_config import _get_platform_tools
+        raise WorkerAuthorityResolutionError("worker profile home is missing")
 
-        token = set_hermes_home_override(hermes_home)
-        try:
-            cfg = load_config()
-            toolsets = sorted(_get_platform_tools(cfg, "cli"))
-        finally:
-            reset_hermes_home_override(token)
-        return toolsets or None
-    except Exception as exc:
-        _log.debug(
-            "kanban worker: could not resolve CLI toolsets for HERMES_HOME=%r (%s)",
-            hermes_home,
-            exc,
+    profile_home = Path(hermes_home).expanduser()
+    config_path = profile_home / "config.yaml"
+    if not profile_home.is_dir():
+        raise WorkerAuthorityResolutionError(
+            f"worker profile home does not exist: {profile_home}"
         )
-        return None
+    if not config_path.is_file():
+        raise WorkerAuthorityResolutionError(
+            f"worker profile config is missing: {config_path}"
+        )
+
+    try:
+        import yaml
+
+        raw = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        raise WorkerAuthorityResolutionError(
+            f"worker profile has malformed config: {config_path}: {exc}"
+        ) from exc
+    if not isinstance(raw, dict):
+        raise WorkerAuthorityResolutionError(
+            f"worker profile config must be a mapping: {config_path}"
+        )
+    platform_toolsets = raw.get("platform_toolsets")
+    if not isinstance(platform_toolsets, dict):
+        raise WorkerAuthorityResolutionError(
+            "worker profile must declare platform_toolsets.cli explicitly"
+        )
+    if "cli" not in platform_toolsets:
+        raise WorkerAuthorityResolutionError(
+            "worker profile must declare platform_toolsets.cli explicitly"
+        )
+    declared = platform_toolsets.get("cli")
+    if not isinstance(declared, list) or not declared:
+        raise WorkerAuthorityResolutionError(
+            "worker profile platform_toolsets.cli must be a non-empty list"
+        )
+    if any(not isinstance(name, str) or not name.strip() for name in declared):
+        raise WorkerAuthorityResolutionError(
+            "worker profile platform_toolsets.cli contains a malformed name"
+        )
+
+    try:
+        from toolsets import TOOLSETS
+        from hermes_cli.plugins import discover_plugins
+        from hermes_cli.tools_config import enabled_mcp_server_names
+
+        # Plugin toolsets must be discovered before validation, but discovery may
+        # never add them implicitly.  The returned spawn allowlist is the literal
+        # declaration below, minus the non-runtime ``no_mcp`` sentinel.
+        discover_plugins()
+        known_mcp = enabled_mcp_server_names(raw)
+        runtime_declared = [name for name in declared if name != "no_mcp"]
+        # ``all``/``*`` are special CLI expansion tokens: downstream they become
+        # an unpinned/default surface rather than a literal allowlist.
+        broad_tokens = [name for name in runtime_declared if name in {"all", "*"}]
+        if broad_tokens:
+            raise WorkerAuthorityResolutionError(
+                "worker profile may not use broad CLI toolset token(s): "
+                + ", ".join(broad_tokens)
+            )
+        # Do not consult validate_toolset() here: it accepts aliases from the
+        # process-global registry, which may have been populated by another
+        # profile in this long-lived gateway. Worker authority is evaluated
+        # only against static built-ins plus MCP servers explicitly enabled in
+        # this profile's own config.
+        known_profile_toolsets = set(TOOLSETS) | set(known_mcp)
+        unknown = [
+            name
+            for name in runtime_declared
+            if name not in known_profile_toolsets
+        ]
+        if unknown:
+            raise WorkerAuthorityResolutionError(
+                "worker profile declares unknown CLI toolset(s): " + ", ".join(unknown)
+            )
+        # The returned set is exactly the explicit declaration; generic
+        # platform resolution is intentionally not called because it can add
+        # MCP, plugin, or context-engine capabilities.
+        toolsets = sorted(set(runtime_declared))
+    except WorkerAuthorityResolutionError:
+        raise
+    except Exception as exc:
+        raise WorkerAuthorityResolutionError(
+            f"could not resolve worker CLI toolsets for {profile_home}: {exc}"
+        ) from exc
+
+    if not toolsets:
+        raise WorkerAuthorityResolutionError(
+            f"worker CLI toolset resolution was empty for {profile_home}"
+        )
+    return toolsets
 
 
 def _default_spawn(
@@ -8098,12 +8223,10 @@ def _default_spawn(
     from hermes_cli.profiles import resolve_profile_env
     try:
         env["HERMES_HOME"] = resolve_profile_env(profile_arg)
-    except FileNotFoundError:
-        # Profile dir doesn't exist — defer resolution to the CLI's
-        # _apply_profile_override() via HERMES_PROFILE (set below).
-        # This only happens in test fixtures where the isolated
-        # HERMES_HOME never had profiles created.
-        pass
+    except (FileNotFoundError, ValueError) as exc:
+        raise WorkerAuthorityResolutionError(
+            f"worker profile home could not be resolved for {profile_arg!r}: {exc}"
+        ) from exc
     if task.tenant:
         env["HERMES_TENANT"] = task.tenant
     env["HERMES_KANBAN_TASK"] = task.id
@@ -8166,6 +8289,10 @@ def _default_spawn(
     # attributed correctly regardless of how the child loads config.
     env["HERMES_PROFILE"] = profile_arg
 
+    # Resolve authority before log creation/rotation or Popen. A failure leaves
+    # no worker, no broad/default fallback, and no misleading spawn log.
+    worker_toolsets = _resolve_worker_cli_toolsets(env.get("HERMES_HOME"))
+
     cmd = [
         *_resolve_hermes_argv(),
         "-p", profile_arg,
@@ -8186,9 +8313,7 @@ def _default_spawn(
                 cmd.extend(["--skills", sk])
     if task.model_override:
         cmd.extend(["-m", task.model_override])
-    worker_toolsets = _resolve_worker_cli_toolsets(env.get("HERMES_HOME"))
-    if worker_toolsets:
-        cmd.extend(["--toolsets", ",".join(worker_toolsets)])
+    cmd.extend(["--toolsets", ",".join(worker_toolsets)])
     cmd.extend([
         "chat",
         "-q", prompt,

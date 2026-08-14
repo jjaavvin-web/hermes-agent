@@ -161,6 +161,69 @@ def four_cards(kanban_home, spawnable):
 
 
 # ===========================================================================
+# Sol policy — executable READY always fails closed, independent of env
+# ===========================================================================
+
+
+def test_sol_dispatch_enforces_ready_spec_when_env_is_unset(kanban_home, spawnable, monkeypatch):
+    monkeypatch.delenv("HERMES_KANBAN_ENFORCE_READY_SPEC", raising=False)
+    with kb.connect(board="sol") as conn:
+        invalid_id = kb.create_task(
+            conn,
+            title="sol-invalid-no-spec",
+            body="no ready-spec",
+            assignee="alice",
+            workspace_kind="scratch",
+            board="sol",
+        )
+        claim_log = _make_claim_spy(monkeypatch)
+        spawn_fn, spawned = _make_spawn_stub()
+        result = kb.dispatch_once(
+            conn, spawn_fn=spawn_fn, dry_run=False, max_spawn=1, board="sol"
+        )
+
+    assert invalid_id not in claim_log
+    assert invalid_id not in spawned
+    assert invalid_id in {tid for tid, _codes in result.skipped_ready_spec}
+    with kb.connect(board="sol") as conn:
+        task = kb.get_task(conn, invalid_id)
+        assert task is not None
+        assert task.status == "ready"
+
+
+def test_sol_dispatch_enforces_ready_spec_from_connection_when_board_arg_omitted(
+    kanban_home, spawnable, monkeypatch
+):
+    monkeypatch.delenv("HERMES_KANBAN_ENFORCE_READY_SPEC", raising=False)
+    with kb.connect(board="sol") as conn:
+        invalid_id = kb.create_task(
+            conn,
+            title="sol-invalid-implicit-board",
+            body="no ready-spec",
+            assignee="alice",
+            workspace_kind="scratch",
+            board="sol",
+        )
+        claim_log = _make_claim_spy(monkeypatch)
+        spawn_fn, spawned = _make_spawn_stub()
+        result = kb.dispatch_once(conn, spawn_fn=spawn_fn, dry_run=False, max_spawn=1)
+
+    assert invalid_id not in claim_log
+    assert invalid_id not in spawned
+    assert invalid_id in {tid for tid, _codes in result.skipped_ready_spec}
+    with kb.connect(board="sol") as conn:
+        task = kb.get_task(conn, invalid_id)
+        assert task is not None
+        assert task.status == "ready"
+
+
+def test_dispatch_rejects_explicit_board_connection_mismatch(kanban_home, spawnable):
+    with kb.connect(board="sol") as conn:
+        with pytest.raises(ValueError, match="does not match connection"):
+            kb.dispatch_once(conn, dry_run=True, board="default")
+
+
+# ===========================================================================
 # Test 1 — enforce mode: claim_task gating
 # ===========================================================================
 
@@ -441,7 +504,7 @@ def test_dispatch_result_has_skipped_ready_spec_field():
 # ===========================================================================
 
 
-def _verifier_policy(tmp_path, monkeypatch):
+def _verifier_policy(tmp_path, monkeypatch) -> dict[str, object]:
     """Point hermes_cli.profiles at a tmp profiles ROOT containing only a
     ``default/`` profile (no ``h2reviewer/``) and return a board_policy dict
     wired to the REAL ``profile_exists`` resolver."""
@@ -455,21 +518,37 @@ def _verifier_card(body, tid="t_verifier_repair"):
     return {"id": tid, "board": "hermes", "body": body}
 
 
-def test_defaulted_verifier_ok_against_real_profile_exists(tmp_path, monkeypatch):
-    """A well-formed card that declares only `scope` (no `verifier` key) must
-    validate ok=True against the REAL profile_exists resolver, even though the
-    default verifier id ('h2reviewer') has no profile on disk."""
+def test_missing_default_verifier_fails_closed_without_ghost_identity(tmp_path, monkeypatch):
+    """Omitting both verifier fields fails closed without inventing an identity."""
     from hermes_cli.ready_spec import validate_ready_spec
 
     policy = _verifier_policy(tmp_path, monkeypatch)
     body = textwrap.dedent("""\
         ```ready-spec
-        scope: defaulted verifier must get its contractual free pass
+        scope: validate default verifier resolution
         allowed_workspace: scratch
         ```
     """)
     r = validate_ready_spec(_verifier_card(body), resolved_workspace="scratch", board_policy=policy)
-    assert r.ok is True, f"expected ok=True for defaulted verifier; got errors={r.errors}"
+    assert r.ok is False and "verifier_empty" in r.codes, (
+        f"expected absent default verifier to fail closed; got errors={r.errors}"
+    )
+    assert r.resolved["verifier"] is None
+
+
+def test_defaulted_verifier_passes_when_default_profile_resolves(tmp_path, monkeypatch):
+    from hermes_cli.ready_spec import validate_ready_spec
+
+    policy = _verifier_policy(tmp_path, monkeypatch)
+    policy["default_verifier"] = "default"
+    body = textwrap.dedent("""\
+        ```ready-spec
+        scope: validate a resolvable default verifier
+        allowed_workspace: scratch
+        ```
+    """)
+    r = validate_ready_spec(_verifier_card(body), resolved_workspace="scratch", board_policy=policy)
+    assert r.ok is True, r.errors
 
 
 def test_explicit_h2reviewer_still_unresolved_against_real_profile_exists(tmp_path, monkeypatch):
