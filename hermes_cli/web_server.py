@@ -48,7 +48,7 @@ import zipfile
 from hermes_cli._subprocess_compat import windows_detach_flags, windows_hide_flags
 import urllib.request
 from pathlib import Path
-from typing import Any, Dict, List, Literal, Optional, Tuple
+from typing import Any, Dict, List, Literal, NamedTuple, Optional, Tuple
 
 import yaml
 
@@ -18250,26 +18250,119 @@ def _read_google_calendar_agenda() -> list[dict[str, Any]]:
     return sorted(agenda, key=lambda item: item["time"] if item["time"] != "All day" else "00:00")
 
 
-def _read_life_kanban_counts() -> tuple[int, int]:
+class _LifeTaskCounts(NamedTuple):
+    """Result of :func:`_read_life_kanban_counts` (indexable: ``counts[0]``/``[1]``)."""
+
+    done: int
+    total: int
+    source: str            # "kanban" (live board) | "life-state" (life-dashboard.json fallback)
+    board: str | None      # resolved board slug, or None when no live board could be resolved
+    error: str | None      # None on a successful board read; short reason otherwise
+
+
+# done = tasks in status 'done'; total = every task that is not 'archived'.
+# (Same semantics as the pre-2026-07-30 counter, collapsed into one query.)
+_LIFE_KANBAN_COUNTS_SQL = (
+    "SELECT COUNT(*) AS total, "
+    "COALESCE(SUM(CASE WHEN status = 'done' THEN 1 ELSE 0 END), 0) AS done "
+    "FROM tasks WHERE status != 'archived'"
+)
+
+# Once-per-reason log latch: the Life tab polls every 30 s, so a persistent
+# failure must not emit a WARNING per poll (it did, for 16 days). WARNING on
+# first failure / changed reason, DEBUG on repeats, INFO on recovery.
+_LIFE_KANBAN_LAST_ERROR: str | None = None
+
+
+def _life_kanban_note(error: str | None) -> None:
+    global _LIFE_KANBAN_LAST_ERROR
+    if error is None:
+        if _LIFE_KANBAN_LAST_ERROR is not None:
+            _log.info("Life agenda: kanban count read recovered")
+        _LIFE_KANBAN_LAST_ERROR = None
+        return
+    if error != _LIFE_KANBAN_LAST_ERROR:
+        _log.warning(
+            "Life agenda: kanban count read failed, falling back to %s: %s",
+            _LIFE_STATE_PATH,
+            error,
+        )
+        _LIFE_KANBAN_LAST_ERROR = error
+    else:
+        _log.debug("Life agenda: kanban count read still failing: %s", error)
+
+
+def _life_kanban_target() -> tuple[str | None, "Path | None", str | None]:
+    """Resolve the LIVE board for the Life tab: ``(slug, db_path, error)``.
+
+    Strict: the board is whatever ``<kanban root>/kanban/current`` names (the
+    one-line slug file ``hermes kanban boards switch`` writes). No hardcoded
+    slug (the old 'hermes' board was removed by THE RESET, 2026-07-30) and no
+    silent fall-through to the legacy ``default`` board: if the pointer is
+    missing, empty, malformed, or names a board that is not on disk, return an
+    error and let the caller fall back to the operator's own numbers.
+    """
+    from hermes_cli import kanban_db
+
+    current_file = kanban_db.current_board_path()
     try:
-        from hermes_cli import kanban_db
-        db_path = kanban_db.kanban_db_path(board="hermes")
-        import sqlite3
-        conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=1.0)
-        conn.row_factory = sqlite3.Row
+        raw = current_file.read_text(encoding="utf-8").strip()
+    except FileNotFoundError:
+        return None, None, f"no current board: {current_file} missing"
+    except OSError as exc:
+        return None, None, f"no current board: cannot read {current_file}: {exc}"
+    if not raw:
+        return None, None, f"no current board: {current_file} is empty"
+    try:
+        if not kanban_db.board_exists(raw):
+            return None, None, f"board {raw!r} named by {current_file} does not exist on disk"
+        db_path = kanban_db.kanban_db_path(board=raw)
+    except ValueError as exc:  # malformed slug in the pointer file
+        return None, None, f"invalid board slug in {current_file}: {exc}"
+    return raw.lower(), db_path, None
+
+
+def _read_life_kanban_counts() -> _LifeTaskCounts:
+    """Life-tab task counter: LIVE current board first, operator's saved numbers second.
+
+    Never fabricates. A failed board read (no pointer, dead board, unreadable
+    DB, missing table, ...) falls back to the SAME values ``/api/life/state``
+    serves (``life-dashboard.json``), so the two surfaces cannot disagree on
+    failure; ``source`` / ``board`` / ``error`` say which path was taken. The
+    only remaining case (fallback file itself holds non-numeric counts) yields
+    the visibly-wrong sentinel ``(-1, -1)`` rather than a plausible ``(0, 0)``.
+    """
+    import sqlite3
+
+    slug, db_path, err = _life_kanban_target()
+    if err is None:
         try:
-            rows = conn.execute(
-                "SELECT status, COUNT(*) AS n FROM tasks WHERE status != 'archived' GROUP BY status"
-            ).fetchall()
-        finally:
-            conn.close()
-    except Exception as exc:
-        _log.warning("Life agenda: kanban count read failed: %s", exc)
-        return 0, 0
-    by_status = {str(row["status"]): int(row["n"] or 0) for row in rows}
-    total = sum(by_status.values())
-    done = by_status.get("done", 0)
-    return done, total
+            conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=1.0)
+            try:
+                row = conn.execute(_LIFE_KANBAN_COUNTS_SQL).fetchone()
+            finally:
+                conn.close()
+            done, total = int(row[1] or 0), int(row[0] or 0)
+        except Exception as exc:  # sqlite3.Error / OSError: fall back, never (0, 0)
+            err = f"{type(exc).__name__}: {exc}"[:200]
+        else:
+            _life_kanban_note(None)
+            return _LifeTaskCounts(done, total, "kanban", slug, None)
+
+    _life_kanban_note(f"{err} (board={slug!r} db={db_path})")
+    state = _read_life_state()
+    done_raw, total_raw = state.get("tasksDone"), state.get("tasksTotal")
+    try:
+        done, total = int(done_raw), int(total_raw)
+    except (TypeError, ValueError):
+        _log.error(
+            "Life agenda: %s has non-numeric task counts (tasksDone=%r tasksTotal=%r)",
+            _LIFE_STATE_PATH,
+            done_raw,
+            total_raw,
+        )
+        return _LifeTaskCounts(-1, -1, "life-state", slug, f"{err}; life-state counts non-numeric")
+    return _LifeTaskCounts(done, total, "life-state", slug, err)
 
 
 @app.get("/api/life/state")
@@ -18287,11 +18380,15 @@ async def put_life_state(payload: dict[str, Any]) -> dict[str, Any]:
 
 @app.get("/api/life/agenda")
 async def get_life_agenda() -> dict[str, Any]:
-    tasks_done, tasks_total = _read_life_kanban_counts()
+    counts = _read_life_kanban_counts()
     return {
         "agenda": _read_google_calendar_agenda(),
-        "tasksDone": tasks_done,
-        "tasksTotal": tasks_total,
+        "tasksDone": counts.done,
+        "tasksTotal": counts.total,
+        # Additive provenance keys (the compiled SPA ignores unknown keys):
+        "tasksSource": counts.source,
+        "tasksBoard": counts.board,
+        "tasksError": counts.error,
     }
 
 
