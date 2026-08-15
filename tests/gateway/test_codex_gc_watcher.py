@@ -106,8 +106,13 @@ async def test_tick_passes_live_branches_to_gc(tmp_path):
 
 @pytest.mark.asyncio
 async def test_tick_tolerates_gh_callable_crashing(tmp_path):
-    """Crashing gh_list_open_branches must NOT abort the tick;
-    gc still runs with live_branches=empty set."""
+    """C7 MED-1: a crashing lookup must NOT abort the tick, and must NOT
+    degrade to ``live_branches=set()``.
+
+    An empty set asserts "no open PR protects any of these worktrees" — the
+    very claim the failed lookup could not verify.  gc is skipped instead;
+    reap_deleted (which does not consult live_branches) still runs.
+    """
     disp = _FakeDispatcher(tmp_path, {"t1": _row("sid-aaa")})
     broker = MagicMock()
     broker.gc.return_value = []
@@ -119,19 +124,19 @@ async def test_tick_tolerates_gh_callable_crashing(tmp_path):
         gh_list_open_branches=crashing_gh,
     )
     await w._tick()  # must not raise
-    kw = broker.gc.call_args.kwargs
-    assert kw["live_branches"] == set()
+    broker.gc.assert_not_called()
     broker.reap_deleted.assert_called_once()
 
 
-def test_default_gh_helper_absorbs_missing_gh(monkeypatch):
-    """_gh_list_open_branches must return empty set when gh is not on PATH."""
+def test_default_gh_helper_raises_when_gh_is_missing(monkeypatch):
+    """_gh_list_open_branches must FAIL, not return an empty set."""
     from gateway import codex_gc_watcher as mod
 
     def fake_run(*args, **kwargs):
         raise FileNotFoundError("gh not on PATH")
     monkeypatch.setattr(mod.subprocess, "run", fake_run)
-    assert mod._gh_list_open_branches() == set()
+    with pytest.raises(mod.GhLookupError):
+        mod._gh_list_open_branches()
 
 
 def test_default_gh_helper_runs_gh_from_repo_root(monkeypatch):
@@ -147,24 +152,55 @@ def test_default_gh_helper_runs_gh_from_repo_root(monkeypatch):
     assert run.call_args.kwargs["cwd"] == mod._REPO_ROOT
 
 
-def test_default_gh_helper_absorbs_timeout(monkeypatch):
-    """_gh_list_open_branches must return empty set when gh times out."""
+def test_default_gh_helper_raises_on_timeout(monkeypatch):
+    """A timed-out lookup is an unknown, not an empty PR set."""
     from gateway import codex_gc_watcher as mod
 
     def fake_run(*args, **kwargs):
         raise mod.subprocess.TimeoutExpired(cmd=args[0], timeout=30)
     monkeypatch.setattr(mod.subprocess, "run", fake_run)
-    assert mod._gh_list_open_branches() == set()
+    with pytest.raises(mod.GhLookupError):
+        mod._gh_list_open_branches()
 
 
-def test_default_gh_helper_absorbs_nonzero_exit(monkeypatch):
-    """_gh_list_open_branches must return empty set on non-zero exit."""
+def test_default_gh_helper_raises_on_nonzero_exit(monkeypatch):
+    """gh exiting non-zero (e.g. auth expired) must fail closed."""
     from gateway import codex_gc_watcher as mod
     from unittest.mock import MagicMock
 
     fake_proc = MagicMock(returncode=1, stdout="", stderr="auth needed")
     monkeypatch.setattr(mod.subprocess, "run", lambda *a, **kw: fake_proc)
+    with pytest.raises(mod.GhLookupError, match="auth needed"):
+        mod._gh_list_open_branches()
+
+
+def test_default_gh_helper_reports_a_genuinely_empty_pr_list(monkeypatch):
+    """The one case that IS an empty set: gh succeeded and there are no PRs.
+
+    This is the pair to the raising tests — fail-closed must not mean
+    "never returns empty", it means "only returns empty when it knows".
+    """
+    from gateway import codex_gc_watcher as mod
+    from unittest.mock import MagicMock
+
+    fake_proc = MagicMock(returncode=0, stdout="[]", stderr="")
+    monkeypatch.setattr(mod.subprocess, "run", lambda *a, **kw: fake_proc)
     assert mod._gh_list_open_branches() == set()
+
+
+@pytest.mark.asyncio
+async def test_a_genuinely_empty_pr_set_still_runs_gc(tmp_path):
+    """Fail-closed must not stall gc when the lookup actually succeeded."""
+    disp = _FakeDispatcher(tmp_path, {"t1": _row("sid-aaa")})
+    broker = MagicMock()
+    broker.gc.return_value = []
+    broker.reap_deleted.return_value = 0
+    w = CodexGcWatcher(
+        dispatcher=disp, worktree_broker=broker, gh_list_open_branches=lambda: set(),
+    )
+    await w._tick()
+    broker.gc.assert_called_once()
+    assert broker.gc.call_args.kwargs["live_branches"] == set()
 
 
 def test_default_gh_helper_parses_branch_names(monkeypatch):
@@ -185,14 +221,15 @@ def test_default_gh_helper_parses_branch_names(monkeypatch):
     assert result == {"codex/sid-aaa/task", "codex/sid-bbb/feat"}
 
 
-def test_default_gh_helper_absorbs_malformed_json(monkeypatch):
-    """_gh_list_open_branches must return empty set on JSON parse failure."""
+def test_default_gh_helper_raises_on_malformed_json(monkeypatch):
+    """A response we cannot parse tells us nothing — fail closed."""
     from gateway import codex_gc_watcher as mod
     from unittest.mock import MagicMock
 
     fake_proc = MagicMock(returncode=0, stdout="{not valid json", stderr="")
     monkeypatch.setattr(mod.subprocess, "run", lambda *a, **kw: fake_proc)
-    assert mod._gh_list_open_branches() == set()
+    with pytest.raises(mod.GhLookupError):
+        mod._gh_list_open_branches()
 
 
 @pytest.mark.asyncio

@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Any, Awaitable, Callable, Iterator, Optional
 
 from agent.worktree_broker import slugify_ref
+from gateway.codex_registry_gc import load_archived_thread_ids
 from gateway.codex_session_dispatcher_commands import _CommandsMixin
 
 log = logging.getLogger(__name__)
@@ -29,6 +30,45 @@ CURRENT_VERSION = 1
 # _MIGRATIONS: (from_ver, to_ver) → fn. No migrations needed at v1.
 _MIGRATIONS: dict[tuple[int, int], Any] = {}
 _KANBAN_COMPLETION_SUMMARY = "Codex session completed by dispatcher."
+
+# C7 / Gate 7: states a session row can never come back from.
+#
+# A row in one of these states is a TOMBSTONE.  It is retained in
+# codex_sessions.json precisely so the thread_id stays claimed and can never be
+# re-discovered into a fresh session — deleting the row is what let reaped
+# sessions resurrect.  ORPHANED is quarantine-terminal: the reaper parks a row
+# there whenever a safety probe is inconclusive, and only a deliberate operator
+# transition (``/revive``) may reactivate it.
+#
+# Single source of truth for: is_tracked, on_thread_message, discover_threads,
+# on_bot_restart, gateway.codex_session_reaper, gateway.codex_registry_gc.
+TERMINAL_STATES = frozenset({
+    "RELEASED",
+    "COMPLETE",
+    "DONE",
+    "MERGED",
+    "ESCALATED",
+    "ORPHANED",
+})
+
+# C7 blocker B3 — quarantine is quarantine.  The reaper docstring and the gc
+# watcher both promise that an ORPHANED row is kept "forever, until a human
+# looks"; the registry GC used to delete it at 90 days.  Both cannot be true, so
+# the promise wins: quarantine states are terminal AND exempt from garbage
+# collection.  A row only ever lands in ORPHANED because a safety probe came
+# back inconclusive or custody was unprovable — i.e. exactly the rows whose
+# disposal a human still owes a decision on.  Ageing them out unattended would
+# silently discard the evidence that the quarantine existed to preserve.
+QUARANTINE_STATES = frozenset({"ORPHANED"})
+
+# Terminal states the registry GC may retire once they age past its retention
+# window: the genuinely-completed ones.  Quarantine is excluded by construction,
+# so widening TERMINAL_STATES can never accidentally make quarantine collectable.
+GC_ELIGIBLE_TERMINAL_STATES = frozenset(TERMINAL_STATES - QUARANTINE_STATES)
+
+# MERGING is not terminal — it is in-flight, owned by CodexMergeWatcher — but
+# on_bot_restart must still leave it alone rather than probe its worktree.
+_RESTART_SKIP_STATES = TERMINAL_STATES | {"MERGING"}
 
 
 def _fsync_directory(path: Path) -> None:
@@ -543,15 +583,37 @@ class CodexSessionDispatcher(_CommandsMixin):
         session (status="discovered").  Already-tracked threads are
         silently skipped — they're handled by :meth:`on_bot_restart`.
 
+        C7: two extra refusals keep a reaped session from resurrecting here.
+        A thread whose row is terminal is skipped explicitly (not merely as a
+        side effect of being present in ``tracked``), and a thread whose row
+        has since been retired by :mod:`gateway.codex_registry_gc` is skipped
+        via the tombstone archive.  Without them, every visible Discord thread
+        whose row had been deleted was handed a brand-new worktree on each
+        restart — the leak diagnosed in the C7 recon brief §3.
+
         Spec: see ``isas/P1.4-auto-discover-threads.md``.
         """
         state = self._load_state()
         tracked = state.get("sessions", {})
+        archived_thread_ids = load_archived_thread_ids(self._hermes_home)
         results: list[ReattachResult] = []
         for thread_id, channel_id, name in threads:
             if not thread_id:
                 continue
             if thread_id in tracked:
+                row = tracked[thread_id]
+                if isinstance(row, dict) and row.get("state") in TERMINAL_STATES:
+                    log.debug(
+                        "discover_threads: thread %s has a %s tombstone — not re-creating",
+                        thread_id, row.get("state"),
+                    )
+                continue
+            if thread_id in archived_thread_ids:
+                log.info(
+                    "discover_threads: thread %s was retired to the tombstone "
+                    "archive — not re-creating",
+                    thread_id,
+                )
                 continue
             event = ThreadEvent(
                 thread_id=thread_id,
@@ -608,6 +670,30 @@ class CodexSessionDispatcher(_CommandsMixin):
             log.debug("on_thread_message: duplicate message_id %s — dropped", event.message_id)
             return
 
+        # C7: refuse to resurrect a tombstone.  The state assignment below used
+        # to be unconditional, so a single stray Discord message on a released
+        # or quarantined thread flipped the row straight back to EXECUTING —
+        # the exact mechanism that undid every reap.  Record the message id so
+        # the same message cannot re-trigger this reply, but leave the state,
+        # last_message_at and the queue untouched: a tombstone must not have
+        # its idle clock refreshed, and it must not accumulate queued work.
+        row_state = row.get("state")
+        if row_state in TERMINAL_STATES:
+            if event.message_id:
+                row["last_message_id"] = event.message_id
+                self._write_state(state)
+            await self._discord_send(
+                thread_id,
+                f"This session is `{row_state}` — it has been released or archived "
+                "and no longer accepts work. Start a new thread, or ask an operator "
+                "to revive this one.",
+            )
+            log.info(
+                "on_thread_message: refused resurrection of %s session %s (thread %s)",
+                row_state, row.get("session_id"), thread_id,
+            )
+            return
+
         # Paused: queue message (operator drains via /resume)
         if row.get("paused"):
             queue = row.setdefault("queued_messages", [])
@@ -646,6 +732,11 @@ class CodexSessionDispatcher(_CommandsMixin):
 
         row = state["sessions"][thread_id]
         sid = row["session_id"]
+        # NOT the module-level TERMINAL_STATES, and deliberately so: this set
+        # answers "did the session finish well enough to close its kanban
+        # card?", not "can this row ever come back?".  Widening it to
+        # TERMINAL_STATES would make ORPHANED and ESCALATED sessions mark their
+        # cards complete.
         terminal_states = {"COMPLETE", "MERGING"}
 
         try:
@@ -687,10 +778,13 @@ class CodexSessionDispatcher(_CommandsMixin):
         for thread_id, row in sessions.items():
             sid = row["session_id"]
             try:
-                # P3.5: COMPLETE / ESCALATED sessions have already been
-                # finalized; their worktree may have been released, but
-                # that's expected and must not flip them to ORPHANED.
-                if row.get("state") in {"COMPLETE", "ESCALATED", "MERGING"}:
+                # P3.5 / C7: every terminal state (plus in-flight MERGING) has
+                # already been finalized; the worktree is *expected* to be gone
+                # and must not flip the row to ORPHANED.  Pre-C7 this set was
+                # only {COMPLETE, ESCALATED, MERGING}, so a restart re-stamped
+                # RELEASED/DONE/MERGED rows — and re-stamped already-ORPHANED
+                # rows — churning the registry on every gateway start.
+                if row.get("state") in _RESTART_SKIP_STATES:
                     log.debug(
                         "on_bot_restart: session %s in terminal/in-flight state %s — skipping",
                         sid, row.get("state"),
@@ -706,6 +800,12 @@ class CodexSessionDispatcher(_CommandsMixin):
                         sid, wt_path,
                     )
                     row["state"] = "ORPHANED"
+                    # C7 blocker B2: every terminal transition stamps the moment
+                    # it went terminal.  Without this the registry GC has to
+                    # infer an age from created_at — a basis that predates the
+                    # transition by an arbitrary amount.
+                    row["orphaned_at"] = _now_iso()
+                    row["orphaned_reason"] = f"worktree missing at {wt_path} on restart"
                     results.append(ReattachResult(sid=sid, thread_id=thread_id, status="orphaned"))
             except Exception as exc:
                 log.warning("on_bot_restart: per-row error sid %s: %s", sid, exc)
@@ -732,9 +832,18 @@ class CodexSessionDispatcher(_CommandsMixin):
         return await handler(ctx)
 
     def is_tracked(self, thread_id: str) -> bool:
-        """Return True if thread_id has an active session row."""
+        """Return True if thread_id has an ACTIVE (non-terminal) session row.
+
+        C7: presence of a row is no longer the same question as liveness.
+        Terminal rows are tombstones kept on purpose (see
+        :data:`TERMINAL_STATES`), and treating them as tracked made the whole
+        gateway route work to released, escalated and quarantined threads.
+        """
         state = self._load_state()
-        return thread_id in state.get("sessions", {})
+        row = state.get("sessions", {}).get(thread_id)
+        if not isinstance(row, dict):
+            return False
+        return row.get("state") not in TERMINAL_STATES
 
     async def on_phase_verify(self, thread_id: str) -> None:
         """Auto-trigger Opus peer-review for a session that hit phase: verify.
@@ -1030,6 +1139,11 @@ class CodexSessionDispatcher(_CommandsMixin):
             )
         else:  # ESCALATE
             row["state"] = "ESCALATED"
+            # C7 blocker B2: stamp the terminal transition.  ``on_pr_closed_unmerged``
+            # writes ``closed_at`` for its own ESCALATED transition; this path wrote
+            # nothing at all, so the registry GC could only fall back to a
+            # non-terminal timestamp.
+            row["escalated_at"] = _now_iso()
             self._write_state(state)
             await self._discord_send(
                 thread_id,

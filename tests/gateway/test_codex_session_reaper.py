@@ -1,4 +1,24 @@
-"""Tests for gateway.codex_session_reaper (DISP-4 / ARCH-4, built dark)."""
+"""Tests for gateway.codex_session_reaper (DISP-4 / ARCH-4, armed by C7).
+
+Updated for the C7 / Gate 7 contract.  What changed under the tests here:
+
+* the release path writes a RELEASED **tombstone** and keeps the row; it no
+  longer pops it out of the registry;
+* ``broker.release_nonforce`` replaces the force ``broker.release``;
+* the idle window is expressed in **hours** (``reap_idle_days`` survives as an
+  explicit keyword alias, which most of these tests still use);
+* the ``created_at``-plus-no-commits-since fallback is gone.  ``created_at`` is
+  now consulted only when ``last_message_at`` is absent, and whether work would
+  be lost is decided by unique-commit custody instead;
+* ``_has_commits_since`` was replaced by ``_branch_only_commits``
+  (``git rev-list HEAD --not --remotes``) and ``_safe_open_branches`` by
+  ``_open_branches``, which returns ``(branches, lookup_ok)`` so the caller can
+  fail **closed**.
+
+The broader C7 contract (tombstone ordering, no-resurrection, fail-closed PR
+lookup, process-owner gate, registry GC) is covered in
+``test_codex_reaper_repair.py``.
+"""
 
 from __future__ import annotations
 
@@ -44,10 +64,21 @@ def _git(worktree: Path, *args: str) -> None:
     )
 
 
-def _make_worktree(path: Path, *, dirty: bool, commit_days_ago: float | None) -> Path:
+def _make_worktree(
+    path: Path,
+    *,
+    dirty: bool,
+    commit_days_ago: float | None,
+    pushed: bool = True,
+) -> Path:
     """Create a real git repo. If commit_days_ago is set, make a back-dated commit.
 
     ``dirty`` leaves an untracked file so ``git status --porcelain`` is non-empty.
+
+    ``pushed`` (C7) mirrors the commit into a **local bare** remote beside the
+    repo — no network — so ``git rev-list HEAD --not --remotes`` is empty and the
+    unique-commit custody gate can clear.  Pass ``pushed=False`` to model work
+    that exists only on this branch.
     """
     path.mkdir(parents=True, exist_ok=True)
     _git(path, "init", "-q")
@@ -65,6 +96,15 @@ def _make_worktree(path: Path, *, dirty: bool, commit_days_ago: float | None) ->
             capture_output=True, text=True, check=True,
             env={"GIT_COMMITTER_DATE": when, **_base_env()},
         )
+        if pushed:
+            origin = path.parent / f"{path.name}-origin.git"
+            subprocess.run(
+                ["git", "init", "-q", "--bare", str(origin)],
+                capture_output=True, text=True, check=True,
+            )
+            _git(path, "remote", "add", "origin", str(origin))
+            _git(path, "push", "-q", "origin", "HEAD")
+            _git(path, "fetch", "-q", "origin")
     if dirty:
         (path / "uncommitted.txt").write_text("WIP", encoding="utf-8")
     return path
@@ -90,12 +130,22 @@ def _row(sid: str, worktree: Path, *, state: str = "EXECUTING",
 
 
 def _reaper(disp, broker=None, open_branches=None) -> CodexSessionReaper:
+    """Reaper with the C7 ownership probes stubbed to "nobody owns this".
+
+    ``_scan_process_owners`` walks the real ``/proc`` and ``_tmux_owner`` shells
+    out to ``tmux``; neither is the subject of this file, and both would make
+    every release-path test depend on whatever else the host happens to be
+    running.  ``test_codex_reaper_repair.py`` exercises them directly.
+    """
     broker = broker or MagicMock()
-    return CodexSessionReaper(
+    reaper = CodexSessionReaper(
         dispatcher_state=disp,
         broker=broker,
         gh_open_branches_fn=lambda: open_branches if open_branches is not None else set(),
     )
+    reaper._scan_process_owners = lambda worktrees: ({}, True)
+    reaper._tmux_owner = lambda row, sid: (None, True)
+    return reaper
 
 
 # --------------------------------------------------------------------------- #
@@ -150,7 +200,12 @@ def test_open_pr_orphans(tmp_path):
 
 
 def test_clean_and_idle_releases(tmp_path):
-    """Idle (primary) + clean + no open PR -> broker.release + row deleted."""
+    """Idle (primary) + clean + custody + no open PR -> non-force release.
+
+    C7: the row is NOT deleted.  It becomes a RELEASED tombstone carrying a
+    custody receipt, which is what stops ``discover_threads`` re-materialising
+    the session on the next restart.
+    """
     wt = _make_worktree(tmp_path / "wt", dirty=False, commit_days_ago=20)
     rows = {"t-a": _row("a", wt, last_message_at=_iso(20), created_at=_iso(20))}
     disp = _FakeDispatcher(tmp_path, rows)
@@ -158,33 +213,34 @@ def test_clean_and_idle_releases(tmp_path):
     out = _reaper(disp, broker).reap(reap_idle_days=10, dry_run=False)
 
     assert out[0]["outcome"] == "released"
-    broker.release.assert_called_once_with("a")
-    # row removed from state
-    assert "t-a" not in disp._load_state()["sessions"]
+    broker.release_nonforce.assert_called_once_with("a")
+    broker.release.assert_not_called()
+    row = disp._load_state()["sessions"]["t-a"]
+    assert row["state"] == "RELEASED"
+    assert row["release_receipt"]["branch_only_commits"] == []
 
 
-def test_created_at_fallback_fires_when_last_message_recent_no_commits(tmp_path):
-    """last_message_at recent but created_at old AND no commits since -> released.
+def test_created_at_is_used_only_when_no_message_was_ever_received(tmp_path):
+    """No last_message_at + old created_at -> idle on the created_at clock.
 
-    This is the load-bearing fallback: a chatty-but-dead zombie whose
-    last_message_at keeps refreshing must still be reclaimable.
+    C7 replaced the pre-C7 "created_at old AND no commits since" fallback: that
+    conflated "made no commits" with "holds nothing worth keeping".  ``created_at``
+    now only covers a row that never received a message at all.
     """
-    # Worktree commit predates created_at, so there are NO commits *since* created_at.
     wt = _make_worktree(tmp_path / "wt", dirty=False, commit_days_ago=40)
-    rows = {"t-a": _row("a", wt, last_message_at=_iso(1), created_at=_iso(30))}
+    rows = {"t-a": _row("a", wt, last_message_at=None, created_at=_iso(30))}
     disp = _FakeDispatcher(tmp_path, rows)
     broker = MagicMock()
     out = _reaper(disp, broker).reap(reap_idle_days=10, dry_run=False)
 
     assert out[0]["outcome"] == "released"
-    assert "fallback" in out[0]["idle_reason"]
-    broker.release.assert_called_once_with("a")
-    assert "t-a" not in disp._load_state()["sessions"]
+    assert "no message ever received" in out[0]["idle_reason"]
+    broker.release_nonforce.assert_called_once_with("a")
+    assert disp._load_state()["sessions"]["t-a"]["state"] == "RELEASED"
 
 
-def test_created_at_fallback_does_not_fire_when_commits_since(tmp_path):
-    """created_at old but a recent commit exists -> fallback must NOT fire -> skipped."""
-    # Commit is NEWER than created_at -> there IS progress since creation.
+def test_recent_message_beats_an_ancient_created_at(tmp_path):
+    """A chatty row is not idle, however old created_at is -> skipped."""
     wt = _make_worktree(tmp_path / "wt", dirty=False, commit_days_ago=1)
     rows = {"t-a": _row("a", wt, last_message_at=_iso(2), created_at=_iso(30))}
     disp = _FakeDispatcher(tmp_path, rows)
@@ -192,7 +248,23 @@ def test_created_at_fallback_does_not_fire_when_commits_since(tmp_path):
     out = _reaper(disp, broker).reap(reap_idle_days=10, dry_run=False)
 
     assert out[0]["outcome"] == "skipped"
+    broker.release_nonforce.assert_not_called()
     broker.release.assert_not_called()
+
+
+def test_unpushed_commits_orphan_instead_of_releasing(tmp_path):
+    """C7 custody gate: a commit on no remote is work that would be lost."""
+    wt = _make_worktree(tmp_path / "wt", dirty=False, commit_days_ago=20, pushed=False)
+    rows = {"t-a": _row("a", wt, last_message_at=_iso(20), created_at=_iso(20))}
+    disp = _FakeDispatcher(tmp_path, rows)
+    broker = MagicMock()
+    out = _reaper(disp, broker).reap(reap_idle_days=10, dry_run=False)
+
+    assert out[0]["outcome"] == "orphaned"
+    assert len(out[0]["branch_only_commits"]) == 1
+    broker.release_nonforce.assert_not_called()
+    broker.release.assert_not_called()
+    assert disp._load_state()["sessions"]["t-a"]["state"] == "ORPHANED"
 
 
 def test_dry_run_performs_no_teardown(tmp_path):
@@ -209,6 +281,7 @@ def test_dry_run_performs_no_teardown(tmp_path):
 
     assert out[0]["outcome"] == "released"
     assert out[0]["dry_run"] is True
+    broker.release_nonforce.assert_not_called()
     broker.release.assert_not_called()
     # state untouched
     assert disp._load_state()["sessions"]["t-a"]["state"] == "EXECUTING"
@@ -233,15 +306,16 @@ def test_terminal_state_rows_are_ignored(tmp_path):
 
 
 def test_release_failure_downgrades_to_orphaned(tmp_path):
-    """If broker.release raises, the row is ORPHANED (not silently deleted)."""
+    """If the non-force release is refused, the row is ORPHANED, never deleted."""
     wt = _make_worktree(tmp_path / "wt", dirty=False, commit_days_ago=20)
     rows = {"t-a": _row("a", wt, last_message_at=_iso(20), created_at=_iso(20))}
     disp = _FakeDispatcher(tmp_path, rows)
     broker = MagicMock()
-    broker.release.side_effect = RuntimeError("worktree locked")
+    broker.release_nonforce.side_effect = RuntimeError("worktree locked")
     out = _reaper(disp, broker).reap(reap_idle_days=10, dry_run=False)
 
     assert out[0]["outcome"] == "orphaned"
+    broker.release.assert_not_called()
     row = disp._load_state()["sessions"]["t-a"]
     assert row["state"] == "ORPHANED"
 
@@ -347,17 +421,17 @@ def test_has_uncommitted_work_missing_worktree_is_not_dirty(tmp_path):
 @pytest.mark.parametrize(
     ("git_stdout", "expected"),
     [
-        ("", False),
-        ("abc123 progress\n", True),
-        (None, True),
+        ("", ([], True)),
+        ("abc123\ndef456\n", (["abc123", "def456"], True)),
+        (None, ([], False)),
     ],
 )
-def test_has_commits_since_uses_log_and_fails_safe(tmp_path, git_stdout, expected):
+def test_branch_only_commits_uses_rev_list_and_fails_safe(tmp_path, git_stdout, expected):
+    """C7 replacement for ``_has_commits_since``: real custody, not activity."""
     wt = tmp_path / "wt"
     wt.mkdir()
     disp = _FakeDispatcher(tmp_path, {})
     reaper = _reaper(disp)
-    since = datetime(2026, 6, 23, 12, 0, tzinfo=timezone.utc)
     calls = []
 
     def fake_git(worktree: Path, *args: str):
@@ -366,21 +440,17 @@ def test_has_commits_since_uses_log_and_fails_safe(tmp_path, git_stdout, expecte
 
     reaper._git = fake_git
 
-    assert reaper._has_commits_since(wt, since) is expected
-    assert calls == [
-        (
-            wt,
-            ("log", "--since=2026-06-23T12:00:00", "--oneline", "-n", "1"),
-        )
-    ]
+    assert reaper._branch_only_commits(wt) == expected
+    assert calls == [(wt, ("rev-list", "HEAD", "--not", "--remotes"))]
 
 
-def test_has_commits_since_missing_worktree_assumes_progress(tmp_path):
+def test_branch_only_commits_missing_worktree_is_unprovable(tmp_path):
+    """No worktree means no HEAD to prove custody from — never a clean pass."""
     disp = _FakeDispatcher(tmp_path, {})
     reaper = _reaper(disp)
     reaper._git = MagicMock(return_value="")
 
-    assert reaper._has_commits_since(tmp_path / "missing", datetime.now(timezone.utc)) is True
+    assert reaper._branch_only_commits(tmp_path / "missing") == ([], False)
     reaper._git.assert_not_called()
 
 
@@ -422,28 +492,29 @@ def test_branch_in_open_prs_empty_open_branches_is_false(tmp_path):
     assert reaper._branch_in_open_prs("codex/s1/task", "s1", set()) is False
 
 
-def test_safe_open_branches_returns_set_success(tmp_path):
+def test_open_branches_returns_set_and_ok_on_success(tmp_path):
     disp = _FakeDispatcher(tmp_path, {})
     reaper = CodexSessionReaper(disp, MagicMock(), lambda: {"codex/s1/task"})
 
-    assert reaper._safe_open_branches() == {"codex/s1/task"}
+    assert reaper._open_branches() == ({"codex/s1/task"}, True)
 
 
-def test_safe_open_branches_coerces_list(tmp_path):
+def test_open_branches_coerces_list(tmp_path):
     disp = _FakeDispatcher(tmp_path, {})
     reaper = CodexSessionReaper(disp, MagicMock(), lambda: ["codex/s1/task", "codex/s2/task"])
 
-    assert reaper._safe_open_branches() == {"codex/s1/task", "codex/s2/task"}
+    assert reaper._open_branches() == ({"codex/s1/task", "codex/s2/task"}, True)
 
 
-def test_safe_open_branches_coerces_none_to_empty_set(tmp_path):
+def test_open_branches_treats_none_as_a_failed_lookup(tmp_path):
+    """C7: ``None`` is not "no open PRs" — it is "we do not know"."""
     disp = _FakeDispatcher(tmp_path, {})
     reaper = CodexSessionReaper(disp, MagicMock(), lambda: None)
 
-    assert reaper._safe_open_branches() == set()
+    assert reaper._open_branches() == (set(), False)
 
 
-def test_safe_open_branches_returns_empty_set_on_lookup_error(tmp_path):
+def test_open_branches_fails_closed_on_lookup_error(tmp_path):
     disp = _FakeDispatcher(tmp_path, {})
 
     def boom():
@@ -451,7 +522,7 @@ def test_safe_open_branches_returns_empty_set_on_lookup_error(tmp_path):
 
     reaper = CodexSessionReaper(disp, MagicMock(), boom)
 
-    assert reaper._safe_open_branches() == set()
+    assert reaper._open_branches() == (set(), False)
 
 
 # --------------------------------------------------------------------------- #
@@ -470,35 +541,35 @@ def test_append_ledger_autocreates_parent_and_appends_sorted_json_lines(tmp_path
     assert [json.loads(line) for line in lines] == [{"a": 1, "b": 2}, {"c": 3, "d": 4}]
 
 
-def test_idle_reason_fires_at_exact_reap_idle_days_boundary(tmp_path):
+def test_idle_reason_fires_at_the_exact_boundary(tmp_path):
     disp = _FakeDispatcher(tmp_path, {})
     reaper = _reaper(disp)
     now = datetime(2026, 6, 23, 12, 0, tzinfo=timezone.utc)
-    row = {"last_message_at": (now - timedelta(days=10)).isoformat()}
+    row = {"last_message_at": (now - timedelta(hours=6)).isoformat()}
 
-    assert reaper._idle_reason(row, None, now, reap_idle_days=10).startswith(
-        "last_message_at idle 10.0d >= 10d"
-    )
+    reason, block = reaper._idle_reason(row, now, 6.0)
+    assert block is None
+    assert reason.startswith("idle 6.0h >= 6.0h")
 
 
-def test_idle_reason_does_not_fire_just_below_reap_idle_days_boundary(tmp_path):
+def test_idle_reason_does_not_fire_just_below_the_boundary(tmp_path):
     disp = _FakeDispatcher(tmp_path, {})
     reaper = _reaper(disp)
     now = datetime(2026, 6, 23, 12, 0, tzinfo=timezone.utc)
-    row = {"last_message_at": (now - timedelta(days=10) + timedelta(seconds=1)).isoformat()}
+    row = {"last_message_at": (now - timedelta(hours=6) + timedelta(seconds=1)).isoformat()}
 
-    assert reaper._idle_reason(row, None, now, reap_idle_days=10) is None
+    assert reaper._idle_reason(row, now, 6.0) == (None, None)
 
 
-def test_idle_reason_fires_just_above_reap_idle_days_boundary(tmp_path):
+def test_idle_reason_fires_just_above_the_boundary(tmp_path):
     disp = _FakeDispatcher(tmp_path, {})
     reaper = _reaper(disp)
     now = datetime(2026, 6, 23, 12, 0, tzinfo=timezone.utc)
-    row = {"last_message_at": (now - timedelta(days=10, seconds=1)).isoformat()}
+    row = {"last_message_at": (now - timedelta(hours=6, seconds=1)).isoformat()}
 
-    assert reaper._idle_reason(row, None, now, reap_idle_days=10).startswith(
-        "last_message_at idle 10.0d >= 10d"
-    )
+    reason, block = reaper._idle_reason(row, now, 6.0)
+    assert block is None
+    assert reason.startswith("idle 6.0h >= 6.0h")
 
 
 # --------------------------------------------------------------------------- #
@@ -550,7 +621,9 @@ def test_reap_dry_run_orphans_idle_open_pr_branch_but_releases_without_open_pr(t
     open_pr_out = open_pr_reaper.reap(reap_idle_days=10, dry_run=True)
 
     assert open_pr_out[0]["idle_reason"] is not None
-    assert open_pr_out[0]["uncommitted_work"] is False
+    # C7 orders the open-PR guard BEFORE the dirty probe, so the worktree is
+    # never even inspected once a PR protects the branch.
+    assert "uncommitted_work" not in open_pr_out[0]
     assert open_pr_out[0]["in_open_pr"] is True
     assert open_pr_out[0]["outcome"] == "orphaned"
     assert open_pr_out[0]["outcome"] != "released"

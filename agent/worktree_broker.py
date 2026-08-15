@@ -46,6 +46,18 @@ class RepoStateError(RuntimeError):
     """
 
 
+class WorktreeReleaseRefused(RuntimeError):
+    """Raised when a NON-FORCE release could not complete (C7 / Gate 7).
+
+    Signals that git declined to remove the worktree — or removed its index
+    entry yet left the directory behind — and that the broker consequently
+    refused to escalate.  Callers (notably
+    :class:`gateway.codex_session_reaper.CodexSessionReaper`) treat this as
+    "quarantine, do not delete": the session row is downgraded to ORPHANED
+    with the refusal reason and a human decides.
+    """
+
+
 # ── Data classes ──────────────────────────────────────────────────────────────
 
 _LOCK_TYPE_FILES = [
@@ -387,6 +399,83 @@ class WorktreeBroker:
         # Step 5: remove from registry (if it was there)
         self._registry.pop(session_id, None)
 
+    def release_nonforce(self, session_id: str) -> None:
+        """Release a worktree WITHOUT ``--force`` and WITHOUT any rmtree fallback.
+
+        The automated release path for C7 / Gate 7.  :meth:`release` is the
+        operator/closeout path and is deliberately destructive: it force-removes
+        the git worktree and then ``shutil.rmtree``s whatever survives, which is
+        correct when a human (or a merged PR) has already decided the work is
+        finished.  An unattended hourly reaper must not have that power — under
+        it, one wrong gate reading permanently destroys uncommitted work.
+
+        So this variant is *refusal-first*:
+
+        * ``git worktree remove`` with **no** ``--force`` — git itself declines
+          if the tree is dirty, has submodules in use, or is locked;
+        * **no** ``shutil.rmtree`` fallback of any kind;
+        * **no** ``tmux kill-session`` — killing a live process is exactly what
+          the reaper's process-owner gate exists to make unnecessary, and a
+          non-force release that murders the tenant is not non-force.
+
+        Any refusal raises :class:`WorktreeReleaseRefused` and leaves the
+        worktree, the port lease, and the identity file completely untouched,
+        so the caller can quarantine the session instead of losing it.
+
+        Idempotent: releasing a session whose directory is already gone and
+        which is not in the in-memory registry is a no-op, matching
+        :meth:`release`.
+
+        Raises
+        ------
+        WorktreeReleaseRefused
+            git refused the removal, or the directory outlived a "successful"
+            removal (which would need an rmtree to finish — precisely what this
+            method will not do).
+        """
+        # C7 LOW-1: an empty session_id makes ``self._wt_root / session_id``
+        # resolve to the worktree ROOT — i.e. a "release one session" call that
+        # aims at every session at once.  Refuse before any path is built.
+        if not session_id:
+            raise WorktreeReleaseRefused(
+                "release_nonforce() requires a session_id; an empty one resolves "
+                f"to the worktree root {self._wt_root}"
+            )
+
+        wt = self._registry.get(session_id)
+        wt_path = wt.path if wt else (self._wt_root / session_id)
+        if not wt and not wt_path.exists():
+            return
+
+        if wt_path.exists():
+            rm_result = self._git("worktree", "remove", str(wt_path))
+            if rm_result.returncode != 0:
+                stderr = (rm_result.stderr or "").strip()
+                log.warning(
+                    "release_nonforce: git declined to remove %s: %s", wt_path, stderr,
+                )
+                raise WorktreeReleaseRefused(
+                    f"git worktree remove (non-force) refused {wt_path}: "
+                    f"exit {rm_result.returncode}: {stderr}"
+                )
+
+        if wt_path.exists():
+            # git reported success but the directory survived.  Finishing the
+            # job would require the rmtree this method exists to avoid.
+            log.warning(
+                "release_nonforce: %s survived a successful git worktree remove "
+                "— refusing to rmtree", wt_path,
+            )
+            raise WorktreeReleaseRefused(
+                f"worktree dir {wt_path} still present after non-force removal; "
+                "refusing rmtree fallback"
+            )
+
+        # Only now that the disk is genuinely reclaimed do we drop the leases.
+        if self.ports_enabled:
+            self._free_port(session_id)
+        self._remove_identity(session_id=session_id)
+        self._registry.pop(session_id, None)
 
     def complete_lease(self, session_id: str, *, base_sha: str | None = None) -> str:
         """Complete an active lease, removing only evidence-free worktrees.

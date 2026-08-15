@@ -32,6 +32,7 @@ incident.
 """
 
 import ast
+import os
 import sys
 from pathlib import Path
 from unittest.mock import MagicMock
@@ -132,6 +133,101 @@ def _isolate_update_marker_home(request, tmp_path, monkeypatch):
     assert after == before, (
         "update-marker test mutated marker artifacts in the real Hermes home: "
         f"before={before!r} after={after!r}"
+    )
+
+
+#: The operator's REAL codex-reaper state dir, captured at conftest import —
+#: i.e. before any fixture can monkeypatch ``HOME``.
+_REAL_CODEX_REAPER_DIR = Path.home() / ".hermes" / "state" / "codex-reaper"
+
+#: Opt-in, because a *live* gateway legitimately appends to this ledger on its
+#: hourly tick (``CodexGcWatcher.poll_interval_sec`` defaults to 3600 s).  On a
+#: developer box running hermes-gateway.service that would fail a random test
+#: roughly once per hour of suite runtime — a new flake source, which is a bad
+#: trade for a backstop.  In CI no gateway runs, so it is pure signal: set
+#: ``HERMES_TEST_GUARD_REAL_HERMES_HOME=1`` there.
+#:
+#: This is defence-in-depth only.  The real containment is that
+#: ``codex_session_reaper`` / ``codex_gc_watcher`` / ``codex_registry_gc``
+#: resolve their home via ``get_hermes_home()``, which honours the per-test
+#: ``HERMES_HOME`` that ``tests/conftest.py::_hermetic_environment`` pins for
+#: every test.  See ``tests/gateway/test_codex_reaper_ledger_isolation.py``.
+_GUARD_REAL_HOME_ENV = "HERMES_TEST_GUARD_REAL_HERMES_HOME"
+
+#: Bound at import, before any test can monkeypatch them.  ``Path.iterdir`` and
+#: ``Path.stat`` dispatch through ``os.listdir`` / ``os.stat`` at call time, and
+#: several tests in this package replace those globally (e.g. a ``/proc`` walk
+#: patched to raise ``OSError``).  A guard routed through the patched hooks fails
+#: in two directions: it errors the *victim* test at teardown (a false red, and
+#: attributed to the wrong test), and a patch returning a fixed listing would
+#: make it silently blind (a false green — the worse half).  It must observe the
+#: real filesystem, so it holds the real callables.
+_REAL_LISTDIR = os.listdir
+_REAL_STAT = os.stat
+
+
+def _codex_reaper_state_fingerprint(
+    directory: Path | None = None,
+) -> dict[str, tuple[int, int]]:
+    """Stat-only fingerprint (name -> size, mtime_ns) of the real reaper state.
+
+    Deliberately stat-only: the ledger contains real session/thread ids, so this
+    guard must never read, log, or diff record *contents*.
+
+    ``directory`` defaults to the operator's real dir and exists so the guard's
+    own regression test can point it at a tmpdir without monkeypatching module
+    state that the guard is itself using at teardown.
+    """
+    result: dict[str, tuple[int, int]] = {}
+    root = str(_REAL_CODEX_REAPER_DIR if directory is None else directory)
+    try:
+        names = sorted(_REAL_LISTDIR(root))
+    except OSError:
+        return result
+    for name in names:
+        try:
+            st = _REAL_STAT(os.path.join(root, name))
+        except OSError:
+            continue
+        result[name] = (st.st_size, st.st_mtime_ns)
+    return result
+
+
+@pytest.fixture(autouse=True)
+def _guard_real_codex_reaper_state():
+    """Fail the test that writes the operator's live reap ledger / tombstone archive.
+
+    History: ``test_codex_gc_watcher.py``'s ``_FakeDispatcher`` sets no
+    ``hermes_home`` and its broker is a ``MagicMock``, so the home-resolution
+    probe fell through to ``Path.home() / ".hermes"`` and every ``_tick()``
+    appended real JSONL to the operator's live ledger — ~1.8k records, on a file
+    already unbounded at ~12.9 MB.  The callsite now uses ``get_hermes_home()``;
+    this catches any future reintroduction *by any route*, including one that
+    bypasses the callsites entirely.
+    """
+    if os.environ.get(_GUARD_REAL_HOME_ENV, "").strip().lower() not in {
+        "1", "true", "yes", "on",
+    }:
+        yield
+        return
+
+    before = _codex_reaper_state_fingerprint()
+    yield
+    after = _codex_reaper_state_fingerprint()
+    if after == before:
+        return
+    changed = sorted(set(before) | set(after))
+    delta = {
+        name: (before.get(name, (0, 0))[0], after.get(name, (0, 0))[0])
+        for name in changed
+        if before.get(name) != after.get(name)
+    }
+    raise AssertionError(
+        "this test mutated the operator's REAL codex-reaper state at "
+        f"{_REAL_CODEX_REAPER_DIR} (file -> size before/after: {delta}). "
+        "Either a home-resolution fallback escaped the per-test HERMES_HOME, "
+        "or a live hermes-gateway ticked mid-run. To tell them apart: the test "
+        "fixtures write records with a null worktree_path, a live tick does not."
     )
 
 
