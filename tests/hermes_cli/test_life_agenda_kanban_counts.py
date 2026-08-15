@@ -21,6 +21,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import os
 import sqlite3
 from pathlib import Path
 
@@ -255,6 +256,61 @@ def test_fallback_when_board_db_unreadable(kanban_home, life_state, breaker, err
     assert counts.source == "life-state"
     assert counts.board == "lifetest"
     assert counts.error and error_marker in counts.error
+
+
+def _board_dir(kanban_home: Path) -> Path:
+    return kanban_home / "kanban" / "boards" / "lifetest"
+
+
+def _boards_dir(kanban_home: Path) -> Path:
+    return kanban_home / "kanban" / "boards"
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root ignores file permissions")
+@pytest.mark.parametrize(
+    "locked",
+    [pytest.param(_board_dir, id="board-dir-000"), pytest.param(_boards_dir, id="boards-dir-000")],
+)
+def test_fallback_when_board_dir_unreadable(kanban_home, life_state, client, locked):
+    # Skeptic probes 'board dir mode 000' / 'kanban/boards mode 000' (round 0, 2 BAD):
+    # board_exists() -> Path.exists() -> stat() raised PermissionError, which
+    # escaped _life_kanban_target's `except ValueError` and 500'd /api/life/agenda.
+    # Contract: ANY board-read failure falls back to the operator's numbers.
+    _write_board(kanban_home, "lifetest", _LIVE_STATUSES)
+    target = locked(kanban_home)
+    target.chmod(0)
+    try:
+        counts = web_server._read_life_kanban_counts()
+
+        assert (counts[0], counts[1]) == _STATE_EXPECTED
+        assert counts.source == "life-state"
+        assert counts.board is None
+        assert counts.error and "PermissionError" in counts.error and "lifetest" in counts.error
+
+        body = _agenda(client)                    # HTTP 200, never a 500
+        assert (body["tasksDone"], body["tasksTotal"]) == _STATE_EXPECTED
+        assert body["tasksSource"] == "life-state"
+        assert body["tasksError"] and "PermissionError" in body["tasksError"]
+    finally:
+        target.chmod(0o755)                       # pytest tmp cleanup needs it back
+
+
+def test_fallback_when_current_pointer_is_not_utf8(kanban_home, life_state, client):
+    # read_text(encoding="utf-8") raises UnicodeDecodeError (a ValueError, NOT an
+    # OSError) on a garbage pointer -- same "never crash" contract as above.
+    _write_board(kanban_home, "lifetest", _LIVE_STATUSES)
+    (kanban_home / "kanban" / "current").write_bytes(b"\xff\xfe lifetest\n")
+
+    counts = web_server._read_life_kanban_counts()
+
+    assert (counts[0], counts[1]) == _STATE_EXPECTED
+    assert counts.source == "life-state"
+    assert counts.board is None
+    assert counts.error and "cannot read" in counts.error and "codec" in counts.error
+
+    body = _agenda(client)
+    assert (body["tasksDone"], body["tasksTotal"]) == _STATE_EXPECTED
+    assert body["tasksSource"] == "life-state"
 
 
 def test_non_numeric_life_state_gives_visible_sentinel_not_zero(kanban_home, life_state):

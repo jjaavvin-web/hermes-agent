@@ -18309,7 +18309,7 @@ def _life_kanban_target() -> tuple[str | None, "Path | None", str | None]:
         raw = current_file.read_text(encoding="utf-8").strip()
     except FileNotFoundError:
         return None, None, f"no current board: {current_file} missing"
-    except OSError as exc:
+    except (OSError, UnicodeDecodeError) as exc:  # unreadable, or not UTF-8 text
         return None, None, f"no current board: cannot read {current_file}: {exc}"
     if not raw:
         return None, None, f"no current board: {current_file} is empty"
@@ -18319,6 +18319,8 @@ def _life_kanban_target() -> tuple[str | None, "Path | None", str | None]:
         db_path = kanban_db.kanban_db_path(board=raw)
     except ValueError as exc:  # malformed slug in the pointer file
         return None, None, f"invalid board slug in {current_file}: {exc}"
+    except OSError as exc:  # board_exists() stats the board dir: EACCES etc. must fall back, never 500
+        return None, None, f"cannot resolve board {raw!r} from {current_file}: {type(exc).__name__}: {exc}"
     return raw.lower(), db_path, None
 
 
