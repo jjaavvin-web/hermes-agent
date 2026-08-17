@@ -454,6 +454,7 @@ def build_slo_snapshot(
         "turn_error_rate": min(1.0, counts.turn_error_events / turn_count) if turn_count else None,
         "fallback_trigger_rate": min(1.0, counts.fallback_events / turn_count) if turn_count else None,
         "recall_hit_rate": recall["hit_rate"],
+        "recall_discrimination_pass_rate": recall["discrimination_pass_rate"],
         "watchdog_restart_count": counts.watchdog_restart_events,
         "cost_burn_rate_usd_24h": round(total_cost, 6),
         "gateway_restart_count": counts.gateway_restart_events,

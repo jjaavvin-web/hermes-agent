@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import importlib.util
 import json
 import sqlite3
+import sys
 from pathlib import Path
 
 from fastapi import FastAPI
@@ -9,6 +11,18 @@ from fastapi.testclient import TestClient
 
 from hermes_cli import dashboard_slo
 from hermes_cli import observability_slo as slo
+
+
+SCRIPT_EXPORTER_PATH = (
+    Path(__file__).resolve().parents[2] / "scripts" / "observability" / "slo_exporter.py"
+)
+_SCRIPT_EXPORTER_SPEC = importlib.util.spec_from_file_location(
+    "slo_exporter_script_observability_tests", SCRIPT_EXPORTER_PATH
+)
+assert _SCRIPT_EXPORTER_SPEC is not None and _SCRIPT_EXPORTER_SPEC.loader is not None
+script_exporter = importlib.util.module_from_spec(_SCRIPT_EXPORTER_SPEC)
+sys.modules[_SCRIPT_EXPORTER_SPEC.name] = script_exporter
+_SCRIPT_EXPORTER_SPEC.loader.exec_module(script_exporter)
 
 
 def make_state_db(path: Path) -> None:
@@ -89,6 +103,41 @@ def test_exporter_reads_state_db_mode_ro_and_journal_counts(tmp_path: Path):
     assert snapshot["metrics"]["watchdog_restart_count"] == 1
     assert snapshot["metrics"]["cost_burn_rate_usd_24h"] == 0.6
     assert snapshot["recall"]["hit_rate"] == 0.5
+
+
+def test_script_exporter_preserves_recall_metric_and_adds_diagnostic(
+    tmp_path: Path,
+) -> None:
+    db = tmp_path / "state.db"
+    make_state_db(db)
+    canary = tmp_path / "recall-canary.jsonl"
+    canary.write_text(
+        "\n".join(
+            (
+                '{"ts": 1015, "target_hit": 1, "discrimination_gap": 0.30}',
+                '{"ts": 1016, "target_hit": 0, "discrimination_gap": 0.10}',
+            )
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    snapshot = script_exporter.build_slo_snapshot(
+        state_db=db,
+        output_dir=tmp_path,
+        now=1100.0,
+        window_seconds=500,
+        gateway_lines=[],
+        watchdog_lines=[],
+        recall_canary_path=canary,
+        recall_service_path=tmp_path / "recall-events.jsonl",
+    )
+
+    assert snapshot["metrics"]["recall_hit_rate"] == 0.5
+    assert snapshot["metrics"]["recall_discrimination_pass_rate"] == 0.5
+    assert snapshot["recall"]["hit_rate"] == 0.5
+    assert snapshot["recall"]["discrimination_pass_rate"] == 0.5
+    assert snapshot["metrics"]["turn_error_rate"] == 0.0
 
 
 def test_auxiliary_title_generation_fallback_noise_is_separate_from_provider_fallback(tmp_path: Path):
@@ -254,6 +303,7 @@ def test_recall_hit_rate_all_target_hits_is_full(tmp_path: Path):
     assert out["hit_rate"] == 1.0
     assert out["total"] == 5 and out["hits"] == 5
     assert out["target_misses"] == 0 and out["cosine_collapses"] == 0
+    assert out["discrimination_pass_rate"] == 1.0
 
 
 def test_recall_hit_rate_target_miss_drops_below_critical(tmp_path: Path):
@@ -272,10 +322,10 @@ def test_recall_hit_rate_target_miss_drops_below_critical(tmp_path: Path):
     assert out["target_misses"] == 2 and out["hits"] == 1
 
 
-def test_recall_hit_rate_cosine_collapse_scores_as_miss(tmp_path: Path):
+def test_recall_hit_rate_does_not_conflate_discrimination_margin(tmp_path: Path):
     canary = tmp_path / "recall-canary.jsonl"
-    # Every run nominally found the target, but the in/off-domain cosine gap
-    # collapsed below the 0.20 floor on 3/4 runs -> scored as misses -> 0.25.
+    # Every run found the target. A weak in/off-domain cosine gap is still useful
+    # diagnostics, but must not rewrite target-in-top-k retrieval as a miss.
     _write_canary(
         canary,
         [
@@ -286,8 +336,9 @@ def test_recall_hit_rate_cosine_collapse_scores_as_miss(tmp_path: Path):
         ],
     )
     out = slo.read_recall_hit_rate(canary, service_events_path=tmp_path / "none.jsonl")
-    assert out["hit_rate"] == 0.25 and out["hit_rate"] < 0.65
-    assert out["cosine_collapses"] == 3 and out["hits"] == 1
+    assert out["hit_rate"] == 1.0 and out["hits"] == 4
+    assert out["cosine_collapses"] == 3
+    assert out["discrimination_pass_rate"] == 0.25
 
 
 def test_recall_hit_rate_null_hit_records_are_skipped(tmp_path: Path):
@@ -322,6 +373,87 @@ def test_recall_service_up_subfield_is_separate_from_hit_rate(tmp_path: Path):
     out = slo.read_recall_hit_rate(canary, service_events_path=service)
     assert out["hit_rate"] == 1.0  # canary-driven SLO value
     assert out["service_up"]["rate"] == 0.5  # informational, NOT the SLO value
+def test_recall_non_numeric_and_nonfinite_gap_is_skipped_not_crash(tmp_path: Path):
+    """Invalid discrimination_gap values must not crash or skew aggregation.
+
+    Policy encoded here (source-faithful skip/count):
+    - keep the canary record in hit_rate samples when target_hit is measured
+    - skip the bad gap from discrimination_samples / discrimination_pass_rate
+    - do not invent a numeric gap and do not count it as a cosine collapse
+    """
+    canary = tmp_path / "recall-canary.jsonl"
+    _write_canary(
+        canary,
+        [
+            {
+                "ts": 1000,
+                "target_hit": 1,
+                "discrimination_gap": "n/a",  # malformed / missing measurement
+            },
+            {
+                "ts": 1001,
+                "target_hit": 1,
+                "discrimination_gap": "NaN",
+            },
+            {
+                "ts": 1002,
+                "target_hit": 1,
+                "discrimination_gap": "inf",
+            },
+            {
+                "ts": 1003,
+                "target_hit": 1,
+                "discrimination_gap": 0.30,
+            },
+            {
+                "ts": 1004,
+                "target_hit": 0,
+                "discrimination_gap": "bad",
+            },
+        ],
+    )
+    out = slo.read_recall_hit_rate(canary, service_events_path=tmp_path / "none.jsonl")
+    # hit_rate still counts measured target_hit rows only
+    assert out["status"] == "ok"
+    assert out["total"] == 5
+    assert out["hits"] == 4
+    assert out["target_misses"] == 1
+    assert out["hit_rate"] == 4 / 5
+    # Non-numeric and non-finite gaps are excluded from diagnostics.
+    assert out["discrimination_samples"] == 1
+    assert out["discrimination_passes"] == 1
+    assert out["cosine_collapses"] == 0
+    assert out["discrimination_pass_rate"] == 1.0
+
+
+def test_recall_discrimination_pass_rate_is_non_paging_diagnostic():
+    """Low discrimination rate is visible but must never page as a breach.
+
+    recall_hit_rate remains the only target-in-top-k paging metric; a healthy
+    hit rate with a weak discrimination diagnostic produces no alert rows.
+    """
+    from scripts.observability import slo_alert_check
+
+    disc = slo.SLO_DEFINITIONS["recall_discrimination_pass_rate"]
+    assert disc.get("page") is False
+    assert disc.get("critical") is None
+    assert disc.get("warn") is None
+    assert disc.get("target") == "diagnostic"
+
+    # Healthy target-hit SLO, weak discrimination diagnostic, plus another
+    # known non-paging metric to prove the page=False gate is exercised.
+    snapshot = {
+        "metrics": {
+            "recall_hit_rate": 1.0,
+            "recall_discrimination_pass_rate": 0.0,
+            "gateway_turn_p95_latency_ms": 9999.0,
+        }
+    }
+    rows = slo_alert_check.breaches(snapshot)
+    assert rows == []
+    assert "recall_discrimination_pass_rate" not in {
+        row.get("metric") for row in rows
+    }
 
 
 def test_alert_synthetic_breach_renders():

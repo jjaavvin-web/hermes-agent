@@ -9,7 +9,8 @@ import os
 import subprocess
 import sys
 import tempfile
-from datetime import datetime, timezone
+import time
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -18,7 +19,11 @@ from hermes_constants import get_hermes_home
 
 NOTIFY = Path.home() / ".hermes" / "scripts" / "discord-notify.sh"
 DEFAULT_REMINDER_SECONDS = 6 * 60 * 60
-STATE_SCHEMA_VERSION = 2
+DEFAULT_DELIVERY_RETRY_SECONDS = 60 * 60
+DEFAULT_NOTIFY_ATTEMPTS = 3
+DEFAULT_NOTIFY_RETRY_DELAY_SECONDS = 1.0
+DEFAULT_NOTIFY_TIMEOUT_SECONDS = 15
+STATE_SCHEMA_VERSION = 3
 
 
 def default_state_path() -> Path:
@@ -170,6 +175,7 @@ def _notification_snapshot(snapshot: dict[str, Any]) -> dict[str, Any]:
         "generated_at": snapshot.get("generated_at"),
         "turn_count": snapshot.get("turn_count"),
         "sources": snapshot.get("sources") or {},
+        "recall": snapshot.get("recall") or {},
     }
 
 
@@ -185,6 +191,75 @@ def _parse_time(value: Any) -> datetime | None:
     return parsed.astimezone(timezone.utc)
 
 
+def _effective_delivery_kind(kind: str, previous: dict[str, Any]) -> str:
+    if kind == "pending_breach":
+        pending = pending_notification(previous)
+        if pending is not None:
+            return str(pending.get("kind") or "breach")
+    return kind
+
+
+def _pending_matches_breaches(
+    pending: dict[str, Any], breach_rows: list[dict[str, Any]]
+) -> bool:
+    """Return whether a queued transition still describes the live metric set."""
+    return incident_metrics(pending["breaches"]) == incident_metrics(breach_rows)
+
+
+def _delivery_retry_blocked(
+    previous: dict[str, Any],
+    *,
+    kind: str,
+    now: datetime,
+    breach_rows: list[dict[str, Any]] | None = None,
+) -> bool:
+    """Suppress only a repeat of the same failed delivery until its retry time."""
+    effective_kind = _effective_delivery_kind(kind, previous)
+    if previous.get("last_delivery_failure_kind") != effective_kind:
+        return False
+    pending = pending_notification(previous)
+    if (
+        kind in {"breach", "changed"}
+        and breach_rows
+        and pending is not None
+        and not _pending_matches_breaches(pending, breach_rows)
+    ):
+        # A materially different live incident supersedes the stale queued
+        # payload. Its notification is not a duplicate of the failed attempt.
+        return False
+    retry_at = _parse_time(previous.get("next_delivery_retry_at"))
+    return retry_at is not None and now.astimezone(timezone.utc) < retry_at
+
+
+def _clear_delivery_failure(state: dict[str, Any]) -> None:
+    for key in (
+        "last_delivery_failed_at",
+        "last_delivery_failure_kind",
+        "next_delivery_retry_at",
+        "delivery_failure_count",
+    ):
+        state.pop(key, None)
+
+
+def _mark_delivery_failure(
+    state: dict[str, Any],
+    previous: dict[str, Any],
+    *,
+    kind: str,
+    now: datetime,
+    delivery_retry_seconds: int,
+) -> None:
+    effective_kind = _effective_delivery_kind(kind, previous)
+    same_failure = previous.get("last_delivery_failure_kind") == effective_kind
+    prior_count = int(previous.get("delivery_failure_count") or 0) if same_failure else 0
+    state["last_delivery_failed_at"] = now.astimezone(timezone.utc).isoformat()
+    state["last_delivery_failure_kind"] = effective_kind
+    state["next_delivery_retry_at"] = (
+        now.astimezone(timezone.utc) + timedelta(seconds=delivery_retry_seconds)
+    ).isoformat()
+    state["delivery_failure_count"] = prior_count + 1
+
+
 def notification_kind(
     breach_rows: list[dict[str, Any]],
     previous: dict[str, Any],
@@ -195,21 +270,32 @@ def notification_kind(
     """Return breach/changed/reminder/recovery, or None for a quiet poll."""
     pending = pending_notification(previous)
     if pending is not None:
-        return "pending_breach"
-    if not breach_rows:
-        return "recovery" if previous.get("status") == "breached" else None
-
-    if previous.get("status") != "breached":
-        return "breach"
-    if not same_incident(previous, breach_rows):
-        return "changed"
-
-    last_notified = _parse_time(previous.get("last_notified_at"))
-    if last_notified is None:
-        return "breach"
-    if (now.astimezone(timezone.utc) - last_notified).total_seconds() >= reminder_seconds:
-        return "reminder"
-    return None
+        if breach_rows and not _pending_matches_breaches(pending, breach_rows):
+            # Supersede stale queued content with the live identity. Retain the
+            # original transition label: an initial page that never landed is
+            # still a breach, while an undelivered change remains a change.
+            kind: str | None = str(pending["kind"])
+        else:
+            kind = "pending_breach"
+    elif not breach_rows:
+        kind = "recovery" if previous.get("status") == "breached" else None
+    elif previous.get("status") != "breached":
+        kind = "breach"
+    elif not same_incident(previous, breach_rows):
+        kind = "changed"
+    else:
+        last_notified = _parse_time(previous.get("last_notified_at"))
+        if last_notified is None:
+            kind = "breach"
+        elif (now.astimezone(timezone.utc) - last_notified).total_seconds() >= reminder_seconds:
+            kind = "reminder"
+        else:
+            kind = None
+    if kind is not None and _delivery_retry_blocked(
+        previous, kind=kind, now=now, breach_rows=breach_rows
+    ):
+        return None
+    return kind
 
 
 def updated_state(
@@ -220,6 +306,7 @@ def updated_state(
     now: datetime,
     notification_kind: str | None,
     notification_sent: bool,
+    delivery_retry_seconds: int = DEFAULT_DELIVERY_RETRY_SECONDS,
 ) -> dict[str, Any]:
     """Build the next state while preserving ordered delivery retries."""
     now_iso = now.astimezone(timezone.utc).isoformat()
@@ -227,6 +314,7 @@ def updated_state(
 
     if notification_kind == "pending_breach":
         state = dict(previous)
+        state["schema_version"] = STATE_SCHEMA_VERSION
         state["last_observed_at"] = now_iso
         state["snapshot_generated_at"] = snapshot_at
         if not breach_rows:
@@ -238,6 +326,15 @@ def updated_state(
                 pending.get("kind") if pending is not None else "breach"
             )
             state["pending_notification"] = None
+            _clear_delivery_failure(state)
+        elif notification_kind:
+            _mark_delivery_failure(
+                state,
+                previous,
+                kind=notification_kind,
+                now=now,
+                delivery_retry_seconds=delivery_retry_seconds,
+            )
         return state
 
     if breach_rows:
@@ -263,10 +360,25 @@ def updated_state(
                 previous.get("pending_notification") if same_identity else None
             ),
         }
+        if same_identity:
+            for key in (
+                "last_delivery_failed_at",
+                "last_delivery_failure_kind",
+                "next_delivery_retry_at",
+                "delivery_failure_count",
+            ):
+                if key in previous:
+                    state[key] = previous[key]
+        if previous.get("last_delivery_failure_kind") == "recovery":
+            # A live breach means the undelivered recovery intent is obsolete.
+            # Keep the incident open without letting stale recovery backoff
+            # poison the next real transition.
+            _clear_delivery_failure(state)
         if notification_kind and notification_sent:
             state["last_notified_at"] = now_iso
             state["last_notification_kind"] = notification_kind
             state["pending_notification"] = None
+            _clear_delivery_failure(state)
         elif notification_kind in {"breach", "changed"}:
             state["pending_notification"] = {
                 "kind": notification_kind,
@@ -275,6 +387,21 @@ def updated_state(
                 "snapshot": _notification_snapshot(snapshot),
                 "detected_at": now_iso,
             }
+            _mark_delivery_failure(
+                state,
+                previous,
+                kind=notification_kind,
+                now=now,
+                delivery_retry_seconds=delivery_retry_seconds,
+            )
+        elif notification_kind:
+            _mark_delivery_failure(
+                state,
+                previous,
+                kind=notification_kind,
+                now=now,
+                delivery_retry_seconds=delivery_retry_seconds,
+            )
         return state
 
     if previous.get("status") == "breached" and not (
@@ -282,9 +409,18 @@ def updated_state(
     ):
         # Keep the incident open so a failed recovery notification is retried.
         state = dict(previous)
+        state["schema_version"] = STATE_SCHEMA_VERSION
         state["last_observed_at"] = now_iso
         state["snapshot_generated_at"] = snapshot_at
         state["pending_recovery_at"] = now_iso
+        if notification_kind == "recovery":
+            _mark_delivery_failure(
+                state,
+                previous,
+                kind=notification_kind,
+                now=now,
+                delivery_retry_seconds=delivery_retry_seconds,
+            )
         return state
 
     resolved = previous.get("active_breaches", []) if previous else []
@@ -333,8 +469,16 @@ def render_alert(
             + ", ".join(
                 f"{key}={value}"
                 for key, value in sorted(sources.items())
-                if key in {"state_db", "latest", "synthetic"}
+                if key in {"state_db", "recall_canary", "latest", "synthetic"}
             )
+        )
+    recall = snapshot.get("recall") or {}
+    if any(row.get("metric") == "recall_hit_rate" for row in breach_rows) and recall:
+        lines.append(
+            "recall_evidence: "
+            f"target_misses={recall.get('target_misses')} "
+            f"discrimination_warnings={recall.get('cosine_collapses')} "
+            f"samples={recall.get('total')}"
         )
     if notification_kind == "reminder":
         lines.append("action: incident remains open; duplicate pages are suppressed between reminders.")
@@ -358,21 +502,45 @@ def render_recovery(snapshot: dict[str, Any], previous: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
-def notify(message: str, *, dry_run: bool) -> int:
+def notify(
+    message: str,
+    *,
+    dry_run: bool,
+    attempts: int = DEFAULT_NOTIFY_ATTEMPTS,
+    retry_delay_seconds: float = DEFAULT_NOTIFY_RETRY_DELAY_SECONDS,
+) -> int:
     env = os.environ.copy()
     if dry_run:
         env["DISCORD_NOTIFY_DRYRUN"] = "1"
-    proc = subprocess.run(
-        [str(NOTIFY), message],
-        text=True,
-        capture_output=True,
-        env=env,
-        check=False,
-        timeout=30,
-    )
-    sys.stdout.write(proc.stdout)
-    sys.stderr.write(proc.stderr)
-    return proc.returncode
+    last_rc = 1
+    for attempt in range(1, attempts + 1):
+        try:
+            proc = subprocess.run(
+                [str(NOTIFY), message],
+                text=True,
+                capture_output=True,
+                env=env,
+                check=False,
+                timeout=DEFAULT_NOTIFY_TIMEOUT_SECONDS,
+            )
+            sys.stdout.write(proc.stdout)
+            sys.stderr.write(proc.stderr)
+            last_rc = proc.returncode
+        except (OSError, subprocess.SubprocessError) as exc:
+            print(
+                f"slo-alert delivery attempt {attempt}/{attempts} failed: {exc}",
+                file=sys.stderr,
+            )
+            last_rc = 1
+        if last_rc == 0:
+            return 0
+        if attempt < attempts:
+            print(
+                f"slo-alert delivery attempt {attempt}/{attempts} returned rc={last_rc}; retrying",
+                file=sys.stderr,
+            )
+            time.sleep(retry_delay_seconds * attempt)
+    return last_rc
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -391,6 +559,16 @@ def main(argv: list[str] | None = None) -> int:
         default=int(os.environ.get("HERMES_SLO_REMINDER_SECONDS", DEFAULT_REMINDER_SECONDS)),
         help="minimum seconds between unchanged-incident reminders (default: 21600)",
     )
+    parser.add_argument(
+        "--delivery-retry-seconds",
+        type=int,
+        default=int(
+            os.environ.get(
+                "HERMES_SLO_DELIVERY_RETRY_SECONDS", DEFAULT_DELIVERY_RETRY_SECONDS
+            )
+        ),
+        help="minimum seconds before retrying the same failed notification (default: 3600)",
+    )
     parser.add_argument("--dry-run", action="store_true", help="force DISCORD_NOTIFY_DRYRUN=1")
     parser.add_argument(
         "--synthetic-breach",
@@ -403,6 +581,8 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     if args.reminder_seconds <= 0:
         parser.error("--reminder-seconds must be positive")
+    if args.delivery_retry_seconds <= 0:
+        parser.error("--delivery-retry-seconds must be positive")
 
     explicit_state = args.state is not None
     state_path = Path(args.state).expanduser() if explicit_state else default_state_path()
@@ -436,14 +616,36 @@ def main(argv: list[str] | None = None) -> int:
             now=now,
             notification_kind=None,
             notification_sent=False,
+            delivery_retry_seconds=args.delivery_retry_seconds,
         )
         if persist_state:
             save_state(state_path, state)
         if breach_rows:
             metrics = ",".join(sorted(str(row["metric"]) for row in breach_rows))
+            failure_kind = previous.get("last_delivery_failure_kind")
+            retry_at = _parse_time(previous.get("next_delivery_retry_at"))
+            if (
+                failure_kind
+                and failure_kind != "recovery"
+                and retry_at is not None
+                and now < retry_at
+            ):
+                print(
+                    "slo-alert delivery suppressed: "
+                    f"{failure_kind} retry backoff until="
+                    f"{previous.get('next_delivery_retry_at')}"
+                )
+            else:
+                print(
+                    f"slo-alert suppressed: unchanged incident ({metrics}); "
+                    f"reminder interval={args.reminder_seconds}s"
+                )
+        elif previous.get("status") == "breached" and previous.get(
+            "last_delivery_failure_kind"
+        ) == "recovery":
             print(
-                f"slo-alert suppressed: unchanged incident ({metrics}); "
-                f"reminder interval={args.reminder_seconds}s"
+                "slo-alert delivery suppressed: recovery retry backoff until="
+                f"{previous.get('next_delivery_retry_at')}"
             )
         else:
             print("slo-alert ok: no breaches")
@@ -474,6 +676,7 @@ def main(argv: list[str] | None = None) -> int:
         now=now,
         notification_kind=kind,
         notification_sent=rc == 0,
+        delivery_retry_seconds=args.delivery_retry_seconds,
     )
     if persist_state:
         save_state(state_path, state)

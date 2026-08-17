@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import re
 import sqlite3
@@ -28,16 +29,16 @@ DEFAULT_RECALL_EVENTS = HERMES_HOME / "state" / "learning-index" / "recall-event
 # 2026-06-26: recall_hit_rate is now computed from a STANDALONE recall-quality
 # canary (recall-quality-canary.py) that probes a known in-pool lesson against the
 # production recall(query, k=10) ranker and records a real target-in-top-k hit plus
-# an off-domain discrimination gap. The old "hit = n_lessons>0" signal off
+# a separate off-domain discrimination gap. The old "hit = n_lessons>0" signal off
 # recall-events.jsonl was structurally 1.0 (warm-recall always injects 5 lessons)
 # and could never fire on degraded recall. recall-events.jsonl is still read, but
 # only for the informational service_up sub-field (is the warm path producing
 # injections at all), NOT for the SLO value.
 DEFAULT_RECALL_CANARY = HERMES_HOME / "state" / "learning-index" / "recall-canary.jsonl"
-# A canary record counts as a HIT only if the target was in top-k AND the
-# in-domain/off-domain cosine gap cleared this floor; a cosine collapse (gap below
-# the floor) is scored as a miss even when the target nominally appears. Kept in
-# sync with recall-quality-canary.py's DISCRIMINATION_FLOOR.
+# The in-domain/off-domain cosine gap is a separate, non-paging diagnostic. It
+# must not redefine target-in-top-k recall hits: doing so turned 100% successful
+# retrieval into a false-red recall_hit_rate when a static gap floor drifted.
+# Kept in sync with recall-quality-canary.py's DISCRIMINATION_FLOOR.
 RECALL_DISCRIMINATION_FLOOR = float(os.environ.get("HERMES_RECALL_CANARY_GAP", "0.20"))
 
 WINDOW_SECONDS = 24 * 60 * 60
@@ -80,7 +81,15 @@ SLO_DEFINITIONS: dict[str, dict[str, Any]] = {
         "warn": 0.80,
         "critical": 0.65,
         "unit": "ratio",
-        "source": "~/.hermes/state/learning-index/recall-canary.jsonl: fraction of recall-quality-canary runs where a known in-pool lesson appeared in production recall(query,k=10) top-k AND the in/off-domain cosine gap cleared the discrimination floor (target miss or cosine collapse -> miss). service_up sub-field tracks warm-path injection separately. reports no_data when missing",
+        "source": "~/.hermes/state/learning-index/recall-canary.jsonl: fraction of recall-quality-canary runs where a known in-pool lesson appeared in production recall(query,k=10) top-k. service_up and discrimination_pass_rate are separate diagnostics. reports no_data when missing",
+    },
+    "recall_discrimination_pass_rate": {
+        "target": "diagnostic",
+        "warn": None,
+        "critical": None,
+        "unit": "ratio",
+        "page": False,
+        "source": "~/.hermes/state/learning-index/recall-canary.jsonl: fraction of measured in/off-domain cosine gaps clearing HERMES_RECALL_CANARY_GAP; tracked separately from target-in-top-k recall",
     },
     "watchdog_restart_count": {
         "target": "<=0 per 24h",
@@ -406,13 +415,12 @@ def read_recall_hit_rate(
 ) -> dict[str, Any]:
     """Recall hit-rate from the recall-quality canary's target-in-top-k ledger.
 
-    A canary record is a HIT only when the known in-pool target appeared in the
-    production recall(query, k=10) top-k AND the in-domain/off-domain cosine gap
-    cleared `discrimination_floor`. A target miss OR a cosine collapse (gap below
-    the floor) is a miss, so the rate can legitimately fall under the 0.65 critical
-    threshold. Records with a null hit (the canary's never-raise setup_error path)
-    are skipped, not counted as misses. `service_up` is a separate informational
-    sub-field off the legacy recall-events.jsonl injection ledger.
+    A canary record is a HIT when the known in-pool target appeared in the
+    production recall(query, k=10) top-k. The in-domain/off-domain cosine gap is
+    reported separately as ``discrimination_pass_rate``; it does not turn a real
+    retrieval hit into a miss. Records with a null hit (the canary's never-raise
+    setup_error path) are skipped. ``service_up`` is another separate diagnostic
+    off the legacy recall-events.jsonl injection ledger.
     """
     expanded = canary_path.expanduser()
     service_up = _read_service_up(service_events_path, since_epoch=since_epoch)
@@ -426,10 +434,14 @@ def read_recall_hit_rate(
             "hits": 0,
             "target_misses": 0,
             "cosine_collapses": 0,
+            "discrimination_samples": 0,
+            "discrimination_passes": 0,
+            "discrimination_pass_rate": None,
             "discrimination_floor": discrimination_floor,
             "service_up": service_up,
         }
     total = hits = target_misses = cosine_collapses = 0
+    discrimination_samples = discrimination_passes = 0
     for event in _iter_jsonl(expanded, since_epoch=since_epoch):
         # Prefer the explicit canary fields; fall back to a bare `hit` flag so
         # legacy/synthetic hit-only records still score.
@@ -445,14 +457,21 @@ def read_recall_hit_rate(
         gap = event.get("discrimination_gap")
         if gap is None:
             gap = event.get("gap")
-        gap_ok = gap is None or float(gap) >= discrimination_floor
-        if target_hit and gap_ok:
+        if gap is not None:
+            try:
+                numeric_gap = float(gap)
+            except (TypeError, ValueError):
+                numeric_gap = None
+            if numeric_gap is not None and math.isfinite(numeric_gap):
+                discrimination_samples += 1
+                if numeric_gap >= discrimination_floor:
+                    discrimination_passes += 1
+                else:
+                    cosine_collapses += 1
+        if target_hit:
             hits += 1
         else:
-            if not target_hit:
-                target_misses += 1
-            elif not gap_ok:
-                cosine_collapses += 1
+            target_misses += 1
     return {
         "status": "ok" if total else "no_events",
         "source_exists": True,
@@ -462,6 +481,13 @@ def read_recall_hit_rate(
         "hits": hits,
         "target_misses": target_misses,
         "cosine_collapses": cosine_collapses,
+        "discrimination_samples": discrimination_samples,
+        "discrimination_passes": discrimination_passes,
+        "discrimination_pass_rate": (
+            discrimination_passes / discrimination_samples
+            if discrimination_samples
+            else None
+        ),
         "discrimination_floor": discrimination_floor,
         "service_up": service_up,
     }
@@ -505,6 +531,7 @@ def build_slo_snapshot(
         "turn_error_rate": min(1.0, counts.error_events / turn_count) if turn_count else None,
         "fallback_trigger_rate": min(1.0, fallback_events / turn_count) if turn_count else None,
         "recall_hit_rate": recall["hit_rate"],
+        "recall_discrimination_pass_rate": recall["discrimination_pass_rate"],
         "watchdog_restart_count": counts.watchdog_restart_events,
         "cost_burn_rate_usd_24h": round(total_cost, 6),
     }
