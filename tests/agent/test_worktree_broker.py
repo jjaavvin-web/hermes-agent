@@ -370,8 +370,16 @@ class TestPortRecovery:
         ports_path = hermes_home / "codex-ports.json"
         ports_path.write_text(json.dumps(ports_data))
 
-        # Write codex_sessions.json with only the live sid
-        sessions_data = {live_sid: {"path": "/some/path"}}
+        # Write the real v1 dispatcher schema with only the live sid.
+        sessions_data = {
+            "version": 1,
+            "sessions": {
+                "thread-live": {
+                    "session_id": live_sid,
+                    "path": "/some/path",
+                }
+            },
+        }
         (hermes_home / "codex_sessions.json").write_text(
             json.dumps(sessions_data)
         )

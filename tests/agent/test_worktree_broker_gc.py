@@ -70,6 +70,7 @@ class TestGc:
         actions = broker.gc(
             tracked_sids=set(),
             live_branches={"codex/sid-pr-open/some-isa/"},
+            allow_empty_tracked_sids=True,
         )
         # Branch match → no gc.
         assert actions == []

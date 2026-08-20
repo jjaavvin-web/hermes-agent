@@ -46,6 +46,10 @@ class RepoStateError(RuntimeError):
     """
 
 
+class InvalidSessionIdError(ValueError):
+    """Raised before any side effect when a session path is not broker-contained."""
+
+
 # ── Data classes ──────────────────────────────────────────────────────────────
 
 _LOCK_TYPE_FILES = [
@@ -57,6 +61,7 @@ _LOCK_TYPE_FILES = [
 _SLUG_INVALID_RE = re.compile(r"[^a-z0-9-]+")
 _SLUG_REPEAT_DASH_RE = re.compile(r"-+")
 _IDENTITY_PATH_INVALID_RE = re.compile(r"[^A-Za-z0-9._-]+")
+_SESSION_ID_RE = re.compile(r"^[A-Za-z0-9._-]+$")
 
 
 def slugify_ref(value: str, *, fallback: str = "task", max_len: int = 40) -> str:
@@ -200,6 +205,15 @@ class WorktreeBroker:
         identity: str | None = None,
     ) -> Worktree:
         """Create a git worktree and claim a port for the given session."""
+        wt_path = self._validated_candidate_path(session_id)
+        registered = self._registry.get(session_id)
+        if registered is not None:
+            self._validated_registered_path(
+                session_id=session_id,
+                registered_path=registered.path,
+                candidate_path=wt_path,
+            )
+
         # Step 1: disk-pressure check
         free = self._disk_free_bytes()
         if free < _DISK_HARD_FLOOR:
@@ -237,7 +251,6 @@ class WorktreeBroker:
         # spaces / capitals / punctuation that Discord thread titles freely use)
         isa_slug = slugify_ref(isa_slug)
         branch = branch_name or f"{self.branch_prefix}/{session_id}/{isa_slug}"
-        wt_path = self._wt_root / session_id
         if wt_path.is_dir() and identity is None:
             raise BranchCollisionError(
                 f"Worktree path {wt_path} already exists. Operator intervention required."
@@ -339,8 +352,17 @@ class WorktreeBroker:
             MergeWatcher catches a merge) would silently no-op and leave
             the worktree checked out forever. Discovered 2026-05-26.
         """
+        candidate_path = self._validated_candidate_path(session_id)
         wt = self._registry.get(session_id)
-        wt_path = wt.path if wt else (self._wt_root / session_id)
+        wt_path = (
+            self._validated_registered_path(
+                session_id=session_id,
+                registered_path=wt.path,
+                candidate_path=candidate_path,
+            )
+            if wt
+            else candidate_path
+        )
         if not wt and not wt_path.exists():
             return
 
@@ -397,8 +419,17 @@ class WorktreeBroker:
         active lease registry entry is cleared so completed runs do not consume
         live capacity.
         """
+        candidate_path = self._validated_candidate_path(session_id)
         wt = self._registry.get(session_id)
-        wt_path = wt.path if wt else (self._wt_root / session_id)
+        wt_path = (
+            self._validated_registered_path(
+                session_id=session_id,
+                registered_path=wt.path,
+                candidate_path=candidate_path,
+            )
+            if wt
+            else candidate_path
+        )
         effective_base = base_sha or (wt.base_sha if wt else None)
         outcome = "awaiting-harvest"
 
@@ -427,6 +458,7 @@ class WorktreeBroker:
         *,
         tracked_sids: set[str],
         live_branches: set[str] | None = None,
+        allow_empty_tracked_sids: bool = False,
     ) -> list[GcAction]:
         """Sweep orphan worktrees out of ``~/.hermes/codex-wt/``.
 
@@ -437,6 +469,10 @@ class WorktreeBroker:
         is RENAMED to ``codex-wt/.deleted-<ts>/<sid>/`` so the
         operator can recover; the reaper purges entries older than 7 days.
 
+        ``allow_empty_tracked_sids`` is a manual-recovery override.  Production
+        watchers must leave it false: an empty registry alongside any visible
+        worktree is ambiguous and therefore cannot authorize a sweep.
+
         Per WORKFLOW-LESSONS §3 rule 5: no direct recursive cleanup; renames are the
         safe deletion pattern.
         """
@@ -444,6 +480,21 @@ class WorktreeBroker:
         wt_root = getattr(self, "_wt_root", self.hermes_home / "codex-wt")
         if not wt_root.is_dir():
             return actions
+        if not tracked_sids and not allow_empty_tracked_sids:
+            try:
+                has_visible_worktree = any(
+                    entry.is_dir() and not entry.name.startswith(".")
+                    for entry in wt_root.iterdir()
+                )
+            except OSError as exc:
+                log.warning("gc: cannot verify empty-registry safety floor: %s", exc)
+                return actions
+            if has_visible_worktree:
+                log.warning(
+                    "gc: refusing empty tracked_sids sweep while visible worktrees exist; "
+                    "manual override required"
+                )
+                return actions
         live_branches = live_branches or set()
         ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
         deleted_root = wt_root / f".deleted-{ts}"
@@ -558,6 +609,48 @@ class WorktreeBroker:
             ["git", "-C", str(self.repo_root), *args],
             capture_output=True, text=True, check=False,
         )
+
+    def _validated_candidate_path(self, session_id: str) -> Path:
+        """Return the canonical broker path or raise before any side effect."""
+        if (
+            not isinstance(session_id, str)
+            or session_id in {"", ".", ".."}
+            or _SESSION_ID_RE.fullmatch(session_id) is None
+        ):
+            raise InvalidSessionIdError("session_id is not a safe broker path component")
+        try:
+            root = self._wt_root.resolve(strict=False)
+            candidate = (self._wt_root / session_id).resolve(strict=False)
+            relative = candidate.relative_to(root)
+        except (OSError, RuntimeError, ValueError) as exc:
+            raise InvalidSessionIdError(
+                "session worktree path could not be proven broker-contained"
+            ) from exc
+        if relative == Path("."):
+            raise InvalidSessionIdError("session worktree path must be a strict child")
+        return candidate
+
+    def _validated_registered_path(
+        self,
+        *,
+        session_id: str,
+        registered_path: Path,
+        candidate_path: Path,
+    ) -> Path:
+        """Reject hydrated paths outside, across, or symlinked beyond the sid path."""
+        try:
+            root = self._wt_root.resolve(strict=False)
+            registered = Path(registered_path).resolve(strict=False)
+            relative = registered.relative_to(root)
+        except (OSError, RuntimeError, ValueError) as exc:
+            raise InvalidSessionIdError(
+                "registered worktree path could not be proven broker-contained"
+            ) from exc
+        if relative == Path(".") or registered != candidate_path:
+            raise InvalidSessionIdError(
+                f"registered worktree path does not match session {session_id!r}"
+            )
+        return registered
 
     def _identity_path(self, *, session_id: str) -> Path:
         safe_sid = _IDENTITY_PATH_INVALID_RE.sub("_", session_id).strip("._") or "session"
@@ -743,29 +836,38 @@ class WorktreeBroker:
         null it and write back (spec §4 "Recovery on broker init").
         """
         sessions_path = self._sessions_path()
-        live_sids: set[str] = set()
-        if sessions_path.exists():
-            try:
-                raw = json.loads(sessions_path.read_text(encoding="utf-8"))
-                # codex_sessions.json may be a dict or list; extract keys/ids
-                if isinstance(raw, dict):
-                    live_sids = set(raw.keys())
-                elif isinstance(raw, list):
-                    for entry in raw:
-                        if isinstance(entry, dict) and "session_id" in entry:
-                            live_sids.add(entry["session_id"])
-                        elif isinstance(entry, str):
-                            live_sids.add(entry)
-            except (json.JSONDecodeError, OSError):
-                log.warning(
-                    "codex_sessions.json unreadable during port recovery; "
-                    "treating all ports as stale."
-                )
-        else:
+        live_sids: set[str]
+        try:
+            sessions_exists = sessions_path.exists()
+        except OSError:
+            log.warning(
+                "codex_sessions.json could not be inspected during port recovery; "
+                "leaving ports unchanged."
+            )
+            return
+        if not sessions_exists:
             log.warning(
                 "codex_sessions.json absent during port recovery; "
                 "nulling all non-null ports."
             )
+            live_sids = set()
+        else:
+            try:
+                raw = json.loads(sessions_path.read_text(encoding="utf-8"))
+            except (json.JSONDecodeError, OSError, UnicodeError):
+                log.warning(
+                    "codex_sessions.json unreadable during port recovery; "
+                    "leaving ports unchanged."
+                )
+                return
+            parsed_sids = self._parse_registry_live_sids(raw)
+            if parsed_sids is None:
+                log.warning(
+                    "codex_sessions.json has an unsupported or malformed shape; "
+                    "leaving ports unchanged."
+                )
+                return
+            live_sids = parsed_sids
 
         ports_path = self._ports_path()
         with open(ports_path, "r+", encoding="utf-8") as fd:
@@ -783,6 +885,51 @@ class WorktreeBroker:
                     fd.truncate()
             finally:
                 fcntl.flock(fd, fcntl.LOCK_UN)
+
+    @staticmethod
+    def _parse_registry_live_sids(raw: Any) -> set[str] | None:
+        """Parse known v1/legacy registry shapes; ``None`` means unknown truth."""
+        if isinstance(raw, dict) and ("version" in raw or "sessions" in raw):
+            if type(raw.get("version")) is not int or raw.get("version") != 1:
+                return None
+            sessions = raw.get("sessions")
+            if not isinstance(sessions, dict):
+                return None
+            live_sids: set[str] = set()
+            for thread_id, row in sessions.items():
+                if not isinstance(thread_id, str) or not thread_id.strip():
+                    return None
+                if not isinstance(row, Mapping):
+                    return None
+                sid = row.get("session_id")
+                if not isinstance(sid, str) or not sid.strip():
+                    return None
+                live_sids.add(sid)
+            return live_sids
+
+        if isinstance(raw, dict):
+            live_sids = set()
+            for sid, row in raw.items():
+                if not isinstance(sid, str) or not sid.strip() or not isinstance(row, Mapping):
+                    return None
+                live_sids.add(sid)
+            return live_sids
+
+        if isinstance(raw, list):
+            live_sids = set()
+            for entry in raw:
+                if isinstance(entry, str) and entry.strip():
+                    live_sids.add(entry)
+                    continue
+                if isinstance(entry, Mapping):
+                    sid = entry.get("session_id")
+                    if isinstance(sid, str) and sid.strip():
+                        live_sids.add(sid)
+                        continue
+                return None
+            return live_sids
+
+        return None
 
     def _detect_lock_type(self, wt_path: Path) -> str | None:
         """Scan worktree root for JS lock files; return lock type or None."""
