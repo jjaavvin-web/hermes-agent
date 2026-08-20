@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import subprocess
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -14,6 +15,7 @@ from gateway.codex_gc_watcher import CodexGcWatcher
 
 class _FakeDispatcher:
     def __init__(self, hermes_home: Path, rows: dict) -> None:
+        self.hermes_home = hermes_home
         self._sessions_path = hermes_home / "codex_sessions.json"
         self._state = {"version": 1, "sessions": rows}
         self._sessions_path.write_text(json.dumps(self._state))
@@ -105,9 +107,8 @@ async def test_tick_passes_live_branches_to_gc(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_tick_tolerates_gh_callable_crashing(tmp_path):
-    """Crashing gh_list_open_branches must NOT abort the tick;
-    gc still runs with live_branches=empty set."""
+async def test_tick_fails_closed_when_gh_callable_crashes(tmp_path):
+    """A failed PR lookup skips every destructive phase for this tick."""
     disp = _FakeDispatcher(tmp_path, {"t1": _row("sid-aaa")})
     broker = MagicMock()
     broker.gc.return_value = []
@@ -119,80 +120,115 @@ async def test_tick_tolerates_gh_callable_crashing(tmp_path):
         gh_list_open_branches=crashing_gh,
     )
     await w._tick()  # must not raise
-    kw = broker.gc.call_args.kwargs
-    assert kw["live_branches"] == set()
-    broker.reap_deleted.assert_called_once()
+    broker.gc.assert_not_called()
+    broker.reap_deleted.assert_not_called()
 
 
-def test_default_gh_helper_absorbs_missing_gh(monkeypatch):
-    """_gh_list_open_branches must return empty set when gh is not on PATH."""
+def _script_repo_lookup(root: Path, gh_result):
+    calls = []
+
+    def run(argv, **kwargs):
+        argv = list(argv)
+        calls.append((argv, kwargs))
+        if argv == ["git", "-C", str(root), "rev-parse", "--show-toplevel"]:
+            return subprocess.CompletedProcess(argv, 0, stdout=str(root) + "\n", stderr="")
+        if argv == ["git", "-C", str(root), "remote", "get-url", "fork"]:
+            return subprocess.CompletedProcess(
+                argv, 0, stdout="git@github.com:owner/repo.git\n", stderr=""
+            )
+        if argv and argv[0] == "gh":
+            if isinstance(gh_result, BaseException):
+                raise gh_result
+            return gh_result
+        raise AssertionError(f"unexpected command: {argv!r}")
+
+    return run, calls
+
+
+def test_default_gh_helper_raises_typed_failure_for_missing_gh(tmp_path, monkeypatch):
+    """Missing gh is unknown state, never a verified-empty result."""
     from gateway import codex_gc_watcher as mod
 
-    def fake_run(*args, **kwargs):
-        raise FileNotFoundError("gh not on PATH")
-    monkeypatch.setattr(mod.subprocess, "run", fake_run)
-    assert mod._gh_list_open_branches() == set()
+    root = (tmp_path / "repo").resolve()
+    root.mkdir()
+    run, _ = _script_repo_lookup(root, FileNotFoundError("gh not on PATH"))
+    monkeypatch.setattr(mod.subprocess, "run", run)
+    with pytest.raises(mod.OpenPrLookupError):
+        mod._gh_list_open_branches(root)
 
 
-def test_default_gh_helper_runs_gh_from_repo_root(monkeypatch):
-    """gh pr list must run from the Hermes repo root, not the gateway CWD."""
+def test_default_gh_helper_runs_exact_gh_command_from_bound_repo(tmp_path, monkeypatch):
+    """gh is repo-qualified and runs from the verified broker root."""
     from gateway import codex_gc_watcher as mod
-    from unittest.mock import MagicMock
 
-    fake_proc = MagicMock(returncode=0, stdout="[]", stderr="")
-    run = MagicMock(return_value=fake_proc)
+    root = (tmp_path / "repo").resolve()
+    root.mkdir()
+    gh_result = subprocess.CompletedProcess([], 0, stdout="[]", stderr="")
+    run, calls = _script_repo_lookup(root, gh_result)
     monkeypatch.setattr(mod.subprocess, "run", run)
 
-    assert mod._gh_list_open_branches() == set()
-    assert run.call_args.kwargs["cwd"] == mod._REPO_ROOT
+    assert mod._gh_list_open_branches(root) == set()
+    gh_argv, gh_kwargs = calls[-1]
+    assert gh_argv == [
+        "gh", "pr", "list", "--repo", "owner/repo", "--state", "open",
+        "--json", "headRefName", "--limit", "200",
+    ]
+    assert gh_kwargs["cwd"] == root
 
 
-def test_default_gh_helper_absorbs_timeout(monkeypatch):
-    """_gh_list_open_branches must return empty set when gh times out."""
+def test_default_gh_helper_raises_typed_failure_for_timeout(tmp_path, monkeypatch):
     from gateway import codex_gc_watcher as mod
 
-    def fake_run(*args, **kwargs):
-        raise mod.subprocess.TimeoutExpired(cmd=args[0], timeout=30)
-    monkeypatch.setattr(mod.subprocess, "run", fake_run)
-    assert mod._gh_list_open_branches() == set()
+    root = (tmp_path / "repo").resolve()
+    root.mkdir()
+    timeout = mod.subprocess.TimeoutExpired(cmd=["gh"], timeout=30)
+    run, _ = _script_repo_lookup(root, timeout)
+    monkeypatch.setattr(mod.subprocess, "run", run)
+    with pytest.raises(mod.OpenPrLookupError):
+        mod._gh_list_open_branches(root)
 
 
-def test_default_gh_helper_absorbs_nonzero_exit(monkeypatch):
-    """_gh_list_open_branches must return empty set on non-zero exit."""
+def test_default_gh_helper_raises_typed_failure_for_nonzero(tmp_path, monkeypatch):
     from gateway import codex_gc_watcher as mod
-    from unittest.mock import MagicMock
 
-    fake_proc = MagicMock(returncode=1, stdout="", stderr="auth needed")
-    monkeypatch.setattr(mod.subprocess, "run", lambda *a, **kw: fake_proc)
-    assert mod._gh_list_open_branches() == set()
+    root = (tmp_path / "repo").resolve()
+    root.mkdir()
+    failed = subprocess.CompletedProcess([], 1, stdout="", stderr="auth needed")
+    run, _ = _script_repo_lookup(root, failed)
+    monkeypatch.setattr(mod.subprocess, "run", run)
+    with pytest.raises(mod.OpenPrLookupError):
+        mod._gh_list_open_branches(root)
 
 
-def test_default_gh_helper_parses_branch_names(monkeypatch):
+def test_default_gh_helper_parses_branch_names(tmp_path, monkeypatch):
     """Happy path: gh returns JSON; we extract headRefName values."""
     from gateway import codex_gc_watcher as mod
-    from unittest.mock import MagicMock
-    import json as _json
 
+    root = (tmp_path / "repo").resolve()
+    root.mkdir()
     payload = [
         {"headRefName": "codex/sid-aaa/task"},
         {"headRefName": "codex/sid-bbb/feat"},
-        {"headRefName": ""},  # empty, must be filtered
-        {},  # no headRefName, must be skipped
     ]
-    fake_proc = MagicMock(returncode=0, stdout=_json.dumps(payload), stderr="")
-    monkeypatch.setattr(mod.subprocess, "run", lambda *a, **kw: fake_proc)
-    result = mod._gh_list_open_branches()
+    success = subprocess.CompletedProcess([], 0, stdout=json.dumps(payload), stderr="")
+    run, _ = _script_repo_lookup(root, success)
+    monkeypatch.setattr(mod.subprocess, "run", run)
+    result = mod._gh_list_open_branches(root)
     assert result == {"codex/sid-aaa/task", "codex/sid-bbb/feat"}
 
 
-def test_default_gh_helper_absorbs_malformed_json(monkeypatch):
-    """_gh_list_open_branches must return empty set on JSON parse failure."""
+@pytest.mark.parametrize("stdout", ["{not valid json", "{}", '[{}]'])
+def test_default_gh_helper_rejects_malformed_output(tmp_path, monkeypatch, stdout):
+    """Malformed JSON, top-level shape, or rows are typed failures."""
     from gateway import codex_gc_watcher as mod
-    from unittest.mock import MagicMock
 
-    fake_proc = MagicMock(returncode=0, stdout="{not valid json", stderr="")
-    monkeypatch.setattr(mod.subprocess, "run", lambda *a, **kw: fake_proc)
-    assert mod._gh_list_open_branches() == set()
+    root = (tmp_path / "repo").resolve()
+    root.mkdir()
+    malformed = subprocess.CompletedProcess([], 0, stdout=stdout, stderr="")
+    run, _ = _script_repo_lookup(root, malformed)
+    monkeypatch.setattr(mod.subprocess, "run", run)
+    with pytest.raises(mod.OpenPrLookupError):
+        mod._gh_list_open_branches(root)
 
 
 @pytest.mark.asyncio

@@ -43,7 +43,11 @@ def test_orphan_worktrees_not_in_tracked_sids_are_swept_to_deleted_bucket(tmp_pa
 
     broker._git = MagicMock()
 
-    actions = broker.gc(tracked_sids=set(), live_branches=set())
+    actions = broker.gc(
+        tracked_sids=set(),
+        live_branches=set(),
+        allow_empty_tracked_sids=True,
+    )
 
     assert {action.sid for action in actions} == CENSUS_MERGED_SIDS
     for action in actions:
@@ -103,7 +107,16 @@ async def test_gc_watcher_tick_tracks_every_session_row_and_delegates_to_broker(
             "created_at": future.isoformat(),
         },
     }
-    dispatcher = SimpleNamespace(_load_state=lambda: {"version": 1, "sessions": rows})
+    hermes_home = tmp_path / "dispatcher-home"
+    hermes_home.mkdir()
+    sessions_path = hermes_home / "codex_sessions.json"
+    state = {"version": 1, "sessions": rows}
+    sessions_path.write_text(json.dumps(state), encoding="utf-8")
+    dispatcher = SimpleNamespace(
+        hermes_home=hermes_home,
+        _sessions_path=sessions_path,
+        _load_state=lambda: state,
+    )
     broker = MagicMock()
     broker.gc.return_value = []
     broker.reap_deleted.return_value = 0
