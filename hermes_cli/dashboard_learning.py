@@ -341,7 +341,19 @@ def _read_canary(paths: dict[str, Path]) -> tuple[dict[str, Any], list[str]]:
     }, []
 
 
-def _overall_status(blocks: list[dict[str, Any]], errors: list[str]) -> str:
+def _overall_status(
+    blocks: list[dict[str, Any]],
+    errors: list[str],
+    *,
+    verify: dict[str, Any] | None = None,
+    canary: dict[str, Any] | None = None,
+) -> str:
+    if verify and verify.get("status") == "measured" and (
+        verify.get("critic_status") == "FAIL" or int(verify.get("hard_failures") or 0) > 0
+    ):
+        return "red"
+    if canary and canary.get("status") == "measured" and canary.get("pass") is False:
+        return "red"
     if any(block.get("status") == "unmeasured" for block in blocks):
         return "amber"
     if errors:
@@ -370,7 +382,7 @@ def get_learning_snapshot() -> dict[str, Any]:
         payload: dict[str, Any] = {
             "generated_at": _now(),
             "cache_ttl_seconds": _TTL_SECONDS,
-            "status": _overall_status(blocks, errors),
+            "status": _overall_status(blocks, errors, verify=verify, canary=canary),
             "files": {name: str(path) for name, path in paths.items()},
             "mvms_lessons": mvms,
             "recall_eval": recall_eval,
