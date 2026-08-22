@@ -81,6 +81,12 @@ SLO_DEFINITIONS: dict[str, dict[str, Any]] = {
         "warn": 0.80,
         "critical": 0.65,
         "unit": "ratio",
+        # 2026-08-22 (Truth Surface Cleanup v1): demoted to informational. The canary
+        # query is derived from the target's own content (recall-quality-canary.py
+        # _derive_query), so the hit is tautological — 1,221/1,221 hits over ~2 months
+        # incl. through a full discrimination collapse. Not a health gate; discrimination
+        # paging returns in v2 after the canary target rotates.
+        "page": False,
         "source": "~/.hermes/state/learning-index/recall-canary.jsonl: fraction of recall-quality-canary runs where a known in-pool lesson appeared in production recall(query,k=10) top-k. service_up and discrimination_pass_rate are separate diagnostics. reports no_data when missing",
     },
     "recall_discrimination_pass_rate": {

@@ -106,15 +106,6 @@ def breaches(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
             continue  # informational metric (e.g. mixed-lane p95) — tracked, not paged
         value = metrics.get(key)
         if value is None:
-            if key == "recall_hit_rate":
-                found.append(
-                    {
-                        "metric": key,
-                        "value": "no_data",
-                        "target": spec["target"],
-                        "severity": "warn",
-                    }
-                )
             continue
         critical = spec.get("critical")
         if key == "recall_hit_rate":

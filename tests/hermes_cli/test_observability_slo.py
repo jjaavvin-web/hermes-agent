@@ -429,8 +429,9 @@ def test_recall_non_numeric_and_nonfinite_gap_is_skipped_not_crash(tmp_path: Pat
 def test_recall_discrimination_pass_rate_is_non_paging_diagnostic():
     """Low discrimination rate is visible but must never page as a breach.
 
-    recall_hit_rate remains the only target-in-top-k paging metric; a healthy
-    hit rate with a weak discrimination diagnostic produces no alert rows.
+    No recall metric pages in v1: recall_hit_rate was demoted to informational
+    (see test_recall_hit_rate_is_non_paging_informational) alongside the
+    discrimination diagnostic tested here.
     """
     from scripts.observability import slo_alert_check
 
@@ -454,6 +455,20 @@ def test_recall_discrimination_pass_rate_is_non_paging_diagnostic():
     assert "recall_discrimination_pass_rate" not in {
         row.get("metric") for row in rows
     }
+
+
+def test_recall_hit_rate_is_non_paging_informational():
+    """recall_hit_rate is tautological (the canary query is derived from the
+    target's own content) and must never page — it is tracked, not gated.
+    """
+    from scripts.observability import slo_alert_check
+
+    assert slo.SLO_DEFINITIONS["recall_hit_rate"].get("page", True) is False
+
+    rows = slo_alert_check.breaches(
+        {"metrics": {"recall_hit_rate": 0.0, "watchdog_restart_count": 0}}
+    )
+    assert not any(row.get("metric") == "recall_hit_rate" for row in rows)
 
 
 def test_alert_synthetic_breach_renders():
