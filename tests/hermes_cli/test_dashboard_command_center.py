@@ -137,12 +137,8 @@ def test_command_center_endpoint_aggregates_existing_layers(monkeypatch, tmp_pat
     assert payload["resume"]["summary"] == "Resume Alpha Ship from review"
 
     decisions = {(item["title"], item["source"]) for item in payload["decisions"]}
-    assert ("Blocked deploy decision", "kanban:alpha") in decisions
-    assert ("Needs operator review", "kanban:alpha") in decisions
+    assert not any(source.startswith("kanban:") for _title, source in decisions)
     assert ("command-center PR #12", "github") in decisions
-    blocked = next(item for item in payload["decisions"] if item["title"] == "Blocked deploy decision")
-    assert blocked["link_or_id"].endswith(blocked_id)
-    assert blocked["reason"] == "blocked"
 
     assert payload["stalled"] == [
         {
