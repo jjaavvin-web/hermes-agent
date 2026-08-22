@@ -170,3 +170,62 @@ def test_learning_snapshot_marks_absent_history_unmeasured(monkeypatch, tmp_path
     assert payload["history_tail_count"] == 0
     assert payload["history"]["status"] == "unmeasured"
     assert payload["history"]["source"].endswith("state/learning-index/history.jsonl")
+
+
+def test_learning_snapshot_status_is_red_when_critic_fails(monkeypatch, tmp_path):
+    home = tmp_path / "hermes"
+    _seed_home(home)
+    (home / "state/learning-loop/verify-latest.log").write_text(
+        "critic FAIL hard_failures=1 report=/tmp/critic.md\n"
+        "OK recall@10=0.9667 mrr=0.9011 ndcg@10=0.9173 resolved=30/30\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr(learning, "_systemd_unit", lambda name: {"name": name, "enabled": "enabled", "active": "active"})
+    monkeypatch.setattr(learning.time, "time", lambda: 90_100.0)
+    learning._CACHE = None
+
+    payload = learning.get_learning_snapshot()
+
+    assert payload["verify"]["critic_status"] == "FAIL"
+    assert payload["status"] == "red"
+
+
+def test_overall_status_red_when_verify_critic_fails():
+    result = learning._overall_status(
+        [{"status": "measured"}],
+        [],
+        verify={"status": "measured", "critic_status": "FAIL", "hard_failures": 1},
+        canary={"status": "measured", "pass": True},
+    )
+    assert result == "red"
+
+
+def test_overall_status_red_when_canary_fails():
+    result = learning._overall_status(
+        [{"status": "measured"}],
+        [],
+        verify={"status": "measured", "critic_status": "PASS", "hard_failures": 0},
+        canary={"status": "measured", "pass": False},
+    )
+    assert result == "red"
+
+
+def test_overall_status_ignores_service_state_regression_guard():
+    result = learning._overall_status(
+        [{"status": "measured"}],
+        [],
+        verify={
+            "status": "measured",
+            "critic_status": "PASS",
+            "hard_failures": 0,
+            "service": {"active": "failed"},
+        },
+        canary={"status": "measured", "pass": True},
+    )
+    assert result == "green"
+
+
+def test_overall_status_backward_compatible_without_kwargs():
+    assert learning._overall_status([{"status": "measured"}], []) == "green"
+    assert learning._overall_status([{"status": "unmeasured"}], []) == "amber"
