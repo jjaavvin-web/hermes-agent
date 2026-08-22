@@ -249,7 +249,8 @@ def _pr_decisions() -> list[dict]:
 
 
 def _decisions_snapshot() -> list[dict]:
-    return _kanban_decisions() + _pr_decisions()
+    # Kanban retired 2026-08-17 (history-only; MVMS Projects is the SoT) — kanban rows are no longer projected as decisions (Truth Surface Cleanup v1)
+    return _pr_decisions()
 
 
 def _coerce_epoch(value: Any) -> int | None:
