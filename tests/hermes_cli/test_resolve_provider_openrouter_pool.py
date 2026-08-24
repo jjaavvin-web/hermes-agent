@@ -65,3 +65,46 @@ def test_auto_detects_openrouter_from_pool(tmp_path, monkeypatch):
     assert resolve_provider("auto") == "openrouter"
 
 
+def test_auto_does_not_detect_openrouter_from_pool_when_paid_fallback_disabled(
+    tmp_path, monkeypatch
+):
+    """Safety net: auth.disable_paid_api_fallback=true must stop the auto path's
+    OpenRouter-pool auto-detection (issue #42130's tier 4), not just the
+    Anthropic-specific guard in runtime_provider.py. With no other provider
+    configured, the auto path falls through to "no provider configured"
+    rather than silently returning openrouter."""
+    from hermes_cli.auth import AuthError, resolve_provider
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    (tmp_path / "hermes").mkdir(parents=True, exist_ok=True)
+    _seed_openrouter_pool()
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config",
+        lambda: {"auth": {"disable_paid_api_fallback": True}},
+    )
+
+    with pytest.raises(AuthError) as exc_info:
+        resolve_provider("auto")
+    assert exc_info.value.code == "no_provider_configured"
+
+
+def test_auto_does_not_detect_openrouter_from_env_when_paid_fallback_disabled(
+    tmp_path, monkeypatch
+):
+    """Safety net: auth.disable_paid_api_fallback=true must stop the auto
+    path's OPENROUTER_API_KEY/OPENAI_API_KEY env-var tier too (tier 3)."""
+    from hermes_cli.auth import AuthError, resolve_provider
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    (tmp_path / "hermes").mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-FAKEKEY123")
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config",
+        lambda: {"auth": {"disable_paid_api_fallback": True}},
+    )
+
+    with pytest.raises(AuthError) as exc_info:
+        resolve_provider("auto")
+    assert exc_info.value.code == "no_provider_configured"
+
+

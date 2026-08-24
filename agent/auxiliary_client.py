@@ -2636,8 +2636,21 @@ def _resolve_api_key_provider() -> Tuple[Optional[OpenAI], Optional[str]]:
         logger.debug("Could not import PROVIDER_REGISTRY for API-key fallback")
         return None, None
 
+    from hermes_cli.providers import is_safe_provider
+    from hermes_cli.runtime_provider import _auth_disable_paid_api_fallback_enabled
+
+    disable_paid_api_fallback = _auth_disable_paid_api_fallback_enabled()
+
     for provider_id, pconfig in PROVIDER_REGISTRY.items():
         if pconfig.auth_type != "api_key":
+            continue
+        if disable_paid_api_fallback and not is_safe_provider(provider_id):
+            # auth.disable_paid_api_fallback=true: this loop only resolves
+            # api_key-type providers, none of which are on SAFE_PROVIDERS
+            # (openai-codex/xai-oauth are oauth_external, claude-cli-subprocess
+            # is cli_subprocess) — skip every entry rather than hand back a
+            # paid API key. Safety net for the discovery chain filter in
+            # _get_provider_chain().
             continue
         if _is_provider_unhealthy(provider_id):
             logger.debug("Auxiliary api-key chain: %s is unhealthy, skipping", provider_id)
@@ -3927,13 +3940,32 @@ def _get_provider_chain() -> List[tuple]:
     fails more often than not.  Codex is used only when the user's main
     provider *is* openai-codex (see Step 1 of ``_resolve_auto``) or when
     a caller explicitly requests it with a model.
+
+    When ``auth.disable_paid_api_fallback`` is set, every rung of this
+    speculative discovery chain is suppressed: none of the chain labels
+    (``openrouter``/``nous``/``local/custom``/``api-key``) are on
+    :data:`hermes_cli.providers.SAFE_PROVIDERS`, so none can be proven to
+    avoid a pay-as-you-go credential. Callers fall back to whatever the
+    main runtime provider already resolved (which is separately gated by
+    ``resolve_runtime_provider()``).
     """
-    return [
+    chain = [
         ("openrouter", _try_openrouter),
         ("nous", _try_nous),
         ("local/custom", _try_custom_endpoint),
         ("api-key", _resolve_api_key_provider),
     ]
+
+    from hermes_cli.providers import is_safe_provider
+    from hermes_cli.runtime_provider import _auth_disable_paid_api_fallback_enabled
+
+    if not _auth_disable_paid_api_fallback_enabled():
+        return chain
+
+    safe_chain = [entry for entry in chain if is_safe_provider(entry[0])]
+    if len(safe_chain) != len(chain):
+        logger.debug("discovery chain suppressed (paid fallback disabled)")
+    return safe_chain
 
 
 # ── Auxiliary "recently 402'd" unhealthy-provider cache ────────────────────

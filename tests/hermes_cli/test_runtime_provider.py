@@ -115,14 +115,35 @@ def test_disable_paid_api_fallback_uses_anthropic_oauth_pool_entry(
     assert resolved["credential_pool"] is pool
 
 
-def test_disable_paid_api_fallback_only_guards_anthropic_KNOWN_GAP(
+def test_disable_paid_api_fallback_blocks_openrouter(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Current behavior: the flag does not block non-Anthropic fallback routes."""
+    """auth.disable_paid_api_fallback=true blocks the OpenRouter fallback route
+    too, not just Anthropic — "openrouter" is not on SAFE_PROVIDERS."""
     _configure_model_and_auth(
         monkeypatch,
         model_cfg={"provider": "auto", "default": "some-model"},
         disable_paid_api_fallback=True,
+    )
+    monkeypatch.setenv("OPENROUTER_API_KEY", "fake-openrouter-key")
+    monkeypatch.setattr(rp, "resolve_provider", lambda *args, **kwargs: "openrouter")
+    monkeypatch.setattr(rp, "load_pool", lambda provider: _EmptyPool())
+
+    with pytest.raises(AuthError) as exc_info:
+        rp.resolve_runtime_provider(requested="auto")
+
+    assert exc_info.value.provider == "openrouter"
+    assert exc_info.value.code == "paid_provider_blocked"
+
+
+def test_disable_paid_api_fallback_allows_openrouter_when_flag_false(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Parity check: with the flag off, OpenRouter fallback is unaffected."""
+    _configure_model_and_auth(
+        monkeypatch,
+        model_cfg={"provider": "auto", "default": "some-model"},
+        disable_paid_api_fallback=False,
     )
     monkeypatch.setenv("OPENROUTER_API_KEY", "fake-openrouter-key")
     monkeypatch.setattr(rp, "resolve_provider", lambda *args, **kwargs: "openrouter")
@@ -256,10 +277,42 @@ def test_pool_entry_without_api_key_exhausts_pool_then_uses_provider_resolver(
     assert resolved.get("credential_pool") is None
 
 
-def test_auto_oauth_failure_falls_through_to_openrouter_KNOWN_GAP_C2(
+def test_disable_paid_api_fallback_blocks_auto_oauth_failure_fallthrough(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Current behavior: auto OAuth failure reaches OpenRouter; audit C2 retires this fallback chain."""
+    """C2 gap closed: with auth.disable_paid_api_fallback=true, an auto-path
+    OAuth failure (qwen-oauth) must not fall through to OpenRouter. The
+    safe-provider gate raises before ``resolve_qwen_runtime_credentials`` is
+    even reached — if that ever regresses to running first, this test would
+    instead see the qwen-specific AuthError below and fail on the code
+    assertion.
+    """
+    _configure_model_and_auth(
+        monkeypatch,
+        model_cfg={"provider": "auto", "default": "some-model"},
+        disable_paid_api_fallback=True,
+    )
+    monkeypatch.setenv("OPENROUTER_API_KEY", "fake-openrouter-key")
+    monkeypatch.setattr(rp, "resolve_provider", lambda *args, **kwargs: "qwen-oauth")
+    monkeypatch.setattr(rp, "load_pool", lambda provider: _EmptyPool())
+
+    def _qwen_credentials_fail():
+        raise AuthError("stale qwen credentials", provider="qwen-oauth", code="qwen_auth_missing")
+
+    monkeypatch.setattr(rp, "resolve_qwen_runtime_credentials", _qwen_credentials_fail)
+
+    with pytest.raises(AuthError) as exc_info:
+        rp.resolve_runtime_provider(requested="auto")
+
+    assert exc_info.value.provider == "qwen-oauth"
+    assert exc_info.value.code == "paid_provider_blocked"
+
+
+def test_auto_oauth_failure_falls_through_to_openrouter_when_flag_false(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Parity check: with the flag off, an auto-path OAuth failure still
+    falls through to OpenRouter — unchanged, pre-existing behavior."""
     monkeypatch.setenv("OPENROUTER_API_KEY", "fake-openrouter-key")
     monkeypatch.setattr(rp, "resolve_provider", lambda *args, **kwargs: "qwen-oauth")
     monkeypatch.setattr(rp, "load_pool", lambda provider: _EmptyPool())

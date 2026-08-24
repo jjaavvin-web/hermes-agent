@@ -2079,6 +2079,44 @@ def _get_config_hint_for_unknown_provider(provider_name: str) -> str:
         return ""
 
 
+def _as_config_bool(value: Any, *, default: bool = False) -> bool:
+    """Coerce a config.yaml scalar to bool. Local to this module — do NOT
+    import ``hermes_cli.runtime_provider``'s copy here, since that module
+    already imports from ``hermes_cli.auth`` and back-importing it would
+    create a cycle.
+    """
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return default
+    if isinstance(value, (int, float)):
+        return bool(value)
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"1", "true", "yes", "on", "enabled"}:
+            return True
+        if normalized in {"0", "false", "no", "off", "disabled", ""}:
+            return False
+    return default
+
+
+def _auto_path_disable_paid_api_fallback() -> bool:
+    """Read ``auth.disable_paid_api_fallback`` for the auto-resolution
+    safety net inside :func:`resolve_provider`. Never returns True on a
+    config-read failure — a broken config must not block auto-resolution
+    outright; it only means the extra openrouter guard below is skipped.
+    """
+    try:
+        from hermes_cli.config import load_config
+
+        auth_cfg = (load_config() or {}).get("auth")
+    except Exception:
+        return False
+    if not isinstance(auth_cfg, dict):
+        return False
+    return _as_config_bool(auth_cfg.get("disable_paid_api_fallback"), default=False)
+
+
 def resolve_provider(
     requested: Optional[str] = None,
     *,
@@ -2196,7 +2234,15 @@ def resolve_provider(
     except Exception as e:
         logger.debug("Could not read config.yaml model.provider for auto-resolution: %s", e)
 
-    if has_usable_secret(os.getenv("OPENAI_API_KEY")) or has_usable_secret(os.getenv("OPENROUTER_API_KEY")):
+    # Safe-provider gate: when auth.disable_paid_api_fallback=true, the auto
+    # path must not silently resolve to OpenRouter (a pay-as-you-go
+    # aggregator) just because an env var or a pooled credential happens to
+    # be present. See hermes_cli.providers.SAFE_PROVIDERS.
+    _disable_paid_api_fallback = _auto_path_disable_paid_api_fallback()
+
+    if not _disable_paid_api_fallback and (
+        has_usable_secret(os.getenv("OPENAI_API_KEY")) or has_usable_secret(os.getenv("OPENROUTER_API_KEY"))
+    ):
         return "openrouter"
 
     # Auto-detect an OpenRouter credential added via `hermes auth add openrouter`
@@ -2206,13 +2252,14 @@ def resolve_provider(
     # Authorization header ("HTTP 401: Missing Authentication header"). The
     # env-var check above only covers keys exported as OPENROUTER_API_KEY /
     # OPENAI_API_KEY. See issue #42130.
-    try:
-        from agent.credential_pool import load_pool as _load_pool
+    if not _disable_paid_api_fallback:
+        try:
+            from agent.credential_pool import load_pool as _load_pool
 
-        if _load_pool("openrouter").has_credentials():
-            return "openrouter"
-    except Exception as e:
-        logger.debug("Could not check OpenRouter credential pool: %s", e)
+            if _load_pool("openrouter").has_credentials():
+                return "openrouter"
+        except Exception as e:
+            logger.debug("Could not check OpenRouter credential pool: %s", e)
 
     # Determine the logged-in OAuth provider up front so the env-key loop below
     # can WARN when an exported API key preempts it (#29285 transparency). The

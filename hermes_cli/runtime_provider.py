@@ -47,7 +47,7 @@ from hermes_cli.config import (
 )
 from hermes_cli.providers import custom_provider_aliases, custom_provider_slug
 from hermes_constants import OPENROUTER_BASE_URL
-from hermes_cli.providers import is_official_openai_host
+from hermes_cli.providers import is_official_openai_host, is_safe_provider
 from utils import base_url_host_matches, base_url_hostname, env_int
 
 
@@ -1853,6 +1853,13 @@ def resolve_runtime_provider(
         custom_runtime["requested_provider"] = requested_provider
         return custom_runtime
 
+    # Read once, up front — the custom-base-url bypass branch immediately
+    # below has its own early return and must not be able to hand back a
+    # non-safe-provider runtime (e.g. an "openrouter"-labelled custom
+    # endpoint) without passing the same paid-fallback gate applied to the
+    # resolve_provider() path further down. See SAFE_PROVIDERS.
+    disable_paid_api_fallback = _auth_disable_paid_api_fallback_enabled()
+
     # If provider is "auto" (or unset) but config.yaml has an explicit base_url
     # pointing at a custom/local endpoint (e.g. Ollama at localhost:11434),
     # route through the OpenAI-compatible resolver instead of letting
@@ -1887,6 +1894,14 @@ def resolve_runtime_provider(
                     explicit_api_key=explicit_api_key,
                     explicit_base_url=explicit_base_url,
                 )
+                if disable_paid_api_fallback and not is_safe_provider(runtime.get("provider")):
+                    raise AuthError(
+                        f"Custom endpoint resolved provider '{runtime.get('provider')}' is "
+                        "blocked because auth.disable_paid_api_fallback=true. Paid API-key "
+                        "fallback is disabled for this profile.",
+                        provider=str(runtime.get("provider") or ""),
+                        code="paid_provider_blocked",
+                    )
                 runtime["requested_provider"] = requested_provider
                 return runtime
 
@@ -1896,7 +1911,22 @@ def resolve_runtime_provider(
         explicit_base_url=explicit_base_url,
     )
     model_cfg = _get_model_config()
-    disable_paid_api_fallback = _auth_disable_paid_api_fallback_enabled()
+    if (
+        disable_paid_api_fallback
+        and provider != "anthropic"
+        and not is_safe_provider(provider)
+    ):
+        # provider == "anthropic" is handled below by the existing OAuth-only
+        # branch, which already fails closed (raises AuthError) when no
+        # Anthropic OAuth credential is available — see the docstring note
+        # on SAFE_PROVIDERS for why "anthropic" itself is not on the list.
+        raise AuthError(
+            f"Provider '{provider}' is blocked because auth.disable_paid_api_fallback=true "
+            "only permits openai-codex, xai-oauth, or claude-cli-subprocess for inference. "
+            "Paid API-key fallback is disabled for this profile.",
+            provider=provider,
+            code="paid_provider_blocked",
+        )
     explicit_runtime = _resolve_explicit_runtime(
         provider=provider,
         requested_provider=requested_provider,

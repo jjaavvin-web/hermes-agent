@@ -260,3 +260,31 @@ def test_user_provider_resolution_rejects_malformed_entries():
     assert providers.resolve_user_provider("x", {"x": "not-a-dict"}) is None
     assert providers.resolve_custom_provider("x", {}) is None  # type: ignore[arg-type]
     assert providers.resolve_custom_provider("x", [{"name": "no-url"}]) is None
+
+
+@pytest.mark.parametrize(
+    ("provider", "expected"),
+    [
+        ("openai-codex", True),
+        ("xai-oauth", True),
+        ("claude-cli-subprocess", True),
+        (" OpenAI-Codex ", True),
+        ("XAI-OAUTH", True),
+        ("openrouter", False),
+        ("openai", False),
+        ("anthropic", False),
+        ("gemini", False),
+        (None, False),
+        ("", False),
+        (" OpenRouter ", False),
+    ],
+)
+def test_is_safe_provider(provider, expected):
+    assert providers.is_safe_provider(provider) is expected
+
+
+def test_safe_providers_excludes_anthropic():
+    """Deliberate: policy pins the lane provider to claude-cli-subprocess,
+    never anthropic — see SAFE_PROVIDERS docstring."""
+    assert "anthropic" not in providers.SAFE_PROVIDERS
+    assert "claude-cli-subprocess" in providers.SAFE_PROVIDERS

@@ -957,3 +957,24 @@ def resolve_provider_full(
         pass
 
     return None
+
+
+# -- Safe-provider allow-list -------------------------------------------------
+# Providers that stay usable when ``auth.disable_paid_api_fallback`` is set —
+# each one is either a subscription-backed OAuth lane or the Max-preserving
+# interactive CLI subprocess, never a pay-as-you-go API key. "anthropic" is
+# deliberately EXCLUDED: policy requires the lane provider to be
+# claude-cli-subprocess, never anthropic — the canonical lock forbids
+# native_anthropic_api_pins and anthropic_oauth_spoof_provider.
+SAFE_PROVIDERS: frozenset[str] = frozenset({
+    "openai-codex",
+    "xai-oauth",
+    "claude-cli-subprocess",
+})
+
+
+def is_safe_provider(provider: str | None) -> bool:
+    """Return True when *provider* is on the paid-fallback-disabled allow-list."""
+    if not provider:
+        return False
+    return provider.strip().lower() in SAFE_PROVIDERS

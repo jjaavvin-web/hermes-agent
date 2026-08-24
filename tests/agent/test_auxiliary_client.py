@@ -1546,6 +1546,31 @@ class TestGetProviderChain:
             chain = _get_provider_chain()
         assert chain[0] == ("openrouter", sentinel)
 
+    def test_chain_suppressed_when_paid_fallback_disabled(self, monkeypatch, caplog):
+        """None of the chain labels (openrouter/nous/local-custom/api-key) are
+        on SAFE_PROVIDERS, so auth.disable_paid_api_fallback=true drops the
+        entire speculative discovery chain rather than proving any rung safe."""
+        import hermes_cli.runtime_provider as rp
+
+        monkeypatch.setattr(rp, "_auth_disable_paid_api_fallback_enabled", lambda: True)
+
+        with caplog.at_level(logging.DEBUG, logger="agent.auxiliary_client"):
+            chain = _get_provider_chain()
+
+        assert chain == []
+        assert "discovery chain suppressed (paid fallback disabled)" in caplog.text
+
+    def test_chain_unchanged_when_paid_fallback_flag_false(self, monkeypatch):
+        """Parity: with the flag off, all four rungs are still present."""
+        import hermes_cli.runtime_provider as rp
+
+        monkeypatch.setattr(rp, "_auth_disable_paid_api_fallback_enabled", lambda: False)
+
+        chain = _get_provider_chain()
+
+        labels = [label for label, _ in chain]
+        assert labels == ["openrouter", "nous", "local/custom", "api-key"]
+
 
 class TestTryPaymentFallback:
     """_try_payment_fallback skips the failed provider and tries alternatives."""
@@ -2192,6 +2217,78 @@ def test_resolve_api_key_provider_skips_unconfigured_anthropic(monkeypatch):
 
     assert "anthropic" not in called, \
         "_try_anthropic() should not be called when anthropic is not explicitly configured"
+
+
+def test_resolve_api_key_provider_skips_all_when_paid_fallback_disabled(monkeypatch):
+    """_resolve_api_key_provider must skip every api_key provider — never
+    touching pool or env credentials — when auth.disable_paid_api_fallback is
+    true. None of the registry's api_key-type providers (openrouter isn't
+    even in PROVIDER_REGISTRY) are on SAFE_PROVIDERS, so the loop must never
+    return a non-safe provider such as openrouter."""
+    from collections import OrderedDict
+    from hermes_cli.auth import ProviderConfig
+    import hermes_cli.runtime_provider as rp
+
+    fake_registry = OrderedDict({
+        "gemini": ProviderConfig(
+            id="gemini",
+            name="Gemini",
+            auth_type="api_key",
+            inference_base_url="https://generativelanguage.googleapis.com",
+            api_key_env_vars=("GEMINI_API_KEY",),
+        ),
+    })
+
+    select_calls = []
+
+    def mock_select_pool_entry(provider_id):
+        select_calls.append(provider_id)
+        return False, None
+
+    monkeypatch.setattr("hermes_cli.auth.PROVIDER_REGISTRY", fake_registry)
+    monkeypatch.setattr("agent.auxiliary_client._select_pool_entry", mock_select_pool_entry)
+    monkeypatch.setattr(rp, "_auth_disable_paid_api_fallback_enabled", lambda: True)
+
+    from agent.auxiliary_client import _resolve_api_key_provider
+    client, model = _resolve_api_key_provider()
+
+    assert (client, model) == (None, None)
+    assert select_calls == [], (
+        "flag-disabled providers must be skipped before any credential resolution"
+    )
+
+
+def test_resolve_api_key_provider_unaffected_when_paid_fallback_flag_false(monkeypatch):
+    """Parity: with the flag off, the api-key loop still reaches pool
+    resolution for a normal api_key provider."""
+    from collections import OrderedDict
+    from hermes_cli.auth import ProviderConfig
+    import hermes_cli.runtime_provider as rp
+
+    fake_registry = OrderedDict({
+        "gemini": ProviderConfig(
+            id="gemini",
+            name="Gemini",
+            auth_type="api_key",
+            inference_base_url="https://generativelanguage.googleapis.com",
+            api_key_env_vars=("GEMINI_API_KEY",),
+        ),
+    })
+
+    select_calls = []
+
+    def mock_select_pool_entry(provider_id):
+        select_calls.append(provider_id)
+        return False, None
+
+    monkeypatch.setattr("hermes_cli.auth.PROVIDER_REGISTRY", fake_registry)
+    monkeypatch.setattr("agent.auxiliary_client._select_pool_entry", mock_select_pool_entry)
+    monkeypatch.setattr(rp, "_auth_disable_paid_api_fallback_enabled", lambda: False)
+
+    from agent.auxiliary_client import _resolve_api_key_provider
+    _resolve_api_key_provider()
+
+    assert select_calls == ["gemini"], "flag-off must still reach pool resolution"
 
 
 # ---------------------------------------------------------------------------
