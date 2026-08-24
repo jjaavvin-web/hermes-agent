@@ -6372,10 +6372,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         except Exception:
             logger.debug("could not set multiplex-active flag", exc_info=True)
         self.adapters: Dict[Platform, BasePlatformAdapter] = {}
-        # Multi-profile multiplexing: adapters for NON-default profiles live
-        # here, keyed by profile name then Platform. self.adapters stays the
-        # default/active profile's map so the ~93 existing self.adapters[...]
-        # sites are untouched when multiplexing is off (this dict is empty).
+        # Multi-profile multiplexing: adapters for every NON-active profile live
+        # here, keyed by profile name then Platform. self.adapters belongs to the
+        # active profile (which may itself be named); when another profile such as
+        # ``default`` is served secondarily it therefore lives in this map.
+        # The dict is empty when multiplexing is off, preserving the existing
+        # self.adapters[...] call sites.
         # Populated by _start_secondary_profile_adapters().
         self._profile_adapters: Dict[str, Dict[Platform, BasePlatformAdapter]] = {}
         self._warn_if_docker_media_delivery_is_risky()
@@ -14910,10 +14912,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         return _handler
 
     def _make_default_profile_message_handler(self):
-        """Scope a multiplexed default-profile message from ingress onward."""
-        profile_home = Path(get_hermes_home())
+        """Scope primary-adapter intake without changing root/default behavior."""
 
         async def _handler(event):
+            selected_profile = str(
+                getattr(getattr(event, "source", None), "profile", "") or ""
+            ).strip()
+            profile_home = (
+                self._resolve_profile_home_for_source(event.source)
+                if selected_profile
+                else Path(get_hermes_home())
+            )
             with _profile_runtime_scope(profile_home):
                 return await self._handle_message(event)
 
@@ -14924,6 +14933,54 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if getattr(self.config, "multiplex_profiles", False):
             return self._make_default_profile_message_handler()
         return self._handle_message
+
+    def _profile_home_for_name(self, profile: str) -> Optional[Path]:
+        """Return the exact currently served profile home, or ``None``."""
+        selected = (profile or "").strip()
+        if not selected:
+            return None
+        try:
+            for profile_name, profile_home in _multiplex_profile_homes(self.config):
+                if profile_name == selected:
+                    return profile_home
+        except Exception:
+            logger.warning(
+                "Failed to resolve served profile home for %r",
+                selected,
+                exc_info=True,
+            )
+        return None
+
+    def _delivery_adapter_for_profile(
+        self, platform: Platform, profile: str
+    ):
+        """Return only the adapter owned by the exact served profile.
+
+        ``self.adapters`` belongs to the process's active profile, which is not
+        necessarily ``default``. Secondary profiles—including ``default`` when
+        a named profile is active—live in ``_profile_adapters``. Outbound
+        explicit-profile delivery must distinguish those registries and never
+        fall back across them.
+        """
+        selected = (profile or "").strip()
+        if not selected or self._profile_home_for_name(selected) is None:
+            return None
+        if selected == self._active_profile_name():
+            return (getattr(self, "adapters", None) or {}).get(platform)
+        profile_adapters = getattr(self, "_profile_adapters", None) or {}
+        return (profile_adapters.get(selected) or {}).get(platform)
+
+    def _home_channel_for_profile(
+        self, platform: Platform, profile: str
+    ):
+        """Resolve a home channel only from the exact selected profile config."""
+        from gateway.config import load_gateway_config
+
+        profile_home = self._profile_home_for_name(profile)
+        if profile_home is None:
+            return None
+        with _profile_runtime_scope(profile_home):
+            return load_gateway_config().get_home_channel(platform)
 
     async def _handle_gateway_platform_event(self, event: dict, source) -> None:
         """Authorize and publish one normalized adapter event to plugin hooks."""
@@ -26918,6 +26975,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         
         # Track whether a profile was explicitly requested (vs. falling back to default)
         explicit_profile = None
+        explicit_webhook_profile = bool(
+            getattr(source, "platform", None) == Platform.WEBHOOK
+            and str(getattr(source, "profile", "") or "").strip()
+        )
         try:
             name = (source.profile or "").strip()
             if name:
@@ -26930,8 +26991,19 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 name = get_active_profile_name() or "default"
             
             profile_dir = get_profile_dir(name)
-            # Warn if an explicit profile doesn't exist on disk
+            # An explicitly stamped webhook profile was already selected by an
+            # authenticated /p/<profile>/ route. If that profile disappears or
+            # becomes unavailable before dispatch, never cross the trust boundary
+            # by executing under the global/default HERMES_HOME.
             if explicit_profile and not profile_exists(name):
+                if explicit_webhook_profile:
+                    logger.warning(
+                        "Rejecting webhook source %s/%s because profile %r no longer exists",
+                        source.platform.value,
+                        source.chat_id,
+                        explicit_profile,
+                    )
+                    raise ProfileRouteRejected(explicit_profile)
                 logger.warning(
                     "Profile %r does not exist for source %s/%s (guild_id=%s), "
                     "falling back to global HERMES_HOME",
@@ -26944,8 +27016,19 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             return profile_dir
         except ProfileRouteRejected:
             raise
-        except Exception:
-            # Catch normalization errors, path errors, etc.
+        except Exception as exc:
+            # A named webhook profile is an authenticated routing decision; a
+            # resolver error cannot authorize fallback to the default profile.
+            if explicit_webhook_profile:
+                logger.warning(
+                    "Rejecting webhook source %s/%s because profile %r could not be resolved",
+                    source.platform.value,
+                    source.chat_id,
+                    explicit_profile,
+                    exc_info=True,
+                )
+                raise ProfileRouteRejected(explicit_profile or "webhook-profile") from exc
+            # Preserve the historical fallback for non-webhook sources.
             logger.warning(
                 "Failed to resolve profile directory for source %s/%s (guild_id=%s), "
                 "falling back to global HERMES_HOME: %s",

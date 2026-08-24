@@ -22,6 +22,7 @@ import json
 import socket
 import time
 from collections import deque
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -29,7 +30,7 @@ from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
 from gateway.config import Platform, PlatformConfig
-from gateway.platforms.base import SendResult
+from gateway.platforms.base import MessageEvent, MessageType, SendResult
 from gateway.platforms.webhook import (
     WebhookAdapter,
     _INSECURE_NO_AUTH,
@@ -710,6 +711,521 @@ class TestSessionIsolation:
         ids = {ev.source.chat_id for ev in captured_events}
         assert len(ids) == 2, "Each delivery must have a unique session chat_id"
 
+    @pytest.mark.asyncio
+    async def test_named_profile_stamps_source_and_agent_delivery_metadata(
+        self, tmp_path, monkeypatch
+    ):
+        """A validated named route keeps its profile on dispatch and response state."""
+        routes = {
+            "ci": {
+                "profile": "worker",
+                "secret": _INSECURE_NO_AUTH,
+                "prompt": "build",
+            }
+        }
+        adapter = _make_adapter(routes=routes)
+        adapter._wt_enabled = False
+        runner = MagicMock()
+        runner.config.multiplex_profiles = True
+        runner.config.multiplex_profile_allowlist = ["worker"]
+        runner._profile_name_for_source.return_value = None
+        adapter.gateway_runner = runner
+        monkeypatch.setattr(
+            "hermes_cli.profiles.profiles_to_serve",
+            lambda multiplex, profile_allowlist=None: [
+                ("default", tmp_path),
+                ("worker", tmp_path / "profiles" / "worker"),
+            ],
+        )
+        captured = []
+
+        async def _capture(event):
+            captured.append(event)
+
+        adapter.handle_message = _capture
+        app = _create_app(adapter)
+        app.router.add_post(
+            "/p/{profile}/webhooks/{route_name}", adapter._handle_webhook
+        )
+
+        async with TestClient(TestServer(app)) as cli:
+            response = await cli.post(
+                "/p/worker/webhooks/ci",
+                json={"ref": "main"},
+                headers={"X-GitHub-Delivery": "profile-agent-1"},
+            )
+            assert response.status == 202
+
+        await asyncio.sleep(0.05)
+        assert len(captured) == 1
+        source = captured[0].source
+        assert source.profile == "worker"
+        assert adapter._delivery_info[source.chat_id]["profile"] == "worker"
+        from gateway.session import build_session_key
+
+        assert build_session_key(source, profile=source.profile).startswith("agent:worker:")
+        assert adapter._build_session_key(source).startswith("agent:worker:")
+
+    @pytest.mark.asyncio
+    async def test_named_profile_real_spawn_retains_finalizer_until_true_completion(
+        self, tmp_path, monkeypatch
+    ):
+        """The real prefixed HTTP run keeps lifecycle custody until completion."""
+        adapter = _make_adapter(
+            routes={
+                "ci": {
+                    "profile": "worker",
+                    "secret": _INSECURE_NO_AUTH,
+                    "prompt": "build",
+                }
+            }
+        )
+        adapter._wt_enabled = False
+        adapter.config.typing_indicator = False
+        adapter._max_concurrent_agent_runs = 1
+        adapter._agent_run_semaphore = asyncio.Semaphore(1)
+
+        runner = MagicMock()
+        runner.config.multiplex_profiles = True
+        runner.config.multiplex_profile_allowlist = ["worker"]
+        runner._profile_name_for_source.return_value = None
+        adapter.gateway_runner = runner
+        monkeypatch.setattr(
+            "hermes_cli.profiles.profiles_to_serve",
+            lambda multiplex, profile_allowlist=None: [
+                ("default", tmp_path),
+                ("worker", tmp_path / "profiles" / "worker"),
+            ],
+        )
+
+        started = asyncio.Event()
+        finish = asyncio.Event()
+
+        async def _message_handler(_event):
+            started.set()
+            await finish.wait()
+            return ""
+
+        adapter._message_handler = _message_handler
+        app = _create_app(adapter)
+        app.router.add_post(
+            "/p/{profile}/webhooks/{route_name}", adapter._handle_webhook
+        )
+
+        async with TestClient(TestServer(app)) as cli:
+            response = await cli.post(
+                "/p/worker/webhooks/ci",
+                json={"ref": "main"},
+                headers={"X-GitHub-Delivery": "named-lifecycle-1"},
+            )
+            assert response.status == 202
+            await asyncio.wait_for(started.wait(), timeout=1.0)
+
+            assert len(adapter._run_finalizers) == 1
+            finalizer_key = next(iter(adapter._run_finalizers))
+            assert finalizer_key.startswith("agent:worker:")
+            assert finalizer_key in adapter._session_tasks
+            assert adapter._agent_run_semaphore._value == 0
+
+            finish.set()
+            owner_task = adapter._session_tasks[finalizer_key]
+            await asyncio.wait_for(asyncio.shield(owner_task), timeout=2.0)
+            await asyncio.sleep(0)
+
+        assert finalizer_key not in adapter._session_tasks
+        assert finalizer_key not in adapter._run_finalizers
+        assert adapter._agent_run_semaphore._value == 1
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("first_exit", ["success", "failure", "cancelled"])
+    @pytest.mark.parametrize("handoff_point", ["in_band", "late_pending"])
+    async def test_named_profile_pending_chain_retains_custody_until_terminal_owner(
+        self, tmp_path, monkeypatch, first_exit, handoff_point
+    ):
+        """Same-key follow-ups retain one run lease until the chain is terminal."""
+        adapter = _make_adapter(
+            routes={
+                "ci": {
+                    "profile": "worker",
+                    "secret": _INSECURE_NO_AUTH,
+                    "prompt": "build",
+                }
+            }
+        )
+        adapter._wt_enabled = False
+        adapter.config.typing_indicator = False
+        adapter._max_concurrent_agent_runs = 1
+        adapter._agent_run_semaphore = asyncio.Semaphore(1)
+        lease_completions = []
+        approval_registrations = []
+        approval_clears = []
+        monkeypatch.setattr(
+            "tools.approval.register_session_deny_patterns",
+            lambda key, patterns: approval_registrations.append(
+                (key, tuple(patterns))
+            ),
+        )
+        monkeypatch.setattr(
+            adapter,
+            "_complete_worktree_lease",
+            lambda lease, runtime_cwds=(): lease_completions.append(
+                (lease, tuple(runtime_cwds))
+            ),
+        )
+        monkeypatch.setattr(
+            "tools.approval.clear_session",
+            lambda key: approval_clears.append(("session", key)),
+        )
+        monkeypatch.setattr(
+            "tools.approval.clear_session_credential_taint",
+            lambda key: approval_clears.append(("taint", key)),
+        )
+
+        runner = MagicMock()
+        runner.config.multiplex_profiles = True
+        runner.config.multiplex_profile_allowlist = ["worker"]
+        runner._profile_name_for_source.return_value = None
+        adapter.gateway_runner = runner
+        monkeypatch.setattr(
+            "hermes_cli.profiles.profiles_to_serve",
+            lambda multiplex, profile_allowlist=None: [
+                ("default", tmp_path),
+                ("worker", tmp_path / "profiles" / "worker"),
+            ],
+        )
+
+        first_started = asyncio.Event()
+        release_first = asyncio.Event()
+        first_handler_returned = asyncio.Event()
+        cleanup_entered = asyncio.Event()
+        release_cleanup = asyncio.Event()
+        second_started = asyncio.Event()
+        release_second = asyncio.Event()
+        calls = 0
+        first_event = None
+
+        async def _message_handler(_event):
+            nonlocal calls, first_event
+            calls += 1
+            if calls == 1:
+                first_event = _event
+                first_started.set()
+                await release_first.wait()
+                first_handler_returned.set()
+                if first_exit == "failure":
+                    raise RuntimeError("synthetic first-turn failure")
+                if first_exit == "cancelled":
+                    raise asyncio.CancelledError
+                return ""
+            second_started.set()
+            await release_second.wait()
+            return ""
+
+        adapter._message_handler = _message_handler
+        adapter.send = AsyncMock(return_value=SendResult(success=True))
+        original_stop = adapter._stop_typing_refresh
+        stop_calls = 0
+
+        async def _stop_typing_refresh(*args, **kwargs):
+            nonlocal stop_calls
+            stop_calls += 1
+            if (
+                handoff_point == "late_pending"
+                and calls == 1
+                and first_handler_returned.is_set()
+                and stop_calls >= 2
+            ):
+                cleanup_entered.set()
+                await release_cleanup.wait()
+            return await original_stop(*args, **kwargs)
+
+        adapter._stop_typing_refresh = _stop_typing_refresh
+        app = _create_app(adapter)
+        app.router.add_post(
+            "/p/{profile}/webhooks/{route_name}", adapter._handle_webhook
+        )
+
+        async with TestClient(TestServer(app)) as cli:
+            response = await cli.post(
+                "/p/worker/webhooks/ci",
+                json={"ref": "main"},
+                headers={
+                    "X-GitHub-Delivery": f"named-pending-{first_exit}-1"
+                },
+            )
+            assert response.status == 202
+            await asyncio.wait_for(first_started.wait(), timeout=1.0)
+
+            assert len(adapter._run_finalizers) == 1
+            finalizer_key = next(iter(adapter._run_finalizers))
+            assert finalizer_key.startswith("agent:worker:")
+            first_owner = adapter._session_tasks[finalizer_key]
+            assert first_event is not None
+            adapter._lease_by_finalizer[finalizer_key] = {
+                "path": str(tmp_path / "leases" / first_exit / handoff_point)
+            }
+            pending_event = MessageEvent(
+                text="queued follow-up",
+                message_type=MessageType.TEXT,
+                source=first_event.source,
+                message_id=f"queued-{first_exit}-{handoff_point}-1",
+            )
+            if handoff_point == "in_band":
+                adapter._pending_messages[finalizer_key] = pending_event
+
+            if first_exit == "cancelled":
+                adapter._expected_cancelled_tasks.add(first_owner)
+            release_first.set()
+            if handoff_point == "late_pending":
+                await asyncio.wait_for(cleanup_entered.wait(), timeout=2.0)
+                adapter._pending_messages[finalizer_key] = pending_event
+                release_cleanup.set()
+            await asyncio.wait_for(second_started.wait(), timeout=2.0)
+
+            second_owner = adapter._session_tasks[finalizer_key]
+            assert second_owner is not first_owner
+            assert not second_owner.done()
+            assert finalizer_key in adapter._run_finalizers
+            assert finalizer_key in adapter._lease_by_finalizer
+            assert adapter._agent_run_semaphore._value == 0
+            assert len(approval_registrations) == 1
+            assert approval_registrations[0][0] == finalizer_key
+            assert lease_completions == []
+            assert approval_clears == []
+
+            release_second.set()
+            await asyncio.wait_for(asyncio.shield(second_owner), timeout=2.0)
+            await asyncio.sleep(0)
+
+        assert finalizer_key not in adapter._session_tasks
+        assert finalizer_key not in adapter._run_finalizers
+        assert finalizer_key not in adapter._lease_by_finalizer
+        assert adapter._agent_run_semaphore._value == 1
+        assert len(lease_completions) == 1
+        assert [kind for kind, _key in approval_clears] == ["session", "taint"]
+
+    @pytest.mark.asyncio
+    async def test_root_webhook_keeps_legacy_unstamped_profile_state(self):
+        adapter = _make_adapter(
+            routes={
+                "ci": {
+                    "secret": _INSECURE_NO_AUTH,
+                    "prompt": "build",
+                }
+            }
+        )
+        adapter._wt_enabled = False
+        captured = []
+
+        async def _capture(event):
+            captured.append(event)
+
+        adapter.handle_message = _capture
+        app = _create_app(adapter)
+
+        async with TestClient(TestServer(app)) as cli:
+            response = await cli.post(
+                "/webhooks/ci",
+                json={"ref": "main"},
+                headers={"X-GitHub-Delivery": "root-agent-legacy-1"},
+            )
+            assert response.status == 202
+
+        await asyncio.sleep(0.05)
+        assert len(captured) == 1
+        source = captured[0].source
+        assert source.profile is None
+        assert "profile" not in adapter._delivery_info[source.chat_id]
+
+    @pytest.mark.asyncio
+    async def test_named_default_deliver_only_keeps_explicit_profile_metadata(
+        self, tmp_path, monkeypatch
+    ):
+        adapter = _make_adapter(
+            routes={
+                "notify": {
+                    "secret": _INSECURE_NO_AUTH,
+                    "prompt": "notice",
+                    "deliver_only": True,
+                    "deliver": "telegram",
+                    "deliver_extra": {"chat_id": "default-chat"},
+                }
+            }
+        )
+        runner = MagicMock()
+        runner.config.multiplex_profiles = True
+        runner.config.multiplex_profile_allowlist = None
+        adapter.gateway_runner = runner
+        monkeypatch.setattr(
+            "hermes_cli.profiles.profiles_to_serve",
+            lambda multiplex, profile_allowlist=None: [("default", tmp_path)],
+        )
+        captured = []
+
+        async def _capture(content, delivery):
+            captured.append(delivery)
+            return SendResult(success=True)
+
+        monkeypatch.setattr(adapter, "_direct_deliver", _capture)
+        app = _create_app(adapter)
+        app.router.add_post(
+            "/p/{profile}/webhooks/{route_name}", adapter._handle_webhook
+        )
+
+        async with TestClient(TestServer(app)) as cli:
+            response = await cli.post(
+                "/p/default/webhooks/notify",
+                json={"event": "ready"},
+                headers={"X-GitHub-Delivery": "profile-default-direct-1"},
+            )
+
+        assert response.status == 200
+        assert captured == [
+            {
+                "deliver": "telegram",
+                "deliver_extra": {"chat_id": "default-chat"},
+                "payload": {"event": "ready"},
+                "profile": "default",
+            }
+        ]
+
+    @pytest.mark.asyncio
+    async def test_named_profile_skill_preprocessing_uses_selected_home(
+        self, tmp_path, monkeypatch
+    ):
+        """Route-level skill expansion must load the named profile's skill bytes."""
+        import agent.skill_commands as sc_mod
+
+        worker_home = tmp_path / "profiles" / "worker"
+        skill_dir = worker_home / "skills" / "worker-skill"
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text(
+            "---\nname: worker-skill\ndescription: Worker scoped.\n---\n\n"
+            "WORKER PROFILE SKILL BODY\n",
+            encoding="utf-8",
+        )
+        adapter = _make_adapter(
+            routes={
+                "skilled": {
+                    "profile": "worker",
+                    "secret": _INSECURE_NO_AUTH,
+                    "prompt": "original instruction",
+                    "skills": ["worker-skill"],
+                }
+            }
+        )
+        adapter._wt_enabled = False
+        runner = MagicMock()
+        runner.config.multiplex_profiles = True
+        runner.config.multiplex_profile_allowlist = ["worker"]
+        runner._profile_name_for_source.return_value = None
+        adapter.gateway_runner = runner
+        monkeypatch.setattr(
+            "hermes_cli.profiles.profiles_to_serve",
+            lambda multiplex, profile_allowlist=None: [
+                ("default", tmp_path),
+                ("worker", worker_home),
+            ],
+        )
+        monkeypatch.setattr(
+            "hermes_cli.profiles.get_profile_dir", lambda profile: worker_home
+        )
+        monkeypatch.setattr(sc_mod, "_skill_commands", {})
+        monkeypatch.setattr(sc_mod, "_skill_commands_platform", None)
+        monkeypatch.setattr(sc_mod, "_skill_commands_home", None, raising=False)
+        observed_skill_scopes = []
+        real_get_skill_commands = sc_mod.get_skill_commands
+
+        def _record_get_skill_commands():
+            from hermes_constants import get_hermes_home
+
+            commands = real_get_skill_commands()
+            observed_skill_scopes.append((get_hermes_home(), dict(commands)))
+            return commands
+
+        monkeypatch.setattr(sc_mod, "get_skill_commands", _record_get_skill_commands)
+        captured = []
+
+        async def _capture(event):
+            captured.append(event)
+
+        adapter.handle_message = _capture
+        app = _create_app(adapter)
+        app.router.add_post(
+            "/p/{profile}/webhooks/{route_name}", adapter._handle_webhook
+        )
+
+        async with TestClient(TestServer(app)) as cli:
+            response = await cli.post(
+                "/p/worker/webhooks/skilled",
+                json={"ref": "main"},
+                headers={"X-GitHub-Delivery": "profile-skill-1"},
+            )
+            assert response.status == 202
+
+        await asyncio.sleep(0.05)
+        assert len(captured) == 1
+        assert observed_skill_scopes
+        assert all(home == worker_home for home, _commands in observed_skill_scopes)
+        assert all("/worker-skill" in commands for _home, commands in observed_skill_scopes)
+        assert "WORKER PROFILE SKILL BODY" in captured[0].text
+
+    @pytest.mark.asyncio
+    async def test_named_profile_deliver_only_carries_profile_metadata(
+        self, tmp_path, monkeypatch
+    ):
+        adapter = _make_adapter(
+            routes={
+                "notify": {
+                    "profile": "worker",
+                    "secret": _INSECURE_NO_AUTH,
+                    "prompt": "notice",
+                    "deliver_only": True,
+                    "deliver": "telegram",
+                    "deliver_extra": {"chat_id": "worker-chat"},
+                }
+            }
+        )
+        runner = MagicMock()
+        runner.config.multiplex_profiles = True
+        runner.config.multiplex_profile_allowlist = ["worker"]
+        adapter.gateway_runner = runner
+        monkeypatch.setattr(
+            "hermes_cli.profiles.profiles_to_serve",
+            lambda multiplex, profile_allowlist=None: [
+                ("default", tmp_path),
+                ("worker", tmp_path / "profiles" / "worker"),
+            ],
+        )
+        captured = []
+
+        async def _capture(content, delivery):
+            captured.append(delivery)
+            return SendResult(success=True)
+
+        monkeypatch.setattr(adapter, "_direct_deliver", _capture)
+        app = _create_app(adapter)
+        app.router.add_post(
+            "/p/{profile}/webhooks/{route_name}", adapter._handle_webhook
+        )
+
+        async with TestClient(TestServer(app)) as cli:
+            response = await cli.post(
+                "/p/worker/webhooks/notify",
+                json={"event": "ready"},
+                headers={"X-GitHub-Delivery": "profile-direct-1"},
+            )
+
+        assert response.status == 200
+        assert captured == [
+            {
+                "deliver": "telegram",
+                "deliver_extra": {"chat_id": "worker-chat"},
+                "payload": {"event": "ready"},
+                "profile": "worker",
+            }
+        ]
+
 
 # ===================================================================
 # Silence-marker suppression
@@ -931,6 +1447,263 @@ class TestDeliverCrossPlatformThreadId:
         mock_target.send.assert_awaited_once_with(
             "12345", "hello", metadata={"thread_id": "999"}
         )
+
+    @pytest.mark.asyncio
+    async def test_named_profile_uses_exact_adapter_and_home_channel(self):
+        adapter = _make_adapter()
+        default_target = AsyncMock()
+        default_target.send = AsyncMock(return_value=SendResult(success=True))
+        worker_target = AsyncMock()
+        worker_target.send = AsyncMock(return_value=SendResult(success=True))
+        runner = MagicMock()
+        runner.config.multiplex_profiles = True
+        runner.adapters = {Platform.TELEGRAM: default_target}
+        runner._profile_adapters = {"worker": {Platform.TELEGRAM: worker_target}}
+        runner._delivery_adapter_for_profile.side_effect = (
+            lambda platform, profile=None: runner._profile_adapters.get(
+                profile, {}
+            ).get(platform)
+        )
+        worker_home = MagicMock()
+        worker_home.chat_id = "worker-home"
+        runner._home_channel_for_profile.return_value = worker_home
+        default_home = MagicMock()
+        default_home.chat_id = "default-home"
+        runner.config.get_home_channel.return_value = default_home
+        adapter.gateway_runner = runner
+
+        result = await adapter._deliver_cross_platform(
+            "telegram",
+            "hello",
+            {"profile": "worker", "deliver_extra": {}},
+        )
+
+        assert result.success is True
+        worker_target.send.assert_awaited_once_with(
+            "worker-home", "hello", metadata={"profile": "worker"}
+        )
+        default_target.send.assert_not_awaited()
+        runner._home_channel_for_profile.assert_called_once_with(
+            Platform.TELEGRAM, "worker"
+        )
+        runner.config.get_home_channel.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_named_profile_missing_adapter_fails_closed(self):
+        adapter = _make_adapter()
+        default_target = AsyncMock()
+        default_target.send = AsyncMock(return_value=SendResult(success=True))
+        arbitrary_target = AsyncMock()
+        arbitrary_target.send = AsyncMock(return_value=SendResult(success=True))
+        runner = MagicMock()
+        runner.config.multiplex_profiles = True
+        runner.adapters = {Platform.TELEGRAM: default_target}
+        runner._profile_adapters = {
+            "other": {Platform.TELEGRAM: arbitrary_target},
+            "worker": {},
+        }
+        runner._delivery_adapter_for_profile.return_value = None
+        adapter.gateway_runner = runner
+
+        result = await adapter._deliver_cross_platform(
+            "telegram",
+            "hello",
+            {
+                "profile": "worker",
+                "deliver_extra": {"chat_id": "worker-chat"},
+            },
+        )
+
+        assert result.success is False
+        assert "worker" in (result.error or "")
+        default_target.send.assert_not_awaited()
+        arbitrary_target.send.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_named_profile_missing_config_fails_closed_with_explicit_chat_id(self):
+        adapter = _make_adapter()
+        worker_target = AsyncMock()
+        worker_target.send = AsyncMock(return_value=SendResult(success=True))
+        runner = MagicMock()
+        runner.config.multiplex_profiles = True
+        runner._profile_home_for_name.return_value = None
+        runner._delivery_adapter_for_profile.return_value = worker_target
+        adapter.gateway_runner = runner
+
+        result = await adapter._deliver_cross_platform(
+            "telegram",
+            "hello",
+            {
+                "profile": "worker",
+                "deliver_extra": {"chat_id": "worker-chat"},
+            },
+        )
+
+        assert result.success is False
+        assert "worker" in (result.error or "")
+        assert "config" in (result.error or "").lower()
+        runner._delivery_adapter_for_profile.assert_not_called()
+        worker_target.send.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_explicit_default_profile_uses_served_default_config(self):
+        adapter = _make_adapter()
+        default_target = AsyncMock()
+        default_target.send = AsyncMock(return_value=SendResult(success=True))
+        runner = MagicMock()
+        runner.config.multiplex_profiles = True
+        runner._profile_home_for_name.return_value = Path("/profiles/default")
+        runner._delivery_adapter_for_profile.return_value = default_target
+        adapter.gateway_runner = runner
+
+        result = await adapter._deliver_cross_platform(
+            "telegram",
+            "hello",
+            {
+                "profile": "default",
+                "deliver_extra": {"chat_id": "default-chat"},
+            },
+        )
+
+        assert result.success is True
+        runner._profile_home_for_name.assert_called_once_with("default")
+        runner._delivery_adapter_for_profile.assert_called_once_with(
+            Platform.TELEGRAM, "default"
+        )
+        default_target.send.assert_awaited_once_with(
+            "default-chat", "hello", metadata={"profile": "default"}
+        )
+
+    @pytest.mark.asyncio
+    async def test_explicit_default_profile_uses_exact_secondary_default_adapter(
+        self,
+    ):
+        """A named active profile must not own explicit /p/default/ delivery."""
+        from gateway.run import GatewayRunner
+
+        adapter = _make_adapter()
+        active_named_target = AsyncMock()
+        active_named_target.send = AsyncMock(return_value=SendResult(success=True))
+        exact_default_target = AsyncMock()
+        exact_default_target.send = AsyncMock(return_value=SendResult(success=True))
+
+        runner = GatewayRunner.__new__(GatewayRunner)
+        runner.config = MagicMock()
+        runner.config.multiplex_profiles = True
+        runner.adapters = {Platform.TELEGRAM: active_named_target}
+        runner._profile_adapters = {
+            "default": {Platform.TELEGRAM: exact_default_target}
+        }
+        runner._active_profile_name = lambda: "worker"
+        runner._profile_home_for_name = lambda profile: (
+            Path("/profiles/default") if profile == "default" else None
+        )
+        adapter.gateway_runner = runner
+
+        result = await adapter._deliver_cross_platform(
+            "telegram",
+            "hello",
+            {
+                "profile": "default",
+                "deliver_extra": {"chat_id": "default-chat"},
+            },
+        )
+
+        assert result.success is True
+        exact_default_target.send.assert_awaited_once_with(
+            "default-chat", "hello", metadata={"profile": "default"}
+        )
+        active_named_target.send.assert_not_awaited()
+
+
+class TestGitHubCommentProfileIsolation:
+    @pytest.mark.asyncio
+    async def test_explicit_profile_missing_config_fails_before_github_subprocess(
+        self,
+    ):
+        adapter = _make_adapter()
+        runner = MagicMock()
+        runner._profile_home_for_name.return_value = None
+        adapter.gateway_runner = runner
+
+        with patch("gateway.platforms.webhook.subprocess.run") as mock_run:
+            result = await adapter._deliver_github_comment(
+                "review body",
+                {
+                    "profile": "worker",
+                    "deliver_extra": {"repo": "org/repo", "pr_number": "1"},
+                },
+            )
+
+        assert result.success is False
+        assert "worker" in (result.error or "")
+        assert "config" in (result.error or "").lower()
+        mock_run.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_explicit_profile_missing_live_webhook_adapter_fails_closed(
+        self, tmp_path
+    ):
+        profile_home = tmp_path / "worker"
+        profile_home.mkdir()
+        adapter = _make_adapter()
+        runner = MagicMock()
+        runner._profile_home_for_name.return_value = profile_home
+        runner.adapters = {}
+        adapter.gateway_runner = runner
+
+        with patch("gateway.platforms.webhook.subprocess.run") as mock_run:
+            result = await adapter._deliver_github_comment(
+                "review body",
+                {
+                    "profile": "worker",
+                    "deliver_extra": {"repo": "org/repo", "pr_number": "1"},
+                },
+            )
+
+        assert result.success is False
+        assert "worker" in (result.error or "")
+        assert "adapter" in (result.error or "").lower()
+        mock_run.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_explicit_profile_github_subprocess_uses_only_scoped_token(
+        self, tmp_path, monkeypatch
+    ):
+        profile_home = tmp_path / "worker"
+        profile_home.mkdir()
+        (profile_home / ".env").write_text(
+            "GH_TOKEN=worker-profile-token\n", encoding="utf-8"
+        )
+        monkeypatch.setenv("GH_TOKEN", "wrong-process-token")
+        monkeypatch.setenv("GITHUB_TOKEN", "wrong-process-github-token")
+        monkeypatch.setenv("OPENAI_API_KEY", "wrong-process-provider-secret")
+
+        adapter = _make_adapter()
+        runner = MagicMock()
+        runner._profile_home_for_name.return_value = profile_home
+        runner.adapters = {Platform.WEBHOOK: adapter}
+        adapter.gateway_runner = runner
+        completed = MagicMock(returncode=0, stdout="", stderr="")
+
+        with patch(
+            "gateway.platforms.webhook.subprocess.run", return_value=completed
+        ) as mock_run:
+            result = await adapter._deliver_github_comment(
+                "review body",
+                {
+                    "profile": "worker",
+                    "deliver_extra": {"repo": "org/repo", "pr_number": "1"},
+                },
+            )
+
+        assert result.success is True
+        call_env = mock_run.call_args.kwargs["env"]
+        assert call_env["GH_TOKEN"] == "worker-profile-token"
+        assert "GITHUB_TOKEN" not in call_env
+        assert "OPENAI_API_KEY" not in call_env
+        assert call_env["HOME"] == str(profile_home)
+        assert call_env["GH_CONFIG_DIR"].startswith(str(profile_home))
 
 
 class TestInsecureNoAuthSafetyRail:

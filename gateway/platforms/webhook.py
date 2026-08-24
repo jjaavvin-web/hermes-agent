@@ -251,6 +251,11 @@ def check_webhook_requirements() -> bool:
 class WebhookAdapter(BasePlatformAdapter):
     """Generic webhook receiver that triggers agent runs from HTTP POSTs."""
 
+    # A webhook delivery is one run even when gateway-internal same-key
+    # continuations drain through multiple owner tasks. Keep its semaphore,
+    # approval state, session, and worktree lease until the terminal owner.
+    _DEFER_PROCESSING_COMPLETE_UNTIL_DRAIN_TERMINAL = True
+
     # No human is present to answer a "session restored — what next?" prompt:
     # webhook runs are event-triggered.  The startup auto-resume turn must
     # instruct the model to FINISH the interrupted work instead of emitting an
@@ -353,6 +358,7 @@ class WebhookAdapter(BasePlatformAdapter):
             source,
             group_sessions_per_user=extra.get("group_sessions_per_user", True),
             thread_sessions_per_user=extra.get("thread_sessions_per_user", False),
+            profile=getattr(source, "profile", None),
         )
 
     def _run_finalizer_key(self, event: MessageEvent) -> str:
@@ -580,7 +586,11 @@ class WebhookAdapter(BasePlatformAdapter):
             )
             return SendResult(success=True)
 
-        delivery = self._delivery_info.get(chat_id, {})
+        delivery = dict(self._delivery_info.get(chat_id, {}))
+        profile = (delivery.get("profile") or "").strip()
+        if profile:
+            metadata = dict(metadata or {})
+            metadata["profile"] = profile
         deliver_type = delivery.get("deliver", "log")
 
         if deliver_type == "log":
@@ -1530,25 +1540,33 @@ class WebhookAdapter(BasePlatformAdapter):
         skills = route_config.get("skills", [])
         if skills:
             try:
+                from contextlib import nullcontext
                 from agent.skill_commands import (
                     build_skill_invocation_message,
                     get_skill_commands,
                 )
 
-                skill_cmds = get_skill_commands()
-                for skill_name in skills:
-                    cmd_key = f"/{skill_name}"
-                    if cmd_key in skill_cmds:
-                        skill_content = build_skill_invocation_message(
-                            cmd_key, user_instruction=prompt
-                        )
-                        if skill_content:
-                            prompt = skill_content
-                            break  # Load the first matching skill
-                    else:
-                        logger.warning(
-                            "[webhook] Skill '%s' not found", skill_name
-                        )
+                profile_scope = nullcontext()
+                if profile:
+                    from gateway.run import _profile_runtime_scope
+                    from hermes_cli.profiles import get_profile_dir
+
+                    profile_scope = _profile_runtime_scope(get_profile_dir(profile))
+                with profile_scope:
+                    skill_cmds = get_skill_commands()
+                    for skill_name in skills:
+                        cmd_key = f"/{skill_name}"
+                        if cmd_key in skill_cmds:
+                            skill_content = build_skill_invocation_message(
+                                cmd_key, user_instruction=prompt
+                            )
+                            if skill_content:
+                                prompt = skill_content
+                                break  # Load the first matching skill
+                        else:
+                            logger.warning(
+                                "[webhook] Skill '%s' not found", skill_name
+                            )
             except Exception as e:
                 logger.warning("[webhook] Skill loading failed: %s", e)
 
@@ -1594,6 +1612,8 @@ class WebhookAdapter(BasePlatformAdapter):
                 ),
                 "payload": payload,
             }
+            if profile:
+                delivery["profile"] = profile
             logger.info(
                 "[webhook] direct-deliver event=%s route=%s target=%s msg_len=%d delivery=%s",
                 event_type,
@@ -1651,6 +1671,8 @@ class WebhookAdapter(BasePlatformAdapter):
                 route_config.get("deliver_extra", {}), payload
             ),
         }
+        if profile:
+            deliver_config["profile"] = profile
         self._delivery_info[session_chat_id] = deliver_config
         self._delivery_info_created[session_chat_id] = now
         self._prune_delivery_info(now)
@@ -1663,6 +1685,7 @@ class WebhookAdapter(BasePlatformAdapter):
             user_id=f"webhook:{route_name}",
             user_name=route_name,
         )
+        source.profile = profile
 
         def _register_approval_rails() -> Optional[str]:
             """Register push/PR/merge denial only for runs accepted for spawn."""
@@ -2279,7 +2302,88 @@ class WebhookAdapter(BasePlatformAdapter):
                 success=False, error="Invalid repo format"
             )
 
+        subprocess_env = None
+        selected_profile = (delivery.get("profile") or "").strip()
+        if selected_profile:
+            if not self.gateway_runner:
+                return SendResult(
+                    success=False,
+                    error="No gateway runner for profile-scoped GitHub delivery",
+                )
+            profile_home = self.gateway_runner._profile_home_for_name(
+                selected_profile
+            )
+            if profile_home is None:
+                return SendResult(
+                    success=False,
+                    error=f"Profile {selected_profile} config is unavailable",
+                )
+            # Multiplex HTTP ingress intentionally uses one shared listener;
+            # secondary profiles cannot own another port-binding webhook
+            # adapter. Prove this adapter is still that live shared listener,
+            # while profile_home above binds config/credentials to the exact
+            # selected profile.
+            shared_webhook_adapter = (
+                getattr(self.gateway_runner, "adapters", None) or {}
+            ).get(Platform.WEBHOOK)
+            if shared_webhook_adapter is not self:
+                return SendResult(
+                    success=False,
+                    error=f"Profile {selected_profile} shared webhook adapter is unavailable",
+                )
+
+            # ``gh`` is a subprocess and cannot see the context-local secret
+            # scope. Build an explicit environment from the selected profile's
+            # isolated mapping, remove every ambient GitHub credential, and
+            # bind gh's config/home lookup to that same profile. Root webhooks
+            # keep the legacy ambient subprocess environment.
+            from agent.secret_scope import build_profile_secret_scope
+
+            scoped_secrets = build_profile_secret_scope(profile_home)
+            # Do not clone os.environ here: in a multiplexer it may contain
+            # another profile's provider or platform credentials. Pass only
+            # process-level execution/network settings plus GitHub variables
+            # sourced from the exact selected profile.
+            subprocess_env = {}
+            for name in (
+                "PATH",
+                "LANG",
+                "LC_ALL",
+                "TZ",
+                "SSL_CERT_FILE",
+                "SSL_CERT_DIR",
+                "HTTP_PROXY",
+                "HTTPS_PROXY",
+                "NO_PROXY",
+                "http_proxy",
+                "https_proxy",
+                "no_proxy",
+                "SYSTEMROOT",
+                "COMSPEC",
+                "PATHEXT",
+                "TMP",
+                "TEMP",
+                "TMPDIR",
+            ):
+                value = os.environ.get(name)
+                if value:
+                    subprocess_env[name] = value
+            for name, value in scoped_secrets.items():
+                if value and (name.startswith("GH_") or name.startswith("GITHUB_")):
+                    subprocess_env[name] = value
+            subprocess_env["HOME"] = str(profile_home)
+            subprocess_env["GH_CONFIG_DIR"] = str(profile_home / ".config" / "gh")
+
         try:
+            run_kwargs = {
+                "capture_output": True,
+                "text": True,
+                "encoding": "utf-8",
+                "errors": "replace",
+                "timeout": 30,
+            }
+            if subprocess_env is not None:
+                run_kwargs["env"] = subprocess_env
             result = subprocess.run(
                 [
                     "gh",
@@ -2291,9 +2395,7 @@ class WebhookAdapter(BasePlatformAdapter):
                     "--body",
                     content,
                 ],
-                capture_output=True,
-                text=True, encoding='utf-8', errors='replace',
-                timeout=30,
+                **run_kwargs,
             )
             if result.returncode == 0:
                 logger.info(
@@ -2334,29 +2436,52 @@ class WebhookAdapter(BasePlatformAdapter):
                 success=False, error=f"Unknown platform: {platform_name}"
             )
 
-        # Default adapters first; multiplex may park Slack/etc. only on a
-        # secondary profile (self._profile_adapters). Fall back so webhook
-        # deliver:slack still works when default has slack disabled.
-        adapter = self.gateway_runner.adapters.get(target_platform)
+        selected_profile = (delivery.get("profile") or "").strip()
+        explicit_profile = bool(selected_profile)
+        if explicit_profile:
+            profile_home = self.gateway_runner._profile_home_for_name(
+                selected_profile
+            )
+            if profile_home is None:
+                return SendResult(
+                    success=False,
+                    error=f"Profile {selected_profile} config is unavailable",
+                )
+            adapter = self.gateway_runner._delivery_adapter_for_profile(
+                target_platform, selected_profile
+            )
+        else:
+            # Preserve legacy root/unprefixed webhook behavior: prefer the
+            # primary adapter, then any connected secondary adapter. Explicit
+            # /p/<profile>/ routes never enter this fallback branch.
+            adapter = self.gateway_runner.adapters.get(target_platform)
+            if not adapter:
+                for _profile, adapter_map in (
+                    getattr(self.gateway_runner, "_profile_adapters", None) or {}
+                ).items():
+                    if not isinstance(adapter_map, dict):
+                        continue
+                    candidate = adapter_map.get(target_platform)
+                    if candidate is not None:
+                        adapter = candidate
+                        break
         if not adapter:
-            for _prof, amap in (getattr(self.gateway_runner, "_profile_adapters", None) or {}).items():
-                if not isinstance(amap, dict):
-                    continue
-                cand = amap.get(target_platform)
-                if cand is not None:
-                    adapter = cand
-                    break
-        if not adapter:
+            suffix = f" for profile {selected_profile}" if explicit_profile else ""
             return SendResult(
                 success=False,
-                error=f"Platform {platform_name} not connected",
+                error=f"Platform {platform_name} not connected{suffix}",
             )
 
         # Use home channel if no specific chat_id in deliver_extra
         extra = delivery.get("deliver_extra", {})
         chat_id = extra.get("chat_id", "")
         if not chat_id:
-            home = self.gateway_runner.config.get_home_channel(target_platform)
+            if explicit_profile:
+                home = self.gateway_runner._home_channel_for_profile(
+                    target_platform, selected_profile
+                )
+            else:
+                home = self.gateway_runner.config.get_home_channel(target_platform)
             if home:
                 chat_id = home.chat_id
             else:
@@ -2370,5 +2495,8 @@ class WebhookAdapter(BasePlatformAdapter):
         thread_id = extra.get("message_thread_id") or extra.get("thread_id")
         if thread_id:
             metadata = {"thread_id": thread_id}
+        if explicit_profile:
+            metadata = dict(metadata or {})
+            metadata["profile"] = selected_profile
 
         return await adapter.send(chat_id, content, metadata=metadata)

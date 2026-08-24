@@ -1,7 +1,14 @@
 """Phase 1: HTTP-inbound /p/<profile>/ routing for the webhook adapter."""
+from contextlib import contextmanager
+from pathlib import Path
+from unittest.mock import MagicMock
+
 import pytest
 
+import gateway.run as gateway_run
 from gateway.config import GatewayConfig, Platform
+from gateway.profile_routing import ProfileRouteRejected
+from gateway.run import GatewayRunner
 from gateway.session import SessionSource, build_session_key
 
 
@@ -64,5 +71,107 @@ class TestWebhookProfileResolution:
 
         assert adapter._resolve_request_profile(Req("worker")) == "worker"
         assert adapter._resolve_request_profile(Req("restricted")) is rejected
+
+
+class TestNamedProfileRuntimeBinding:
+    @pytest.mark.asyncio
+    async def test_primary_webhook_handler_enters_selected_profile_scope(
+        self, monkeypatch
+    ):
+        """The shared primary HTTP adapter must not force named routes to default."""
+        runner = GatewayRunner.__new__(GatewayRunner)
+        runner.config = GatewayConfig(multiplex_profiles=True)
+        selected_home = Path("/profiles/worker")
+        entered = []
+
+        @contextmanager
+        def _record_scope(profile_home):
+            entered.append(Path(profile_home))
+            yield
+
+        monkeypatch.setattr(gateway_run, "_profile_runtime_scope", _record_scope)
+        runner._resolve_profile_home_for_source = lambda source: selected_home
+
+        seen = {}
+
+        async def _handle(event):
+            seen["profile"] = event.source.profile
+            return "ok"
+
+        runner._handle_message = _handle
+        source = SessionSource(
+            platform=Platform.WEBHOOK,
+            chat_id="webhook:route:delivery",
+            chat_type="webhook",
+            profile="worker",
+        )
+        event = type("Event", (), {"source": source})()
+
+        result = await runner._make_default_profile_message_handler()(event)
+
+        assert result == "ok"
+        assert seen["profile"] == "worker"
+        assert entered == [selected_home]
+
+    @pytest.mark.asyncio
+    async def test_named_webhook_profile_disappearing_before_dispatch_fails_closed(
+        self, monkeypatch
+    ):
+        """A validated named URL must never fall back to the default profile."""
+        runner = GatewayRunner.__new__(GatewayRunner)
+        runner.config = GatewayConfig(multiplex_profiles=True)
+        runner._handle_message = MagicMock()
+        source = SessionSource(
+            platform=Platform.WEBHOOK,
+            chat_id="webhook:route:delivery",
+            chat_type="webhook",
+            profile="worker",
+        )
+        event = type("Event", (), {"source": source})()
+
+        monkeypatch.setattr(
+            "hermes_cli.profiles.get_profile_dir",
+            MagicMock(return_value=Path("/profiles/worker")),
+        )
+        monkeypatch.setattr(
+            "hermes_cli.profiles.profile_exists", MagicMock(return_value=False)
+        )
+
+        with pytest.raises(ProfileRouteRejected, match="worker"):
+            await runner._make_default_profile_message_handler()(event)
+
+        runner._handle_message.assert_not_called()
+
+    def test_named_profile_home_channel_resolves_under_exact_profile_scope(
+        self, monkeypatch
+    ):
+        runner = GatewayRunner.__new__(GatewayRunner)
+        runner.config = GatewayConfig(multiplex_profiles=True)
+        selected_home = Path("/profiles/worker")
+        entered = []
+
+        @contextmanager
+        def _record_scope(profile_home):
+            entered.append(Path(profile_home))
+            yield
+
+        worker_channel = MagicMock(chat_id="worker-home")
+        worker_config = MagicMock()
+        worker_config.get_home_channel.return_value = worker_channel
+        monkeypatch.setattr(gateway_run, "_profile_runtime_scope", _record_scope)
+        monkeypatch.setattr(
+            gateway_run,
+            "_multiplex_profile_homes",
+            lambda config: [("default", Path("/default")), ("worker", selected_home)],
+        )
+        monkeypatch.setattr(
+            "gateway.config.load_gateway_config", lambda: worker_config
+        )
+
+        resolved = runner._home_channel_for_profile(Platform.TELEGRAM, "worker")
+
+        assert resolved is worker_channel
+        assert entered == [selected_home]
+        worker_config.get_home_channel.assert_called_once_with(Platform.TELEGRAM)
 
 

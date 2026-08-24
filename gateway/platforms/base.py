@@ -5348,6 +5348,13 @@ class BasePlatformAdapter(ABC):
     _OK_EMOJI: Optional[str] = None
     _FAIL_EMOJI: Optional[str] = None
 
+    # Most chat adapters report completion once per processed message.  A
+    # one-shot transport may opt in to defer its completion hook until the
+    # entire same-key pending/late-pending drain chain is terminal, so
+    # run-scoped leases and concurrency custody are not released between
+    # chained owner tasks.
+    _DEFER_PROCESSING_COMPLETE_UNTIL_DRAIN_TERMINAL = False
+
     async def on_processing_start(self, event: MessageEvent) -> None:
         """Hook called when background processing begins."""
 
@@ -5977,6 +5984,45 @@ class BasePlatformAdapter(ABC):
 
         await self._drain_pending_after_session_command(session_key, command_guard)
 
+    async def _run_processing_complete_for_drain_terminal(
+        self,
+        event: MessageEvent,
+        outcome: ProcessingOutcome,
+        *,
+        session_key: str,
+    ) -> bool:
+        """Run completion now unless run custody continues in a same-key drain.
+
+        The decision is made at the task's terminal owner boundary, after both
+        in-band and late-pending handoff opportunities have been resolved.
+        Returns ``True`` when the hook ran.
+        """
+        current_task = asyncio.current_task()
+        next_owner = self._session_tasks.get(session_key)
+        if (
+            self._DEFER_PROCESSING_COMPLETE_UNTIL_DRAIN_TERMINAL
+            and next_owner is not None
+            and next_owner is not current_task
+            and not next_owner.done()
+        ):
+            return False
+        await self._run_processing_hook("on_processing_complete", event, outcome)
+        return True
+
+    def _build_session_key(self, source: SessionSource) -> str:
+        """Return this adapter's canonical owner-task/session key.
+
+        Subclasses that add a routing namespace (for example multiplex webhook
+        profiles) override this seam so task ownership, interruption, and
+        completion lifecycle all use the same key.
+        """
+        extra = getattr(self.config, "extra", {}) or {}
+        return build_session_key(
+            source,
+            group_sessions_per_user=extra.get("group_sessions_per_user", True),
+            thread_sessions_per_user=extra.get("thread_sessions_per_user", False),
+        )
+
     async def handle_message(self, event: MessageEvent) -> None:
         """
         Process an incoming message.
@@ -6002,11 +6048,7 @@ class BasePlatformAdapter(ABC):
         if needs_topic_recovery:
             await asyncio.to_thread(self._apply_topic_recovery, event)
 
-        session_key = build_session_key(
-            event.source,
-            group_sessions_per_user=self.config.extra.get("group_sessions_per_user", True),
-            thread_sessions_per_user=self.config.extra.get("thread_sessions_per_user", False),
-        )
+        session_key = self._build_session_key(event.source)
         expected_session_key = str(
             (event.metadata or {}).get("gateway_session_key") or ""
         ).strip()
@@ -6222,9 +6264,12 @@ class BasePlatformAdapter(ABC):
 
     async def _process_message_background(self, event: MessageEvent, session_key: str) -> None:
         """Background task that actually processes the message."""
-        # Track delivery outcomes for the processing-complete hook
+        # Track delivery outcomes for the processing-complete hook. One-shot
+        # transports may defer the hook until the same-key drain chain is
+        # terminal; all others retain the historical per-turn timing.
         delivery_attempted = False
         delivery_succeeded = False
+        processing_outcome: Optional[ProcessingOutcome] = None
 
         def _record_delivery(result):
             nonlocal delivery_attempted, delivery_succeeded
@@ -6736,8 +6781,12 @@ class BasePlatformAdapter(ABC):
                         self.name, len(_response_pre_extract), event.source.chat_id,
                     )
 
-            # Determine overall success for the processing hook
-            processing_ok = delivery_succeeded if delivery_attempted else not bool(response)
+            # Determine overall success for the processing hook.
+            processing_outcome = (
+                ProcessingOutcome.SUCCESS
+                if (delivery_succeeded if delivery_attempted else not bool(response))
+                else ProcessingOutcome.FAILURE
+            )
             # Clean up the per-turn streaming-TTS flag (#60671).
             self._streaming_tts_completed_turns.discard(
                 self._streaming_tts_turn_key(
@@ -6747,11 +6796,12 @@ class BasePlatformAdapter(ABC):
                 )
                 or ""
             )
-            await self._run_processing_hook(
-                "on_processing_complete",
-                event,
-                ProcessingOutcome.SUCCESS if processing_ok else ProcessingOutcome.FAILURE,
-            )
+            if not self._DEFER_PROCESSING_COMPLETE_UNTIL_DRAIN_TERMINAL:
+                await self._run_processing_hook(
+                    "on_processing_complete",
+                    event,
+                    processing_outcome,
+                )
 
             # The active drain owns debounce state. If a queue-mode timer has
             # not fired yet, force-flush into _pending_messages here and let
@@ -6799,13 +6849,20 @@ class BasePlatformAdapter(ABC):
                 
         except asyncio.CancelledError:
             current_task = asyncio.current_task()
-            outcome = ProcessingOutcome.CANCELLED
+            processing_outcome = ProcessingOutcome.CANCELLED
             if current_task is None or current_task not in self._expected_cancelled_tasks:
-                outcome = ProcessingOutcome.FAILURE
-            await self._run_processing_hook("on_processing_complete", event, outcome)
+                processing_outcome = ProcessingOutcome.FAILURE
+            if not self._DEFER_PROCESSING_COMPLETE_UNTIL_DRAIN_TERMINAL:
+                await self._run_processing_hook(
+                    "on_processing_complete", event, processing_outcome
+                )
             raise
         except Exception as e:
-            await self._run_processing_hook("on_processing_complete", event, ProcessingOutcome.FAILURE)
+            processing_outcome = ProcessingOutcome.FAILURE
+            if not self._DEFER_PROCESSING_COMPLETE_UNTIL_DRAIN_TERMINAL:
+                await self._run_processing_hook(
+                    "on_processing_complete", event, processing_outcome
+                )
             logger.error("[%s] Error handling message: %s", self.name, e, exc_info=True)
             # Send the error to the user so they aren't left with radio silence
             try:
@@ -6943,6 +7000,16 @@ class BasePlatformAdapter(ABC):
                 current_task = asyncio.current_task()
                 if current_task is not None and self._session_tasks.get(session_key) is current_task:
                     self._cleanup_finished_session_task(session_key, interrupt_event)
+
+            if (
+                self._DEFER_PROCESSING_COMPLETE_UNTIL_DRAIN_TERMINAL
+                and processing_outcome is not None
+            ):
+                await self._run_processing_complete_for_drain_terminal(
+                    event,
+                    processing_outcome,
+                    session_key=session_key,
+                )
     
     def _cleanup_finished_session_task(
         self, session_key: str, interrupt_event: Optional[asyncio.Event]

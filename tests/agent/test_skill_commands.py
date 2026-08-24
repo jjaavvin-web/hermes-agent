@@ -236,6 +236,42 @@ class TestScanSkillCommands:
             assert "/telegram-only" in bare_commands
             assert sc_mod._skill_commands_platform is None
 
+    def test_get_skill_commands_rescans_when_profile_home_changes(self, tmp_path):
+        """One profile's slash-command cache must never be served to another."""
+        import agent.skill_commands as sc_mod
+        from agent.skill_commands import get_skill_commands
+        from hermes_constants import (
+            reset_hermes_home_override,
+            set_hermes_home_override,
+        )
+
+        default_home = tmp_path / "default-home"
+        worker_home = tmp_path / "worker-home"
+        _make_skill(default_home / "skills", "default-only")
+        _make_skill(worker_home / "skills", "worker-only")
+
+        with (
+            patch.object(sc_mod, "_skill_commands", {}),
+            patch.object(sc_mod, "_skill_commands_platform", None),
+            patch.object(sc_mod, "_skill_commands_home", None, create=True),
+        ):
+            default_token = set_hermes_home_override(default_home)
+            try:
+                default_commands = dict(get_skill_commands())
+            finally:
+                reset_hermes_home_override(default_token)
+
+            worker_token = set_hermes_home_override(worker_home)
+            try:
+                worker_commands = dict(get_skill_commands())
+            finally:
+                reset_hermes_home_override(worker_token)
+
+        assert "/default-only" in default_commands
+        assert "/worker-only" not in default_commands
+        assert "/worker-only" in worker_commands
+        assert "/default-only" not in worker_commands
+
 
 
 
