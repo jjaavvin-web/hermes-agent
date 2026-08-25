@@ -6698,6 +6698,35 @@ class DiscordAdapter(BasePlatformAdapter):
         )
         return (len(self._skill_entries), self._skill_group_hidden_count)
 
+    @staticmethod
+    def _interaction_guild_id(interaction: Any) -> Optional[str]:
+        """Resolve Discord guild scope from a slash interaction."""
+        guild_id = getattr(interaction, "guild_id", None)
+        if guild_id is None:
+            guild = getattr(interaction, "guild", None)
+            guild_id = getattr(guild, "id", None) if guild else None
+        if guild_id is None:
+            channel = getattr(interaction, "channel", None)
+            guild = getattr(channel, "guild", None) if channel else None
+            guild_id = getattr(guild, "id", None) if guild else None
+        return str(guild_id) if guild_id else None
+
+    @staticmethod
+    def _interaction_parent_chat_id(
+        interaction: Any,
+        *,
+        is_thread: bool,
+    ) -> Optional[str]:
+        """Resolve the parent channel for a slash invoked inside a thread."""
+        if not is_thread:
+            return None
+        channel = getattr(interaction, "channel", None)
+        parent_id = getattr(channel, "parent_id", None) if channel else None
+        if parent_id is None:
+            parent = getattr(channel, "parent", None) if channel else None
+            parent_id = getattr(parent, "id", None) if parent else None
+        return str(parent_id) if parent_id else None
+
     def _build_slash_event(self, interaction: discord.Interaction, text: str) -> MessageEvent:
         """Build a MessageEvent from a Discord slash command interaction."""
         is_dm = isinstance(interaction.channel, discord.DMChannel)
@@ -6721,6 +6750,7 @@ class DiscordAdapter(BasePlatformAdapter):
         # Get channel topic (if available).
         # For forum threads, inherit the parent forum's topic.
         chat_topic = self._get_effective_topic(interaction.channel, is_thread=is_thread)
+        parent_id = self._interaction_parent_chat_id(interaction, is_thread=is_thread)
 
         source = self.build_source(
             chat_id=str(interaction.channel_id),
@@ -6730,11 +6760,12 @@ class DiscordAdapter(BasePlatformAdapter):
             user_name=interaction.user.display_name,
             thread_id=thread_id,
             chat_topic=chat_topic,
+            guild_id=self._interaction_guild_id(interaction),
+            parent_chat_id=parent_id,
         )
 
         msg_type = MessageType.COMMAND if text.startswith("/") else MessageType.TEXT
         channel_id = str(interaction.channel_id)
-        parent_id = str(getattr(getattr(interaction, "channel", None), "parent_id", "") or "")
         interaction_id = str(getattr(interaction, "id", "") or "") or None
         return MessageEvent(
             text=text,
@@ -6818,6 +6849,8 @@ class DiscordAdapter(BasePlatformAdapter):
         # Inherit forum topic when the thread was created inside a forum channel.
         _chan = getattr(interaction, "channel", None)
         chat_topic = self._get_effective_topic(_chan, is_thread=True) if _chan else None
+        _parent_channel = self._thread_parent_channel(_chan)
+        _parent_id = str(getattr(_parent_channel, "id", "") or "")
 
         source = self.build_source(
             chat_id=thread_id,
@@ -6827,10 +6860,10 @@ class DiscordAdapter(BasePlatformAdapter):
             user_name=interaction.user.display_name,
             thread_id=thread_id,
             chat_topic=chat_topic,
+            guild_id=self._interaction_guild_id(interaction),
+            parent_chat_id=_parent_id or None,
         )
 
-        _parent_channel = self._thread_parent_channel(getattr(interaction, "channel", None))
-        _parent_id = str(getattr(_parent_channel, "id", "") or "")
         _skills = self._resolve_channel_skills(thread_id, _parent_id or None)
         _channel_prompt = self._resolve_channel_prompt(thread_id, _parent_id or None)
         event = MessageEvent(

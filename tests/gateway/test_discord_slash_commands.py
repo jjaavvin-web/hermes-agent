@@ -7,6 +7,8 @@ import sys
 import pytest
 
 from gateway.config import PlatformConfig
+from gateway.profile_routing import ProfileRoute, match_profile_route
+from gateway.session import build_session_key
 
 
 def _ensure_discord_mock():
@@ -112,6 +114,38 @@ def adapter():
     # construct a full auth context (allowlist / channel scope).
     adapter._check_slash_authorization = AsyncMock(return_value=True)
     return adapter
+
+
+def _attach_profile_routes(adapter, routes):
+    """Attach the real route matcher to the adapter's build_source path."""
+
+    class _RouteRunner:
+        def _profile_name_for_source(self, source):
+            matched = match_profile_route(
+                routes,
+                platform=source.platform.value,
+                guild_id=source.guild_id,
+                chat_id=source.chat_id,
+                thread_id=source.thread_id,
+                parent_chat_id=source.parent_chat_id,
+            )
+            return matched.profile if matched else None
+
+    adapter.gateway_runner = _RouteRunner()
+
+
+def _channel_profile_route(*, guild_id="1", chat_id="123", profile="oxlab"):
+    return ProfileRoute(
+        name="discord-channel",
+        platform="discord",
+        profile=profile,
+        guild_id=guild_id,
+        chat_id=chat_id,
+    )
+
+
+def _profile_session_key(source):
+    return build_session_key(source, profile=source.profile)
 
 
 # ------------------------------------------------------------------
@@ -377,6 +411,32 @@ async def test_dispatch_thread_session_builds_thread_event(adapter):
     assert "TestGuild" in event.source.chat_name
 
 
+@pytest.mark.asyncio
+async def test_slash_created_thread_session_preserves_parent_route(adapter):
+    _attach_profile_routes(adapter, [_channel_profile_route()])
+    interaction = SimpleNamespace(
+        channel=_FakeTextChannel(channel_id=123, name="general"),
+        channel_id=123,
+        guild=SimpleNamespace(name="TestGuild", id=1),
+        user=SimpleNamespace(display_name="Jezza", id=42),
+    )
+    captured_events = []
+
+    async def capture_handle(event):
+        captured_events.append(event)
+
+    adapter.handle_message = capture_handle
+
+    await adapter._dispatch_thread_session(interaction, "555", "Planning", "Hello!")
+
+    assert len(captured_events) == 1
+    source = captured_events[0].source
+    assert source.guild_id == "1"
+    assert source.parent_chat_id == "123"
+    assert source.profile == "oxlab"
+    assert _profile_session_key(source).startswith("agent:oxlab:")
+
+
 # ------------------------------------------------------------------
 # _build_slash_event — preserve thread context for native slash commands
 # ------------------------------------------------------------------
@@ -396,9 +456,68 @@ def test_build_slash_event_preserves_thread_context(adapter):
     assert event.source.chat_id == "555"
     assert event.source.chat_type == "thread"
     assert event.source.thread_id == "555"
+    assert event.source.guild_id == "1"
+    assert event.source.parent_chat_id == "100"
     assert "TestGuild" in event.source.chat_name
     assert event.message_id == "987654321"
     assert event.delivery_id == "987654321"
+
+
+def test_slash_inside_thread_matches_parent_channel_route(adapter):
+    _attach_profile_routes(adapter, [_channel_profile_route()])
+    interaction = SimpleNamespace(
+        id=987654321,
+        channel=_FakeThreadChannel(
+            channel_id=555,
+            name="Planning",
+            parent_id=123,
+        ),
+        channel_id=555,
+        guild_id=1,
+        user=SimpleNamespace(display_name="Jezza", id=42),
+    )
+
+    source = adapter._build_slash_event(interaction, "/status").source
+
+    assert source.guild_id == "1"
+    assert source.parent_chat_id == "123"
+    assert source.profile == "oxlab"
+    assert _profile_session_key(source).startswith("agent:oxlab:")
+
+
+def test_plain_slash_matches_guild_channel_route_and_namespaces_session(adapter):
+    _attach_profile_routes(adapter, [_channel_profile_route()])
+    interaction = SimpleNamespace(
+        id=123456789,
+        channel=_FakeTextChannel(channel_id=123, name="general"),
+        channel_id=123,
+        guild_id=1,
+        user=SimpleNamespace(display_name="Jezza", id=42),
+    )
+
+    source = adapter._build_slash_event(interaction, "/reset").source
+
+    assert source.guild_id == "1"
+    assert source.parent_chat_id is None
+    assert source.profile == "oxlab"
+    assert _profile_session_key(source).startswith("agent:oxlab:")
+
+
+def test_plain_slash_same_channel_id_in_other_guild_stays_default(adapter):
+    _attach_profile_routes(adapter, [_channel_profile_route(guild_id="1")])
+    interaction = SimpleNamespace(
+        id=123456789,
+        channel=_FakeTextChannel(channel_id=123, name="general"),
+        channel_id=123,
+        guild_id=2,
+        user=SimpleNamespace(display_name="Jezza", id=42),
+    )
+
+    source = adapter._build_slash_event(interaction, "/reset").source
+
+    assert source.guild_id == "2"
+    assert source.profile is None
+    assert _profile_session_key(source).startswith("agent:main:")
 
 
 @pytest.mark.asyncio
