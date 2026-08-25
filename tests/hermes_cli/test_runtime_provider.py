@@ -58,6 +58,8 @@ def _configure_model_and_auth(
 def test_disable_paid_api_fallback_blocks_anthropic_when_pool_unavailable(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """anthropic is blocked outright — load_pool() is never even reached, so
+    a broken/unavailable pool is irrelevant to the outcome."""
     _configure_model_and_auth(
         monkeypatch,
         model_cfg={"provider": "anthropic", "default": "claude-sonnet-4"},
@@ -65,24 +67,29 @@ def test_disable_paid_api_fallback_blocks_anthropic_when_pool_unavailable(
     )
     monkeypatch.setattr(rp, "resolve_provider", lambda *args, **kwargs: "anthropic")
 
-    def _pool_load_fails(provider: str):
-        assert provider == "anthropic"
-        raise RuntimeError("pool unavailable")
+    def _pool_load_must_not_run(provider: str):
+        raise AssertionError("anthropic must be blocked before load_pool() runs")
 
-    monkeypatch.setattr(rp, "load_pool", _pool_load_fails)
+    monkeypatch.setattr(rp, "load_pool", _pool_load_must_not_run)
 
     with pytest.raises(AuthError) as exc_info:
         rp.resolve_runtime_provider(requested="anthropic")
 
     assert exc_info.value.provider == "anthropic"
-    assert exc_info.value.code == "anthropic_oauth_missing"
-    assert exc_info.value.relogin_required is True
+    assert exc_info.value.code == "paid_provider_blocked"
+    assert exc_info.value.relogin_required is False
     assert "auth.disable_paid_api_fallback=true" in str(exc_info.value)
 
 
-def test_disable_paid_api_fallback_uses_anthropic_oauth_pool_entry(
+def test_disable_paid_api_fallback_blocks_anthropic_even_with_oauth_pool_entry(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """Regression for the anthropic_oauth_spoof_provider gap: a live Claude
+    Code OAuth pool entry must NOT be used under the flag. "anthropic" is
+    deliberately absent from SAFE_PROVIDERS regardless of billing shape —
+    the premium/OAuth lane is reserved exclusively for
+    claude-cli-subprocess. select_anthropic_oauth_only() must never even be
+    called."""
     _configure_model_and_auth(
         monkeypatch,
         model_cfg={"provider": "anthropic", "default": "claude-sonnet-4"},
@@ -105,14 +112,56 @@ def test_disable_paid_api_fallback_uses_anthropic_oauth_pool_entry(
     pool = _Pool()
     monkeypatch.setattr(rp, "load_pool", lambda provider: pool)
 
+    with pytest.raises(AuthError) as exc_info:
+        rp.resolve_runtime_provider(requested="anthropic")
+
+    assert exc_info.value.provider == "anthropic"
+    assert exc_info.value.code == "paid_provider_blocked"
+    assert pool.selected_oauth_only is False, (
+        "select_anthropic_oauth_only() must not be reached under the flag"
+    )
+
+
+def test_disable_paid_api_fallback_flag_false_allows_anthropic_oauth_pool(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Parity: with the flag off, anthropic resolution is unaffected — it
+    falls through to the generic pool.select() path, same as before this
+    change (the old anthropic-only OAuth branch only ever fired when the
+    flag was already true, so this is the actual "today's behavior")."""
+    _configure_model_and_auth(
+        monkeypatch,
+        model_cfg={"provider": "anthropic", "default": "claude-sonnet-4"},
+        disable_paid_api_fallback=False,
+    )
+    monkeypatch.setattr(rp, "resolve_provider", lambda *args, **kwargs: "anthropic")
+
+    class _OAuthEntry:
+        access_token = "fake-anthropic-oauth-token"
+        base_url = "https://api.anthropic.com"
+        source = "claude_code_oauth"
+
+        def __init__(self):
+            self.runtime_api_key = None
+
+    class _Pool:
+        # No `.provider` attribute — credential_pool_matches_provider()
+        # treats unscoped legacy/test pool adapters as always matching.
+        def has_credentials(self) -> bool:
+            return True
+
+        def select(self):
+            return _OAuthEntry()
+
+    pool = _Pool()
+    monkeypatch.setattr(rp, "load_pool", lambda provider: pool)
+
     resolved = rp.resolve_runtime_provider(requested="anthropic")
 
-    assert pool.selected_oauth_only is True
     assert resolved["provider"] == "anthropic"
     assert resolved["api_mode"] == "anthropic_messages"
     assert resolved["api_key"] == "fake-anthropic-oauth-token"
     assert resolved["source"] == "claude_code_oauth"
-    assert resolved["credential_pool"] is pool
 
 
 def test_disable_paid_api_fallback_blocks_openrouter(

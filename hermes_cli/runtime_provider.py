@@ -1911,15 +1911,13 @@ def resolve_runtime_provider(
         explicit_base_url=explicit_base_url,
     )
     model_cfg = _get_model_config()
-    if (
-        disable_paid_api_fallback
-        and provider != "anthropic"
-        and not is_safe_provider(provider)
-    ):
-        # provider == "anthropic" is handled below by the existing OAuth-only
-        # branch, which already fails closed (raises AuthError) when no
-        # Anthropic OAuth credential is available — see the docstring note
-        # on SAFE_PROVIDERS for why "anthropic" itself is not on the list.
+    if disable_paid_api_fallback and not is_safe_provider(provider):
+        # "anthropic" is NOT exempted here — the canonical lock forbids
+        # anthropic_oauth_spoof_provider regardless of billing shape. A
+        # Claude Code OAuth token hitting api.anthropic.com is still
+        # "provider=anthropic", and policy reserves the premium/OAuth lane
+        # exclusively for claude-cli-subprocess. See SAFE_PROVIDERS in
+        # hermes_cli/providers.py.
         raise AuthError(
             f"Provider '{provider}' is blocked because auth.disable_paid_api_fallback=true "
             "only permits openai-codex, xai-oauth, or claude-cli-subprocess for inference. "
@@ -1962,27 +1960,16 @@ def resolve_runtime_provider(
         pool = load_pool(provider) if should_use_pool else None
     except Exception:
         pool = None
-    if provider == "anthropic" and disable_paid_api_fallback:
-        if pool is None:
-            raise AuthError(
-                "No Anthropic OAuth credential is available because the credential pool "
-                "could not be loaded. auth.disable_paid_api_fallback=true requires "
-                "Anthropic OAuth credentials from the credential pool. Paid API-key "
-                "fallback is disabled, so Hermes will not use ANTHROPIC_API_KEY for "
-                "this profile.",
-                provider="anthropic",
-                code="anthropic_oauth_missing",
-                relogin_required=True,
-            )
-        entry = pool.select_anthropic_oauth_only()
-        return _resolve_runtime_from_pool_entry(
-            provider=provider,
-            entry=entry,
-            requested_provider=requested_provider,
-            model_cfg=model_cfg,
-            pool=pool,
-            target_model=target_model,
-        )
+    # NOTE: the anthropic-specific "OAuth-only, no paid-key fallback" branch
+    # that used to live here (gated on `provider == "anthropic" and
+    # disable_paid_api_fallback`) is now dead code and has been removed:
+    # when disable_paid_api_fallback is true, "anthropic" is blocked by the
+    # is_safe_provider() check above — before pool is even loaded — because
+    # the canonical lock forbids anthropic_oauth_spoof_provider regardless
+    # of billing shape (see hermes_cli.providers.SAFE_PROVIDERS). Anthropic
+    # is no longer special-cased here at all; with the flag off, it falls
+    # through to the generic pool/API-key resolution below like any other
+    # provider, same as before this change.
     if pool and pool.has_credentials():
         entry = pool.select()
         pool_api_key = ""

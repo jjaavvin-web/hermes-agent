@@ -875,13 +875,13 @@
      "test": "tests/hermes_cli/test_runtime_provider.py::test_disable_paid_api_fallback_blocks_anthropic_when_pool_unavailable"
     },
     {
-     "test": "tests/hermes_cli/test_runtime_provider.py::test_disable_paid_api_fallback_uses_anthropic_oauth_pool_entry"
+     "test": "tests/hermes_cli/test_runtime_provider.py::test_disable_paid_api_fallback_blocks_anthropic_even_with_oauth_pool_entry"
     },
     {
      "test": "tests/security/test_fork_parity_guard.py::test_billing_guard_paid_fallback_flag_parses_fail_safe"
     }
    ],
-   "notes": "Billing guard behavior + default-key literal pin (closes worker-flagged pin gap)."
+   "notes": "Billing guard behavior + default-key literal pin (closes worker-flagged pin gap). POST-AUDIT CORRECTION (fable-safe-provider-filter-v1 F1, 2026-08-24): the anthropic-OAuth-only fallback this item originally proved is now itself blocked under disable_paid_api_fallback (canonical lock forbids anthropic_oauth_spoof_provider regardless of billing shape). Proof retargeted to the renamed test asserting the corrected (blocking) behavior; the billing-guard anchors/mechanism this item verifies are otherwise unchanged."
   },
   {
    "id": "fp-031",
@@ -1860,13 +1860,13 @@
      "test": "tests/hermes_cli/test_runtime_provider.py::test_disable_paid_api_fallback_blocks_anthropic_when_pool_unavailable"
     },
     {
-     "test": "tests/hermes_cli/test_runtime_provider_resolution.py::test_resolve_runtime_provider_anthropic_disable_paid_fallback_uses_valid_oauth"
+     "test": "tests/hermes_cli/test_runtime_provider_resolution.py::test_resolve_runtime_provider_anthropic_disable_paid_fallback_blocks_valid_oauth"
     },
     {
      "test": "tests/agent/test_credential_pool.py::test_anthropic_oauth_only_selection_does_not_rotate_to_api_key"
     }
    ],
-   "notes": "Critic recheck of fp-030/031."
+   "notes": "Critic recheck of fp-030/031. POST-AUDIT CORRECTION (fable-safe-provider-filter-v1 F1, 2026-08-24): same retarget as fp-030 — anthropic is now blocked outright under the flag; select_anthropic_oauth_only() still exists in credential_pool.py (anchor unchanged) but is no longer called from this code path."
   },
   {
    "id": "fp-071",

@@ -3482,10 +3482,21 @@ def _resolve_custom_runtime() -> Tuple[Optional[str], Optional[str], Optional[st
     endpoints where the base URL lives in config.yaml instead of the live
     environment.
     """
+    from hermes_cli.auth import AuthError
+
     try:
         from hermes_cli.runtime_provider import resolve_runtime_provider
 
         runtime = resolve_runtime_provider(requested="custom")
+    except AuthError as exc:
+        if exc.code == "paid_provider_blocked":
+            # auth.disable_paid_api_fallback=true rejected this endpoint —
+            # re-raise instead of silently falling back to raw
+            # OPENAI_BASE_URL/OPENAI_API_KEY env vars below, which would
+            # defeat the whole point of the flag (#post-audit F2).
+            raise
+        logger.debug("Auxiliary client: custom runtime resolution failed: %s", exc)
+        runtime = None
     except Exception as exc:
         logger.debug("Auxiliary client: custom runtime resolution failed: %s", exc)
         runtime = None

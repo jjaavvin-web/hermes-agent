@@ -2291,6 +2291,52 @@ def test_resolve_api_key_provider_unaffected_when_paid_fallback_flag_false(monke
     assert select_calls == ["gemini"], "flag-off must still reach pool resolution"
 
 
+def test_resolve_custom_runtime_reraises_paid_provider_blocked(monkeypatch):
+    """_resolve_custom_runtime() must not swallow a paid_provider_blocked
+    AuthError into its raw OPENAI_BASE_URL/OPENAI_API_KEY env fallback —
+    doing so would defeat auth.disable_paid_api_fallback for the custom
+    endpoint discovery path (post-audit F2)."""
+    from hermes_cli.auth import AuthError
+    import hermes_cli.runtime_provider as rp
+
+    def _blocked(*args, **kwargs):
+        raise AuthError(
+            "Provider 'custom' is blocked because auth.disable_paid_api_fallback=true",
+            provider="custom",
+            code="paid_provider_blocked",
+        )
+
+    monkeypatch.setattr(rp, "resolve_runtime_provider", _blocked)
+    monkeypatch.setenv("OPENAI_BASE_URL", "https://sneaky-fallback.example/v1")
+    monkeypatch.setenv("OPENAI_API_KEY", "fake-openai-key")
+
+    from agent.auxiliary_client import _resolve_custom_runtime
+
+    with pytest.raises(AuthError) as exc_info:
+        _resolve_custom_runtime()
+
+    assert exc_info.value.code == "paid_provider_blocked"
+
+
+def test_resolve_custom_runtime_falls_back_on_genuine_resolution_failure(monkeypatch):
+    """Parity: a non-security failure (no endpoint configured, network glitch,
+    etc.) still falls back to the raw env-var custom endpoint as before."""
+    import hermes_cli.runtime_provider as rp
+
+    def _boom(*args, **kwargs):
+        raise RuntimeError("no custom endpoint configured")
+
+    monkeypatch.setattr(rp, "resolve_runtime_provider", _boom)
+    monkeypatch.setenv("OPENAI_BASE_URL", "http://127.0.0.1:11434/v1")
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
+    from agent.auxiliary_client import _resolve_custom_runtime
+
+    custom_base, custom_key, custom_mode = _resolve_custom_runtime()
+
+    assert custom_base == "http://127.0.0.1:11434/v1"
+
+
 # ---------------------------------------------------------------------------
 # model="default" elimination (#7512)
 # ---------------------------------------------------------------------------
