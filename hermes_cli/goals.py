@@ -687,6 +687,30 @@ _DB_BOOTSTRAP_LOOP_WAIT_S = 0.25
 _DB_BOOTSTRAP_INIT_WAIT_S = 1.5
 
 
+def _construct_session_db(home: str):
+    """Open the SessionDB for the CURRENT hermes home.
+
+    Fork edge (2c20d0bb1f9): goal storage must follow runtime HERMES_HOME even
+    when ``hermes_state``'s import-time default is stale, so we pass the
+    explicit path whenever it differs from the module default. When the
+    default already points at this home we call ``SessionDB()`` — upstream's
+    contract, and what its off-loop bootstrap tests construct against.
+    """
+    from pathlib import Path
+
+    import hermes_state
+    from hermes_state import SessionDB
+
+    db_path = Path(home) / "state.db"
+    try:
+        default_path = Path(hermes_state._default_db_path())
+    except Exception:  # pragma: no cover - defensive; fall back to explicit path
+        default_path = None
+    if default_path is not None and default_path == db_path:
+        return SessionDB()
+    return SessionDB(db_path)
+
+
 def _bootstrap_session_db(home: str, done: threading.Event) -> None:
     """Construct SessionDB off-loop and populate the cache (worker thread)."""
     try:
@@ -704,7 +728,7 @@ def _bootstrap_session_db(home: str, done: threading.Event) -> None:
         # profile's key.
         token = set_hermes_home_override(home)
         try:
-            db = SessionDB()
+            db = _construct_session_db(home)
         finally:
             reset_hermes_home_override(token)
     except Exception as exc:  # pragma: no cover
@@ -793,7 +817,7 @@ def _get_session_db() -> Optional[Any]:
         return _DB_CACHE.get(home)
 
     try:
-        db = SessionDB()  # same convention as _bootstrap_session_db (upstream contract; F28)
+        db = _construct_session_db(home)  # F28 v2: explicit path only when the module default is stale
     except Exception as exc:  # pragma: no cover
         logger.debug("GoalManager: SessionDB() raised (%s)", exc)
         return None
