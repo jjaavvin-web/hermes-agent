@@ -1738,7 +1738,7 @@ def test_singleton_seed_does_not_clobber_manual_oauth_entry(tmp_path, monkeypatc
     )
 
     monkeypatch.setattr(
-        "agent.anthropic_adapter.read_hermes_oauth_credentials",
+        "agent.anthropic_credentials.read_hermes_oauth_credentials",
         lambda: {
             "accessToken": "seeded-token",
             "refreshToken": "seeded-refresh",
@@ -1746,7 +1746,7 @@ def test_singleton_seed_does_not_clobber_manual_oauth_entry(tmp_path, monkeypatc
         },
     )
     monkeypatch.setattr(
-        "agent.anthropic_adapter.read_claude_code_credentials",
+        "agent.anthropic_credentials.read_claude_code_credentials",
         lambda: None,
     )
 

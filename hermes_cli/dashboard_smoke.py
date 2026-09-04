@@ -554,6 +554,9 @@ def _declared_expected_for_route(route: APIRoute) -> tuple[set[int], str | None]
         return set(DECLARED_PROXY_STATUSES), "declared proxy/sidecar 4xx/5xx response accepted"
     if route.path == "/api/ssh/ownership":
         return {200, 404}, "declared inactive SSH ownership response accepted"
+    if route.path == "/api/hermes/update/receipt":
+        # v0.21 updater receipt: 404 until an update has ever run in this HERMES_HOME.
+        return {200, 404}, "declared no-receipt-yet response accepted"
     path_params = _path_param_names(route.path)
     required_query = _required_param_names(route, "query_params")
     if path_params or required_query:

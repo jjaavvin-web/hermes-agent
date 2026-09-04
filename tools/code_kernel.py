@@ -595,6 +595,12 @@ def _spawn(kernel: SessionKernel, *, task_id: str, child_python: str,
 
     kernel.proc = subprocess.Popen(
         [child_python, runner_path],
+        # child_cwd arrives already-confined: the caller
+        # (code_execution_tool.execute_code) resolves it via
+        # _resolve_child_cwd(), which routes every rung of its ladder
+        # through resolve_confined_cwd() and fails closed to the active
+        # worktree when confinement is required (F4, t_0113eacc) — this
+        # module stays a thin consumer, never re-deriving a cwd of its own.
         # Strict mode resolves an empty cwd: the kernel's own staging dir
         # then plays the per-call tmpdir's role.
         cwd=child_cwd or kernel.tmpdir,

@@ -1639,12 +1639,37 @@ def execute_code(
         from tools.code_kernel import execute_in_session_kernel
 
         _mode = _get_execution_mode()
+        _kernel_exec_start = time.monotonic()
+        # Resolved HERE — not inside code_kernel.py — so the kernel spawn
+        # site stays a thin consumer of an already-confined cwd, same as the
+        # per-call path below. _resolve_child_cwd() routes every rung of its
+        # ladder through resolve_confined_cwd() and fails closed (raises
+        # WorktreeConfinementError, a subclass of Exception) when worktree
+        # confinement is required and no bound worktree exists (F4,
+        # t_0113eacc). That must surface as this tool's own refusal envelope
+        # — never an escaping exception — mirroring the per-call path's
+        # broad ``except Exception`` below. See
+        # tests/tools/test_runtime_cwd_grep_guard.py.
+        try:
+            _child_cwd = _resolve_child_cwd(_mode, "", task_id=task_id or "")
+        except Exception as exc:
+            logger.error(
+                "execute_code session-kernel cwd resolution refused: %s: %s",
+                type(exc).__name__, exc, exc_info=True,
+            )
+            return json.dumps({
+                "status": "error",
+                "error": str(exc),
+                "tool_calls_made": 0,
+                "duration_seconds": round(time.monotonic() - _kernel_exec_start, 2),
+            }, ensure_ascii=False)
+        record_runtime_execution_cwd(_child_cwd)
         return execute_in_session_kernel(
             code,
             task_id=task_id or "",
             mode=_mode,
             child_python=_resolve_child_python(_mode),
-            child_cwd=_resolve_child_cwd(_mode, "", task_id=task_id or ""),
+            child_cwd=_child_cwd,
             sandbox_tools=frozenset(sandbox_tools),
             timeout=timeout,
             max_tool_calls=max_tool_calls,

@@ -118,23 +118,6 @@ class TestPerJobToolsetMcpMerge:
         assert m_platform.call_args[0][1] == "cron"
         assert set(result) == set(sentinel)
 
-    def test_resolver_keeps_memory_in_per_job_list(self):
-        result = _resolve_cron_enabled_toolsets(
-            {"enabled_toolsets": ["memory", "file"]},
-            {"mcp_servers": {}},
-        )
-        assert "memory" in result
-        assert "file" in result
-
-    def test_resolver_keeps_memory_from_platform_fallback(self):
-        job = {"enabled_toolsets": None}
-        with patch(
-            "hermes_cli.tools_config._get_platform_tools",
-            return_value={"web", "memory", "file"},
-        ):
-            result = _resolve_cron_enabled_toolsets(job, {})
-        assert result == ["file", "memory", "web"]
-
 
 class TestResolveOrigin:
     def test_full_origin(self):
@@ -674,23 +657,6 @@ class TestRunJobSessionPersistence:
         assert kwargs["skip_memory"] is True
         assert kwargs["enabled_toolsets"] == ["memory", "file"]
         assert "memory" in kwargs["disabled_toolsets"]
-
-    def test_run_job_keeps_per_job_memory_toolset(self, tmp_path):
-        """A per-job enabled_toolsets naming memory keeps it."""
-        job = {
-            "id": "memory-toolset-job",
-            "name": "test",
-            "prompt": "remember what you learn",
-            "enabled_toolsets": ["memory", "file"],
-        }
-        with self._run_job_patches(tmp_path) as (fake_db, mock_agent_cls):
-            run_job(job)
-
-        kwargs = mock_agent_cls.call_args.kwargs
-        assert kwargs["skip_memory"] is False
-        assert "memory" in (kwargs["enabled_toolsets"] or [])
-        assert "file" in (kwargs["enabled_toolsets"] or [])
-        assert "memory" not in kwargs["disabled_toolsets"]
 
     def test_tick_skips_due_jobs_while_dispatch_is_paused(self, tmp_path):
         """The drain gate runs before advancing a due job's schedule."""

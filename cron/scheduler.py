@@ -582,6 +582,11 @@ def _merge_mcp_into_per_job_toolsets(per_job: list[str], cfg: dict) -> list[str]
       * one or more MCP server names already listed -> treat as an allowlist,
         add nothing further (the user named exactly the servers they want)
       * otherwise -> union in every globally-enabled MCP server
+      * MCP-membership lookup failure -> the per-job list, untouched (same
+        fail-safe as ``_resolve_cron_enabled_toolsets``'s platform fallback:
+        a broken MCP lookup must degrade the run's toolset, never crash the
+        job before the memory/messaging/clarify policy denylist is even
+        applied)
     """
     result = [t for t in per_job if t != "no_mcp"]
     if "no_mcp" in per_job:
@@ -589,8 +594,15 @@ def _merge_mcp_into_per_job_toolsets(per_job: list[str], cfg: dict) -> list[str]
     # lazy import: avoid heavy hermes_cli import at cron module load (matches
     # _resolve_cron_enabled_toolsets' fallback) and share one MCP-membership
     # computation with the gateway/CLI platform resolver.
-    from hermes_cli.tools_config import enabled_mcp_server_names
-    enabled_mcp = enabled_mcp_server_names(cfg)
+    try:
+        from hermes_cli.tools_config import enabled_mcp_server_names
+        enabled_mcp = enabled_mcp_server_names(cfg)
+    except Exception as exc:
+        logger.warning(
+            "Cron per-job MCP toolset merge failed, keeping per-job list unmerged: %s",
+            exc,
+        )
+        return result
     if set(result) & enabled_mcp:
         return result
     for name in sorted(enabled_mcp):

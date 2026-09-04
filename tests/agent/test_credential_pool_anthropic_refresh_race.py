@@ -1,4 +1,5 @@
 """Regression tests for cross-process races refreshing Anthropic OAuth tokens.
+from typing import Dict
 
 ``CredentialPool._refresh_entry`` explicitly documents (see the comment
 above the ``if self.provider in ("openai-codex", "xai-oauth", "anthropic"):`` branch in

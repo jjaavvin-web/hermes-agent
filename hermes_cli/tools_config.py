@@ -17,7 +17,7 @@ import subprocess
 import sys
 from collections.abc import Callable, Sequence
 from pathlib import Path
-from typing import Any, Set, TYPE_CHECKING
+from typing import Any, Optional, Set, TYPE_CHECKING
 
 if TYPE_CHECKING:
     import argparse
