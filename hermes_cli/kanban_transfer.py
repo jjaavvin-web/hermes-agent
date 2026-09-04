@@ -73,6 +73,17 @@ _DISPATCHABLE_STATUSES = ("ready", "running", "todo", "scheduled")
 # Export
 # ---------------------------------------------------------------------------
 
+def _readonly_uri(path: Path) -> str:
+    """Return a ``file:…?mode=ro`` SQLite URI for ``path``.
+
+    ``Path.as_uri`` percent-encodes every character SQLite's URI parser
+    would otherwise treat as structure (``?``, ``#``, spaces), so a board
+    living under an awkward directory name cannot smuggle extra URI
+    parameters into the connection string.
+    """
+    return f"{Path(path).resolve().as_uri()}?mode=ro"
+
+
 def _snapshot_db(source: Path, target: Path) -> None:
     """Write a consistent copy of ``source`` to ``target``.
 
@@ -80,8 +91,16 @@ def _snapshot_db(source: Path, target: Path) -> None:
     a just-committed page can still live in the ``-wal`` sidecar, so
     copying only ``kanban.db`` loses recent writes and can produce a
     torn image if the dispatcher commits mid-copy.
+
+    Fork rail: the SOURCE is opened through a ``file:…?mode=ro`` URI, never
+    a writable ``connect()``. Export is a read operation, and after the
+    2026-09-01 retirement the only board databases left on disk are
+    read-only history — a plain ``connect()`` takes a write lock, runs WAL
+    recovery and can checkpoint/truncate the sidecars of a board nobody is
+    allowed to mutate any more. ``mode=ro`` still reads a hot or orphaned
+    WAL correctly (the reader only needs the ``-shm``), so nothing is lost.
     """
-    src = sqlite3.connect(str(source))
+    src = sqlite3.connect(_readonly_uri(source), uri=True)
     try:
         dst = sqlite3.connect(str(target))
         try:
@@ -163,6 +182,20 @@ def export_board(
     Workspaces are never included: they are git worktrees and scratch
     trees that are large, machine-local, and rebuilt on demand.
     """
+    # Fork rail: export opens a board DB and mints a redistributable archive
+    # from it. Refuse FIRST — before board resolution, before the output
+    # directory is created, before any DB is touched — so a tombstoned
+    # installation cannot be talked into opening read-only history (WAL
+    # recovery on open is a write) or into publishing a copy of it, no
+    # matter how the caller redirects the path (``HERMES_KANBAN_DB``,
+    # ``HERMES_KANBAN_HOME``, ``HERMES_KANBAN_BOARD``, an explicit board).
+    # Mirrors the gate at the top of import_board().
+    if kb.kanban_retired():
+        raise kb.KanbanRetiredError(
+            "Kanban was retired on 2026-09-01; the board is read-only history. "
+            "export_board() refused — no board database may be opened and no "
+            "archive may be written, regardless of board or path overrides."
+        )
     slug = kb._normalize_board_slug(board) or kb.get_current_board()
     if not kb.board_exists(slug):
         raise ValueError(f"board {slug!r} does not exist")

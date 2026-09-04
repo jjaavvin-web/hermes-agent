@@ -79,6 +79,7 @@ import random
 import secrets
 import shutil
 import sqlite3
+import stat
 import subprocess
 import sys
 import threading
@@ -735,6 +736,43 @@ def kanban_db_path(board: Optional[str] = None) -> Path:
     return board_dir(slug) / "kanban.db"
 
 
+def _tombstoned_shape(db_path: Path) -> bool:
+    """Return True when ``db_path`` is not an absent path or an ordinary file.
+
+    The retirement gate used to decide this with :meth:`Path.is_dir`, which
+    swallows **every** ``OSError`` and reports ``False`` — so the documented
+    fail-CLOSED branch in :func:`kanban_retired` was unreachable for exactly
+    the three cases its docstring named (permissions, broken symlink,
+    unreadable home). A dangling symlink at the canonical ``kanban.db`` path
+    therefore read as "not retired" and let an opener create a fresh board DB
+    straight through the tombstone.
+
+    ``os.lstat`` (which never follows the final symlink) makes each shape
+    explicit:
+
+    * absent (``FileNotFoundError``) → **not** retired; a board that has never
+      been created is not a retired one, and this is the shape every
+      non-retired installation and test fixture has.
+    * regular file → **not** retired; that is an ordinary board database.
+    * directory → retired; the canonical tombstone shape.
+    * symlink, dangling or not → retired; a symlink AT the canonical DB path is
+      never a legitimate board database, and following it is precisely the
+      bypass this closes.
+    * anything else (fifo, socket, device) or any other ``OSError``
+      (``PermissionError``, ``ELOOP``, ``NotADirectoryError``, …) → retired,
+      fail CLOSED.
+    """
+    try:
+        st = os.lstat(db_path)
+    except FileNotFoundError:
+        return False
+    except OSError:
+        # Permissions, ELOOP, a non-directory component in the path: the
+        # tombstone cannot be ruled out, so no write surface may mount.
+        return True
+    return not stat.S_ISREG(st.st_mode)
+
+
 def kanban_retired(home: Optional[Path] = None) -> bool:
     """Return True when the Kanban board has been retired (tombstoned).
 
@@ -770,20 +808,20 @@ def kanban_retired(home: Optional[Path] = None) -> bool:
     consulted here — it is a data-access convenience for CLI/dispatcher
     lanes and must NOT be able to redirect a security gate away from the
     real tombstone.
+
+    The shape test itself is :func:`_tombstoned_shape`: only an absent path
+    or an ordinary regular file reads as "not retired". Every other shape —
+    directory, symlink (dangling or not), fifo/socket/device — and every
+    ``OSError`` reads as retired, so this function fails CLOSED for the
+    cases the paragraph above promises.
     """
     try:
         if home is not None:
-            db_path = Path(home) / "kanban.db"
-            # A DIRECTORY at the kanban.db path can never be a valid
-            # database: it is the tombstone shape whether or not the
-            # RETIRED marker is still inside it (a deleted marker must not
-            # resurrect the board).
-            return db_path.is_dir()
+            return _tombstoned_shape(Path(home) / "kanban.db")
         from hermes_constants import get_default_hermes_root
-        canonical_db_path = get_default_hermes_root() / "kanban.db"
-        if canonical_db_path.is_dir():
+        if _tombstoned_shape(get_default_hermes_root() / "kanban.db"):
             return True
-        return (kanban_home() / "kanban.db").is_dir()
+        return _tombstoned_shape(kanban_home() / "kanban.db")
     except OSError:
         # Fail CLOSED: if the tombstone cannot be inspected (permissions,
         # broken symlink, unreadable home), no write surface may mount.

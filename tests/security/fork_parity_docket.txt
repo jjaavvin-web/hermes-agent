@@ -183,3 +183,6 @@ fp-184	agent/file_safety.py: cross-profile write guard (get_cross_profile_warnin
 fp-185	tools/delegate_tool.py + hermes_cli/config_defaults.py: delegation caps stay 3 concurrent children / 50 iterations
 fp-186	model_tools.py: worker authority is re-checked after the pre_tool_call modify directive may rewrite tool args
 fp-187	tools/approval.py: every "always" approval routes through _apply_always_choice (destructive-class keys stay session-only)
+fp-188	sec4:hermes_cli/kanban_transfer.py export_board() refuses on the canonical Kanban tombstone BEFORE any board or path resolution, and _snapshot_db opens the source through a file:...?mode=ro URI (never a writable sqlite3.connect) — the exporter was the one public opener left ungated and writable
+fp-189	sec4:gateway/kanban_watchers.py both Kanban watchers (notifier + dispatcher) refuse on the canonical tombstone BEFORE the config read and before the singleton kanban/.dispatcher.lock is written — the tombstone, not kanban.dispatch_in_gateway, is the authority
+fp-190	sec4:hermes_cli/kanban_db.py kanban_retired() decides retirement through _tombstoned_shape (os.lstat, never following the final symlink): only an absent path or an ordinary regular file reads as not-retired, so a dangling symlink, a symlink to a directory, a fifo or an unreadable path all fail CLOSED

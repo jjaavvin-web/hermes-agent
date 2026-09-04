@@ -2218,3 +2218,159 @@ class TestMemoryProviderExternalPaths:
 
 
 
+
+
+# ---------------------------------------------------------------------------
+# Descendant secret-exclusion regression pin (PR#70 class)
+# ---------------------------------------------------------------------------
+
+# Five RECURSIVE-DESCENDANT locations inside the three directory entries of
+# ``_QUICK_STATE_FILES`` that are walked rather than copied whole. The
+# pre-PR#70 code applied the exclusion authority only to the top-level entry
+# and to ``profiles/<name>/`` — everything nested below leaked. These are the
+# depths a `git merge` of upstream silently reverts.
+_DESCENDANT_PLANTED_LOCATIONS = (
+    "pairing/nested",
+    "pairing/nested/deeper",
+    "platforms/pairing/whatsapp",
+    "kanban/boards/alpha",
+    "kanban/boards/alpha/meta",
+)
+
+_DESCENDANT_SECRET_FILES = (
+    ".env",
+    "auth.json",
+    "relay.secret",
+    "session.key",
+    "certificate.pem",
+)
+
+
+def _descendant_marker(location: str, filename: str) -> str:
+    slug = location.replace("/", "_")
+    stem = filename.lstrip(".").replace(".", "_")
+    return f"PLANTED_DESC_{slug}_{stem}".upper()
+
+
+def _plant_descendant_secrets(root: Path) -> tuple[list[str], list[str]]:
+    """Plant one of each secret kind at each descendant location.
+
+    Returns ``(markers, keeper_rel_paths)`` — the second list is the positive
+    control: an ordinary file planted beside each secret, which the snapshot
+    and the backup MUST contain. Without it a test that merely asserts absence
+    would also pass if the walk never reached these depths at all (or if the
+    whole directory entry were dropped), which is the exact way this class of
+    regression hides.
+    """
+    markers: list[str] = []
+    keepers: list[str] = []
+    for location in _DESCENDANT_PLANTED_LOCATIONS:
+        d = root / location
+        d.mkdir(parents=True, exist_ok=True)
+        for filename in _DESCENDANT_SECRET_FILES:
+            marker = _descendant_marker(location, filename)
+            markers.append(marker)
+            (d / filename).write_text(f"SECRET={marker}\n", encoding="utf-8")
+        keeper_rel = f"{location}/board.json"
+        (root / keeper_rel).write_text('{"kept": true}\n', encoding="utf-8")
+        keepers.append(keeper_rel)
+    return markers, keepers
+
+
+def _assert_markers_absent(label: str, data: bytes, markers: list[str]) -> None:
+    for marker in markers:
+        assert marker.encode() not in data, f"{marker} leaked via {label}"
+
+
+class TestDescendantSecretExclusionPin:
+    """Mutation pin for the PR#70 descendant filter.
+
+    ``_create_quick_snapshot_locked`` and ``run_backup`` both walk the
+    directory entries of ``_QUICK_STATE_FILES`` (``pairing``,
+    ``platforms/pairing``, ``kanban/boards``) with ``os.walk`` and evaluate
+    ``_should_exclude`` on **every** descendant, pruning excluded directories
+    in place. The fork carries that filter; the fork's own suite did not pin
+    it — deleting the descendant ``_should_exclude`` call left every backup
+    test GREEN while a probe found 28 credential files, including
+    ``platforms/pairing/oauth.key``, inside the quick snapshot.
+
+    A silent upstream merge is the realistic way this reverts, so this class
+    asserts the property on the produced ARTIFACT BYTES (not on
+    ``_should_exclude`` in isolation) for both producers.
+    """
+
+    def _home(self, tmp_path: Path) -> Path:
+        home = tmp_path / ".hermes"
+        home.mkdir()
+        _make_hermes_tree(home)
+        return home
+
+    def test_quick_snapshot_excludes_descendant_secrets(self, tmp_path, monkeypatch):
+        from hermes_cli.backup import _QUICK_SNAPSHOTS_DIR, create_quick_snapshot
+
+        home = self._home(tmp_path)
+        markers, keepers = _plant_descendant_secrets(home)
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+        snap_id = create_quick_snapshot(hermes_home=home)
+        assert snap_id
+        snap_dir = home / _QUICK_SNAPSHOTS_DIR / snap_id
+
+        # Positive control first: the walk really did reach these depths.
+        for keeper in keepers:
+            assert (snap_dir / keeper).is_file(), (
+                f"positive control {keeper} missing — the snapshot never walked "
+                "this depth, so the absence assertions below would be vacuous"
+            )
+
+        for path in snap_dir.rglob("*"):
+            if path.is_file():
+                _assert_markers_absent(
+                    path.relative_to(snap_dir).as_posix(), path.read_bytes(), markers
+                )
+        leaked = [
+            p.relative_to(snap_dir).as_posix()
+            for p in snap_dir.rglob("*")
+            if p.is_file() and p.name in _DESCENDANT_SECRET_FILES
+        ]
+        assert leaked == [], f"secret-bearing descendants copied into snapshot: {leaked}"
+
+        manifest = json.loads((snap_dir / "manifest.json").read_text(encoding="utf-8"))
+        manifest_blob = json.dumps(manifest).encode()
+        _assert_markers_absent("manifest.json", manifest_blob, markers)
+
+    def test_full_backup_excludes_descendant_secrets(self, tmp_path, monkeypatch):
+        from hermes_cli.backup import run_backup
+
+        home = self._home(tmp_path)
+        markers, keepers = _plant_descendant_secrets(home)
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+        out_zip = tmp_path / "backup.zip"
+        run_backup(Namespace(output=str(out_zip)))
+
+        with zipfile.ZipFile(out_zip) as zf:
+            names = set(zf.namelist())
+            for keeper in keepers:
+                assert keeper in names, (
+                    f"positive control {keeper} missing from the full backup — "
+                    "absence assertions would be vacuous"
+                )
+            for name in names:
+                _assert_markers_absent(name, zf.read(name), markers)
+
+        leaked = [n for n in names if n.rsplit("/", 1)[-1] in _DESCENDANT_SECRET_FILES]
+        assert leaked == [], f"secret-bearing descendants shipped in backup: {leaked}"
+
+    def test_should_exclude_covers_every_planted_descendant(self):
+        """Unit-level counterpart: the shared authority itself must deny each
+        planted path, so a failure above localises to the walk, not the rule."""
+        from hermes_cli.backup import _should_exclude
+
+        for location in _DESCENDANT_PLANTED_LOCATIONS:
+            for filename in _DESCENDANT_SECRET_FILES:
+                rel = Path(location) / filename
+                assert _should_exclude(rel), f"{rel} must be excluded"
+            assert not _should_exclude(Path(location) / "board.json")

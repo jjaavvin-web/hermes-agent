@@ -257,6 +257,25 @@ class GatewayKanbanWatchersMixin:
         # must poll subscriptions for adapters they own even when another
         # process owns dispatch, or when in-gateway dispatch is disabled.
         # This read/deliver loop never claims or spawns work.
+        # Fork rail (Kanban retirement, 2026-09-01): the tombstone — not a
+        # config key — decides whether this watcher may run at all. Both
+        # watchers used to start unconditionally and the dispatcher's only
+        # brake was ``kanban.dispatch_in_gateway``; a lost or defaulted config
+        # key therefore resurrected a live tick against a retired board, and
+        # the dispatcher wrote its ``.dispatcher.lock`` INTO the retired tree
+        # before any DB opener could refuse. Check first, write nothing.
+        try:
+            from hermes_cli import kanban_db as _kb_gate
+            _retired = _kb_gate.kanban_retired()
+        except Exception:
+            _retired = True  # unreadable tombstone → fail CLOSED, do not run
+        if _retired:
+            logger.info(
+                "%s: Kanban is retired (tombstone present); watcher not started",
+                "kanban notifier",
+            )
+            return
+
         from gateway.config import Platform as _Platform
         try:
             from hermes_cli import kanban_db as _kb
@@ -1300,6 +1319,25 @@ class GatewayKanbanWatchersMixin:
         # restart the gateway; same pattern as every other background
         # watcher here. Honours HERMES_KANBAN_DISPATCH_IN_GATEWAY env var
         # as an escape hatch (false-y value disables without editing YAML).
+        # Fork rail (Kanban retirement, 2026-09-01): the tombstone — not a
+        # config key — decides whether this watcher may run at all. Both
+        # watchers used to start unconditionally and the dispatcher's only
+        # brake was ``kanban.dispatch_in_gateway``; a lost or defaulted config
+        # key therefore resurrected a live tick against a retired board, and
+        # the dispatcher wrote its ``.dispatcher.lock`` INTO the retired tree
+        # before any DB opener could refuse. Check first, write nothing.
+        try:
+            from hermes_cli import kanban_db as _kb_gate
+            _retired = _kb_gate.kanban_retired()
+        except Exception:
+            _retired = True  # unreadable tombstone → fail CLOSED, do not run
+        if _retired:
+            logger.info(
+                "%s: Kanban is retired (tombstone present); watcher not started",
+                "kanban dispatcher",
+            )
+            return
+
         try:
             from hermes_cli.config import load_config as _load_config
         except Exception:

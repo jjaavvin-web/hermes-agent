@@ -1,12 +1,12 @@
 {
   "schema": "hermes-fork-parity-manifest/2",
   "docket_source": "tests/security/fork_parity_docket.txt",
-  "docket_sha256": "5860b10983f4c7b6027985c6518742a13ea4b11681ff6d2a0f7165a9924134e4",
+  "docket_sha256": "31fab122f8472173ac360f33b466e41c71e9289fb7931b04486d14315fd09f36",
   "target_base_commit": "5424fa8002ed3eea24c220e97d166b66628c3426",
   "counts": {
-    "total": 185,
+    "total": 188,
     "RELOCATED": 9,
-    "PRESERVED_EQUIVALENT": 153,
+    "PRESERVED_EQUIVALENT": 156,
     "SUPERSEDED_LEGIT": 23
   },
   "security_suite_min_collected": 794,
@@ -845,9 +845,15 @@
         },
         {
           "test": "tests/security/test_merge_invariants.py::test_restore_quick_snapshot_skips_manifest_traversal_entry"
+        },
+        {
+          "test": "tests/hermes_cli/test_backup.py::TestDescendantSecretExclusionPin::test_quick_snapshot_excludes_descendant_secrets"
+        },
+        {
+          "test": "tests/hermes_cli/test_backup.py::TestDescendantSecretExclusionPin::test_full_backup_excludes_descendant_secrets"
         }
       ],
-      "notes": "Quick snapshot exclusion + traversal guards. v2026.8.13 merge: upstream split create_quick_snapshot into a lock wrapper + _create_quick_snapshot_locked; exclusion call edge lives in the locked internal, wrapper edge anchored too."
+      "notes": "Quick snapshot exclusion + traversal guards. v2026.8.13 merge: upstream split create_quick_snapshot into a lock wrapper + _create_quick_snapshot_locked; exclusion call edge lives in the locked internal, wrapper edge anchored too. P7 part 7: the descendant filter (os.walk + _should_exclude on every nested path) now has its own mutation pin \u2014 deleting it left all 92 other backup tests green while 28 credential files leaked into the snapshot."
     },
     {
       "id": "fp-030",
@@ -6042,6 +6048,138 @@
         }
       ],
       "notes": "v021 lead pin F13"
+    },
+    {
+      "id": "fp-188",
+      "verdict": "PRESERVED_EQUIVALENT",
+      "severity": "NONE",
+      "kind": "security_invariant",
+      "phase": "in_repo",
+      "introduced_by": [],
+      "docket_item": "sec4:hermes_cli/kanban_transfer.py export_board() refuses on the canonical Kanban tombstone BEFORE any board or path resolution, and _snapshot_db opens the source through a file:...?mode=ro URI (never a writable sqlite3.connect) \u2014 the exporter was the one public opener left ungated and writable",
+      "docket_item_sha256_16": "2f542c5907e5c970",
+      "anchors": [
+        {
+          "path": "hermes_cli/kanban_transfer.py",
+          "mode": "call_edge",
+          "caller": "export_board",
+          "callee": "kanban_retired"
+        },
+        {
+          "path": "hermes_cli/kanban_transfer.py",
+          "mode": "call_edge",
+          "caller": "_snapshot_db",
+          "callee": "_readonly_uri"
+        },
+        {
+          "path": "hermes_cli/kanban_transfer.py",
+          "mode": "contains",
+          "text": "?mode=ro"
+        }
+      ],
+      "proofs": [
+        {
+          "test": "tests/security/test_kanban_opener_tombstone.py::TestExportBoardRefuses::test_export_board_refuses_and_writes_no_archive"
+        },
+        {
+          "test": "tests/security/test_kanban_opener_tombstone.py::TestExportBoardRefuses::test_export_board_refuses_for_explicit_board_and_home_override"
+        },
+        {
+          "test": "tests/security/test_kanban_opener_tombstone.py::TestExportBoardRefuses::test_snapshot_source_is_opened_read_only"
+        },
+        {
+          "test": "tests/security/test_kanban_opener_tombstone.py::TestExportBoardRefuses::test_readonly_uri_connection_rejects_writes"
+        }
+      ],
+      "notes": "P7 part 7 / criterion 8. Export resolved a board, opened its kanban.db read-write and minted a redistributable archive with the tombstone present. Gate mirrors import_board's; the read-only URI keeps WAL recovery off read-only history."
+    },
+    {
+      "id": "fp-189",
+      "verdict": "PRESERVED_EQUIVALENT",
+      "severity": "NONE",
+      "kind": "security_invariant",
+      "phase": "in_repo",
+      "introduced_by": [],
+      "docket_item": "sec4:gateway/kanban_watchers.py both Kanban watchers (notifier + dispatcher) refuse on the canonical tombstone BEFORE the config read and before the singleton kanban/.dispatcher.lock is written \u2014 the tombstone, not kanban.dispatch_in_gateway, is the authority",
+      "docket_item_sha256_16": "1eb826cf57f2204a",
+      "anchors": [
+        {
+          "path": "gateway/kanban_watchers.py",
+          "mode": "call_edge",
+          "caller": "_kanban_dispatcher_watcher",
+          "callee": "kanban_retired"
+        },
+        {
+          "path": "gateway/kanban_watchers.py",
+          "mode": "call_edge",
+          "caller": "_kanban_notifier_watcher",
+          "callee": "kanban_retired"
+        },
+        {
+          "path": "gateway/kanban_watchers.py",
+          "mode": "contains",
+          "text": ".dispatcher.lock"
+        }
+      ],
+      "proofs": [
+        {
+          "test": "tests/security/test_kanban_opener_tombstone.py::TestGatewayKanbanWatchersRefuse::test_dispatcher_watcher_refuses_and_writes_no_lock"
+        },
+        {
+          "test": "tests/security/test_kanban_opener_tombstone.py::TestGatewayKanbanWatchersRefuse::test_notifier_watcher_refuses_and_writes_nothing"
+        },
+        {
+          "test": "tests/security/test_kanban_opener_tombstone.py::TestGatewayKanbanWatchersRefuse::test_control_dispatcher_is_not_blocked_without_a_tombstone"
+        }
+      ],
+      "notes": "P7 part 7 / criterion 8. gateway/run.py spawns both watchers unconditionally; the dispatcher's only brake was a config key, and it wrote its singleton lock INTO the retired tree before any DB opener could refuse. fp-002 keeps the config default fail-closed; this item keeps the tombstone gate above it."
+    },
+    {
+      "id": "fp-190",
+      "verdict": "PRESERVED_EQUIVALENT",
+      "severity": "NONE",
+      "kind": "security_invariant",
+      "phase": "in_repo",
+      "introduced_by": [],
+      "docket_item": "sec4:hermes_cli/kanban_db.py kanban_retired() decides retirement through _tombstoned_shape (os.lstat, never following the final symlink): only an absent path or an ordinary regular file reads as not-retired, so a dangling symlink, a symlink to a directory, a fifo or an unreadable path all fail CLOSED",
+      "docket_item_sha256_16": "bd7233612193a324",
+      "anchors": [
+        {
+          "path": "hermes_cli/kanban_db.py",
+          "mode": "call_edge",
+          "caller": "kanban_retired",
+          "callee": "_tombstoned_shape"
+        },
+        {
+          "path": "hermes_cli/kanban_db.py",
+          "mode": "call_edge",
+          "caller": "_tombstoned_shape",
+          "callee": "lstat"
+        },
+        {
+          "path": "hermes_cli/kanban_db.py",
+          "mode": "contains",
+          "symbol": "_tombstoned_shape"
+        }
+      ],
+      "proofs": [
+        {
+          "test": "tests/security/test_kanban_opener_tombstone.py::TestTombstoneShapeIsFailClosed::test_dangling_symlink_is_retired"
+        },
+        {
+          "test": "tests/security/test_kanban_opener_tombstone.py::TestTombstoneShapeIsFailClosed::test_symlink_to_directory_is_retired"
+        },
+        {
+          "test": "tests/security/test_kanban_opener_tombstone.py::TestTombstoneShapeIsFailClosed::test_permission_error_is_retired"
+        },
+        {
+          "test": "tests/security/test_kanban_opener_tombstone.py::TestTombstoneShapeIsFailClosed::test_dangling_symlink_blocks_init_db"
+        },
+        {
+          "test": "tests/security/test_kanban_opener_tombstone.py::TestTombstoneShapeIsFailClosed::test_regular_file_is_not_retired"
+        }
+      ],
+      "notes": "P7 part 7 / criterion 8. Path.is_dir() swallows OSError, so the documented fail-closed branch was dead for exactly the three cases it named; a dangling symlink at the canonical path let init_db() create a 118,784-byte board DB through the tombstone."
     }
   ],
   "repo_owned_top_level": [
