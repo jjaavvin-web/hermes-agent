@@ -819,13 +819,34 @@ class TestFTS5Search:
         db.append_message("s1", role="assistant", content="projectionneedle")
         db.append_message("s1", role="user", content="after")
 
+        # v0.21 read-path split: search (and the per-hit context-enrichment
+        # query in _finalize_search_matches) reads through
+        # `with self._read_ctx() as conn:`, which hands out a connection
+        # borrowed from a bounded pool (hermes_state.py _read_ctx /
+        # _checkout_read_conn / _get_read_conn) rather than the shared
+        # writer connection (db._conn). Snapshotting `db._get_read_conn()`
+        # once up front (the old approach) opens an orphaned connection
+        # that is never the one _read_ctx later checks out — the pool
+        # reuses/opens its own — so it never observes the enrichment
+        # queries. Instead, wrap `_checkout_read_conn`, the single seam
+        # every pooled read (fresh open AND pool-hit reuse) passes through,
+        # so every connection that ever serves a read gets traced.
         statements = []
-        read_conn = db._get_read_conn() or db._conn
-        traced_connections = [db._conn]
-        if read_conn is not db._conn:
-            traced_connections.append(read_conn)
-        for conn in traced_connections:
+        traced_conns = []
+
+        def _trace(conn):
             conn.set_trace_callback(statements.append)
+            traced_conns.append(conn)
+            return conn
+
+        _trace(db._conn)  # non-WAL / pool-exhaustion fallback path
+        original_checkout = db._checkout_read_conn
+
+        def traced_checkout():
+            conn = original_checkout()
+            return _trace(conn) if conn is not None else conn
+
+        db._checkout_read_conn = traced_checkout
 
         def context_query_count():
             normalized = (" ".join(sql.upper().split()) for sql in statements)
@@ -843,14 +864,19 @@ class TestFTS5Search:
             )
             assert len(full) == 1
             assert full[0]["context"]
-            assert context_query_count() <= 1  # v0.21: upstream folds context enrichment into the main query (context still populated, asserted above); the projection-skip property (== 0) is the pin
+            # Exactly one match, so exactly one enrichment query — the
+            # projection-skip property is the pin, not the count itself,
+            # but the count IS stable here (one query per matched row) so
+            # keep the exact assertion rather than loosening it to <= 1.
+            assert context_query_count() == 1
 
             default = db.search_messages("projectionneedle")
             assert len(default) == 1
             assert default[0]["context"]
             assert context_query_count() == 2
         finally:
-            for conn in traced_connections:
+            del db._checkout_read_conn
+            for conn in traced_conns:
                 conn.set_trace_callback(None)
 
     def test_sanitize_fts5_query_strips_dangerous_chars(self):

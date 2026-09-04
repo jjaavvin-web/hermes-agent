@@ -5941,13 +5941,20 @@
       "anchors": [
         {
           "path": "agent/file_safety.py",
-          "mode": "contains",
-          "symbol": "get_cross_profile_warning"
+          "mode": "call_edge",
+          "caller": "get_cross_profile_warning",
+          "callee": "classify_cross_profile_target"
         },
         {
           "path": "agent/file_safety.py",
           "mode": "contains",
-          "symbol": "classify_cross_profile_target"
+          "text": "def get_cross_profile_warning"
+        },
+        {
+          "path": "tools/file_tools.py",
+          "mode": "call_edge",
+          "caller": "_check_cross_profile_path",
+          "callee": "get_cross_profile_warning"
         }
       ],
       "proofs": [
