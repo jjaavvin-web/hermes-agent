@@ -1175,7 +1175,8 @@ def test_slash_exec_routes_pending_input_commands_to_dispatch(server, cmd):
     base, _, arg = cmd.partition(" ")
 
     def fresh_session():
-        return {"session_key": "test-session", "agent": None}
+        # v0.21: live sessions always carry a per-session history lock (methods_session.py).
+        return {"session_key": "test-session", "agent": None, "history_lock": threading.Lock()}
 
     sid = "test-session"
 

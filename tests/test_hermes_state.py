@@ -843,7 +843,7 @@ class TestFTS5Search:
             )
             assert len(full) == 1
             assert full[0]["context"]
-            assert context_query_count() == 1
+            assert context_query_count() <= 1  # v0.21: upstream folds context enrichment into the main query (context still populated, asserted above); the projection-skip property (== 0) is the pin
 
             default = db.search_messages("projectionneedle")
             assert len(default) == 1

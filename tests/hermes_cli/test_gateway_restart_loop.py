@@ -442,10 +442,7 @@ class TestGatewaySelfTargetingGuard:
     """Verify destructive gateway commands refuse inside the gateway."""
 
     def test_stop_refuses_inside_gateway(self, monkeypatch):
-        from tools import process_registry
-        monkeypatch.setattr(
-            process_registry, "_is_supervised_gateway_process", lambda: True
-        )
+        monkeypatch.setenv("_HERMES_GATEWAY", "1")
         from hermes_cli.gateway import gateway_command
         args = Namespace(gateway_command="stop", all=False, system=False)
         with pytest.raises(SystemExit) as exc_info:
@@ -453,10 +450,7 @@ class TestGatewaySelfTargetingGuard:
         assert exc_info.value.code == 1
 
     def test_uninstall_refuses_inside_gateway(self, monkeypatch):
-        from tools import process_registry
-        monkeypatch.setattr(
-            process_registry, "_is_supervised_gateway_process", lambda: True
-        )
+        monkeypatch.setenv("_HERMES_GATEWAY", "1")
         from hermes_cli.gateway import gateway_command
 
         args = Namespace(gateway_command="uninstall", system=False)
@@ -511,16 +505,15 @@ class TestTerminalToolGatewayLifecycleGuard:
 
     def _patch_env(self, monkeypatch, fake_env, *, inside_gateway: bool):
         import tools.terminal_tool as tt
-        from tools import process_registry
         eid = "default"
         monkeypatch.setattr(tt, "_active_environments", {eid: fake_env})
         monkeypatch.setattr(tt, "_last_activity", {eid: 0.0})
         monkeypatch.setattr(tt, "_task_env_overrides", {})
         monkeypatch.setattr(tt, "_get_env_config", self._minimal_config)
-        monkeypatch.setattr(
-            process_registry, "_is_supervised_gateway_process",
-            lambda: inside_gateway,
-        )
+        if inside_gateway:
+            monkeypatch.setenv("_HERMES_GATEWAY", "1")
+        else:
+            monkeypatch.delenv("_HERMES_GATEWAY", raising=False)
 
     @pytest.mark.parametrize("cmd", [
         "systemctl restart hermes-gateway",
@@ -632,38 +625,25 @@ class TestTerminalToolGatewayLifecycleGuard:
         assert result["exit_code"] == 0
         assert calls == [command]
 
-    def test_cli_agent_session_not_blocked_by_inherited_env(
+    def test_child_process_inheriting_gateway_env_marker_is_blocked(
         self, monkeypatch
     ):
-        """#92560: CLI/TUI agent sessions inherit _HERMES_GATEWAY=1 from the
-        gateway but are NOT the gateway supervisor.  The env gate must not
-        fire for them — only for the actual gateway process (PID-file owner).
+        """Policy (LEAD-DECISIONS D6 / never-port 0e038425db): the guard
+        keys on the raw env marker, not a PID-file/supervisor probe. ANY
+        gateway-descendant process — including a CLI/TUI agent session that
+        merely inherited ``_HERMES_GATEWAY=1`` from its parent gateway and
+        does not itself own the gateway PID file — must still be blocked.
+        Narrowing this to "only the actual supervisor" is the rejected
+        upstream semantics.
         """
         import tools.terminal_tool as tt
 
-        calls = []
-
-        class _FakeEnv:
-            env = {}
-
-            def execute(self, cmd, **kwargs):
-                calls.append(cmd)
-                return {"output": "", "returncode": 0}
-
-        # Simulate a CLI agent session: _HERMES_GATEWAY=1 is in the
-        # environment (inherited from the gateway), but
-        # _is_supervised_gateway_process() returns False because the
-        # process does not own the gateway PID file.
-        self._patch_env(monkeypatch, _FakeEnv(), inside_gateway=False)
-        monkeypatch.setenv("_HERMES_GATEWAY", "1")
-        monkeypatch.setattr(
-            tt, "_check_all_guards", lambda cmd, env, **kwargs: {"approved": True}
-        )
+        self._patch_env(monkeypatch, self._make_fake_env(), inside_gateway=True)
 
         result = json.loads(tt.terminal_tool(command="hermes gateway restart"))
 
-        assert result["exit_code"] == 0
-        assert calls == ["hermes gateway restart"]
+        assert result["exit_code"] == 1
+        assert "Blocked" in result["error"]
 
     def test_blocks_launchctl_submit_hidden_in_referenced_script(
         self, monkeypatch, tmp_path
@@ -1830,16 +1810,15 @@ class TestTerminalToolGatewayLifecycleGuardRemote:
 
     def _patch_env(self, monkeypatch, fake_env, *, inside_gateway: bool):
         import tools.terminal_tool as tt
-        from tools import process_registry
         eid = "default"
         monkeypatch.setattr(tt, "_active_environments", {eid: fake_env})
         monkeypatch.setattr(tt, "_last_activity", {eid: 0.0})
         monkeypatch.setattr(tt, "_task_env_overrides", {})
         monkeypatch.setattr(tt, "_get_env_config", lambda: {"env_type": "local", "cwd": "/tmp", "timeout": 60, "lifetime_seconds": 3600})
-        monkeypatch.setattr(
-            process_registry, "_is_supervised_gateway_process",
-            lambda: inside_gateway,
-        )
+        if inside_gateway:
+            monkeypatch.setenv("_HERMES_GATEWAY", "1")
+        else:
+            monkeypatch.delenv("_HERMES_GATEWAY", raising=False)
 
     def test_remote_backend_script_read_uses_env_execute(self, monkeypatch, tmp_path):
         import tools.terminal_tool as tt
