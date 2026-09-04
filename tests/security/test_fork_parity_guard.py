@@ -1,6 +1,6 @@
 """Executable fork-parity guard — in-suite half.
 
-Binds the 71-item fork-parity custody docket to THIS checkout: manifest
+Binds the 185-item fork-parity custody docket to THIS checkout: manifest
 integrity + docket hash binding, per-item anchor/proof evaluation (PASS /
 FAIL / WRONG_PHASE), lineage binding, live import provenance, and direct
 behavioral pins for the four decisive invariant families (credential/exfil
@@ -40,8 +40,8 @@ def test_manifest_integrity_and_docket_binding():
     assert errors == [], "fork-parity manifest integrity broken:\n" + "\n".join(errors)
 
     counts = MANIFEST["counts"]
-    assert counts["total"] == 71
-    assert counts["PRESERVED_EQUIVALENT"] == 39
+    assert counts["total"] == 185
+    assert counts["PRESERVED_EQUIVALENT"] == 153
     assert counts["SUPERSEDED_LEGIT"] == 23
     assert counts["RELOCATED"] == 9
 

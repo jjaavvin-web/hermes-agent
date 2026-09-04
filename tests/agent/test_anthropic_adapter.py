@@ -178,7 +178,7 @@ class TestReadClaudeCodeCredentials:
     @pytest.fixture(autouse=True)
     def no_keychain(self, monkeypatch):
         monkeypatch.setattr(
-            "agent.anthropic_adapter._read_claude_code_credentials_from_keychain",
+            "agent.anthropic_credentials._read_claude_code_credentials_from_keychain",
             lambda: None,
         )
 
@@ -276,7 +276,7 @@ class TestResolveAnthropicToken:
         monkeypatch.delenv("ANTHROPIC_TOKEN", raising=False)
         monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
         monkeypatch.setattr(
-            "agent.anthropic_adapter.read_claude_code_credentials",
+            "agent.anthropic_credentials.read_claude_code_credentials",
             self._assert_not_called,
         )
 
@@ -306,7 +306,7 @@ class TestResolveAnthropicToken:
         # Isolate source #5 (credential_pool): ensure source #4 (Claude Code
         # creds, incl. the macOS keychain read which Path.home does not cover)
         # returns nothing, mirroring a Hermes-PKCE-only setup.
-        monkeypatch.setattr("agent.anthropic_adapter.read_claude_code_credentials", lambda: None)
+        monkeypatch.setattr("agent.anthropic_credentials.read_claude_code_credentials", lambda: None)
 
         pool_entry = SimpleNamespace(
             auth_type="oauth",
@@ -325,7 +325,7 @@ class TestResolveAnthropicToken:
         monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
         monkeypatch.setattr("agent.anthropic_adapter.Path.home", lambda: tmp_path)
         monkeypatch.setattr(
-            "agent.anthropic_adapter.read_claude_code_credentials",
+            "agent.anthropic_credentials.read_claude_code_credentials",
             self._assert_not_called,
         )
         monkeypatch.setattr(
@@ -344,7 +344,7 @@ class TestResolveAnthropicToken:
         monkeypatch.delenv("ANTHROPIC_TOKEN", raising=False)
         monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
         monkeypatch.setattr("agent.anthropic_adapter.Path.home", lambda: tmp_path)
-        monkeypatch.setattr("agent.anthropic_adapter.read_claude_code_credentials", lambda: None)
+        monkeypatch.setattr("agent.anthropic_credentials.read_claude_code_credentials", lambda: None)
 
         broken_entry = SimpleNamespace(auth_type="oauth", access_token=None)
         pool = SimpleNamespace(
@@ -364,7 +364,7 @@ class TestResolveAnthropicToken:
         monkeypatch.delenv("ANTHROPIC_TOKEN", raising=False)
         monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
         monkeypatch.setattr("agent.anthropic_adapter.Path.home", lambda: tmp_path)
-        monkeypatch.setattr("agent.anthropic_adapter.read_claude_code_credentials", lambda: None)
+        monkeypatch.setattr("agent.anthropic_credentials.read_claude_code_credentials", lambda: None)
 
         api_key_entry = SimpleNamespace(auth_type="api_key", access_token="sk-pool-apikey")
         pool = SimpleNamespace(
@@ -384,7 +384,7 @@ class TestResolveAnthropicToken:
         monkeypatch.delenv("ANTHROPIC_TOKEN", raising=False)
         monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
         monkeypatch.setattr("agent.anthropic_adapter.Path.home", lambda: tmp_path)
-        monkeypatch.setattr("agent.anthropic_adapter.read_claude_code_credentials", lambda: None)
+        monkeypatch.setattr("agent.anthropic_credentials.read_claude_code_credentials", lambda: None)
 
         captured = {}
         pool_entry = SimpleNamespace(auth_type="oauth", access_token="pool-oauth-token")
@@ -427,7 +427,7 @@ class TestRefreshOauthToken:
         # — the test stays hermetic and never touches the operator's real token.
         monkeypatch.setattr("agent.anthropic_adapter.Path.home", lambda: tmp_path)
         monkeypatch.setattr(
-            "agent.anthropic_adapter.read_claude_code_credentials", lambda: None
+            "agent.anthropic_credentials.read_claude_code_credentials", lambda: None
         )
         creds = {"accessToken": "expired", "refreshToken": "", "expiresAt": 0}
         assert _refresh_oauth_token(creds) is None
@@ -435,7 +435,7 @@ class TestRefreshOauthToken:
     def test_successful_refresh(self, tmp_path, monkeypatch):
         monkeypatch.setattr("agent.anthropic_adapter.Path.home", lambda: tmp_path)
         monkeypatch.setattr(
-            "agent.anthropic_adapter.read_claude_code_credentials", lambda: None
+            "agent.anthropic_credentials.read_claude_code_credentials", lambda: None
         )
 
         creds = {
@@ -472,7 +472,7 @@ class TestRefreshOauthToken:
         # Hermetic against the upstream live-credential pre-read (see above).
         monkeypatch.setattr("agent.anthropic_adapter.Path.home", lambda: tmp_path)
         monkeypatch.setattr(
-            "agent.anthropic_adapter.read_claude_code_credentials", lambda: None
+            "agent.anthropic_credentials.read_claude_code_credentials", lambda: None
         )
         creds = {
             "accessToken": "old",
@@ -545,7 +545,7 @@ class TestResolveWithRefresh:
         monkeypatch.setattr("agent.anthropic_adapter.Path.home", lambda: tmp_path)
 
         # Mock refresh to succeed
-        with patch("agent.anthropic_adapter._refresh_oauth_token", return_value="refreshed-token"):
+        with patch("agent.anthropic_credentials._refresh_oauth_token", return_value="refreshed-token"):
             result = resolve_anthropic_token()
 
         assert result == "refreshed-token"
@@ -566,7 +566,7 @@ class TestResolveWithRefresh:
         }))
         monkeypatch.setattr("agent.anthropic_adapter.Path.home", lambda: tmp_path)
 
-        with patch("agent.anthropic_adapter._refresh_oauth_token", return_value="refreshed-token"):
+        with patch("agent.anthropic_credentials._refresh_oauth_token", return_value="refreshed-token"):
             result = resolve_anthropic_token()
 
         assert result == "refreshed-token"

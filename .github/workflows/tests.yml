@@ -10,7 +10,6 @@ on:
 
 permissions:
   contents: read
-  pull-requests: write
 
 # Cancel in-progress runs for the same ref
 concurrency:
@@ -113,9 +112,6 @@ jobs:
         with:
           command: uv sync --locked --python 3.11 --extra all --extra dev --extra anthropic --extra mistral --extra fal --extra modal --extra daytona --extra hindsight --extra parallel-web
 
-      - name: Install advisory coverage tools
-        run: uv pip install --python .venv/bin/python coverage==7.14.0 diff-cover==10.3.0
-
       - name: Minimize uv cache
         # Optimized for CI: prunes pre-built wheels that are cheap to
         # re-download, keeping the persisted cache small and fast to restore.
@@ -146,7 +142,7 @@ jobs:
         # re-ran LPT independently — redundant N times.
         run: |
           source .venv/bin/activate
-          python scripts/run_tests_parallel.py --files '${{ matrix.slice.files }}' --coverage --coverage-dir .coverage-fragments/slice-${{ matrix.slice.index }}
+          python scripts/run_tests_parallel.py --files '${{ matrix.slice.files }}'
         env:
           # Ensure tests don't accidentally call real APIs
           OPENROUTER_API_KEY: ""
@@ -163,18 +159,8 @@ jobs:
           path: test_durations.json
           retention-days: 1
 
-      - name: Upload per-slice coverage fragments
-        if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: coverage-fragments-slice-${{ matrix.slice.index }}
-          path: .coverage-fragments/slice-${{ matrix.slice.index }}/.coverage.*
-          if-no-files-found: warn
-          retention-days: 1
-
   # Merge per-slice duration data into a single cache, so future runs
-  # (including PRs) get balanced slicing. Also combine per-slice coverage
-  # fragments and publish advisory diff coverage without blocking merge.
+  # (including PRs) get balanced slicing.
   save-durations:
     needs: test
     if: needs.test.result == 'success'
@@ -199,9 +185,6 @@ jobs:
 
       - name: Install dependencies
         run: uv sync --locked --python 3.11 --extra all --extra dev
-
-      - name: Install advisory coverage tools
-        run: uv pip install --python .venv/bin/python coverage==7.14.0 diff-cover==10.3.0
 
       - name: Download all slice durations
         # Each slice uploads the same file name (test_durations.json).
@@ -233,62 +216,6 @@ jobs:
         with:
           path: test_durations.json
           key: test-durations-${{ github.run_id }}
-
-      - name: Download all coverage fragments
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        with:
-          pattern: coverage-fragments-slice-*
-          path: .coverage-fragments
-          merge-multiple: true
-
-      - name: Combine coverage and run advisory diff-cover
-        run: |
-          source .venv/bin/activate
-          if python -m coverage combine --keep --data-file .coverage .coverage-fragments; then
-            python -m coverage xml -o coverage.xml --data-file .coverage || true
-          else
-            echo "coverage combine failed (advisory)" > diff-cover.md
-          fi
-          if [ -f coverage.xml ]; then
-            python -m diff_cover.diff_cover_tool coverage.xml \
-              --show-uncovered \
-              --include 'agent/*' 'gateway/*' 'tools/*' 'hermes_cli/*' \
-              --fail-under 85 \
-              --format markdown > diff-cover.md || true
-          fi
-          cat diff-cover.md || true
-
-      - name: Upload combined coverage artifacts
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: coverage-report
-          path: |
-            .coverage
-            coverage.xml
-            diff-cover.md
-          if-no-files-found: warn
-          retention-days: 14
-
-      - name: Post advisory diff-cover PR comment
-        if: github.event_name == 'pull_request'
-        continue-on-error: true
-        uses: actions/github-script@501413f7c774666dd86d3e54c4b74a6349c13582 # v9.0.0
-        with:
-          script: |
-            const fs = require('fs');
-            const body = [
-              '## Advisory diff coverage',
-              '',
-              'Non-blocking baseline signal for changed `agent/`, `gateway/`, `tools/`, and `hermes_cli/` lines.',
-              '',
-              fs.readFileSync('diff-cover.md', 'utf8')
-            ].join('\n');
-            await github.rest.issues.createComment({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              issue_number: context.issue.number,
-              body
-            });
 
   e2e:
     runs-on: ubuntu-latest

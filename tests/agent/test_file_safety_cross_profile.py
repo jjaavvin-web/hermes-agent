@@ -182,3 +182,4 @@ class TestGetCrossProfileWarning:
         # Must self-document as defense-in-depth so future reviewers
         # don't promote it to a hard block.
         assert "not a security boundary" in warn.lower()
+

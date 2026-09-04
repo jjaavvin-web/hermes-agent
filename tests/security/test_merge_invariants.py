@@ -933,3 +933,203 @@ def test_c_mcp_inherit_writer_authority_boundary_survives_merge():
         "the derived child toolset list, silently re-opening writer-capable "
         "MCP inheritance for delegated children (C-mcp-inherit, t_883970c1)."
     )
+
+
+# --- v0.21 absorption pins (2026-09-03) ---
+
+
+def test_gateway_lifecycle_guard_keys_on_env_marker_at_both_sites():
+    """Never-port upstream commit 0e038425db: gateway lifecycle guard must key
+    on the ``_HERMES_GATEWAY`` env marker at BOTH call sites, not on
+    ``_is_supervised_gateway_process`` (a PID-file-owner check).
+
+    Any process descended from the gateway (not merely the process holding
+    the gateway's own PID file) must be blocked from stopping/restarting/
+    uninstalling the gateway. A merge that reintroduces the PID-file-owner
+    helper narrows the guard back to a single supervised process, reopening
+    the class of bug 0e038425db was written to close.
+    """
+    gateway_src = _read("hermes_cli/gateway.py")
+    terminal_src = _read("tools/terminal_tool.py")
+    assert "_is_supervised_gateway_process" not in gateway_src, \
+        "hermes_cli/gateway.py reintroduced the never-ported PID-owner guard (0e038425db)"
+    assert "_is_supervised_gateway_process" not in terminal_src, \
+        "tools/terminal_tool.py reintroduced the never-ported PID-owner guard (0e038425db)"
+    marker = 'os.getenv("_HERMES_GATEWAY") == "1"'
+    assert gateway_src.count(marker) >= 3, \
+        f"hermes_cli/gateway.py env-marker guard sites dropped below 3 (found {gateway_src.count(marker)})"
+    terminal_marker = 'os.environ.get("_HERMES_GATEWAY") == "1"'
+    assert terminal_src.count(terminal_marker) >= 1, \
+        "tools/terminal_tool.py dropped the _HERMES_GATEWAY env-marker guard"
+
+
+def test_cron_agents_skip_memory():
+    """Fork policy divergence (DIVERGENCES V1): cron-spawned agents must be
+    constructed with ``skip_memory=True`` and never ``skip_memory=False``.
+    Upstream commit ef04d846e9 (auto-loading memory into cron system prompts)
+    was deliberately NOT adopted — cron system prompts would corrupt user
+    representations. A merge that flips this default silently re-adopts the
+    upstream behavior this fork rejected.
+    """
+    src = _read("cron/scheduler.py")
+    assert "skip_memory=True" in src, \
+        "cron scheduler no longer constructs agents with skip_memory=True (ef04d846e9 divergence reverted)"
+    assert "skip_memory=False" not in src, \
+        "cron scheduler now sets skip_memory=False somewhere (ef04d846e9 divergence reverted)"
+
+    start = src.find("def _resolve_cron_disabled_toolsets")
+    assert start != -1, "_resolve_cron_disabled_toolsets dropped from cron/scheduler.py"
+    end = src.find("\ndef ", start + 1)
+    assert end != -1, "_resolve_cron_disabled_toolsets boundary changed unexpectedly"
+    body = src[start:end]
+    assert "memory" in body, \
+        "_resolve_cron_disabled_toolsets no longer disables the memory toolset for cron agents"
+
+
+def test_cross_profile_write_guard_not_retired():
+    """agent/file_safety.py cross-profile write guard must not be retired.
+
+    String half: guards against a maintainer-decision retirement marker
+    silently landing (the guard becoming dead code without deleting the
+    function). Behavioral half: constructs a cross-profile write attempt the
+    same way tests/agent/test_file_safety_cross_profile.py does (fake Hermes
+    root with two profiles, monkeypatched resolver helpers) and asserts
+    get_cross_profile_warning actually still returns a warning for it -- a
+    string-only pin could stay green while the function body was gutted to
+    always return None.
+    """
+    src = _read("agent/file_safety.py")
+    assert "RETIRED (maintainer decision)" not in src, \
+        "agent/file_safety.py cross-profile guard carries a retirement marker"
+    assert "def get_cross_profile_warning" in src, \
+        "agent/file_safety.py dropped get_cross_profile_warning"
+
+    import hermes_constants
+    import agent.file_safety as fs
+
+    def _fake_hermes(tmp_path):
+        root = tmp_path / "fake-hermes"
+        (root / "skills" / "foo").mkdir(parents=True)
+        (root / "skills" / "foo" / "SKILL.md").write_text("# default skill\n", encoding="utf-8")
+        sec_home = root / "profiles" / "hermes-security"
+        (sec_home / "skills" / "foo").mkdir(parents=True)
+        (sec_home / "skills" / "foo" / "SKILL.md").write_text("# sec skill\n", encoding="utf-8")
+        return root, sec_home
+
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = Path(tmp)
+        root, sec_home = _fake_hermes(tmp_path)
+        orig_root_fn = hermes_constants.get_default_hermes_root
+        orig_home_fn = fs._hermes_root_path
+        orig_active_home_fn = fs._hermes_home_path
+        try:
+            hermes_constants.get_default_hermes_root = lambda: root
+            fs._hermes_root_path = lambda: root
+            fs._hermes_home_path = lambda: sec_home
+            warn = fs.get_cross_profile_warning(str(root / "skills" / "foo" / "SKILL.md"))
+        finally:
+            hermes_constants.get_default_hermes_root = orig_root_fn
+            fs._hermes_root_path = orig_home_fn
+            fs._hermes_home_path = orig_active_home_fn
+
+    assert warn is not None, \
+        "get_cross_profile_warning returned None for a genuine cross-profile write " \
+        "(hermes-security session writing into the default profile's skills dir) -- " \
+        "guard behaviorally gutted even though its symbols/strings survive"
+
+
+def test_anthropic_endpoint_check_uses_hostname_boundary():
+    """agent/anthropic_endpoints.py must classify the Anthropic API base_url
+    via the shared hostname-boundary matcher, not a raw substring check.
+
+    ``"anthropic.com" in normalized`` also matches an attacker-controlled
+    host like ``https://anthropic.com.evil.tld`` or
+    ``https://evil.tld/anthropic.com``; ``base_url_host_matches`` enforces a
+    real hostname boundary. The behavioral twin lives in
+    tests/agent/test_anthropic_adapter.py; this pins the source-level
+    mechanism so a merge can't silently swap it back to the substring form
+    while leaving unrelated call sites (that legitimately use
+    base_url_host_matches elsewhere in the file) looking untouched.
+    """
+    src = _read("agent/anthropic_endpoints.py")
+    assert 'base_url_host_matches(normalized, "anthropic.com")' in src, \
+        "anthropic_endpoints.py no longer classifies the Anthropic host via base_url_host_matches"
+    assert '"anthropic.com" in normalized' not in src, \
+        "anthropic_endpoints.py reverted to a raw substring host check (hostname-boundary bypass)"
+
+
+def test_delegation_caps_keep_fork_defaults():
+    """Delegation concurrency/iteration/MCP-inheritance defaults must stay at
+    the fork's fail-closed values.
+
+    Regression case: upstream commit ce996d4057 bumped
+    ``max_concurrent_children`` 3 -> 10 and a prior merge auto-applied it
+    with no conflict marker. Pinning only the code-level constant
+    (_DEFAULT_MAX_CONCURRENT_CHILDREN in tools/delegate_tool.py) is not
+    enough -- the runtime-consulted DEFAULT_CONFIG literal in
+    hermes_cli/config_defaults.py is a SEPARATE value that can drift
+    independently, so both are pinned here.
+    """
+    delegate_src = _read("tools/delegate_tool.py")
+    assert re.search(r"^_DEFAULT_MAX_CONCURRENT_CHILDREN = 3$", delegate_src, re.MULTILINE), \
+        "tools/delegate_tool.py _DEFAULT_MAX_CONCURRENT_CHILDREN drifted from the fork default of 3"
+    assert re.search(r"^DEFAULT_MAX_ITERATIONS = 50$", delegate_src, re.MULTILINE), \
+        "tools/delegate_tool.py DEFAULT_MAX_ITERATIONS drifted from the fork default of 50"
+
+    config_src = _read("hermes_cli/config_defaults.py")
+    assert '"max_iterations": 50' in config_src, \
+        "hermes_cli/config_defaults.py max_iterations default drifted from 50"
+    assert '"inherit_mcp_toolsets": "read_only"' in config_src, \
+        "hermes_cli/config_defaults.py inherit_mcp_toolsets default drifted from the fail-closed 'read_only'"
+    # Paired cap for _DEFAULT_MAX_CONCURRENT_CHILDREN: upstream ce996d4057 bumped
+    # this DEFAULT_CONFIG literal 3 -> 10 and a prior merge auto-applied it with
+    # no conflict marker (caught by review, not by CI) -- pin it explicitly so a
+    # repeat of that silent auto-apply turns this check RED before merge.
+    assert '"max_concurrent_children": 3,' in config_src, \
+        "hermes_cli/config_defaults.py max_concurrent_children drifted from the fork default of 3 " \
+        "(upstream ce996d4057 bumps this to 10 with no conflict marker on merge)"
+    assert '"max_concurrent_children": 10,' not in config_src, \
+        "hermes_cli/config_defaults.py max_concurrent_children silently re-adopted upstream's 10 (ce996d4057)"
+
+
+def test_worker_authority_rechecked_after_hook_modify():
+    """model_tools.py must re-check authorize_current_worker() AFTER a
+    pre-tool-call hook is allowed to rewrite function_args (``modified_args``).
+
+    A hook that mutates tool arguments (e.g. widening a path, swapping a
+    command) must not be able to smuggle a call past the authority check
+    that ran on the original, pre-hook arguments -- the recheck must occur
+    textually after the hook-modify point, not just exist somewhere in the
+    file.
+    """
+    src = _read("model_tools.py")
+    marker = "authorize_current_worker("
+    count = src.count(marker)
+    assert count >= 3, \
+        f"model_tools.py authorize_current_worker() call sites dropped below 3 (found {count})"
+    modified_args_at = src.find("modified_args")
+    assert modified_args_at != -1, "model_tools.py no longer references modified_args (hook-modify point dropped)"
+    last_authority_at = src.rfind(marker)
+    assert last_authority_at > modified_args_at, \
+        "the last authorize_current_worker() call no longer runs AFTER the hook-modify " \
+        "point (modified_args) -- a hook-rewritten tool call could bypass the recheck"
+
+
+def test_hardline_patterns_keep_hermes_dir_rail():
+    """HARDLINE_PATTERNS must keep the Hermes state-dir/agent-install rail and
+    the raw-block-device redirect rail as single, live entries.
+
+    Does not duplicate tests/security/test_exfil_rail.py's
+    ``len(HARDLINE_PATTERNS) == 13`` full-count assertion (that test owns the
+    whole-list size pin); this test targets the two specific rails named in
+    this pin (dir-nuke + raw-block-device redirect) so a merge that silently
+    drops or duplicates just one of them fails loudly here even if the
+    overall count assertion happens to be updated alongside it.
+    """
+    src = _read("tools/approval.py")
+    assert src.count('"recursive delete of the Hermes state dir or agent install"') == 1, \
+        "HARDLINE_PATTERNS Hermes-state-dir/agent-install rail dropped or duplicated"
+    assert src.count('"redirect to raw block device"),') == 1, \
+        "HARDLINE_PATTERNS raw-block-device redirect tuple dropped or duplicated"

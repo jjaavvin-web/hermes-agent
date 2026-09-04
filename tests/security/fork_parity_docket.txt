@@ -1,0 +1,185 @@
+fp-001	hermes_state.py SCHEMA_SQL: additive turn_usage per-turn cost/latency ledger table + idx_turn_usage_session + idx_turn_usage_ts indexes
+fp-002	dispatch_in_gateway fail-safe (fail-closed) default True->False at 4 code sites: gateway/kanban_watchers.py notifier gate, gateway/kanban_watchers.py dispatcher gate, hermes_cli/config.py DEFAULT_CONFIG, hermes_cli/kanban.py _check_dispatcher_presence
+fp-003	3a70aaa5e963 (TUI execFileNoThrow spawn typing)
+fp-004	46d43c9cdaf1 (prune rarely-used MCP tools from Codex requests)
+fp-005	d99d817b625f (os-dashboard runaway guards)
+fp-006	591a72baaf85 (deploy current verified frontend — source only)
+fp-007	05a0381da930 (restore fork dashboard deps — package.json only)
+fp-008	b39dbae2ab84 (vitest+jsdom harness + web test script)
+fp-009	f00fbbef6429 as a whole ("wip: preserve READY_SPEC working state before P1 batched deploy")
+fp-010	agent/learn_prompt.py + /learn command wiring (gateway/run.py, cli.py, hermes_cli/cli_commands_mixin.py, hermes_cli/commands.py, tui_gateway/server.py) added in f00fbbef6429
+fp-011	agent/transports/codex_app_server_session.py refactor in f00fbbef6429 — extracts _command_guard_blocks()/_hardline_blocks() helper methods (KEYSTONE #1b guard-floor, with defense-in-depth + reason-injection-DoS comments) from the earlier inline guard checks
+fp-012	hermes_cli/observability_slo.py auxiliary_fallback_events SLO noise-reduction (added in f00fbbef6429, filters title-generation fail-closed noise out of the fallback SLO)
+fp-013	tests/security/test_codex_exec_approval_matrix.py — DELETED (-180 lines) by f00fbbef6429 as an apparent WIP accident
+fp-014	scratchpad/exfil_probe.py (236 lines, added in f00fbbef6429) — a manual CLI script probing tools/approval.py's CREDENTIAL_EXFIL_DENY_PATTERNS / detect_hardline_command / _detect_credential_exfiltration against a battery of exfil one-liners
+fp-015	new/modified test files bundled in f00fbbef6429: tests/cli/test_cli_init.py, tests/gateway/test_reload_skills_command.py, tests/hermes_cli/test_observability_slo.py, tests/tui_gateway/test_protocol.py (learn-command parametrize + new test_command_dispatch_learn_returns_agent_prompt)
+fp-016	b7378d5a9bf7 — Nexus health detail view (dashboard_health.py DetailPanel/FilterRail/NexusHealthPage)
+fp-017	077367836b20 — learning dashboard tab (LearningPage.tsx, LearningPanel.tsx)
+fp-018	09b38643c6cd — codex sessions dashboard tab (#48) (CodexSessionsPage.tsx + SPA route)
+fp-019	bcfa6495fee7 — Neural Connectome router mount (source: dashboard_connectome.py + Connectome.tsx)
+fp-020	dfb23d5d7fa9 — retire OS/Cost/Learning nav tabs
+fp-021	de545ac61d56 + 776d970f07 + 0a7cd3422f-era HTML-tab v3 work (Favorites default, uniform Latest grid)
+fp-022	f8f8dc3e10e2 — behavioral recall info panel
+fp-023	71faa4f2026a — mobile bottom sheet OS inspect
+fp-024	bdbc1b030cea + 24424e8ed513 + 4a0a6db446e8 + df62c6d6617f — OS/Nexus polish cluster (hover edge labels, full-height canvas, side-by-side inspect, mobile touch a11y, hero flex-wrap/info disclosure, OS/Learning status primitive alignment)
+fp-025	Must-survive invariant routes: /nexus, /nexus-slice, /api/pulse/graph in hermes_cli/web_server.py
+fp-026	fork commit f9b7ee7d8c15 — codex-native exec + apply_patch command-guard floor (all four approval paths)
+fp-027	sec3:dispatch_in_gateway defaults False (fail-closed) in hermes_cli/config_defaults.py
+fp-028	sec3:backup.py::_should_exclude component-walk + secret sets; state.db in _PRIVATE_RESTORE_FILE_NAMES only
+fp-029	sec3:create_quick_snapshot calls _should_exclude; .env/auth.json NOT in _QUICK_STATE_FILES
+fp-030	sec3:runtime_provider.py disable_paid_api_fallback (billing guard)
+fp-031	sec3:credential_pool.py select_anthropic_oauth_only (Max OAuth routing)
+fp-032	sec3:tools/approval.py CREDENTIAL_EXFIL_DENY_PATTERNS + DISP-5 git-push floor + session deny rail + credential-taint floor
+fp-033	sec3:gateway/platforms/webhook.py DEFAULT_WEBHOOK_DENY_PATTERNS
+fp-034	sec3:gateway/session.py set_autonomous_envelope + mark_inflight_sessions_from_markers + lookup_by_session_key + session_keys (run.py calls all four)
+fp-035	sec3:hermes_cli/active_sessions.py resolve_/coerce_max_concurrent_agent_runs failing closed to 4
+fp-036	sec3:hermes_cli/kanban_db.py READY_SPEC trust gate + WorkerAuthorityResolutionError spine
+fp-037	sec3:hermes_cli/web_server.py routes /nexus, /nexus-slice, /api/pulse/graph
+fp-038	sec3:agent/transports/codex_app_server_session.py command-guard floor on all four Codex exec + apply_patch approval paths
+fp-039	agent/chat_completion_helpers.py (fork-line-survival.json: fork_added=113, survived=0, score=0.0)
+fp-040	hermes_cli/model_switch.py (fork_added=89, survived=0, score=0.0)
+fp-041	tools/mcp_oauth.py (fork_added=79, survived=0, score=0.0)
+fp-042	agent/lsp/client.py (fork_added=50, survived=0, score=0.0)
+fp-043	tools/computer_use/cua_backend.py (fork_added=49, survived=0, score=0.0)
+fp-044	plugins/platforms/google_chat/adapter.py (fork_added=47, survived=0, score=0.0)
+fp-045	tools/tts_tool.py (fork_added=45, survived=0, score=0.0)
+fp-046	plugins/memory/mem0/__init__.py (fork_added=43, survived=0, score=0.0)
+fp-047	agent/model_metadata.py (fork_added=41, survived=0, score=0.0)
+fp-048	hermes_cli/memory_setup.py (fork_added=36, survived=0, score=0.0)
+fp-049	tools/vision_tools.py (fork_added=34, survived=0, score=0.0)
+fp-050	plugins/memory/honcho/session.py (fork_added=32, survived=0, score=0.0)
+fp-051	tools/computer_use/tool.py (fork_added=32, survived=0, score=0.0)
+fp-052	agent/memory_manager.py (fork_added=31, survived=0, score=0.0)
+fp-053	hermes_cli/env_loader.py (fork_added=31, survived=0, score=0.0)
+fp-054	hermes_cli/memory_providers.py (+ tests/hermes_cli/test_memory_providers.py)
+fp-055	tests/hermes_cli/test_xai_oauth_pkce_token_exchange.py
+fp-056	tests/test_assistant_ui_tap_compat.py
+fp-057	tests/test_dashboard_sidecar_close_on_disconnect.py
+fp-058	tests/test_desktop_electron_pin.py
+fp-059	tests/test_desktop_mac_entitlements.py
+fp-060	tests/test_package_json_lazy_deps.py
+fp-061	tests/hermes_cli/test_auth_manual_paste.py
+fp-062	critic:pyproject+uv.lock exact-pin supply-chain policy (mcp==2.0.0, python-multipart==0.0.32, starlette CVE pins)
+fp-063	critic:in-tree systemd units (loki-shipper, slo-alert-check, slo-exporter services+timers) + their observability scripts
+fp-064	critic:.github workflows fork delta (typecheck.yml gone; lint PLW1514 gate; tests.yml)
+fp-065	critic:skills/ and plugins/ fork-tree additions
+fp-066	critic:DEFAULT_CONFIG key closure — fork config.py vs merge config_defaults.py (AST comparison, 627 fork keys)
+fp-067	critic:hermes_cli/web_server.py inline-route closure beyond /nexus,/nexus-slice,/api/pulse/graph (84 fork-tree @app routes absent from merge web_server.py)
+fp-068	critic:fork-original-closure.json non-py closure — 114 of 231 substantive non-py files absent from merge (apps/desktop/electron *.cjs bulk, ui-tui billing/credits, web/package-lock.json, website docs)
+fp-069	critic:recheck — sec3 backup.py _should_exclude + _QUICK_STATE_FILES verdicts
+fp-070	critic:recheck — sec3 credential_pool.select_anthropic_oauth_only + runtime_provider disable_paid_api_fallback billing guard
+fp-071	critic:recheck — memory_providers RELOCATED to plugins.memory.config_schema
+fp-072	hermes_cli/backup.py: _SECRET_FILE_NAMES/_SECRET_SUFFIXES literal secret set (".env","auth.json","relay.secret",".key",".pem") must not shrink (PR#70 survival)
+fp-073	hermes_cli/backup.py: run_import chmods restored files 0600 via _is_private_restore_file, which extends _PRIVATE_RESTORE_FILE_NAMES with case-insensitive _SECRET_SUFFIXES (.key/.pem) suffix matching — the fork's superset over upstream's basename-only {.env, auth.json, state.db} restore-perm set
+fp-074	agent/worktree_broker.py: WorktreeBroker enforces the 4GB disk-pressure hard floor before allocate, refuses to gc an empty tracked_sids registry against real worktrees (no accidental mass-delete), and raises typed BranchCollisionError/RepoStateError (never-stash) invariants
+fp-075	gateway/platforms/webhook.py: end-of-run lease finalization (once-only finalize, runtime-cwd adoption audit, semaphore over-release guard, finally-release seam in on_processing_complete)
+fp-076	gateway/platforms/webhook.py: per-delivery worktree restart hydration fails closed on scan exceptions and refuses live-binding mismatches instead of adopting them, keyed to gateway/session.py SessionEntry.worktree_path
+fp-077	gateway/platforms/webhook.py: F4 per-delivery worktree broker switch-off fails closed to the singleton relay worktree fallback (_ensure_relay_worktree at ~/.hermes/relay-wt/relay on branch relay/work) and refuses the run with 503 worktree_unavailable rather than falling through to the live cwd when the worktree cannot be guaranteed
+fp-078	agent/worktree_broker.py: codex-ports.json flock-atomic claim/free with fail-closed unknown-shape recovery (never zeroes/frees ports it cannot interpret)
+fp-079	gateway/codex_gc_watcher.py: CheckedRegistryError fail-closed skip stops gc/deleted-bucket-reap/session-reaper on an unreadable or corrupt codex dispatcher registry, wired from the WorktreeBroker constructed in plugins/platforms/discord/adapter.py and consumed via worktree_path persistence in gateway/codex_session_dispatcher.py, so a broken registry cannot be silently treated as empty and trigger a mass sweep of live codex-wt worktrees
+fp-080	agent/codex_runtime.py: _resolve_codex_thread_cwd fails closed (CodexCwdConfinementError) on a Codex thread cwd outside the bound worktree, sourced from agent/codex_session_context.get_active_worktree
+fp-081	agent/claude_cli_runtime.py + agent/conversation_loop.py + agent/agent_init.py: Max/OAuth claude-cli-subprocess turn runtime (interactive-only, no paid-API fallback) stays wired end-to-end
+fp-082	hermes_cli/providers.py: SAFE_PROVIDERS allow-list + is_safe_provider() gate the disable_paid_api_fallback lattice (anthropic/openrouter excluded at every resolution rung, including the auxiliary discovery chain in agent/auxiliary_client.py)
+fp-083	agent/codex_responses_adapter.py: Codex Responses tool-schema sanitizer (_sanitize_tool_schema_for_codex, JSON-Schema $ref/defs inlining + oneOf/anyOf collapse) and strict additionalProperties forcing (_force_strict_additional_properties_false), which fix the non-retryable HTTP 400 poison-history loop the backend-api/codex route throws on raw MCP tool schemas
+fp-084	hermes_cli/config.py: migration writes route through _persist_migration's default-stripping invariant so explicitly-set fork policy keys (e.g. auth.disable_paid_api_fallback, model.provider) survive config-version-bump migrations rather than being silently reverted to upstream defaults
+fp-085	hermes_cli/provider_lane_canary.py: fork-only provider-stack drift canary that lints live profiles/lanes/aux routes against PROVIDER-STACK.md + provider-stack.lock.yaml and FLAGs (exit 1) native-anthropic pins, openrouter fallback chains, bare `claude -p` calls, and preview-Gemini routes
+fp-086	hermes_cli/web_server.py: _QUERY_TOKEN_PATHS allowlist lets EventSource ?token= satisfy session-token auth for the three fork SSE/raw-artifact routes (/api/pulse/stream, /api/dashboard/stream, /api/dashboard/artifacts/raw), since EventSource cannot set the X-Hermes-Session-Token header
+fp-087	hermes_cli/web_server.py: security_headers_middleware sets report-only CSP with per-request nonce, DENY/SAMEORIGIN frame-ancestors restricted to exactly /nexus and /_gitnexus-app/*, and X-Content-Type-Options nosniff on every response
+fp-088	hermes_cli/web_server.py: HERMES_DASHBOARD_EXTRA_HOSTS operator allowlist feeds _EXTRA_ACCEPTED_HOSTS into _is_accepted_host, honored by both the HTTP host_header_middleware and the WS host/origin guard (_ws_host_origin_reason) as the DNS-rebinding defence for tailnet access
+fp-089	hermes_cli/dashboard_os.py: OS tab /api/dashboard/os truth-snapshot endpoint (20s single-flight cached get_os_snapshot, consolidated 8-section OSSnapshot) exists as a fork-only surface not present in upstream v0.21
+fp-090	hermes_cli/dashboard_nexus.py: read-only Nexus V6 truth API (session-gated /api/dashboard/nexus router, no mutating file I/O or subprocess calls) mounted in web_server.py
+fp-091	hermes_cli/dashboard_nexus_actions.py: W2B safe-summon Nexus action backend stays DISARMED-by-default (501 without state/nexus-actions/ARMED) and dispatch stays hard-pinned to the fixed loki_send.py chokepoint with the 600s anti-flood window decoupled from the 300s capability TTL
+fp-092	hermes_cli/dashboard_smoke.py + tests/fixtures/dashboard_route_manifest.json: dashboard route-manifest drift gate (fork-only mechanism, absent upstream) that fails CI on any missing or unexpected FastAPI route
+fp-093	web/src/App.tsx: fork-only dashboard page routes (OSPage /os, ExplorerPage /explorer, WelcomePage /welcome) stay registered in BUILTIN_ROUTES_CORE across the SPA router merge
+fp-094	tools/approval.py: dangerous-severity SEC-1 credential-exfil pre-check in detect_dangerous_command runs BEFORE the v0.20 verification-artifact-cleanup allow-list, via _normalize_exfil_command's dequote/expand pass
+fp-095	tools/approval.py: destructive-class 'always' approval choices are downgraded to session-only via _apply_always_choice (DESTRUCTIVE_APPROVAL_PATTERN_KEYS gate), never persisted permanently to command_allowlist unless security.allow_permanent_destructive_approvals is explicitly set True
+fp-096	tools/approval.py: HARDLINE_PATTERNS carries the unconditional (yolo-proof) rm floor for the Hermes state dir (~/.hermes) and the agent install (~/.local/share/hermes-agent)
+fp-097	tools/terminal_tool.py: worktree-confinement rail (_WorktreeConfinementError fail-closed cwd resolution in _resolve_command_cwd, the cd/pushd absolute-path guard, and runtime-cwd audit binding via codex_session_context.record_runtime_execution_cwd)
+fp-098	tools/approval.py: import-time frozen _YOLO_MODE_FROZEN + the check_all_command_guards/detect_hardline_command/check_execute_code_guard entry-point trio stay wired so HERMES_YOLO_MODE can never bypass the hardline floor
+fp-099	scripts/fork_parity_guard.py + tests/security/fork_parity_lib.py + test_fork_parity_guard.py: the merge-tripwire mechanism itself (docket schema, merge_integration_gate verdict, and the all-items-hold regression test) must survive a merge, since it is what re-verifies every other pinned row
+fp-100	agent/codex_session_context.py: fail-closed worktree confinement floor (require_confinement_without_worktree arms confinement with no bound worktree so an autonomous resume with a lost worktree denies writes; resolve_confined_cwd revalidates every subprocess spawn against the bound tree) survives upstream merge
+fp-101	agent/codex_runtime.py: Codex app-server thread cwd resolution fails closed (CodexCwdConfinementError) instead of falling back to process cwd when isolation confinement is required but no worktree is bound
+fp-102	tools/file_tools.py, tools/terminal_tool.py, tools/environments/base.py, tools/code_execution_tool.py: F5/V4 fail-closed WORKTREE_CONFINEMENT enforcement - file-write / patch / terminal / code-exec / env-exec cwd resolution refuses to fall back to the live process cwd when confinement is armed but no worktree is bound
+fp-103	.github/workflows/ci.yml + tests.yml + scripts/run_tests_parallel.py: fork retains 12-slice LPT test matrix (ci.yml slice_count: 12 -> tests.yml --generate-slices) instead of upstream's un-sliced single ubuntu-latest-96-core job
+fp-104	.github/workflows/tests.yml + tests/hermes_cli/test_dashboard_smoke.py: named 'Dashboard full route smoke gate' CI step runs outside the sliced test runner with OPENROUTER/OPENAI/NOUS API keys forced empty, asserting app.routes against tests/fixtures/dashboard_route_manifest.json
+fp-105	tests/conftest.py: hermetic sandbox fixture blanks TIRITH_* and DISCORD_* env families and neuters webbrowser.open/open_new/open_new_tab so OAuth code paths cannot pop a real browser during tests
+fp-106	tests/conftest.py + scripts/fork_parity_guard.py: fork-parity provenance hook and guard runner (editable-install/deployment shadow detection) exist and gate on live import provenance
+fp-107	scripts/triage_against_baseline.py: mechanical pre-existing-failure triage exits non-zero only on NEW failures against tests/known_test_debt.json, preventing a merge candidate's 'full suite green' claim from silently swallowing new regressions as if they were pre-existing debt
+fp-108	pyproject.toml: pytest addopts apply a 30s per-test timeout (--timeout=30 --timeout-method=thread) backed by the pytest-timeout==2.4.0 dev-extra pin, a FORK addition absent upstream
+fp-111	cron/scheduler.py: cron agents constructed with skip_memory=True so the memory toolset is disabled in cron sessions
+fp-112	cron/cron_result.py + cron/scheduler.py run_job + hermes_cli/dashboard_cron_reliability.py: self-reporting cron contract ledger (CONTRACT: trailer -> record_contract -> cron-contracts.jsonl, separate from slo-timeseries.jsonl) and the read-only /api/cron/reliability dashboard route survive upstream's rewritten run_job delivery path
+fp-113	agent/worktree_broker.py + gateway/codex_session_dispatcher.py: fork-only per-delivery worktree broker and Codex session dispatcher (workforce substrate for Loki lanes / HERMES_CODEX_DISPATCHER) survive as distinct fork modules with no upstream counterpart
+fp-114	hermes_cli/gateway.py + tools/terminal_tool.py: gateway stop/restart/self-exec guard keys on the strict raw _HERMES_GATEWAY==1 env marker, not the relaxed _is_supervised_gateway_process() PID-file gate from upstream commit 0e038425db (NEVER-PORT ruling)
+fp-115	plugins/platforms/discord/adapter.py: native Discord slash-command MessageEvents are stamped with guild_id/parent_chat_id (via _interaction_guild_id/_interaction_parent_chat_id) and message_id/delivery_id (the interaction id), so gateway profile_routing can match guild-level and parent-chain routes on slash commands and /sol retains delivery-id idempotency identity
+fp-116	plugins/platforms/discord/adapter.py: every admitted inbound Discord message registers the webhook deny-pattern rail against its session key before further routing
+fp-117	plugins/platforms/discord/adapter.py + gateway/codex_session_dispatcher.py: Codex parallel-workflow Discord wiring (thread-session dispatcher gated by HERMES_CODEX_DISPATCHER, plus GC watcher module) survives merge
+fp-118	gateway/run.py + gateway/platforms/webhook.py: explicit-profile outbound delivery never falls back across profile adapter registries or home channels
+fp-119	gateway/config.py: nested gateway.max_concurrent_agent_runs YAML key bridges into the webhook/gateway agent-run cap fed to WebhookAdapter.config.extra
+fp-120	gateway/delivery_retention.py: scan_retained_dirty_deliveries surfaces retained ~/.hermes/relay-wt/deliveries/wh-* dirty worktrees via status.py so an answer landed in a worktree file (never posted) is visible instead of silently lost
+fp-121	agent/file_safety.py + tools/file_tools.py: cross-profile write soft guard (blocks writes into another Hermes profile's skills/plugins/cron/memories unless cross_profile=True) survives merge — upstream v0.21 stubbed get_cross_profile_warning to always return None
+fp-122	gateway/platforms/webhook.py: process-global agent-run semaphore backpressure (429 max_concurrent_agent_runs_exhausted + Retry-After on saturation, seen-deliveries rollback on refusal before approval-rails registration)
+fp-123	gateway/run.py: named webhook-profile fail-closed — an explicitly /p/<profile>/-stamped webhook source whose profile disappears or fails to resolve raises ProfileRouteRejected instead of falling back to the global/default HERMES_HOME
+fp-124	gateway/platforms/webhook.py: profile-scoped webhook cross-platform delivery resolves ONLY the exact served profile's adapter and home channel (never first-match fallback across profiles)
+fp-125	gateway/platforms/webhook.py: profile-namespaced webhook session/run keys plus drain-terminal-deferred run custody so a semaphore slot/lease is not released until the true owner task completes
+fp-126	hermes_state.py: zero-byte/all-NUL state.db (#68474) is detected and quarantined (bytes preserved, not deleted) before SessionDB opens a fresh empty database, rather than failing opaquely or silently discarding the corrupt file
+fp-127	hermes_state.py: maybe_auto_prune_and_vacuum fires FTS optimize/VACUUM on message-count growth (_FTS_OPTIMIZE_GROWTH=5000) or freelist bloat >10%, not only when prune freed rows (GWR-1/ARCH-9) — upstream's pruned>0-gated compaction never fires once sessions sit inside retention
+fp-128	gateway/session.py: autonomous-dispatch security envelope (DISP-5 floor, deny list, worktree confinement) persisted on sessions and re-armed on restart auto-resume
+fp-129	gateway/inflight_crash_markers.py: durable per-session in-flight crash markers (write_marker/load_markers, MARKER_MAX_AGE_SECONDS staleness bound) written before turn side effects via run.py's _submit_inflight_marker_io and swept/recovered at startup (fork-only, absent upstream)
+fp-130	deploy/DEPLOYMENT-MANIFEST.toml + scripts/build_deployment.sh: immutable-deployment build recipe is lock-enforced (uv sync --frozen only, abort if lock_enforced != true) with a version-gated fastapi pin, absent entirely from upstream
+fp-131	pyproject.toml: fork-only exact pins (urllib3==2.7.0, tornado constraint-dependencies==6.5.7, web-extra asyncpg==0.31.0) not covered by the cve_pin_baseline.txt gate
+fp-132	scripts/upstream_merge_preflight.py: upstream-merge preflight gate fails closed on DEFAULT_CONFIG dropped-key drift (check_config_schema_drift) and dashboard route-manifest drift (check_route_manifest_drift) against tests/fixtures/dashboard_route_manifest.json before an upstream merge lands
+fp-133	scripts/triage_against_baseline.py: mechanical NEW-vs-KNOWN-vs-RESOLVED test-failure triage against tests/known_test_debt.json (fork-only; exit non-zero on NEW failures or UNREVIEWED baseline entries)
+fp-134	scripts/blast_radius_tests.py: computed test footprint for a change set (never a curated list), tests/security always included
+fp-135	hermes_cli/banner.py: HERMES_NO_UPDATE_CHECK env gate suppresses the upstream-update nag in check_for_updates() so the fork/TUI never advises the destructive `hermes update` on a git checkout that tracks NousResearch as origin
+fp-136	deploy/DEPLOYMENT-MANIFEST.toml + docs/UPSTREAM-UPDATE-RUNBOOK.md: npm workspace lock discipline — --ignore-scripts install gate plus the workspace-lock EUSAGE-trap regeneration rule (additive, registry-only, zero pin drift)
+fp-137	hermes_cli/kanban_pr.py: open_pr() gates PR auto-merge eligibility on the read-only agent/merge_broker.py MergeBroker.classify_change verdict (needs-human label for sensitive changes, auto-merge label only for safe ones) — fork-only, no upstream v0.21 equivalent
+fp-138	gateway/codex_session_dispatcher.py: Codex dispatcher kanban completion bridge (thread-archive + PR-merge card completion via _complete_kanban_via_bridge/_load_claude_kanban_bridge, plus _kanban_comment_for_review and the kanban_card_id/kanban_board option plumbing in gateway/codex_session_dispatcher_commands.py) must survive any v0.21 merge, since upstream has no gateway/codex_session_dispatcher.py at all
+fp-139	tools/kanban_tools.py: kanban lifecycle-tool arming gate (_check_kanban_mode via HERMES_KANBAN_TASK dispatcher-owned-worker OR _profile_has_kanban_toolset) plus _enforce_specialist_handler_authority fail-closed spine gating specialist mutation/workspace access
+fp-140	hermes_cli/observability_slo.py + scripts/observability/slo_exporter.py: SLO metrics core (turn_error_rate, fallback_trigger_rate, recall_hit_rate definitions -> ~/.hermes/observability/slo-latest.json + timeseries JSONL); absent entirely from upstream v0.21
+fp-141	scripts/observability/loki_shipper.py: fork-only one-shot journald/lane-log -> Loki (/loki/api/v1/push) pusher, absent from upstream v0.21
+fp-142	hermes_cli/dashboard_slo.py: SLO dashboard tab backend (GET /api/dashboard/slo panel + JSON contract reading slo-latest.json via HERMES_SLO_LATEST override) mounted in web_server.py
+fp-143	hermes_cli/dashboard_health.py: mission-control health API router (prefix /api/dashboard) mounted in web_server.py with its probe fan-out (_probe_all) also consumed inline for the pulse/queue path
+fp-144	hermes_cli/cost_reconcile.py: classifies turn_usage spend by billing mode and surfaces paid-fallback violations without mutating state.db, mounted read-only at /api/dashboard/cost via hermes_cli/dashboard_cost.py
+fp-145	hermes_cli/dashboard_cron_reliability.py: read-only GET /api/cron/reliability health contract (jobs.json + systemctl show + journalctl freshness/success-rate) stays mounted in web_server.py, not merged into upstream's extracted /api/cron/* router
+fp-146	hermes_cli/dashboard_learning.py: Learning tab rollup status (_overall_status) goes red on critic FAIL/hard_failures or canary pass=False, not just on unmeasured/parse-only blocks
+fp-147	hermes_cli/dashboard_command_center.py: Command Center _decisions_snapshot() no longer projects retired Kanban board rows as decisions (Kanban retired 2026-08-17; MVMS Projects is SoT)
+fp-148	hermes_cli/dashboard_get_some.py: Get Some dashboard API (project roster + work-nexus graph) mounted read-only over retired Kanban board history at /api/dashboard/projects + /work-nexus
+fp-149	hermes_cli/dashboard_codex_sessions.py: mounted /api/dashboard/codex-sessions operator surface, coupled to gateway.codex_session_dispatcher's locked-json state, with confirm-token-gated kill/force-merge
+fp-150	hermes_cli/dashboard_artifacts.py: fork-only Artifacts gallery (list + path-traversal-guarded raw serve of ~/.hermes report/replay HTML, capped at 500 replays) mounted at /api/dashboard/artifacts
+fp-151	hermes_cli/dashboard_action_preflight.py: read-only dangerous-action blast-radius preflight report (/api/dashboard/action-preflight), issues no tickets and enforces nothing, mounted via register(app) from web_server.py
+fp-152	hermes_cli/web_server.py: fork dashboard routers (dashboard_os/connectome/nexus/nexus_slice/nexus_actions) are mounted individually in a per-module try/except loop so one failing import cannot silently drop its healthy siblings, and dashboard_connectome.py's asyncpg probe surface connects to the MVMS DSN
+fp-153	hermes_cli/personas.py: fork-only Personas router (CRUD + /summon over ~/.hermes/personas/<slug>.json) stays mounted at /api/personas via hermes_cli/web_server.py, absent upstream
+fp-154	hermes_cli/pulse_data.py: read-only kanban DB access (mode=ro sqlite opener) as the single choke point behind Pulse data fusion (build_pulse_graph/build_pulse_queue/build_pulse_kpis/pulse_activity_iter), consumed by web_server.py and every dashboard tab (dashboard_command_center.py, dashboard_get_some.py) instead of opening kanban.db directly
+fp-155	hermes_cli/eval_runner.py + hermes_cli/champion_challenger.py: deterministic recall@k eval runner (E1) and champion/challenger promotion gate (E3) with stale-ID fail-closed discipline and holdout-only promotion rule, fork-only (absent upstream v0.21)
+fp-156	.github/workflows/tests.yml: named 'Dashboard full route smoke gate' CI step runs tests/hermes_cli/test_dashboard_smoke.py isolated with OPENROUTER_API_KEY/OPENAI_API_KEY/NOUS_API_KEY forced empty (required so the route-probe suite terminates instead of hanging on live-key calls)
+fp-157	hermes_cli/web_server.py: fork registration block (GitNexus reverse proxy at _GITNEXUS_BACKEND, CSP same-origin framing exception for /nexus and /_gitnexus-app/, and the periodic dashboard selftest loop) survives, anchored immediately after the upstream _mount_plugin_api_routes() call
+fp-158	gateway/codex_session_dispatcher.py + codex_session_dispatcher_commands.py + agent/worktree_broker.py: CodexSessionDispatcher Discord-thread<->Codex-session lifecycle router (on_thread_create/on_thread_message/on_thread_archive/on_bot_restart) wired from plugins/platforms/discord/adapter.py, absent from upstream v0.21
+fp-159	plugins/platforms/discord/adapter.py: on_ready wires the Codex autonomous-lane pipeline (PeerReviewOrchestrator/MergeBroker/CodexMergeWatcher/CodexGcWatcher) via _maybe_init_codex_dispatcher, called from connect()
+fp-160	gateway/codex_gc_watcher.py: CodexGcWatcher hourly fail-closed tick (broker.gc + reap_deleted) wired from plugins/platforms/discord/adapter.py, absent upstream
+fp-161	gateway/codex_merge_watcher.py: CodexMergeWatcher polls MERGING codex sessions' PRs via gh pr view and fires dispatcher.on_pr_merged/on_pr_closed_unmerged on transition, observe-only (never a mutating gh call), wired from plugins/platforms/discord/adapter.py._maybe_init_codex_dispatcher
+fp-162	gateway/codex_session_reaper.py: CodexSessionReaper stays built-dark - its sole production call site (CodexGcWatcher._tick in gateway/codex_gc_watcher.py) invokes it with dry_run=True, so it only ledgers reap decisions and never tears down a zombie CLAIMED/EXECUTING Codex session or worktree
+fp-163	gateway/codex_session_events.py + hermes_cli/web_server.py: Codex operator SSE feed (codex_session_events_iter wired into /api/pulse/stream) and destructive force-merge endpoint on the codex-sessions router survive intact
+fp-164	gateway/inflight_crash_markers.py: durable in-flight turn crash markers (write_marker/remove_marker) plus run.py boot composition that runs fork exact-marker recovery (_recover_inflight_sessions_after_unclean_shutdown) BEFORE upstream's active-turn-token recovery (recover_interrupted_turns), deliberately suppressing upstream's duplicate suspend_recently_active fallback
+fp-165	gateway/delivery_retention.py: scan_retained_dirty_deliveries operator surface (stranded Codex-lane wh-relay-* worktree deliveries) exposed in gateway status payload as retained_dirty_deliveries
+fp-166	agent/merge_broker.py: classify_change() deny-list (_SENSITIVE_PREFIXES, includes whole hermes_cli/) forces sensitive/needs-human classification for engine-touching PRs, reused fail-closed by hermes_cli/kanban_pr.py's PR-label classifier
+fp-167	agent/peer_review.py: PeerReviewOrchestrator module (dormant Opus tmux pane pool) stays PORTed as-is, and its constants (_DEFAULT_POOL_SIZE/_DEFAULT_ITERATION_CAP/_DEFAULT_DAILY_CAP) keep flowing live into hermes_cli/dashboard_codex_sessions.py's mounted operator-snapshot import edge
+fp-168	tools/file_tools.py + agent/codex_sandbox_allowlist.py: _enforce_codex_sandbox default-deny write guard blocks writes escaping a Codex worktree into the live checkout or a sibling worktree, honoring the opt-in HERMES_CODEX_SANDBOX_ALLOW allowlist
+fp-169	agent/turn_trace.py: fail-open per-turn cost/latency trace (emit_turn_trace) called once from agent/turn_finalizer.py after every turn, writing the ~/.hermes/traces/turns-*.jsonl source of truth plus a best-effort turn_usage row in state.db
+fp-170	hermes_cli/worker_authority.py: fail-closed tool-authority policy for dispatcher-spawned specialist workers (env-activated via HERMES_WORKER_AUTHORITY, enforced at the model_tools.py registry-dispatch seam)
+fp-171	hermes_cli/code_lane_gate.py: deterministic pytest+ruff gate (A3) runs as PRIMARY check before the kanban goal-loop LLM judge; code_gate_fn threading in goals.py's run_kanban_goal_loop can veto completion with a blocked_by_code_gate outcome
+fp-172	hermes_cli/champion_challenger.py: promotion gate treats must-pass assertion failure/regression as a hard REJECT that no recall delta can outweigh, and never auto-mutates live config
+fp-173	hermes_cli/provider_lane_canary.py: forbidden-route lint blocks provider=anthropic / native-anthropic-api-pin on the claude-cli premium lane (provider-stack doctrine enforcement)
+fp-174	isas/: 17 ISA (Ideal State Artifact) spec docs for the Codex autonomous-lane pipeline (P1 MVP through P5 hardening), dormant design docs with no runtime loader but referenced from dispatcher/merge_broker/peer_review docstrings as the canonical spec
+fp-175	hermes_cli/resume.py: fork-only `hermes resume` command (Honcho-backed "where did we leave off") stays registered in main.py and wired as the Command Center's session-snapshot source
+fp-176	hermes_cli/subcommands/pause.py + agent/estop.py: ESTOP-lift CLI subcommand stays `hermes unpause` (not upstream's `resume`, which collides with the fork's session-pickup `hermes resume`), and estop.py's paused-reply/log hints must keep pointing at `hermes unpause`
+fp-177	agent/merge_broker.py: isa_lint exit-0 push gate (Codex ISA work-spec CheckCompleteness) is non-negotiable before merge branch push
+fp-178	hermes_cli/git_janitor.py: git-health worktree/branch hygiene (janitor reap with rename-not-delete guard, merge-ready conflict prediction, install-hooks) wired as the `hermes git-health` CLI command
+fp-179	scripts/profile_authority_guard.py, scripts/retire-stale-tabs.sh, .pre-commit-config.yaml: pure fork-only operator/CI guard scripts and pre-merge safety rail (no upstream counterpart) must survive a merge unaltered
+fp-180	.github/workflows/tests.yml: named 'Dashboard full route smoke gate' CI job runs tests/hermes_cli/test_dashboard_smoke.py with OPENROUTER_API_KEY/OPENAI_API_KEY/NOUS_API_KEY forced empty (route-table drift and route-manifest contract must fail loudly and cannot be silently skipped by live provider keys)
+fp-181	agent/anthropic_endpoints.py: _is_third_party_anthropic_endpoint uses a hostname boundary (base_url_host_matches) so a lookalike host containing "anthropic.com" never receives the OAuth bearer token (fork fix cdc3cdfbc0, re-applied after the v0.21 module split)
+fp-182	hermes_cli/gateway.py + tools/terminal_tool.py: gateway self-targeting lifecycle guard keys on the _HERMES_GATEWAY env marker at every site (never-port 0e038425db)
+fp-183	cron/scheduler.py: cron agents are constructed with skip_memory=True and memory stays in the cron disabled toolsets (fork policy; upstream ef04d846e9 not adopted)
+fp-184	agent/file_safety.py: cross-profile write guard (get_cross_profile_warning) is a real check, not the upstream retired stub
+fp-185	tools/delegate_tool.py + hermes_cli/config_defaults.py: delegation caps stay 3 concurrent children / 50 iterations
+fp-186	model_tools.py: worker authority is re-checked after the pre_tool_call modify directive may rewrite tool args
+fp-187	tools/approval.py: every "always" approval routes through _apply_always_choice (destructive-class keys stay session-only)

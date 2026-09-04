@@ -179,7 +179,8 @@ class TestSkillManageCrossProfileErrorUX:
         err = _skill_not_found_error("default-only-skill")
         assert "not found in active profile 'hermes-security'" in err
         assert "default" in err
-        assert "cross_profile=True" in err
+        assert "cross_profile" not in err  # retired vocabulary
+        assert "file tools / terminal" in err
 
 
     def test_genuinely_missing_skill_keeps_helpful_hint(
@@ -226,7 +227,7 @@ class TestSystemPromptActiveProfile:
         from pathlib import Path
         src = Path("agent/system_prompt.py").read_text()
         assert "Active Hermes profile" in src
-        assert "cross_profile=True" in src
+        assert "cross_profile=True" not in src  # guard retired
         assert "~/.hermes/profiles/" in src
         # Both branches present (default and named profile).
         assert "Active Hermes profile: default" in src

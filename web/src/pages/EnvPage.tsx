@@ -17,6 +17,7 @@ import {
 } from "lucide-react";
 import { api } from "@/lib/api";
 import type { EnvVarInfo } from "@/lib/api";
+import { removeDeletedEnvVarFromState } from "@/lib/env-state";
 import { DeleteConfirmDialog } from "@/components/DeleteConfirmDialog";
 import { Toast } from "@/components/ui-shims";
 import { useConfirmDelete } from "@/components/ui-shims";
@@ -722,14 +723,7 @@ export default function EnvPage() {
         setSaving(key);
         try {
           await api.deleteEnvVar(key);
-          setVars((prev) =>
-            prev
-              ? {
-                  ...prev,
-                  [key]: { ...prev[key], is_set: false, redacted_value: null },
-                }
-              : prev,
-          );
+          setVars((prev) => removeDeletedEnvVarFromState(prev, key));
           setEdits((prev) => {
             const n = { ...prev };
             delete n[key];
