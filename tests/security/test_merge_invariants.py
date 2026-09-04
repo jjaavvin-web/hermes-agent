@@ -1143,6 +1143,13 @@ def test_kanban_retirement_gate_survives_merge():
     kdb = _read("hermes_cli/kanban_db.py")
     assert "def kanban_retired" in kdb
     assert "except OSError" in kdb and "return True" in kdb  # fail closed, never fail open
+    assert "class KanbanRetiredError" in kdb
+    # connect / init_db / create_board / repair_db / write_board_metadata refuse on the tombstone
+    assert kdb.count("if kanban_retired():") >= 5
+    body = kdb[kdb.index("def kanban_retired"):kdb.index("class KanbanRetiredError")]
+    assert "get_default_hermes_root" in body  # canonical HERMES_HOME-anchored path always checked
+    kt = _read("hermes_cli/kanban_transfer.py")
+    assert "kb.kanban_retired()" in kt  # import_board refuses before staging an archive
 
     ws = _read("hermes_cli/web_server.py")
     assert ws.count("kanban_retired()") >= 2  # bundled/any plugin-API mount gate + nexus-actions router gate

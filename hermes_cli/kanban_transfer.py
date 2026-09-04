@@ -395,6 +395,14 @@ def import_board(
     slug auto-suffixes if it is taken, so an import never merges into or
     overwrites an existing board.
     """
+    # Fork rail: importing an archive stages a full DB and moves it into the
+    # boards root BEFORE init_db() would refuse — refuse first, write nothing.
+    if kb.kanban_retired():
+        raise kb.KanbanRetiredError(
+            "Kanban was retired on 2026-09-01; the board is read-only history. "
+            "import_board() refused — no archive may be staged or moved into "
+            "the boards root, regardless of target board or overrides."
+        )
     archive = Path(archive_path).expanduser()
     if not archive.exists():
         raise FileNotFoundError(f"archive not found: {archive}")

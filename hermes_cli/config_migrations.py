@@ -633,37 +633,47 @@ def _migrate_to_34(results: Dict[str, Any], quiet: bool) -> None:
     # only blanked the text, leaving the name behind). When #81946 made
     # display.personality authoritative everywhere, stale names written years
     # ago resurrected personalities users had already turned off ("kawaii
-    # defaults on after updating"). There is no way to know which of the two
-    # divergent fields reflects the user's intent, so reset the selection to
-    # none once and tell the user how to re-enable it. Two scrubs:
+    # defaults on after updating"). Upstream's fix is two scrubs:
     #
-    # 1. display.personality → "" (announce the old name).
+    # 1. display.personality → "" for ANY non-empty value, unconditionally —
+    #    upstream has no way to tell "a stale cross-surface write" from "a
+    #    value the user deliberately kept", so it treats every non-empty name
+    #    as suspect and clears it once.
     # 2. agent.system_prompt → "" ONLY when it verbatim-equals the rendered
-    #    text of a known personality — that shape was written by the old
-    #    CLI/gateway /personality, never typed by hand. Any other text is a
-    #    user-owned manual prompt and is never touched.
+    #    text of a known personality — that exact shape can only have been
+    #    auto-written by the old CLI/gateway /personality, never typed by
+    #    hand. Any other text is a user-owned manual prompt and is never
+    #    touched.
+    #
+    # [FORK RAIL] Scrub 1's blanket wipe already cost this fork a real,
+    # deliberate personality choice in production: the live config carried
+    # ``display.personality: kawaii`` — an explicit user choice, not a stale
+    # cross-surface artifact — and this exact step wiped it (see
+    # /home/josep/.hermes/audits/v021-successor-2-staging/cutover-prereqs/
+    # MIGRATION-SIM.md). ``display.personality``'s own DEFAULT_CONFIG value
+    # is already "" — there is no non-empty upstream legacy sentinel scrub 1
+    # could restrict itself to — so, per the fork rule "never discard an
+    # explicit user value", scrub 1 is disabled outright: a non-empty
+    # display.personality is always left exactly as the user wrote it.
+    #
+    # Scrub 2 needs no change and keeps firing as-is: its trigger (config
+    # text that verbatim-equals a known personality's rendered prompt) IS the
+    # genuine legacy sentinel this migration was designed to retire — that
+    # value shape cannot be user-typed, only auto-written by the retired
+    # CLI/gateway write path — so clearing it never discards anything the
+    # user actually chose.
     _c = _cfg()
     read_raw_config = _c.read_raw_config
     _persist_migration = _c._persist_migration
 
     from hermes_cli.personality import (
         available_personalities,
-        normalize_personality_name,
         prompt_text,
         render_personality_prompt,
     )
 
     config = read_raw_config()
     touched = False
-
-    raw_display = config.get("display")
-    old_name = ""
-    if isinstance(raw_display, dict):
-        old_name = normalize_personality_name(raw_display.get("personality", ""))
-        if old_name:
-            raw_display["personality"] = ""
-            config["display"] = raw_display
-            touched = True
 
     raw_agent = config.get("agent")
     scrubbed_text = False
@@ -682,16 +692,11 @@ def _migrate_to_34(results: Dict[str, Any], quiet: bool) -> None:
 
     if touched:
         _persist_migration(config)
-        results["config_added"].append("display.personality=none (one-time reset)")
-        if not quiet:
-            if old_name:
-                print(
-                    f"  ✓ Personality reset to none (was '{old_name}'). Personality "
-                    "state was previously saved inconsistently across surfaces and "
-                    "could re-enable a personality you had turned off. "
-                    f"Run /personality {old_name} to turn it back on."
-                )
-            if scrubbed_text:
+        if scrubbed_text:
+            results["config_added"].append(
+                "agent.system_prompt cleared (legacy /personality-rendered text)"
+            )
+            if not quiet:
                 print(
                     "  ✓ Removed personality text from agent.system_prompt (written "
                     "by an older /personality). That field is now reserved for "
@@ -768,32 +773,29 @@ def _migrate_to_36(results: Dict[str, Any], quiet: bool) -> None:
 def _migrate_to_37(results: Dict[str, Any], quiet: bool) -> None:
     # ── Version 36 → 37: raise the delegation concurrency default 3 → 10 ──
     # delegation.max_concurrent_children caps how many children run in parallel
-    # per batch (and concurrent background delegation units). The old default of
-    # 3 needlessly serialized independent fan-outs (e.g. reviewing N PRs at
-    # once). The shipped default is now 10, which stays at/below the high-cost
-    # warning threshold. Configs still pinned at exactly the old default 3 —
-    # almost always the inherited default rather than a deliberate choice — are
-    # lifted to 10 so existing installs get the wider fan-out on update. Any
-    # OTHER explicit value (a deliberate override) is preserved; unset inherits
-    # 10 at read time.
-    _c = _cfg()
-    read_raw_config = _c.read_raw_config
-    _persist_migration = _c._persist_migration
-
-    config = read_raw_config()
-    raw_deleg = config.get("delegation")
-    if isinstance(raw_deleg, dict) and raw_deleg.get("max_concurrent_children") == 3:
-        raw_deleg["max_concurrent_children"] = 10
-        config["delegation"] = raw_deleg
-        _persist_migration(config)
-        results["config_added"].append("delegation.max_concurrent_children=10 (was: 3)")
-        if not quiet:
-            print(
-                "  ✓ Raised delegation.max_concurrent_children from 3 to 10 — "
-                "independent delegated children now fan out wider in parallel. "
-                "Each child consumes API tokens independently; set "
-                "delegation.max_concurrent_children back to 3 to restore the old cap."
-            )
+    # per batch (and concurrent background delegation units). Upstream's old
+    # default of 3 needlessly serialized independent fan-outs (e.g. reviewing N
+    # PRs at once), so upstream's shipped default is now 10. Upstream's step
+    # lifts configs still pinned at exactly the old default 3 — on the theory
+    # that 3 is almost always the inherited default rather than a deliberate
+    # choice — to 10 on update.
+    #
+    # [FORK RAIL] That theory does not hold here: this fork deliberately
+    # re-pins ``delegation.max_concurrent_children`` to 3 as its OWN default
+    # (``hermes_cli/config_defaults.py`` DEFAULT_CONFIG, and
+    # ``tools/delegate_tool.py._DEFAULT_MAX_CONCURRENT_CHILDREN``) to protect a
+    # fixed Max-OAuth/Codex quota budget from a wider parallel fan-out — see
+    # DIVERGENCES V4 and the parity docket. Upstream's exact-match guard can't
+    # tell "inherited upstream's old default" from "the fork's own deliberate
+    # default", so applying it here would silently blow through the fork's
+    # quota rail on every install that sits at the fork's intended value. This
+    # step is therefore a no-op for this key in the fork: any explicit value
+    # (3, 5, or anything else) is left exactly as the user/fork wrote it, and
+    # a config missing the key stays missing it so ``DEFAULT_CONFIG``'s fork
+    # value (3) is what ``load_config()`` supplies at read time. Nothing to
+    # persist, so no ``_persist_migration`` call and no registered version-bump
+    # message for this key.
+    return
 
 
 def _migrate_to_38(results: Dict[str, Any], quiet: bool) -> None:

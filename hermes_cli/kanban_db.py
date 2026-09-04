@@ -743,31 +743,67 @@ def kanban_retired(home: Optional[Path] = None) -> bool:
     read-only ``RETIRED`` marker file (see
     ``tests/security/test_kanban_tombstone_inert.py``). This is the single
     fail-closed signal every retirement-aware caller (route mounting,
-    plugin-API mounting, nexus-action authorization) should consult,
-    independent of ``config.yaml`` flags like ``plugins.disabled`` or
+    plugin-API mounting, nexus-action authorization, the DB opener
+    chokepoint in :func:`connect`) should consult, independent of
+    ``config.yaml`` flags like ``plugins.disabled`` or
     ``dashboard.hidden_plugins`` — a lost config key must not resurrect a
     write surface onto a tombstoned board.
 
-    ``home`` overrides the kanban home root (mirrors :func:`kanban_home`);
-    when omitted, the normal env-based resolution chain
-    (``HERMES_KANBAN_DB`` / ``HERMES_KANBAN_HOME`` / ``HERMES_HOME``)
-    applies via :func:`kanban_db_path` against the ``default`` board —
-    the board the live tombstone shape always targets.
+    ``home`` overrides the kanban home root (mirrors :func:`kanban_home`)
+    and, when passed explicitly, checks *only* that literal path — this is
+    the escape hatch tests use to probe one location in isolation.
+
+    When omitted (the normal call shape used by every production caller),
+    this checks the tombstone at **both**:
+
+    1. The canonical ``HERMES_HOME``-anchored root
+       (:func:`hermes_constants.get_default_hermes_root`), computed
+       WITHOUT honouring ``HERMES_KANBAN_HOME``. A caller must not be able
+       to un-retire the board by pointing the umbrella root at a fresh temp
+       directory that has no tombstone — the canonical location always
+       wins.
+    2. The resolved :func:`kanban_home` (which DOES honour
+       ``HERMES_KANBAN_HOME``), so a deliberately relocated board honours
+       its own tombstone too.
+
+    ``HERMES_KANBAN_DB`` (the file-path override) is intentionally never
+    consulted here — it is a data-access convenience for CLI/dispatcher
+    lanes and must NOT be able to redirect a security gate away from the
+    real tombstone.
     """
     try:
-        # Canonical location only (``kanban_home()`` honours HERMES_HOME /
-        # HERMES_KANBAN_HOME). The ``HERMES_KANBAN_DB`` file-path override is
-        # a data-access convenience for CLI/dispatcher lanes and must NOT be
-        # able to redirect a security gate away from the real tombstone.
-        db_path = (Path(home) / "kanban.db") if home is not None else (kanban_home() / "kanban.db")
-        # A DIRECTORY at the kanban.db path can never be a valid database:
-        # it is the tombstone shape whether or not the RETIRED marker is
-        # still inside it (a deleted marker must not resurrect the board).
-        return db_path.is_dir()
+        if home is not None:
+            db_path = Path(home) / "kanban.db"
+            # A DIRECTORY at the kanban.db path can never be a valid
+            # database: it is the tombstone shape whether or not the
+            # RETIRED marker is still inside it (a deleted marker must not
+            # resurrect the board).
+            return db_path.is_dir()
+        from hermes_constants import get_default_hermes_root
+        canonical_db_path = get_default_hermes_root() / "kanban.db"
+        if canonical_db_path.is_dir():
+            return True
+        return (kanban_home() / "kanban.db").is_dir()
     except OSError:
         # Fail CLOSED: if the tombstone cannot be inspected (permissions,
         # broken symlink, unreadable home), no write surface may mount.
         return True
+
+
+class KanbanRetiredError(RuntimeError):
+    """Raised by every public Kanban DB opener when the board is tombstoned.
+
+    Kanban was fully retired live on 2026-09-01 (see :func:`kanban_retired`
+    for the tombstone shape). The retirement contract is: no DB recreation,
+    no writable opener, no watcher, no dispatch, no authority revival —
+    regardless of ``HERMES_KANBAN_DB``, ``HERMES_KANBAN_HOME``, board, or an
+    explicit ``db_path`` override. This exception is a :class:`RuntimeError`
+    subclass so existing broad ``except Exception`` call sites (notifier /
+    dispatcher watchers, CLI command handlers) already degrade gracefully;
+    it deliberately does NOT subclass :class:`OSError` since a bare
+    ``except OSError`` around a stray filesystem call must not accidentally
+    swallow this security gate.
+    """
 
 
 def workspaces_root(board: Optional[str] = None) -> Path:
@@ -923,6 +959,15 @@ def write_board_metadata(
     project scope; a value sets it (not validated here — the caller resolves
     it against ``projects_db``).
     """
+    # Fork rail: board.json is authority-bearing metadata (name, workdir,
+    # project binding). Standalone callers (boards rename / set-default-workdir,
+    # projects sync, import) must fail closed on the tombstone too.
+    if kanban_retired():
+        raise KanbanRetiredError(
+            "Kanban was retired on 2026-09-01; the board is read-only history. "
+            "write_board_metadata() refused — no board.json may be written, "
+            "regardless of board or overrides."
+        )
     _assert_not_delegated_child_mutation()
     slug = _normalize_board_slug(board) or DEFAULT_BOARD
     meta = read_board_metadata(slug)
@@ -970,10 +1015,26 @@ def create_board(
     Returns the resulting metadata. Raises :class:`ValueError` for a
     malformed slug; returns the existing metadata (not an error) if the
     board already exists — matching ``mkdir -p`` semantics.
+
+    Raises :class:`KanbanRetiredError` before writing ``board.json`` when
+    the board is tombstoned: this function's entire purpose is DB-adjacent
+    board initialization (it calls :func:`init_db` below, which has its own
+    guard), but ``write_board_metadata`` runs first and would otherwise
+    leave a ghost board.json behind — making a "new" board visible via
+    :func:`list_boards` — even though the DB write is refused. That is
+    authority revival via a non-default board name and must fail closed
+    too.
     """
     normed = _normalize_board_slug(slug)
     if not normed:
         raise ValueError("board slug is required")
+    if kanban_retired():
+        raise KanbanRetiredError(
+            "Kanban was retired on 2026-09-01; the board is read-only "
+            "history. create_board() refused — no new board may be "
+            "created, regardless of HERMES_KANBAN_DB, HERMES_KANBAN_HOME, "
+            "or board name."
+        )
     meta = write_board_metadata(
         normed,
         name=name,
@@ -2288,6 +2349,16 @@ def repair_db(
     raw, exactly like the guard: a locked healthy DB is not corruption and
     must not be quarantined.
     """
+    # Fork rail: repair opens the DB through _sqlite_connect() (bypassing
+    # connect()) and would still write the cross-process .init.lock sidecar
+    # before failing on the tombstone — refuse first, write nothing.
+    if kanban_retired():
+        raise KanbanRetiredError(
+            "Kanban was retired on 2026-09-01; the board is read-only "
+            "history. repair_db() refused — no repair, lock sidecar or "
+            "quarantine copy may be written, regardless of HERMES_KANBAN_DB, "
+            "HERMES_KANBAN_HOME, board or explicit db_path."
+        )
     if db_path is not None:
         path = db_path
     else:
@@ -2392,7 +2463,22 @@ def connect(
     * Neither → :func:`kanban_db_path` resolves via
       ``HERMES_KANBAN_DB`` env → ``HERMES_KANBAN_BOARD`` env →
       ``<root>/kanban/current`` → ``default``.
+
+    Raises :class:`KanbanRetiredError` before touching the filesystem when
+    :func:`kanban_retired` reports the canonical tombstone — this is the
+    single chokepoint every public opener (:func:`connect_closing`,
+    :func:`init_db`, and therefore :func:`create_board`) funnels through,
+    so the retirement gate applies regardless of ``db_path``, ``board``, or
+    any ``HERMES_KANBAN_DB`` / ``HERMES_KANBAN_HOME`` override the caller
+    passes or has set in its environment.
     """
+    if kanban_retired():
+        raise KanbanRetiredError(
+            "Kanban was retired on 2026-09-01; the board is read-only "
+            "history. No kanban.db may be created or opened for writing — "
+            "this applies regardless of HERMES_KANBAN_DB, "
+            "HERMES_KANBAN_HOME, board, or an explicit db_path override."
+        )
     if db_path is not None:
         path = db_path
     else:
@@ -2558,7 +2644,19 @@ def init_db(
     may have drifted — tests that write legacy event kinds directly,
     external tools that upgrade an old DB file — can call this to
     force re-migration.
+
+    Raises :class:`KanbanRetiredError` before its own ``mkdir`` when the
+    board is tombstoned — checked here too (not just inside the
+    :func:`connect` call below) because this function creates the parent
+    directory itself before delegating, and that mkdir must not run either.
     """
+    if kanban_retired():
+        raise KanbanRetiredError(
+            "Kanban was retired on 2026-09-01; the board is read-only "
+            "history. init_db() refused — this applies regardless of "
+            "HERMES_KANBAN_DB, HERMES_KANBAN_HOME, board, or an explicit "
+            "db_path override."
+        )
     if db_path is not None:
         path = db_path
     else:

@@ -157,18 +157,27 @@ def _run_migration(home, cfg):
         return read_raw_config(), results
 
 
-def test_migration_resets_stale_personality_name(tmp_path):
+def test_migration_preserves_explicit_personality_name(tmp_path):
     # Shape 1: TUI/desktop wrote the name years ago; the old CLI/gateway
     # "/personality none" never cleared it. Post-#81946 it resurrected.
+    # Upstream's fix blanket-clears display.personality here on any
+    # non-empty value, once, because it can't tell a stale cross-surface
+    # write from a value the user deliberately kept. This fork never
+    # guesses: DEFAULT_CONFIG's own personality default is already "" (no
+    # non-empty legacy sentinel to restrict the clear to), and this exact
+    # blanket wipe already cost the live config a real, deliberate `kawaii`
+    # choice in production — see MIGRATION-SIM.md. The name is left exactly
+    # as written; only agent.system_prompt keeps getting scrubbed (see
+    # test_migration_scrubs_personality_text_from_system_prompt below).
     home = tmp_path / ".hermes"
     home.mkdir()
     raw, results = _run_migration(
         home,
         {"_config_version": 33, "display": {"personality": "kawaii"}},
     )
-    assert raw["display"]["personality"] == ""
-    assert resolve_ephemeral_system_prompt(raw) == ""
-    assert any("personality" in item for item in results["config_added"])
+    assert raw["display"]["personality"] == "kawaii"
+    assert resolve_ephemeral_system_prompt(raw) == KAWAII
+    assert not any("personality" in item for item in results["config_added"])
 
 
 def test_migration_scrubs_personality_text_from_system_prompt(tmp_path):
@@ -187,7 +196,9 @@ def test_migration_scrubs_personality_text_from_system_prompt(tmp_path):
 
 def test_migration_preserves_manual_system_prompt(tmp_path):
     # Shape 3: a hand-written prompt never verbatim-matches a personality
-    # render — it must survive untouched while the stale name is reset.
+    # render — it must survive untouched. The explicit display.personality
+    # name survives too (this fork never resets it — see
+    # test_migration_preserves_explicit_personality_name above).
     home = tmp_path / ".hermes"
     home.mkdir()
     raw, _ = _run_migration(
@@ -198,9 +209,14 @@ def test_migration_preserves_manual_system_prompt(tmp_path):
             "agent": {"system_prompt": "my manual prompt"},
         },
     )
-    assert raw["display"]["personality"] == ""
+    assert raw["display"]["personality"] == "pirate"
     assert raw["agent"]["system_prompt"] == "my manual prompt"
-    assert resolve_ephemeral_system_prompt(raw) == "my manual prompt"
+    # display.personality names a known, preserved personality ("pirate"),
+    # so it wins over the manual prompt at resolve time — same precedence
+    # rule covered by test_resolve_overlay_personality_wins_over_manual_prompt.
+    # The point of this test is that the migration left the manual prompt
+    # BYTES untouched (asserted above), not which one wins at resolve time.
+    assert resolve_ephemeral_system_prompt(raw) == BUILTIN_PERSONALITIES["pirate"]
 
 
 def test_migration_noop_when_nothing_stale(tmp_path):
