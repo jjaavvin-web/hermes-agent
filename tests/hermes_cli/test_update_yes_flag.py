@@ -9,10 +9,43 @@ Covers:
 """
 
 import subprocess
+from contextlib import contextmanager
 from types import SimpleNamespace
 from unittest.mock import patch
 
 from hermes_cli.main import cmd_update
+
+
+@contextmanager
+def _patched_gateway_fleet_verification():
+    """Keep cmd_update's gateway auto-restart + fleet verification off this
+    machine's real gateways (mirrors tests/hermes_cli/test_cmd_update.py's
+    ``_patch_gateway_discovery`` autouse fixture).
+
+    None of this module's ``cmd_update``-calling tests mocked gateway
+    discovery at all, so the restart phase discovered THIS machine's real
+    live gateway PIDs. Only the test process's live-system guard
+    (tests/conftest.py) stood between that and a real ``os.kill`` on this
+    box, and it still turned every one of these tests into a ~30s poll
+    against real machine state that then failed closed. No-op the
+    ``_purge_stale_hermes_modules`` mid-run module eviction (it silently
+    drops any earlier gateway-discovery patch by re-importing a fresh,
+    unpatched ``hermes_cli.gateway``), keep gateway discovery empty, and pin
+    the Phase 1 (#91277) fleet-plan/verification collectors to empty so the
+    post-update fleet-verification loop's real ``_time.sleep(2.0)`` (up to a
+    30s deadline) is never entered either.
+    """
+    with patch("hermes_cli.gateway.find_gateway_pids", return_value=[]), \
+         patch("hermes_cli.gateway.supports_systemd_services", return_value=False), \
+         patch("hermes_cli.gateway.find_profile_gateway_processes", return_value=[]), \
+         patch("hermes_cli.main._purge_stale_hermes_modules", lambda: None), \
+         patch("hermes_cli.update_receipt.collect_fleet_versions", return_value=[]), \
+         patch(
+             "hermes_cli.update_inventory.collect_runtime_inventory",
+             return_value=SimpleNamespace(runtimes=[], to_dict=lambda: {}),
+         ), \
+         patch("hermes_cli.update_cmd._time.sleep", lambda *a, **k: None):
+        yield
 
 
 def _make_run_side_effect(
@@ -75,7 +108,7 @@ class TestUpdateYesConfigMigration:
 
         args = SimpleNamespace(yes=True)
 
-        with patch("builtins.input") as mock_input:
+        with patch("builtins.input") as mock_input, _patched_gateway_fleet_verification():
             cmd_update(args)
             # Never prompted the user.
             mock_input.assert_not_called()
@@ -128,7 +161,9 @@ class TestUpdateYesConfigMigration:
 
         with patch("builtins.input", return_value="n") as mock_input, patch.object(
             _sys.stdin, "isatty", return_value=True
-        ), patch.object(_sys.stdout, "isatty", return_value=True):
+        ), patch.object(
+            _sys.stdout, "isatty", return_value=True
+        ), _patched_gateway_fleet_verification():
             cmd_update(args)
             # The user was actually prompted.
             assert mock_input.called
@@ -182,7 +217,7 @@ class TestUnicodeDecodeErrorInUpdatePrompts:
             side_effect=UnicodeDecodeError("utf-8", b"\xff", 0, 1, "invalid byte"),
         ), patch.object(_sys.stdin, "isatty", return_value=True), patch.object(
             _sys.stdout, "isatty", return_value=True
-        ):
+        ), _patched_gateway_fleet_verification():
             cmd_update(args)  # must not raise
 
         out = capsys.readouterr().out

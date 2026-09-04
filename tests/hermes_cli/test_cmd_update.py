@@ -82,10 +82,30 @@ def _patch_gateway_discovery():
     conftest live-system guard and turns into a spurious ``sys.exit(1)``.
     Discovery returning nothing makes the phase a clean no-op for every test
     in this module (none of them assert on gateway restarts).
+
+    ``_cmd_update_impl`` also evicts every cached hermes_cli/gateway module
+    from ``sys.modules`` mid-run (``_purge_stale_hermes_modules``) and
+    re-imports ``hermes_cli.gateway`` from scratch for the restart phase —
+    which silently drops the three patches above (new module object, none of
+    the monkeypatches survive) and lets the restart phase discover THIS
+    machine's real live gateway PIDs anyway. Only the test process's
+    live-system guard (tests/conftest.py) stood between that and a real
+    ``os.kill`` on this box, and it still turned six of this file's tests
+    into a ~30s poll against real machine state that then failed closed. No-op
+    the purge, and pin the Phase 1 (#91277) fleet-plan/verification
+    collectors to empty so the post-update fleet-verification loop's real
+    ``_time.sleep(2.0)`` (up to a 30s deadline) is never entered either.
     """
     with patch("hermes_cli.gateway.find_gateway_pids", return_value=[]), \
          patch("hermes_cli.gateway.supports_systemd_services", return_value=False), \
-         patch("hermes_cli.gateway.find_profile_gateway_processes", return_value=[]):
+         patch("hermes_cli.gateway.find_profile_gateway_processes", return_value=[]), \
+         patch("hermes_cli.main._purge_stale_hermes_modules", lambda: None), \
+         patch("hermes_cli.update_receipt.collect_fleet_versions", return_value=[]), \
+         patch(
+             "hermes_cli.update_inventory.collect_runtime_inventory",
+             return_value=SimpleNamespace(runtimes=[], to_dict=lambda: {}),
+         ), \
+         patch("hermes_cli.update_cmd._time.sleep", lambda *a, **k: None):
         yield
 
 

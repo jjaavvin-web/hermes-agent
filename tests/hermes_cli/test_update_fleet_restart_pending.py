@@ -125,6 +125,24 @@ def _patch_update_deps(monkeypatch, tmp_path, run_side_effect):
         "hermes_cli.update_inventory.collect_runtime_inventory",
         lambda: SimpleNamespace(runtimes=[], to_dict=lambda: {}),
     )
+    # ``_cmd_update_impl`` evicts every cached hermes_cli/gateway module from
+    # sys.modules mid-run (``_purge_stale_hermes_modules``) and re-imports
+    # ``hermes_cli.gateway`` from scratch for the restart phase — which
+    # silently drops the ``find_gateway_pids`` / ``supports_systemd_
+    # services`` / ``find_profile_gateway_processes`` patches above (new
+    # module object, none of the monkeypatches survive) and lets the restart
+    # phase discover THIS machine's real live gateway PIDs. Only the test
+    # process's live-system guard (tests/conftest.py) stood between that and
+    # a real ``os.kill`` on this box. No-op the purge so the mocks above
+    # stay in effect for the whole call.
+    monkeypatch.setattr(hermes_main, "_purge_stale_hermes_modules", lambda: None)
+    # Belt-and-suspenders: with both collectors above returning empty,
+    # ``_fleet_rows_expected`` is False and the post-update fleet
+    # verification loop's real ``_time.sleep(2.0)`` (up to a 30s deadline)
+    # is never entered — but no-op it anyway so any other real sleep in the
+    # restart/verification phases can't reintroduce a slow, non-hermetic
+    # test.
+    monkeypatch.setattr(update_cmd._time, "sleep", lambda *a, **k: None)
 
 
 def _update_args():

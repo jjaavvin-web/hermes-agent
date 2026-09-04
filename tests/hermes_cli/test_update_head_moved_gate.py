@@ -14,6 +14,7 @@ from types import SimpleNamespace
 import pytest
 
 from hermes_cli import main as hermes_main
+from hermes_cli import update_cmd
 
 
 def _make_head_moved_side_effect(pre_sha="abc123", post_sha="def456"):
@@ -119,6 +120,37 @@ def _patch_update_deps(monkeypatch, tmp_path, run_side_effect):
     monkeypatch.setattr(
         hermes_gateway, "find_profile_gateway_processes", lambda *a, **k: []
     )
+    # ``_cmd_update_impl`` evicts every cached hermes_cli/gateway module from
+    # sys.modules mid-run (``_purge_stale_hermes_modules``, #91277-adjacent
+    # freshness fix) and re-imports ``hermes_cli.gateway`` from scratch for
+    # the restart phase — which silently drops the ``find_gateway_pids`` /
+    # ``supports_systemd_services`` / ``find_profile_gateway_processes``
+    # patches above (new module object, none of the monkeypatches survive)
+    # and lets the restart phase discover THIS machine's real live gateway
+    # PIDs. Only the test process's live-system guard (tests/conftest.py)
+    # stood between that and a real ``os.kill`` on this box. No-op the purge
+    # so the mocks above stay in effect for the whole call.
+    monkeypatch.setattr(hermes_main, "_purge_stale_hermes_modules", lambda: None)
+    # Phase 1 (#91277) plan/verification collectors: unmocked, these read
+    # this machine's real running Hermes fleet (same live-system-guard risk
+    # as above) and turn a hermetic head-moved test into a ~30s poll against
+    # real state that then fails closed (mirrors test_update_fleet_restart_
+    # pending.py's existing pattern).
+    monkeypatch.setattr(
+        "hermes_cli.update_receipt.collect_fleet_versions",
+        lambda **k: [],
+    )
+    monkeypatch.setattr(
+        "hermes_cli.update_inventory.collect_runtime_inventory",
+        lambda: SimpleNamespace(runtimes=[], to_dict=lambda: {}),
+    )
+    # Belt-and-suspenders: with the collectors above returning empty/no
+    # fleet, ``_fleet_rows_expected`` is False and the post-update fleet
+    # verification loop's real ``_time.sleep(2.0)`` (up to a 30s deadline)
+    # is never entered — but no-op it anyway so any other real sleep in the
+    # restart/verification phases can't reintroduce a slow, non-hermetic
+    # test.
+    monkeypatch.setattr(update_cmd._time, "sleep", lambda *a, **k: None)
 
 
 def test_update_success_when_head_moves(monkeypatch, tmp_path, capsys):

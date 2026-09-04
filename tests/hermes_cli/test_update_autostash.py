@@ -55,6 +55,46 @@ def _patch_managed_uv(request):
 # Update uses .[all] with fallback to .
 # ---------------------------------------------------------------------------
 
+def _patch_gateway_fleet_verification(monkeypatch):
+    """Keep cmd_update's gateway auto-restart + fleet verification off this
+    machine's real gateways (mirrors tests/hermes_cli/test_cmd_update.py's
+    ``_patch_gateway_discovery`` autouse fixture).
+
+    ``_cmd_update_impl`` evicts every cached hermes_cli/gateway module from
+    ``sys.modules`` mid-run (``_purge_stale_hermes_modules``) and re-imports
+    ``hermes_cli.gateway`` from scratch for the restart phase — which
+    silently drops a bare ``find_gateway_pids`` patch (new module object,
+    the monkeypatch doesn't survive) and lets the restart phase discover
+    THIS machine's real live gateway PIDs. Only the test process's
+    live-system guard (tests/conftest.py) stood between that and a real
+    ``os.kill`` on this box, and it still turned several of this file's
+    ``cmd_update`` tests into a ~30s poll against real machine state that
+    then failed closed. No-op the purge, keep gateway discovery empty, and
+    pin the Phase 1 (#91277) fleet-plan/verification collectors to empty so
+    the post-update fleet-verification loop's real ``_time.sleep(2.0)`` (up
+    to a 30s deadline) is never entered either.
+    """
+    import hermes_cli.gateway as hermes_gateway
+    from hermes_cli import update_cmd
+
+    monkeypatch.setattr(
+        hermes_gateway, "find_gateway_pids", lambda *a, **kw: []
+    )
+    monkeypatch.setattr(hermes_gateway, "supports_systemd_services", lambda: False)
+    monkeypatch.setattr(
+        hermes_gateway, "find_profile_gateway_processes", lambda *a, **kw: []
+    )
+    monkeypatch.setattr(hermes_main, "_purge_stale_hermes_modules", lambda: None)
+    monkeypatch.setattr(
+        "hermes_cli.update_receipt.collect_fleet_versions", lambda **k: []
+    )
+    monkeypatch.setattr(
+        "hermes_cli.update_inventory.collect_runtime_inventory",
+        lambda: SimpleNamespace(runtimes=[], to_dict=lambda: {}),
+    )
+    monkeypatch.setattr(update_cmd._time, "sleep", lambda *a, **k: None)
+
+
 def _setup_update_mocks(monkeypatch, tmp_path):
     """Common setup for cmd_update tests."""
     (tmp_path / ".git").mkdir()
@@ -68,8 +108,22 @@ def _setup_update_mocks(monkeypatch, tmp_path):
     monkeypatch.setattr(hermes_main, "_verify_editable_install", lambda *a, **kw: None)
     monkeypatch.setattr(hermes_main, "_upgrade_pip_before_lazy_refresh", lambda *a, **kw: None)
     monkeypatch.setattr(hermes_main, "_refresh_active_lazy_features", lambda *a, **kw: True)
+    _patch_gateway_fleet_verification(monkeypatch)
 
 
+
+
+def _norm_install(cmd):
+    """Strip the interpreter pin (``--python <venv>``) the updater now passes so
+    the extras-fallback assertions stay about WHICH targets were installed."""
+    out = list(cmd)
+    while "--python" in out:
+        i = out.index("--python"); del out[i:i + 2]
+    return out
+
+
+def _is_extras_install(cmd):
+    return "pip" in cmd and "install" in cmd and not any("faster-whisper" in str(t) for t in cmd)
 
 
 def test_cmd_update_retries_optional_extras_individually_when_all_fails(monkeypatch, tmp_path, capsys):
@@ -91,13 +145,14 @@ def test_cmd_update_retries_optional_extras_individually_when_all_fails(monkeypa
             return SimpleNamespace(stdout="1\n", stderr="", returncode=0)
         if cmd == ["git", "pull", "--ff-only", "origin", "main"]:
             return SimpleNamespace(stdout="Updating\n", stderr="", returncode=0)
-        if cmd == ["/usr/bin/uv", "pip", "install", "-e", ".[all]"]:
+        n = _norm_install(cmd)
+        if n == ["/usr/bin/uv", "pip", "install", "-e", ".[all]"]:
             raise CalledProcessError(returncode=1, cmd=cmd)
-        if cmd == ["/usr/bin/uv", "pip", "install", "-e", "."]:
+        if n == ["/usr/bin/uv", "pip", "install", "-e", "."]:
             return SimpleNamespace(returncode=0)
-        if cmd == ["/usr/bin/uv", "pip", "install", "-e", ".[matrix]"]:
+        if n == ["/usr/bin/uv", "pip", "install", "-e", ".[matrix]"]:
             raise CalledProcessError(returncode=1, cmd=cmd)
-        if cmd == ["/usr/bin/uv", "pip", "install", "-e", ".[mcp]"]:
+        if n == ["/usr/bin/uv", "pip", "install", "-e", ".[mcp]"]:
             return SimpleNamespace(returncode=0)
         # Catch-all must include stdout/stderr so consumers that parse
         # output (e.g. the dashboard-restart `ps -A` scan added in the
@@ -108,7 +163,7 @@ def test_cmd_update_retries_optional_extras_individually_when_all_fails(monkeypa
 
     hermes_main.cmd_update(SimpleNamespace())
 
-    install_cmds = [c for c in recorded if "pip" in c and "install" in c]
+    install_cmds = [_norm_install(c) for c in recorded if _is_extras_install(c)]
     assert install_cmds == [
         ["/usr/bin/uv", "pip", "install", "-e", ".[all]"],
         ["/usr/bin/uv", "pip", "install", "-e", "."],
@@ -146,8 +201,8 @@ def test_cmd_update_succeeds_with_extras(monkeypatch, tmp_path):
 
     hermes_main.cmd_update(SimpleNamespace())
 
-    install_cmds = [c for c in recorded if "pip" in c and "install" in c]
-    assert len(install_cmds) == 1
+    install_cmds = [_norm_install(c) for c in recorded if _is_extras_install(c)]
+    assert len(install_cmds) == 1  # no `-e .` / per-extra fallback attempted
     assert ".[all]" in install_cmds[0]
 
 

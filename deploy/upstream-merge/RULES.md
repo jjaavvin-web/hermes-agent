@@ -30,4 +30,5 @@ Pure text generators (e.g. `generate_systemd_unit`) may be called only under tho
 
 ## Rule 18 — expect the stable class of red upstream tests, adapt the TEST never the rail
 After every absorption: upstream tests asserting upstream POLICY (paid fallback for `provider=auto`, free-tier rings on by default) and upstream HOSTS (no WSL2 probe mock, Chrome present, port 9119 free, drain floors not shortened). Fork tests go stale against upstream refactors silently when a swallow-all `except` hides the mismatch — add a `logger.debug` at every swallow the merge touches. Provision the CI extras in the certification venv before G6 (`uv sync --locked --extra daytona --extra hindsight --extra mistral --extra parallel-web`).
+Addendum (F34): `hermes_cli.update_cmd._purge_stale_hermes_modules()` evicts patched modules mid-update, so a test or script that reaches `_cmd_update_impl` with a monkeypatched `hermes_cli.gateway` still discovers the LIVE gateway PIDs. Any test touching the update path stubs the purge, the runtime-inventory/fleet-version collectors and `update_cmd._time.sleep`; the conftest live-system guard is the last line, not the first.
 
