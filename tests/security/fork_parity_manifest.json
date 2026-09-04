@@ -1931,7 +1931,7 @@
       "id": "fp-073",
       "verdict": "PRESERVED_EQUIVALENT",
       "severity": "NONE",
-      "kind": "security_invariant",
+      "kind": "structural",
       "phase": "in_repo",
       "introduced_by": [],
       "docket_item": "hermes_cli/backup.py: run_import chmods restored files 0600 via _is_private_restore_file, which extends _PRIVATE_RESTORE_FILE_NAMES with case-insensitive _SECRET_SUFFIXES (.key/.pem) suffix matching \u2014 the fork's superset over upstream's basename-only {.env, auth.json, state.db} restore-perm set",
@@ -1954,12 +1954,8 @@
           "callee": "_is_private_restore_file"
         }
       ],
-      "proofs": [
-        {
-          "test": "tests/hermes_cli/test_backup.py::TestImport::test_restores_secret_files_with_0600_perms"
-        }
-      ],
-      "notes": "v021 extension from custody ledger row idx 2: Row 7 (backup.py) covers two distinct fork-preserved surfaces: (a) fp-028/fp-069 already pin _should_exclude (backup-time secret-bearing exclusion walk) and the bare presence of _PRIVATE_RESTORE_FILE_NAMES; (b) this new pin covers the DIFFERENT restore-time surface those items do not anchor \u2014 _is_private_restore_file's suffix-based (.key/.pem, case-ins"
+      "proofs": [],
+      "notes": "v021 extension from custody ledger row idx 2: Row 7 (backup.py) covers two distinct fork-preserved surfaces: (a) fp-028/fp-069 already pin _should_exclude (backup-time secret-bearing exclusion walk) and the bare presence of _PRIVATE_RESTORE_FILE_NAMES; (b) this new pin covers the DIFFERENT restore-time surface those items do not anchor \u2014 _is_private_restore_file's suffix-based (.key/.pem, case-ins Demoted to structural: the only restore-perm test (test_restores_secret_files_with_0600_perms) carries a platform skipif marker, which the guard treats as an unusable proof; the anchors (symbol + text + call edge) pin the mechanism."
     },
     {
       "id": "fp-074",

@@ -1288,17 +1288,6 @@ def _assert_event_capacity(
             "Group Chat storage is full on this host. Delete an old Group Chat and try again."
         )
 
-
-def _table_exists(conn: sqlite3.Connection, table: str) -> bool:
-    return (
-        conn.execute(
-            "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
-            (table,),
-        ).fetchone()
-        is not None
-    )
-
-
 def _prune_disbanded_rooms_locked(
     conn: sqlite3.Connection,
     *,
