@@ -243,11 +243,44 @@ def _extract_kanban_target(comment: str) -> str | None:
     return None
 
 
-def validate_registry(tickets: tuple[dict[str, Any], ...] | list[dict[str, Any]] | None = None) -> list[dict[str, Any]]:
-    """Validate and lint W2B tickets, returning a deep-copied list."""
+def _kanban_is_retired() -> bool:
+    """Best-effort tombstone check for the authorization gate below.
+
+    Fails CLOSED: any error resolving the live tombstone state (including
+    ``hermes_cli.kanban_db`` failing to import) is treated as retired, so
+    an unexpected failure denies kanban-comment authorization rather than
+    silently granting it.
+    """
+    try:
+        from hermes_cli import kanban_db
+        return kanban_db.kanban_retired()
+    except Exception:
+        return True
+
+
+def validate_registry(
+    tickets: tuple[dict[str, Any], ...] | list[dict[str, Any]] | None = None,
+    *,
+    check_kanban_retirement: bool = True,
+) -> list[dict[str, Any]]:
+    """Validate and lint W2B tickets, returning a deep-copied list.
+
+    ``check_kanban_retirement`` (default True) is the runtime "authorize"
+    gate: while Kanban is retired (tombstone present — see
+    :func:`hermes_cli.kanban_db.kanban_retired`), any ticket carrying a
+    ``kanban-*`` effect tag fails CLOSED with :class:`NexusRegistryError`.
+    Every ticket in this static registry currently carries the
+    ``kanban-comment`` tag (its live dispatch chokepoint hard-requires a
+    kanban task id), so this closes the whole ticket set while Kanban
+    stays retired. Callers that only need the static schema/policy shape
+    — notably the module-level ``VALIDATED_TICKETS`` baseline below —
+    pass ``check_kanban_retirement=False`` so importing this module never
+    depends on live filesystem state.
+    """
     selected = list(TICKETS if tickets is None else tickets)
     schema = _schema()
     validator = jsonschema.Draft202012Validator(schema)
+    kanban_retired = check_kanban_retirement and _kanban_is_retired()
     validated: list[dict[str, Any]] = []
     for ticket in selected:
         errors = sorted(validator.iter_errors(ticket), key=lambda err: list(err.path))
@@ -258,6 +291,8 @@ def validate_registry(tickets: tuple[dict[str, Any], ...] | list[dict[str, Any]]
         tags = set(ticket.get("effect_tags", []))
         if not tags <= ALLOWED_EFFECT_TAGS:
             raise NexusRegistryError(f"{action_id} effect tags outside allowlist: {sorted(tags - ALLOWED_EFFECT_TAGS)}")
+        if kanban_retired and any(tag.startswith("kanban-") for tag in tags):
+            raise NexusRegistryError(f"{action_id} carries a kanban-* effect tag while Kanban is retired")
         if "mvms-writeback" in tags or ticket["evidence_output"].get("mvms_record") is not False:
             raise NexusRegistryError(f"{action_id} MVMS writeback is forbidden in W2B")
         workspace_mode = ticket["scope_lock"].get("workspace_mode")
@@ -278,4 +313,4 @@ def validate_registry(tickets: tuple[dict[str, Any], ...] | list[dict[str, Any]]
     return validated
 
 
-VALIDATED_TICKETS = validate_registry()
+VALIDATED_TICKETS = validate_registry(check_kanban_retirement=False)

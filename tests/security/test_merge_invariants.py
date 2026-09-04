@@ -1133,3 +1133,20 @@ def test_hardline_patterns_keep_hermes_dir_rail():
         "HARDLINE_PATTERNS Hermes-state-dir/agent-install rail dropped or duplicated"
     assert src.count('"redirect to raw block device"),') == 1, \
         "HARDLINE_PATTERNS raw-block-device redirect tuple dropped or duplicated"
+
+
+def test_kanban_retirement_gate_survives_merge():
+    """Kanban is retired live (2026-09-01, directory tombstone). The route +
+    authority gates added after the v0.21 P7 review live in two upstream-shared
+    files and must survive every future absorption (PR#70 lesson: lexical pin
+    + the behavioral test tests/security/test_kanban_route_retirement.py)."""
+    kdb = _read("hermes_cli/kanban_db.py")
+    assert "def kanban_retired" in kdb
+    assert "except OSError" in kdb and "return True" in kdb  # fail closed, never fail open
+
+    ws = _read("hermes_cli/web_server.py")
+    assert ws.count("kanban_retired()") >= 2  # bundled/any plugin-API mount gate + nexus-actions router gate
+
+    nar = _read("hermes_cli/nexus_action_registry.py")
+    assert "check_kanban_retirement" in nar
+

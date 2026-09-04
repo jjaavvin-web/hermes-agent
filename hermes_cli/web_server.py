@@ -19380,6 +19380,20 @@ def _mount_plugin_api_routes():
         if not api_file_name:
             continue
         plugin_name = plugin.get("name", "")
+        # Kanban is retired live (2026-09-01). ANY plugin named "kanban" —
+        # bundled, user, or project — must stay fail-closed on the filesystem
+        # tombstone (:func:`hermes_cli.kanban_db.kanban_retired`) independent
+        # of ``plugins.disabled``/``plugins.enabled``: a lost/edited config key
+        # or a look-alike user plugin must never resurrect the write surface
+        # onto a retired board. Checked BEFORE the per-source gates on purpose.
+        if plugin_name == "kanban":
+            from hermes_cli import kanban_db as _kanban_db_for_retirement_gate
+            if _kanban_db_for_retirement_gate.kanban_retired():
+                _log.info(
+                    "Plugin %s: skipping API mount (Kanban retired — tombstone present)",
+                    plugin_name,
+                )
+                continue
         # Gate: user plugins must be in plugins.enabled and not in
         # plugins.disabled before we import their Python code.
         # Bundled plugins are trusted (they ship with the release) but
@@ -19883,6 +19897,16 @@ except Exception as _exc:
 # drop its healthy siblings (a shared try once hid 4 routers behind a
 # misattributed "dashboard_os" warning when only connectome/nexus needed
 # asyncpg). Each failure is logged under its own name.
+#
+# ``dashboard_nexus_actions`` is Kanban-coupled end to end (every W2B
+# ticket's ``effect_tags`` includes ``kanban-comment`` and its live dispatch
+# chokepoint hard-requires a kanban task id — see
+# ``hermes_cli.nexus_action_registry``), so it must be ABSENT — not just
+# 403-stubbed — whenever Kanban is retired. The tombstone
+# (:func:`hermes_cli.kanban_db.kanban_retired`) is the fail-closed signal;
+# it works even if ``plugins.disabled``/``dashboard.hidden_plugins`` were
+# ever lost from config.yaml. The existing bundled-plugin deny-list is
+# still honoured as defence in depth.
 for _mod_name, _label in (
     ("dashboard_os", "os"),
     ("dashboard_connectome", "connectome"),
@@ -19891,6 +19915,15 @@ for _mod_name, _label in (
     ("dashboard_nexus_actions", "nexus_actions"),
 ):
     try:
+        if _mod_name == "dashboard_nexus_actions":
+            from hermes_cli import kanban_db as _kanban_db_for_retirement_gate
+            from hermes_cli.plugins_cmd import _get_disabled_set as _get_plugins_disabled_set
+            if _kanban_db_for_retirement_gate.kanban_retired() or "kanban" in _get_plugins_disabled_set():
+                _log.info(
+                    "Skipped mounting %s routes: Kanban is retired or disabled",
+                    _label,
+                )
+                continue
         _fork_mod = __import__(f"hermes_cli.{_mod_name}", fromlist=["router"])
         app.include_router(_fork_mod.router)
     except Exception as _exc:

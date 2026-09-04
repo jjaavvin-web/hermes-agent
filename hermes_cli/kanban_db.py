@@ -735,6 +735,41 @@ def kanban_db_path(board: Optional[str] = None) -> Path:
     return board_dir(slug) / "kanban.db"
 
 
+def kanban_retired(home: Optional[Path] = None) -> bool:
+    """Return True when the Kanban board has been retired (tombstoned).
+
+    Kanban was fully retired live on 2026-09-01: the former ``kanban.db``
+    file path is now a mode-0555 **directory** containing a single
+    read-only ``RETIRED`` marker file (see
+    ``tests/security/test_kanban_tombstone_inert.py``). This is the single
+    fail-closed signal every retirement-aware caller (route mounting,
+    plugin-API mounting, nexus-action authorization) should consult,
+    independent of ``config.yaml`` flags like ``plugins.disabled`` or
+    ``dashboard.hidden_plugins`` — a lost config key must not resurrect a
+    write surface onto a tombstoned board.
+
+    ``home`` overrides the kanban home root (mirrors :func:`kanban_home`);
+    when omitted, the normal env-based resolution chain
+    (``HERMES_KANBAN_DB`` / ``HERMES_KANBAN_HOME`` / ``HERMES_HOME``)
+    applies via :func:`kanban_db_path` against the ``default`` board —
+    the board the live tombstone shape always targets.
+    """
+    try:
+        # Canonical location only (``kanban_home()`` honours HERMES_HOME /
+        # HERMES_KANBAN_HOME). The ``HERMES_KANBAN_DB`` file-path override is
+        # a data-access convenience for CLI/dispatcher lanes and must NOT be
+        # able to redirect a security gate away from the real tombstone.
+        db_path = (Path(home) / "kanban.db") if home is not None else (kanban_home() / "kanban.db")
+        # A DIRECTORY at the kanban.db path can never be a valid database:
+        # it is the tombstone shape whether or not the RETIRED marker is
+        # still inside it (a deleted marker must not resurrect the board).
+        return db_path.is_dir()
+    except OSError:
+        # Fail CLOSED: if the tombstone cannot be inspected (permissions,
+        # broken symlink, unreadable home), no write surface may mount.
+        return True
+
+
 def workspaces_root(board: Optional[str] = None) -> Path:
     """Return the directory under which ``scratch`` workspaces are created.
 
