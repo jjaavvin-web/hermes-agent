@@ -59,6 +59,29 @@ def fresh_registry():
 
 
 # ---------------------------------------------------------------------------
+# Fork default: ring OFF with no web config at all (DIVERGENCES V16 — no
+# new third-party egress by default). Upstream ships this ring enabled;
+# these tests pin the fork's opposite default so a future config-defaults
+# revert is caught here instead of only in production.
+# ---------------------------------------------------------------------------
+
+
+class TestForkDefaultOff:
+    def test_no_web_config_disables_keyless_tier(self, monkeypatch):
+        monkeypatch.setattr("hermes_cli.config.load_config", lambda: {})
+        assert registry._keyless_tier_enabled() is False
+
+    def test_no_web_config_disables_keyless_rescue(self, monkeypatch):
+        monkeypatch.setattr("hermes_cli.config.load_config", lambda: {})
+        assert web_tools._keyless_rescue_enabled() is False
+
+    def test_default_config_keyless_fallback_is_off(self):
+        from hermes_cli.config_defaults import DEFAULT_CONFIG
+
+        assert DEFAULT_CONFIG["web"]["keyless_fallback"] is False
+
+
+# ---------------------------------------------------------------------------
 # keyless_mcp parsing
 # ---------------------------------------------------------------------------
 
@@ -172,6 +195,30 @@ class TestKeylessCalls:
 
 
 class TestProviderRouting:
+    """Ring-routing tests: opt IN to the keyless tier explicitly.
+
+    Fork default is OFF (``web.keyless_fallback: false`` — DIVERGENCES
+    V16, no new third-party egress by default). This class exercises how
+    the ring routes traffic once an operator has turned it on, so every
+    test here gets the tier enabled via config. Tests that assert the
+    fork-default OFF behavior (e.g. ``test_keyless_disabled_falls_through_
+    to_key_error``) override ``_keyless_tier_enabled`` directly, which
+    short-circuits before ever reading config and so is unaffected by this
+    fixture.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _keyless_ring_enabled(self, monkeypatch):
+        web_cfg = {"keyless_fallback": True, "keyless_rescue": True}
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {"web": dict(web_cfg)},
+            raising=True,
+        )
+        monkeypatch.setattr(
+            web_tools, "_load_web_config", lambda: dict(web_cfg), raising=True
+        )
+
     def test_parallel_keyless_path_when_no_key(self, monkeypatch):
         # Pin parallel so the ring deterministically starts there.
         monkeypatch.setattr(keyless_mcp, "_vendor_pinned", lambda n: n == "parallel")
@@ -276,6 +323,27 @@ class TestProviderRouting:
 
 
 class TestResolutionOrder:
+    """Ring-routing tests: opt IN to the keyless tier explicitly.
+
+    See :class:`TestProviderRouting` for why. Tests that assert the
+    fork-default OFF behavior (e.g. ``test_registry_keyless_disabled_
+    returns_none``, ``test_get_backend_keyless_disabled``,
+    ``test_check_web_api_key_false_when_disabled``) override
+    ``_keyless_tier_enabled`` directly and are unaffected by this fixture.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _keyless_ring_enabled(self, monkeypatch):
+        web_cfg = {"keyless_fallback": True, "keyless_rescue": True}
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {"web": dict(web_cfg)},
+            raising=True,
+        )
+        monkeypatch.setattr(
+            web_tools, "_load_web_config", lambda: dict(web_cfg), raising=True
+        )
+
     def test_registry_falls_back_to_keyless(self, fresh_registry, monkeypatch):
         monkeypatch.setattr(registry, "_read_config_key", lambda *p: None)
         provider = registry.get_active_search_provider()

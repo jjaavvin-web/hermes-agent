@@ -14,13 +14,17 @@ from hermes_cli import models as M
 
 def test_fable_is_not_offered_by_any_static_curated_provider_catalog():
     """Static curated picker catalogs no longer offer Fable."""
+    # Substring match: a prefixed form ("anthropic/claude-fable-5") or a
+    # dated snapshot must be caught too, not only the bare id.
     offenders = {
-        provider: models
+        provider: [m for m in models if "claude-fable" in m]
         for provider, models in M._PROVIDER_MODELS.items()
-        if "claude-fable-5" in models
+        if any("claude-fable" in m for m in models)
     }
 
     assert offenders == {}
+    # The OpenRouter fallback snapshot is a static curated catalog as well.
+    assert [m for m, _ in M.OPENROUTER_MODELS if "claude-fable" in m] == []
 
 
 def test_picker_surfaces_do_not_offer_fable_after_curated_removal():

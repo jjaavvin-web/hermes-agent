@@ -22,3 +22,12 @@ General law
 Output discipline: cite line numbers in the marker file and in the fork/upstream versions; quote the exact identifiers (function names, constants) that must survive; propose the resolved text at hunk granularity when it is short (<40 lines), otherwise describe it precisely.
 
 16. GOVERNING PRINCIPLE — BEHAVIOR-PRESERVING MERGE (lead, 2026-09-03): where upstream changed a DEFAULT or POLICY that alters live behavior on this install (memory writes from cron, cross-profile write guard, self-repo guard scope, dispatch caps, provider enablement, toolset denylists), the candidate keeps TODAY's live behavior unless the upstream change is a security fix or a bug fix. Every such divergence is listed in DIVERGENCES.md (what upstream changed, what we kept, how to flip it later) for josep to accept or reject AFTER cutover. A merge never changes live policy silently.
+
+## Rule 17 — investigation agents are denied production ENTRY POINTS, not just production paths (added 2026-09-03 after a live incident)
+A debugger that was told "never touch ~/.hermes" still ran a real in-place update against the live install: it called `cmd_update()` in-process and the code resolved the real home itself. Every dispatch prompt (debugger, tester, reviewer) carries this clause verbatim:
+*"Never call any CLI/gateway entry point in-process or via a scratch script (no `cmd_*`, no `_cmd_*_impl`, no `gateway run/install`, no `hermes update`). Reproduce only through pytest with the repo's hermetic conftest. Any scratch script sets `HERMES_HOME` to a temp dir under the scratchpad and monkeypatches `Path.home`."*
+Pure text generators (e.g. `generate_systemd_unit`) may be called only under those temp-home conditions. The P0 pins snapshot (`pins-before/`) is mandatory for the same reason: it made the staged restore a `cp`.
+
+## Rule 18 — expect the stable class of red upstream tests, adapt the TEST never the rail
+After every absorption: upstream tests asserting upstream POLICY (paid fallback for `provider=auto`, free-tier rings on by default) and upstream HOSTS (no WSL2 probe mock, Chrome present, port 9119 free, drain floors not shortened). Fork tests go stale against upstream refactors silently when a swallow-all `except` hides the mismatch — add a `logger.debug` at every swallow the merge touches. Provision the CI extras in the certification venv before G6 (`uv sync --locked --extra daytona --extra hindsight --extra mistral --extra parallel-web`).
+

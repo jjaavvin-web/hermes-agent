@@ -81,12 +81,56 @@ class TestNoOverlayFlag:
     def test_linux_wayland_keeps_overlay(self, monkeypatch):
         """Wayland desktop keeps the overlay: the compositor owns the
         overlay surface lifecycle, so it cannot get stuck above every
-        workspace the way an X11 window can."""
+        workspace the way an X11 window can.
+
+        Host-independent: ``_cua_no_overlay`` also probes ``/proc/version``
+        for a WSL2 kernel (auto-detect off, unconditionally, before the
+        Wayland check). Pin that probe to a non-Microsoft kernel string so
+        this test's verdict reflects the Wayland branch under test, not
+        whichever kernel happens to run the test suite.
+        """
         monkeypatch.setenv("DISPLAY", ":0")
         monkeypatch.setenv("WAYLAND_DISPLAY", "wayland-0")
         monkeypatch.setenv("XDG_SESSION_TYPE", "wayland")
-        with patch("hermes_cli.config.load_config", return_value={}):
+        native_open = open
+
+        def _fake_open(path, *args, **kwargs):
+            if path == "/proc/version":
+                return mock_open(
+                    read_data="Linux version 6.8.0-generic (gcc) ...",
+                )()
+            return native_open(path, *args, **kwargs)
+
+        with patch("hermes_cli.config.load_config", return_value={}), \
+             patch("builtins.open", side_effect=_fake_open):
             assert cua_backend._cua_no_overlay() is False
+
+    @pytest.mark.linux_only
+    def test_wsl2_suppresses_overlay_even_on_wayland(self, monkeypatch):
+        """WSL2 auto-detect takes precedence over the Wayland check: a
+        ``/proc/version`` mentioning "microsoft" suppresses the overlay
+        even when the Wayland env vars are set, because WSL2 has no real
+        compositor backing the overlay surface regardless of the reported
+        session type.
+        """
+        monkeypatch.setenv("DISPLAY", ":0")
+        monkeypatch.setenv("WAYLAND_DISPLAY", "wayland-0")
+        monkeypatch.setenv("XDG_SESSION_TYPE", "wayland")
+        native_open = open
+
+        def _fake_open(path, *args, **kwargs):
+            if path == "/proc/version":
+                return mock_open(
+                    read_data=(
+                        "Linux version 6.6.87.2-microsoft-standard-WSL2 "
+                        "(gcc) ..."
+                    ),
+                )()
+            return native_open(path, *args, **kwargs)
+
+        with patch("hermes_cli.config.load_config", return_value={}), \
+             patch("builtins.open", side_effect=_fake_open):
+            assert cua_backend._cua_no_overlay() is True
 
     @pytest.mark.linux_only
     def test_linux_x11_explicit_false_overrides_auto_detect(self, monkeypatch):

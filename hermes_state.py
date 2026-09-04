@@ -15589,8 +15589,11 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 except (TypeError, ValueError):
                     vacuum_due = True
             if vacuum and vacuum_due:
-                with self._lock:  # fork: never touch self._conn outside the lock (#99349 close race)
-                    msg_rows = self._conn.execute(
+                # fork: pure reads go through the pooled read context — never
+                # self._conn outside the lock (#99349 close race) and never the
+                # writer lock for a read (no-locked-readers gate, Pattern C).
+                with self._read_ctx() as rconn:
+                    msg_rows = rconn.execute(
                         "SELECT COUNT(*) FROM messages"
                     ).fetchone()[0]
                 last_opt_raw = self.get_meta("last_fts_optimize_rowcount")
@@ -15598,9 +15601,9 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                     last_opt = int(last_opt_raw) if last_opt_raw else 0
                 except (TypeError, ValueError):
                     last_opt = 0
-                with self._lock:
-                    freelist = self._conn.execute("PRAGMA freelist_count").fetchone()[0]
-                    page_count = self._conn.execute("PRAGMA page_count").fetchone()[0]
+                with self._read_ctx() as rconn:
+                    freelist = rconn.execute("PRAGMA freelist_count").fetchone()[0]
+                    page_count = rconn.execute("PRAGMA page_count").fetchone()[0]
                 bloat = (freelist / page_count) if page_count else 0.0
                 grew = (msg_rows - last_opt) > self._FTS_OPTIMIZE_GROWTH
                 freed_rows = pruned > 0

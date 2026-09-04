@@ -160,13 +160,25 @@ def test_disconnect_reaps_close_on_disconnect_and_parks_reconnectable_sessions(m
     )
     closed = []
     scheduled = []
-    monkeypatch.setattr(server_mod, "_close_session_by_id", lambda sid, **_k: closed.append(sid) or True)
+    # The close-on-disconnect claim is resume-race-sensitive (#39591): it pops
+    # under _session_resume_lock itself and calls _teardown_popped_session
+    # directly, not the _close_session_by_id convenience wrapper (that
+    # wrapper is for callers with no resume race to guard against). Mock the
+    # function actually on this path; _pop_session_by_id already removed the
+    # session from server_mod._sessions and stamped "_sid" onto it by the
+    # time this fires.
+    monkeypatch.setattr(
+        server_mod,
+        "_teardown_popped_session",
+        lambda session, **_k: closed.append(session.get("_sid")) or True,
+    )
     monkeypatch.setattr(server_mod, "_schedule_ws_orphan_reap", lambda sid: scheduled.append(sid))
 
     assert server_mod._close_sessions_for_transport(shared, end_reason="ws_disconnect") == (1, 1)
 
     assert closed == ["close-me"]
     assert scheduled == ["park-me"]
+    assert "close-me" not in server_mod._sessions
     assert server_mod._sessions["park-me"]["transport"] is server_mod._detached_ws_transport
     assert server_mod._sessions["ignore-me"]["transport"] is unrelated
 

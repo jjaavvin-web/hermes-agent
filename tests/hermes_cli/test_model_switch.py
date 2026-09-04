@@ -82,10 +82,16 @@ def switch_dependencies(monkeypatch):
     def resolve_runtime_provider(requested=None, **kwargs):
         calls["runtime"].append((requested, kwargs))
         provider = requested or "auto"
+        # Honour explicit_base_url / explicit_api_key like the real
+        # resolve_runtime_provider does: the direct-alias override path in
+        # switch_model (#83612) passes these to pin the alias's own
+        # endpoint/credential, and a stub that silently drops them (via
+        # **kwargs) would report the templated default URL instead of the
+        # alias's declared one.
         return {
             "provider": provider,
-            "api_key": f"{provider}-key",
-            "base_url": f"https://{provider}.example/v1",
+            "api_key": kwargs.get("explicit_api_key") or f"{provider}-key",
+            "base_url": kwargs.get("explicit_base_url") or f"https://{provider}.example/v1",
             "api_mode": "",
         }
 
@@ -98,12 +104,16 @@ def switch_dependencies(monkeypatch):
     monkeypatch.setattr(
         ms,
         "get_model_capabilities",
-        lambda provider, model: SimpleNamespace(provider=provider, model=model),
+        lambda provider, model, allow_network=False: SimpleNamespace(
+            provider=provider, model=model
+        ),
     )
     monkeypatch.setattr(
         ms,
         "get_model_info",
-        lambda provider, model: SimpleNamespace(id=model, context_window=12345),
+        lambda provider, model, allow_network=False: SimpleNamespace(
+            id=model, context_window=12345
+        ),
     )
     monkeypatch.setattr(model_mod, "detect_provider_for_model", lambda _model, _current: None)
     monkeypatch.setattr(model_mod, "validate_requested_model", validate)

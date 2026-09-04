@@ -414,13 +414,14 @@ def _ddgs_package_importable() -> bool:
 # ─── One-shot keyless rescue (keyed/configured backend failed) ───────────────
 
 def _keyless_rescue_enabled() -> bool:
-    """Read ``web.keyless_rescue`` from config (default: enabled).
+    """Read ``web.keyless_rescue`` from config (fork default: disabled).
 
     Also implicitly off whenever the keyless tier itself is disabled
     (``web.keyless_fallback: false``).
     """
     cfg = _load_web_config()
-    if not cfg.get("keyless_rescue", True):
+    # FORK: default OFF (DIVERGENCES V16).
+    if not cfg.get("keyless_rescue", False):
         return False
     try:
         from agent.web_search_registry import _keyless_tier_enabled

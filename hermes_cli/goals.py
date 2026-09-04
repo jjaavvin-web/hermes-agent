@@ -39,7 +39,6 @@ import subprocess
 import threading
 import time
 from dataclasses import dataclass, field, asdict
-from pathlib import Path
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -794,7 +793,7 @@ def _get_session_db() -> Optional[Any]:
         return _DB_CACHE.get(home)
 
     try:
-        db = SessionDB(Path(home) / "state.db")
+        db = SessionDB()  # same convention as _bootstrap_session_db (upstream contract; F28)
     except Exception as exc:  # pragma: no cover
         logger.debug("GoalManager: SessionDB() raised (%s)", exc)
         return None

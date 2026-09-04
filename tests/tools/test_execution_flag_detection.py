@@ -281,6 +281,39 @@ def test_benign_segment_scaling_benchmark():
     assert small_result == (False, None, None)
     assert large_result == (False, None, None)
     print(f"benign segment benchmark: 2k={small:.3f}s, 4k={large:.3f}s")
+    # Regression guard (2026-09): an unanchored `(?=[\s\S]*A)(?=[\s\S]*B)`
+    # lookahead chain in DANGEROUS_PATTERNS_COMPILED (launchctl lifecycle
+    # rule) made this O(n^2) — 4k segments took ~27s and tripped the 30s
+    # per-test pytest-timeout. Generous bound: catches the O(n^2) class
+    # (which blows well past this on 4k segments) without flaking on CI
+    # scheduler stalls.
+    assert large < 3.0, f"4k benign segments took {large:.3f}s (O(n^2) regression?)"
+
+
+def test_launchctl_hermes_guard_is_order_independent_and_fast():
+    """#77083 companion: the order-independent launchctl/hermes lookahead
+    chain must still flag BOTH token orders (verb-then-label and
+    label-then-verb) after the `\\A`-anchoring perf fix, and must not
+    regress into the O(n^2) shape on a long benign prefix."""
+    verb_then_label = "launchctl bootout gui/501/ai.hermes.gateway"
+    label_then_verb = (
+        "label=ai.hermes.gateway; launchctl bootout \"gui/501/$label\""
+    )
+    for command in (verb_then_label, label_then_verb):
+        dangerous, _, description = detect_dangerous_command(command)
+        assert dangerous is True, command
+        assert "launchd" in description.lower(), command
+
+    # Same order-independent check, but with a long benign prefix ahead of
+    # the trigger tokens — must stay fast, not just correct.
+    padded = ";".join(f"printf segment-{index}" for index in range(2_000))
+    padded_command = f"{padded}; launchctl bootout ai.hermes.gateway"
+    started = time.perf_counter()
+    dangerous, _, description = detect_dangerous_command(padded_command)
+    elapsed = time.perf_counter() - started
+    assert dangerous is True
+    assert "launchd" in description.lower()
+    assert elapsed < 3.0, f"padded launchctl command took {elapsed:.3f}s"
 
 
 def test_max_accepted_separator_free_input_is_fast():

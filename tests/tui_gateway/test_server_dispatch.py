@@ -162,9 +162,16 @@ def test_close_sessions_for_transport_reaps_flagged_and_detaches_remainder(serve
     closed: list[tuple[str, str]] = []
     scheduled: list[str] = []
 
-    def close_session(sid, *, end_reason):
+    # The close-on-disconnect claim is resume-race-sensitive (#39591): it pops
+    # under _session_resume_lock itself and calls _teardown_popped_session
+    # directly, not the _close_session_by_id convenience wrapper (that
+    # wrapper is for callers with no resume race to guard against). Mock the
+    # function actually on this path -- the real (unmocked) _pop_session_by_id
+    # already removes the session from server._sessions and stamps "_sid"
+    # onto it before handing it to teardown.
+    def teardown_popped(session, *, end_reason):
+        sid = (session or {}).get("_sid")
         closed.append((sid, end_reason))
-        server._sessions.pop(sid, None)
         return True
 
     def schedule_reap(sid):
@@ -172,7 +179,7 @@ def test_close_sessions_for_transport_reaps_flagged_and_detaches_remainder(serve
         if sid == "detached-raises":
             raise RuntimeError("timer setup failed")
 
-    monkeypatch.setattr(server, "_close_session_by_id", close_session)
+    monkeypatch.setattr(server, "_teardown_popped_session", teardown_popped)
     monkeypatch.setattr(server, "_schedule_ws_orphan_reap", schedule_reap)
     server._sessions.update(
         {
@@ -249,10 +256,137 @@ def test_scheduled_orphan_reap_closes_only_still_detached_sessions(server, monke
 
     live = RecordingTransport()
     server._sessions["reattached"] = {"transport": live, "running": False}
-    server._sessions["running"] = {"transport": server._detached_ws_transport, "running": True}
     server._schedule_ws_orphan_reap("reattached")
-    server._schedule_ws_orphan_reap("running")
     assert closed == [("orphan", "ws_orphan_reap")]
+
+
+def _running_detached_session(server, *, run_thread=None, session_key="running-key"):
+    """Mid-turn session already pointed at the drop sentinel: the shape
+    ``_interrupt_session_turn`` needs (#85578) -- a real lock, a session_key
+    for the approval-resolve step, and an agent stub with neither
+    ``interrupt`` nor ``hard_interrupt`` (so the legacy-ABI fallback in
+    ``agent.interrupt_compat.request_hard_interrupt`` is a safe no-op).
+
+    ``server`` is the ``tui_gateway.server`` module -- pass the fixture value
+    explicitly since fixture injection only applies to test functions, not
+    plain helpers sharing the fixture's parameter name."""
+    return {
+        "transport": server._detached_ws_transport,
+        "running": True,
+        "session_key": session_key,
+        "agent": types.SimpleNamespace(model="test/model", provider="test-provider"),
+        "history_lock": threading.Lock(),
+        "_run_thread": run_thread,
+    }
+
+
+def test_scheduled_orphan_reap_interrupts_running_session_once_then_reaps_after_it_settles(
+    server, monkeypatch
+):
+    """A mid-turn detached session (#85578) is interrupted exactly once and
+    is NOT reaped on that same pass; only once the run thread's liveness
+    check reports the turn has settled does the next poll reap it."""
+
+    fired_callbacks = []
+
+    class ImmediateTimer:
+        def __init__(self, delay, callback):
+            self.delay = delay
+            self.callback = callback
+            self.daemon = False
+
+        def start(self):
+            fired_callbacks.append(self.delay)
+            self.callback()
+
+    monkeypatch.setattr(server, "_WS_ORPHAN_REAP_GRACE_S", 1.25)
+    monkeypatch.setattr(server.threading, "Timer", ImmediateTimer)
+
+    closed: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        server,
+        "_teardown_popped_session",
+        lambda session, *, end_reason: closed.append(((session or {}).get("_sid"), end_reason))
+        or True,
+    )
+
+    session = _running_detached_session(server)
+
+    class SettlesOnFirstLivenessCheck:
+        """Stand-in for the real background turn-runner thread: reports
+        alive for the interrupt's own liveness snapshot (so
+        ``_interrupt_session_turn`` does not itself clear ``running``), then
+        -- mirroring how the real thread's own finalization clears the flag
+        as it exits -- the session settles before the reaper's next poll."""
+
+        def is_alive(self):
+            session["running"] = False
+            return True
+
+    session["_run_thread"] = SettlesOnFirstLivenessCheck()
+    server._sessions["running"] = session
+
+    server._schedule_ws_orphan_reap("running")
+
+    # Exactly two polls fire: the reconnect-grace poll (interrupt requested,
+    # turn still running so not reaped) and one interrupt-poll-interval
+    # later (turn now settled -> reaped).
+    assert fired_callbacks == [1.25, server._WS_ORPHAN_INTERRUPT_REAP_POLL_S]
+    assert session["_client_gone_interrupt_requested"] is True
+    assert session["_client_gone_interrupt_polls"] == 1
+    assert session["_turn_cancel_requested"] is True
+    assert closed == [("running", "ws_orphan_reap")]
+    assert "running" not in server._sessions
+
+
+def test_scheduled_orphan_reap_force_reaps_running_session_after_interrupt_poll_budget_exhausted(
+    server, monkeypatch
+):
+    """A mid-turn detached session whose turn never settles is force-reaped
+    once the interrupt-poll budget (#85578) is exhausted rather than parked
+    behind a timer chain forever."""
+
+    fired_callbacks = []
+
+    class ImmediateTimer:
+        def __init__(self, delay, callback):
+            self.delay = delay
+            self.callback = callback
+            self.daemon = False
+
+        def start(self):
+            fired_callbacks.append(self.delay)
+            self.callback()
+
+    monkeypatch.setattr(server, "_WS_ORPHAN_REAP_GRACE_S", 1.25)
+    monkeypatch.setattr(server.threading, "Timer", ImmediateTimer)
+
+    closed: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        server,
+        "_teardown_popped_session",
+        lambda session, *, end_reason: closed.append(((session or {}).get("_sid"), end_reason))
+        or True,
+    )
+
+    class NeverSettles:
+        def is_alive(self):
+            return True
+
+    session = _running_detached_session(server, run_thread=NeverSettles())
+    server._sessions["running"] = session
+
+    server._schedule_ws_orphan_reap("running")
+
+    max_polls = server._WS_ORPHAN_INTERRUPT_REAP_MAX_POLLS
+    poll_s = server._WS_ORPHAN_INTERRUPT_REAP_POLL_S
+    # One reconnect-grace poll plus max_polls interrupt-interval polls before
+    # the budget is exhausted and the still-running session is force-reaped.
+    assert fired_callbacks == [1.25] + [poll_s] * max_polls
+    assert session["_client_gone_interrupt_requested"] is True
+    assert session["_client_gone_interrupt_polls"] == max_polls + 1
+    assert closed == [("running", "ws_orphan_reap")]
+    assert "running" not in server._sessions
 
 
 def test_close_session_by_id_runs_idempotent_teardown_cleanup(server, monkeypatch):

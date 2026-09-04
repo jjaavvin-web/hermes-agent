@@ -15657,6 +15657,11 @@ def test_model_options_preserves_canonical_custom_row_after_agent_init(monkeypat
 
     server._sessions["custom-session"] = _session(agent=_Agent())
     monkeypatch.setattr(server, "_resolve_model", lambda: "")
+    # Hermetic: upstream 4ec57d56a9 lets an Anthropic OAuth login on the HOST
+    # (~/.claude/.credentials.json via Path.home()) add an 'anthropic' row; the
+    # conftest never redirects HOME, so pin it off for this test.
+    import hermes_cli.inventory as _inventory
+    monkeypatch.setattr(_inventory, "_anthropic_oauth_credentials_present", lambda: False)
     monkeypatch.setattr(
         "hermes_cli.inventory.load_picker_context",
         lambda: ConfigContext(

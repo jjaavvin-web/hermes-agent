@@ -14,6 +14,7 @@ from pathlib import Path
 import pytest
 
 from gateway import shutdown_forensics as sf
+from gateway import restart
 
 
 # ---------------------------------------------------------------------------
@@ -262,6 +263,7 @@ class TestTimingAlignmentBranches:
             "unit",
             "timeout_stop_sec",
             "drain_timeout",
+            "cron_drain_timeout",  # upstream #82161: cron drain floor joins the budget
             "expected_min",
             "mismatch",
         ]
@@ -269,7 +271,9 @@ class TestTimingAlignmentBranches:
             "unit": "hermes-gateway.service",
             "timeout_stop_sec": 90.0,
             "drain_timeout": 30.0,
-            "expected_min": 60.0,
+            "cron_drain_timeout": float(restart.DEFAULT_GATEWAY_CRON_DRAIN_TIMEOUT),
+            # derived, not hardcoded: max(60 floor, max(drain, cron + reserve) + headroom)
+            "expected_min": float(restart.resolve_systemd_timeout_stop_sec(30.0)),
             "mismatch": False,
         }
         assert calls == [
@@ -303,6 +307,7 @@ class TestTimingAlignmentBranches:
             "unit",
             "timeout_stop_sec",
             "drain_timeout",
+            "cron_drain_timeout",  # upstream #82161: cron drain floor joins the budget
             "expected_min",
             "mismatch",
         ]
@@ -310,7 +315,8 @@ class TestTimingAlignmentBranches:
             "unit": "hermes-gateway.service",
             "timeout_stop_sec": 90.0,
             "drain_timeout": 120.0,
-            "expected_min": 150.0,
+            "cron_drain_timeout": float(restart.DEFAULT_GATEWAY_CRON_DRAIN_TIMEOUT),
+            "expected_min": float(restart.resolve_systemd_timeout_stop_sec(120.0)),
             "mismatch": True,
         }
         assert len(calls) == 1

@@ -90,11 +90,23 @@ def _stub_uvicorn_run(monkeypatch):
     """Replace uvicorn.Config/Server with no-op fakes so start_server
     returns immediately (rather than blocking on the event loop). Returns the dict
     that will capture the keyword args.
+
+    Also stubs ``web_server._port_bind_conflict`` to always report "free"
+    (#93608's real-socket bind probe). Without this, every test in this
+    module that calls ``start_server(..., port=9119, ...)`` races against
+    whatever is *actually* listening on 9119 on the host running the tests
+    (e.g. a live dashboard) and fails closed with ``SystemExit: 75`` before
+    ever reaching the auth-gate logic these tests exist to exercise. Tests
+    that need to exercise the probe itself override this stub afterward.
     """
     import asyncio
     import contextlib
     import uvicorn
     captured: dict = {"kwargs": {}}
+
+    monkeypatch.setattr(
+        web_server, "_port_bind_conflict", lambda host, port: False
+    )
 
     class _FakeConfig:
         loaded = True
@@ -382,6 +394,37 @@ def test_start_server_loopback_public_url_enables_gate(monkeypatch):
         assert captured["kwargs"].get("proxy_headers") is True
     finally:
         clear_providers()
+
+
+def test_start_server_port_bind_conflict_exits_with_dedicated_code(monkeypatch):
+    """#93608: a real bind conflict on the requested port must fail closed
+    with the dedicated ``BACKEND_PORT_IN_USE`` sentinel + exit code — not the
+    generic auth-gate ``SystemExit`` used for "no providers registered".
+
+    Loopback bind with no public URL never engages the auth gate, so this
+    isolates the port-conflict probe from the fail-closed-on-no-providers
+    path covered by the tests above.
+    """
+    from hermes_cli.dashboard_auth import clear_providers
+    from hermes_cli.web_server import PORT_IN_USE_EXIT_CODE
+
+    clear_providers()
+    _stub_uvicorn_run(monkeypatch)
+    # Override the probe stub installed by _stub_uvicorn_run: report a
+    # conflict on every bind attempt, regardless of host/port.
+    monkeypatch.setattr(
+        web_server, "_port_bind_conflict", lambda host, port: True
+    )
+    web_server.app.state.auth_required = None
+
+    with pytest.raises(SystemExit) as exc:
+        web_server.start_server(
+            host="127.0.0.1", port=9119,
+            open_browser=False, allow_public=False,
+        )
+
+    assert exc.value.code == PORT_IN_USE_EXIT_CODE
+    assert exc.value.code == 75
 
 
 def test_start_server_loopback_public_url_without_provider_fails_closed(monkeypatch):

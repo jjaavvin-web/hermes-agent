@@ -497,6 +497,7 @@ aiohttp = false
 aiohttp-socks = false
 aiosqlite = false
 alibabacloud-dingtalk = false
+alibabacloud-tea-openapi = false
 anthropic = false
 asyncpg = false
 azure-identity = false
@@ -560,6 +561,7 @@ pydantic = false
 pyjwt = false
 pytest = false
 pytest-asyncio = false
+pytest-timeout = false
 python-dotenv = false
 python-multipart = false
 python-olm = false
@@ -573,7 +575,6 @@ ruff = false
 sentencepiece = false
 setuptools = false
 setuptools-rust = false
-wheel = false
 sherpa-onnx = false
 slack-bolt = false
 slack-sdk = false
@@ -585,12 +586,12 @@ tenacity = false
 ty = false
 tzdata = false
 unpaddedbase64 = false
+urllib3 = false
 uvicorn = false
 vercel = false
 websockets = false
+wheel = false
 youtube-transcript-api = false
-
-
 [tool.setuptools]
 # Top-level single-file modules (not packages). Without this, uv2nix's
 # sealed venv is missing hermes_constants, run_agent, etc.

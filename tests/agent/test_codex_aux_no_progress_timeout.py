@@ -17,7 +17,13 @@ New contract for ``_CodexCompletionsAdapter.create``:
    window after the last token (``stalled`` in the message).
 4. The compression critical-path retry gate distinguishes the two: a
    cheap first-token failure still gets the same-provider retry; a
-   full-budget stall skips straight to fallback (#54465 semantics).
+   full-budget stall skips straight to fallback (#54465 semantics) —
+   "fallback" meaning provider discovery runs; for the fork's ``auto``
+   route the spend rail at agent/auxiliary_client.py:10517-10526 then
+   fail-closes that discovery and re-raises instead of ever reaching
+   OpenRouter/paid routes (upstream's permissive auto-fallback policy
+   does not apply on this fork). A non-auto, non-sanctioned provider is
+   unaffected by that rail and still runs upstream's discovery chain.
 """
 
 import threading
@@ -27,7 +33,12 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from agent.auxiliary_client import _CodexCompletionsAdapter, call_llm
+from agent.auxiliary_client import (
+    _SANCTIONED_AUTO_PROVIDER,
+    _CodexCompletionsAdapter,
+    _normalize_aux_provider,
+    call_llm,
+)
 
 
 def _content_event(text="tok"):
@@ -198,9 +209,18 @@ class TestNoProgressFailFast:
 
 
 class TestCompressionRetryGate:
-    """First-token failures retry same-provider; stalls skip to fallback."""
+    """First-token failures retry same-provider; stalls skip to fallback.
 
-    def _run_call_llm(self, primary_error, second_response=None):
+    "Fallback" is provider-conditional on this fork: an ``auto``-routed
+    (or sanctioned ``openai-codex`` aux) call hits the fail-closed spend
+    rail (agent/auxiliary_client.py:10517-10526) and never reaches any
+    fallback layer — the original error propagates. A non-auto,
+    non-sanctioned provider is untouched by that rail and runs upstream's
+    real fallback discovery. Both variants still skip the same-provider
+    retry for a stalled / hard-ceiling timeout (#54465).
+    """
+
+    def _run_call_llm(self, primary_error, second_response=None, provider="auto"):
         primary_client = MagicMock()
         primary_client.base_url = "https://chatgpt.com/backend-api/codex"
         if second_response is not None:
@@ -220,24 +240,41 @@ class TestCompressionRetryGate:
             model="fb", usage=None,
         )
 
+        # The fork's spend rail (agent/auxiliary_client.py ~:10517) only
+        # fail-closes `auto` / the sanctioned openai-codex aux route; every
+        # other resolved provider still runs the real
+        # `_try_configured_fallback_chain` discovery in the `else` branch,
+        # so give that discovery a working candidate to find for the
+        # non-auto callers exercising that branch.
+        configured_chain_result = (
+            (fallback_client, "fb", f"{provider}(fallback)")
+            if provider != "auto"
+            else (None, None, "")
+        )
+
+        raised = None
+        result = None
         with (
             patch("agent.auxiliary_client._get_cached_client",
                   return_value=(primary_client, "gpt-5.6-sol")),
             patch("agent.auxiliary_client._resolve_task_provider_model",
-                  return_value=("auto", "gpt-5.6-sol", None, None, None)),
+                  return_value=(provider, "gpt-5.6-sol", None, None, None)),
             patch("agent.auxiliary_client._try_configured_fallback_chain",
-                  return_value=(None, None, "")),
+                  return_value=configured_chain_result),
             patch("agent.auxiliary_client._try_main_fallback_chain",
                   return_value=(None, None, "")),
             patch("agent.auxiliary_client._try_payment_fallback",
                   return_value=(fallback_client, "fb", "openrouter")) as mock_fb,
             patch("agent.auxiliary_client._TRANSIENT_RETRY_BACKOFF_BASE", 0.0),
         ):
-            result = call_llm(
-                task="compression",
-                messages=[{"role": "user", "content": "summarize"}],
-            )
-        return result, primary_client, mock_fb
+            try:
+                result = call_llm(
+                    task="compression",
+                    messages=[{"role": "user", "content": "summarize"}],
+                )
+            except Exception as exc:  # noqa: BLE001 - captured for the raise-path tests
+                raised = exc
+        return result, primary_client, mock_fb, raised
 
     def test_no_progress_timeout_retries_same_provider(self):
         err = TimeoutError(
@@ -252,26 +289,77 @@ class TestCompressionRetryGate:
             )],
             model="gpt-5.6-sol", usage=None,
         )
-        result, primary, mock_fb = self._run_call_llm(err, second_response=good)
+        result, primary, mock_fb, raised = self._run_call_llm(
+            err, second_response=good,
+        )
+        assert raised is None
         assert result.choices[0].message.content == "retried"
         assert primary.chat.completions.create.call_count == 2
         assert not mock_fb.called
 
     def test_stalled_timeout_skips_same_provider_retry(self):
+        """FORK doctrine: an auto-routed stall is fail-closed — the
+        TimeoutError propagates out of ``call_llm`` instead of reaching
+        any fallback (never mind same-provider retry, no fallback of any
+        kind runs for ``auto``). The same-provider retry skip itself
+        still holds: the primary client is called exactly once.
+        """
         err = TimeoutError(
             "Codex auxiliary Responses stream stalled: no new output for "
             "60.0s (247.3s elapsed)"
         )
-        result, primary, mock_fb = self._run_call_llm(err)
-        assert result.choices[0].message.content == "fallback"
+        result, primary, mock_fb, raised = self._run_call_llm(err)
+        assert isinstance(raised, TimeoutError)
+        assert "stalled" in str(raised)
         assert primary.chat.completions.create.call_count == 1
-        assert mock_fb.called
+        assert not mock_fb.called
 
     def test_hard_ceiling_timeout_skips_same_provider_retry(self):
+        """FORK doctrine: an auto-routed hard-ceiling timeout is likewise
+        fail-closed — propagates instead of falling back, same-provider
+        retry still skipped.
+        """
         err = TimeoutError(
             "Codex auxiliary Responses stream exceeded 600.0s hard ceiling"
         )
-        result, primary, mock_fb = self._run_call_llm(err)
+        result, primary, mock_fb, raised = self._run_call_llm(err)
+        assert isinstance(raised, TimeoutError)
+        assert "hard ceiling" in str(raised)
+        assert primary.chat.completions.create.call_count == 1
+        assert not mock_fb.called
+
+    def test_stalled_timeout_non_auto_provider_reaches_fallback(self):
+        """Upstream's retry-gate classification, isolated from the fork's
+        auto-only spend rail: a non-auto, non-sanctioned provider still
+        runs the real fallback discovery chain on a mid-stream stall
+        (the fail-closed gate at :10517-10526 does not apply to it), and
+        still skips the same-provider retry (#54465).
+        """
+        assert _normalize_aux_provider("openai") != _SANCTIONED_AUTO_PROVIDER
+        err = TimeoutError(
+            "Codex auxiliary Responses stream stalled: no new output for "
+            "60.0s (247.3s elapsed)"
+        )
+        result, primary, mock_fb, raised = self._run_call_llm(
+            err, provider="openai",
+        )
+        assert raised is None
         assert result.choices[0].message.content == "fallback"
         assert primary.chat.completions.create.call_count == 1
-        assert mock_fb.called
+        assert not mock_fb.called
+
+    def test_hard_ceiling_timeout_non_auto_provider_reaches_fallback(self):
+        """Same upstream retry-gate classification for a hard-ceiling
+        timeout on a non-auto, non-sanctioned provider.
+        """
+        assert _normalize_aux_provider("openai") != _SANCTIONED_AUTO_PROVIDER
+        err = TimeoutError(
+            "Codex auxiliary Responses stream exceeded 600.0s hard ceiling"
+        )
+        result, primary, mock_fb, raised = self._run_call_llm(
+            err, provider="openai",
+        )
+        assert raised is None
+        assert result.choices[0].message.content == "fallback"
+        assert primary.chat.completions.create.call_count == 1
+        assert not mock_fb.called

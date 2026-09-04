@@ -206,6 +206,12 @@ step "identity OK: $HEAD"
 git -C "$REPO_ROOT" archive HEAD | tar -x -C "$DEST"
 step "source exported to $DEST"
 printf '%s\n' "$HEAD" > "$DEST/.deployed-commit"
+# Stamp the deployment as immutable so evaluate_update_admission()
+# (hermes_cli/update_contract.py) refuses `hermes update` / the dashboard
+# Update button against it — upstream is absorbed as a merge project +
+# GATE-B cutover, never an in-place update over a build (ledger row 135).
+printf 'immutable-deployment\n' > "$DEST/.install_method"
+step "stamped .install_method=immutable-deployment"
 
 # --- 4. python venv — LOCK-ENFORCED (see [venv] lock_enforced above) ------
 cd "$DEST"

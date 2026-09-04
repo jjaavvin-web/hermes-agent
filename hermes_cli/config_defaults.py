@@ -544,13 +544,16 @@ DEFAULT_CONFIG = {
         # web_search/web_extract rotate round-robin across five vendors'
         # public free tiers (exa, parallel, firecrawl, keenable),
         # failing over to the next ring vendor on rate limits. Never
-        # pre-empts a configured or keyed backend. Set false to disable.
-        "keyless_fallback": True,
+        # pre-empts a configured or keyed backend. Set true to enable.
+        # FORK: default OFF — no new third-party egress by default
+        # (DIVERGENCES V16); upstream ships this ring enabled.
+        "keyless_fallback": False,
         # One-shot keyless rescue: when the chosen/keyed backend fails a
         # web_search/web_extract call, THAT call retries once on the keyless
         # free-tier ring — the next call attempts the chosen backend again
         # (no sticky failover). Off when keyless_fallback is false.
-        "keyless_rescue": True,
+        # FORK: default OFF (DIVERGENCES V16).
+        "keyless_rescue": False,
         # Per-provider tier selection for ring vendors with both a keyless
         # free endpoint and a keyed paid path (exa, parallel,
         # firecrawl, keenable). Set by the `hermes tools` picker's
@@ -3264,7 +3267,9 @@ DEFAULT_CONFIG = {
         # — whether the feature is enabled at all is the Labs toggle, never a
         # config key (decisions.md D2/D11). 0/negative falls back to the default.
         "scale_to_zero": {
-            "idle_timeout_minutes": 2,
+            # FORK: keep the pre-merge 5 min idle window (upstream tightened to 2;
+            # DIVERGENCES V18 — behavior-preserving merge).
+            "idle_timeout_minutes": 5,
         },
 
         # Auto-resume restart-loop breaker (#30719, defense-3). When the

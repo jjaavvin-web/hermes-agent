@@ -65,7 +65,7 @@ def test_on_pre_compress_return_is_injected_verbatim_into_summarizer_prompt() ->
     preservation = "MEMORY FACT: preserve OPUSHANDS review-only routing exactly."
     prompts: list[str] = []
     compressor = _compressor()
-    memory_manager = SimpleNamespace(on_pre_compress=lambda messages: preservation)
+    memory_manager = SimpleNamespace(on_pre_compress=lambda messages, **kwargs: preservation)
     agent = _agent(memory_manager, compressor)
 
     def fake_call_llm(**kwargs):

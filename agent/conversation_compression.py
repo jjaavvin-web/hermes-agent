@@ -3877,8 +3877,8 @@ def compress_context(
                 )
                 if isinstance(_maybe_ctx, str):
                     memory_context = sanitize_memory_context(_maybe_ctx)
-            except Exception:
-                pass
+            except Exception as exc:  # fork: never silent — a stale provider contract hid the loss
+                logger.debug("on_pre_compress failed (preservation context dropped): %s", exc)
 
         # Fork (83f65db64) CRITICAL PRESERVATION CONTEXT channel, re-anchored
         # onto upstream's restructured call site. Upstream's ``memory_context``

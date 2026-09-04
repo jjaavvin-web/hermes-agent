@@ -55,12 +55,31 @@ class _RaisingProvider(_KeyedBoomProvider):
 
 @pytest.fixture(autouse=True)
 def _keyed_keenable_env(monkeypatch):
-    """Simulate a keyed Keenable setup with rescue enabled."""
+    """Simulate a keyed Keenable setup with rescue enabled.
+
+    Fork default is OFF (``web.keyless_fallback: false`` /
+    ``keyless_rescue: false`` — DIVERGENCES V16, no new third-party egress
+    by default). This whole module exercises the rescue mechanism itself,
+    so it opts in explicitly here rather than relying on upstream's
+    default-ON assumption. Tests that assert the fork-default OFF
+    behavior (``test_config_gate_disables``, ``test_keyless_fallback_off_
+    disables``, ``test_no_rescue_when_disabled``) override
+    ``_load_web_config``/``_keyless_tier_enabled`` again in the test body,
+    which wins over this fixture.
+    """
     monkeypatch.setattr(
         "agent.web_search_provider.get_provider_env",
         lambda name: "kn-real" if name == "KEENABLE_API_KEY" else "",
     )
-    monkeypatch.setattr(web_tools, "_load_web_config", lambda: {"backend": "keenable"})
+    monkeypatch.setattr(
+        web_tools,
+        "_load_web_config",
+        lambda: {"backend": "keenable", "keyless_rescue": True},
+    )
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config",
+        lambda: {"web": {"backend": "keenable", "keyless_fallback": True, "keyless_rescue": True}},
+    )
     monkeypatch.setattr(
         "agent.web_search_registry._keyless_tier_enabled", lambda: True
     )
