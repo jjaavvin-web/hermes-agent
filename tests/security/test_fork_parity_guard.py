@@ -40,8 +40,8 @@ def test_manifest_integrity_and_docket_binding():
     assert errors == [], "fork-parity manifest integrity broken:\n" + "\n".join(errors)
 
     counts = MANIFEST["counts"]
-    assert counts["total"] == 188
-    assert counts["PRESERVED_EQUIVALENT"] == 156
+    assert counts["total"] == 190
+    assert counts["PRESERVED_EQUIVALENT"] == 158
     assert counts["SUPERSEDED_LEGIT"] == 23
     assert counts["RELOCATED"] == 9
 

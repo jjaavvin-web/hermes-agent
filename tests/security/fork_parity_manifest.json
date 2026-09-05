@@ -1,12 +1,12 @@
 {
   "schema": "hermes-fork-parity-manifest/2",
   "docket_source": "tests/security/fork_parity_docket.txt",
-  "docket_sha256": "31fab122f8472173ac360f33b466e41c71e9289fb7931b04486d14315fd09f36",
+  "docket_sha256": "0143c5aee90b277c9f7cb1599345d3a6da244073a1c5c1aadf5983fd747473e0",
   "target_base_commit": "5424fa8002ed3eea24c220e97d166b66628c3426",
   "counts": {
-    "total": 188,
+    "total": 190,
     "RELOCATED": 9,
-    "PRESERVED_EQUIVALENT": 156,
+    "PRESERVED_EQUIVALENT": 158,
     "SUPERSEDED_LEGIT": 23
   },
   "security_suite_min_collected": 794,
@@ -6180,6 +6180,148 @@
         }
       ],
       "notes": "P7 part 7 / criterion 8. Path.is_dir() swallows OSError, so the documented fail-closed branch was dead for exactly the three cases it named; a dangling symlink at the canonical path let init_db() create a 118,784-byte board DB through the tombstone."
+    },
+    {
+      "id": "fp-191",
+      "verdict": "PRESERVED_EQUIVALENT",
+      "severity": "NONE",
+      "kind": "security_invariant",
+      "phase": "in_repo",
+      "introduced_by": [],
+      "docket_item": "sec4:hermes_cli/kanban_db.py six entry points that sit ABOVE or BESIDE the connect() opener gate refuse on the canonical tombstone as their FIRST statement \u2014 dispatch_once(conn) and create_task(conn) (take an already-open connection), run_daemon() (hermes kanban daemon, before its first tick), set_current_board() (writes <root>/kanban/current with no DB open), remove_board() (archive/delete of a board directory) and count_notify_subs() (raw read-only sqlite3 open that still mints -wal/-shm sidecars) \u2014 plus the write_txn(conn) transaction chokepoint every conn-taking mutator (archive_task, delete_task, add_comment, assign_task, block_task, \u2026) funnels through, and the two DB-less filesystem writers store_attachment_bytes() and resolve_workspace(): a connection opened BEFORE the tombstone was laid, or a path that never calls connect(), can no longer write, delete, archive or dispatch against read-only history (C9/C16/C18)",
+      "docket_item_sha256_16": "50db62247bbef92c",
+      "anchors": [
+        {
+          "path": "hermes_cli/kanban_db.py",
+          "mode": "call_edge",
+          "caller": "dispatch_once",
+          "callee": "kanban_retired"
+        },
+        {
+          "path": "hermes_cli/kanban_db.py",
+          "mode": "call_edge",
+          "caller": "create_task",
+          "callee": "kanban_retired"
+        },
+        {
+          "path": "hermes_cli/kanban_db.py",
+          "mode": "call_edge",
+          "caller": "run_daemon",
+          "callee": "kanban_retired"
+        },
+        {
+          "path": "hermes_cli/kanban_db.py",
+          "mode": "call_edge",
+          "caller": "set_current_board",
+          "callee": "kanban_retired"
+        },
+        {
+          "path": "hermes_cli/kanban_db.py",
+          "mode": "call_edge",
+          "caller": "remove_board",
+          "callee": "kanban_retired"
+        },
+        {
+          "path": "hermes_cli/kanban_db.py",
+          "mode": "call_edge",
+          "caller": "count_notify_subs",
+          "callee": "kanban_retired"
+        },
+        {
+          "path": "hermes_cli/kanban_db.py",
+          "mode": "call_edge",
+          "caller": "write_txn",
+          "callee": "kanban_retired"
+        },
+        {
+          "path": "hermes_cli/kanban_db.py",
+          "mode": "call_edge",
+          "caller": "store_attachment_bytes",
+          "callee": "kanban_retired"
+        },
+        {
+          "path": "hermes_cli/kanban_db.py",
+          "mode": "call_edge",
+          "caller": "resolve_workspace",
+          "callee": "kanban_retired"
+        },
+        {
+          "path": "hermes_cli/kanban_db.py",
+          "mode": "contains",
+          "symbol": "KanbanRetiredError"
+        }
+      ],
+      "proofs": [
+        {
+          "test": "tests/security/test_kanban_opener_tombstone.py::TestPart8EntryPointsRefuse::test_dispatch_once_refuses_on_pre_tombstone_connection"
+        },
+        {
+          "test": "tests/security/test_kanban_opener_tombstone.py::TestPart8EntryPointsRefuse::test_create_task_refuses_on_pre_tombstone_connection"
+        },
+        {
+          "test": "tests/security/test_kanban_opener_tombstone.py::TestPart8EntryPointsRefuse::test_run_daemon_refuses_before_first_tick"
+        },
+        {
+          "test": "tests/security/test_kanban_opener_tombstone.py::TestPart8EntryPointsRefuse::test_set_current_board_refuses_and_writes_nothing"
+        },
+        {
+          "test": "tests/security/test_kanban_opener_tombstone.py::TestPart8EntryPointsRefuse::test_remove_board_refuses_and_deletes_nothing"
+        },
+        {
+          "test": "tests/security/test_kanban_opener_tombstone.py::TestPart8EntryPointsRefuse::test_count_notify_subs_refuses_and_creates_no_sidecars"
+        },
+        {
+          "test": "tests/security/test_kanban_opener_tombstone.py::TestPart8EntryPointsRefuse::test_write_txn_mutators_refuse_on_pre_tombstone_connection"
+        },
+        {
+          "test": "tests/security/test_kanban_opener_tombstone.py::TestPart8EntryPointsRefuse::test_raw_write_txn_refuses_on_pre_tombstone_connection"
+        },
+        {
+          "test": "tests/security/test_kanban_opener_tombstone.py::TestPart8EntryPointsRefuse::test_store_attachment_bytes_refuses_and_writes_no_blob"
+        },
+        {
+          "test": "tests/security/test_kanban_opener_tombstone.py::TestPart8EntryPointsRefuse::test_resolve_workspace_refuses_and_creates_no_workspace"
+        }
+      ],
+      "notes": "Part 8 patch A (C9/C16/C18). connect() was the only tombstone gate, so anything holding a pre-tombstone connection (long-lived gateway/daemon/worker) or writing without a DB open (current-board pointer, board archive/delete, attachment blobs, workspaces, WAL sidecars from a read-only open) still mutated read-only history. Every guard is the function's first statement, ahead of _assert_not_delegated_child_mutation() and any use of conn; write_txn is the chokepoint for the ~50 conn-taking mutators (fix-pass finding F1). Each proof asserts the KanbanRetiredError AND a byte-identical tree / unchanged row counts."
+    },
+    {
+      "id": "fp-192",
+      "verdict": "PRESERVED_EQUIVALENT",
+      "severity": "NONE",
+      "kind": "structural",
+      "phase": "in_repo",
+      "introduced_by": [],
+      "docket_item": "agent/prompt_builder.py: Skills block uses precise-selection wording (fork policy; upstream \"load every partially relevant skill\" text not adopted) \u2014 _build_skills_system_prompt_inner tells the model to load the most directly applicable skill and additional skills only for their procedures, integration details or safeguards; the upstream \"partially relevant \u2026 you MUST load it\" / \"Err on the side of loading\" sentences (Teknium 2026-04-12) are deliberately absent",
+      "docket_item_sha256_16": "7855a6522da9dc39",
+      "anchors": [
+        {
+          "path": "agent/prompt_builder.py",
+          "mode": "contains",
+          "symbol": "_build_skills_system_prompt_inner"
+        },
+        {
+          "path": "agent/prompt_builder.py",
+          "mode": "contains",
+          "text": "directly applicable skill with skill_view(name) before acting and follow its instructions."
+        },
+        {
+          "path": "agent/prompt_builder.py",
+          "mode": "contains",
+          "text": "not merely because their topic overlaps."
+        },
+        {
+          "path": "agent/prompt_builder.py",
+          "mode": "contains",
+          "text": "Proceed without loading a skill when none covers the task."
+        }
+      ],
+      "proofs": [
+        {
+          "test": "tests/agent/test_prompt_builder.py::TestBuildSkillsSystemPrompt::test_skills_block_uses_precise_selection_wording"
+        }
+      ],
+      "notes": "Part 8 patch B. Upstream-origin Skills text (Teknium 2026-04-12) told the model to load every partially relevant skill; the fork keeps MOTHERSHIP's precise-selection wording so unnecessary skill reads drop. The proof pins the fork sentences present and the upstream sentences absent, so an upstream merge cannot silently reintroduce the load-everything instruction. kind=structural (prompt policy, not a security invariant) \u2014 the upstream-merge guard reviews it on every merge via this docket item."
     }
   ],
   "repo_owned_top_level": [
