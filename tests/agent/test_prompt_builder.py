@@ -387,6 +387,33 @@ class TestBuildSkillsSystemPrompt:
         second = build_skills_system_prompt()
         assert "cached-skill" not in second
 
+    def test_skills_block_uses_precise_selection_wording(self, monkeypatch, tmp_path):
+        """Fork policy: the Skills block tells the model to load the most
+        directly applicable skill, not every partially relevant one.  The
+        upstream "err on the side of loading" text is deliberately not adopted
+        (Part 8 Patch B) — this test pins the fork wording so an upstream
+        merge cannot silently reintroduce the load-everything instruction."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        skill_dir = tmp_path / "skills" / "tools" / "routing-probe"
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text(
+            "---\nname: routing-probe\ndescription: Probe skill\n---\n"
+        )
+
+        result = build_skills_system_prompt()
+
+        assert result.startswith("## Skills\n")
+        assert "load the most directly applicable skill" in result
+        # The model must still be told HOW to load a skill.
+        assert "skill_view(name)" in result
+        assert "partially relevant" not in result
+        assert "Err on the side of loading" not in result
+        # No surviving blanket-loading mandate anywhere in the block.
+        assert "even if you think you could handle" not in result
+        assert "load them even for tasks you" not in result
+        assert "genuinely none are relevant" not in result
+        assert "Proceed without loading a skill when none covers the task." in result
+
 
 # =========================================================================
 # Context files prompt builder
