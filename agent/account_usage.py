@@ -507,22 +507,52 @@ def _resolve_codex_usage_credentials(
     return entry.runtime_api_key, str(entry.runtime_base_url or base_url or "").strip(), None
 
 
-def _fetch_codex_account_usage(
-    base_url: Optional[str] = None,
-    api_key: Optional[str] = None,
-) -> Optional[AccountUsageSnapshot]:
-    token, resolved_base_url, account_id = _resolve_codex_usage_credentials(base_url, api_key)
-    headers = {
-        "Authorization": f"Bearer {token}",
-        "Accept": "application/json",
-        "User-Agent": "codex-cli",
-    }
-    if account_id:
-        headers["ChatGPT-Account-Id"] = account_id
-    with httpx.Client(timeout=15.0) as client:
-        response = client.get(_resolve_codex_usage_url(resolved_base_url), headers=headers)
-        response.raise_for_status()
-    payload = response.json() or {}
+# A Codex access token can be structurally valid (unexpired JWT) and STILL be
+# server-side revoked: OpenAI rotates single-use refresh tokens, so a login
+# elsewhere - e.g. the Windows Codex app - silently invalidates this machine's
+# token without touching its exp claim. _resolve_codex_usage_credentials only
+# reaches its tier-3 pool select when tier 2 RAISES; a tier-2 token that is
+# merely DEAD returns successfully and wins. Verified 2026-09-04: the singleton
+# and pool[0] both 401 while pool[1] returned 200, and the usage card silently
+# fell back to a rollout tail and rendered an untouched per-model allowance as
+# the plan meter ("100% left" against a real 77% used). Only a live 401 can
+# detect this, so retry the OTHER pool entries on 401/403 - bounded, because
+# repeatedly hammering a provider auth endpoint with known-bad tokens is a real
+# risk to the account, not just wasted latency.
+_CODEX_USAGE_POOL_RETRY_LIMIT = 2
+
+# Deliberately STRICTER than credential_pool's own routing rule, which treats
+# EXHAUSTED as temporary. Here we are spending one of two bounded retry slots
+# on a diagnostic read, not routing live traffic: the cost of skipping a usable
+# entry is a blank usage card, the cost of not skipping is another 15s
+# auth-failing round trip.
+_CODEX_USAGE_UNUSABLE_STATUSES = frozenset({"dead", "exhausted"})
+
+
+def _codex_account_id_from_token(access_token: str) -> Optional[str]:
+    """The ChatGPT account id bound to THIS token's own JWT claim.
+
+    Delegates to the canonical extraction already used for live Codex traffic
+    rather than a second copy of the base64/JWT parsing. Per-token derivation
+    matters on the retry path: a borrowed credential-pool token can belong to a
+    different ChatGPT account, and pairing one account's id with another
+    account's bearer either wastes the retry on a spurious 403 or renders
+    someone else's meter as this account's.
+
+    Imported lazily - this module must not drag the auxiliary client in at
+    import time on a serving tree.
+    """
+    try:
+        from agent.auxiliary_client import _codex_cloudflare_headers
+
+        return _codex_cloudflare_headers(access_token).get("ChatGPT-Account-ID")
+    except Exception:
+        logger.debug("codex - /usage account-id claim read failed", exc_info=True)
+        return None
+
+
+def _codex_usage_snapshot_from_payload(payload: dict) -> AccountUsageSnapshot:
+    """Map a Codex /usage response body into an AccountUsageSnapshot."""
     rate_limit = payload.get("rate_limit") or {}
     windows: list[AccountUsageWindow] = []
     for key, label in (("primary_window", "Session"), ("secondary_window", "Weekly")):
@@ -561,6 +591,79 @@ def _fetch_codex_account_usage(
         windows=tuple(windows),
         details=tuple(details),
     )
+
+
+def _fetch_codex_account_usage(
+    base_url: Optional[str] = None,
+    api_key: Optional[str] = None,
+) -> Optional[AccountUsageSnapshot]:
+    token, resolved_base_url, resolver_account_id = _resolve_codex_usage_credentials(
+        base_url, api_key
+    )
+
+    def _headers(access_token: str, fallback_account_id: Optional[str] = None) -> dict:
+        headers = {
+            "Authorization": f"Bearer {access_token}",
+            "Accept": "application/json",
+            "User-Agent": "codex-cli",
+        }
+        account_id = _codex_account_id_from_token(access_token) or fallback_account_id
+        if account_id:
+            headers["ChatGPT-Account-Id"] = account_id
+        return headers
+
+    url = _resolve_codex_usage_url(resolved_base_url)
+    try:
+        with httpx.Client(timeout=15.0) as client:
+            response = client.get(url, headers=_headers(token, resolver_account_id))
+            response.raise_for_status()
+    except httpx.HTTPStatusError as exc:
+        status = exc.response.status_code if exc.response is not None else None
+        if status not in (401, 403) or str(api_key or "").strip():
+            raise
+        # A failure READING the pool must not become the exception that
+        # propagates: the outer guard logs whatever comes out of here, and
+        # swapping the 401 for an OSError would misreport a revoked credential
+        # as a disk problem.
+        try:
+            from hermes_cli.auth import read_credential_pool
+
+            pool_raw = read_credential_pool("openai-codex") or []
+        except Exception:
+            logger.warning("codex - /usage credential-pool read failed", exc_info=True)
+            raise exc from None
+        pool_entries = [
+            entry
+            for entry in pool_raw
+            if isinstance(entry, dict)
+            and isinstance(entry.get("access_token"), str)
+            and entry["access_token"].strip()
+            and entry["access_token"] != token
+            and str(entry.get("last_status") or "").lower()
+            not in _CODEX_USAGE_UNUSABLE_STATUSES
+        ]
+        pool_entries.sort(
+            key=lambda entry: _parse_dt(entry.get("last_refresh"))
+            or datetime.min.replace(tzinfo=timezone.utc),
+            reverse=True,
+        )
+        for entry in pool_entries[:_CODEX_USAGE_POOL_RETRY_LIMIT]:
+            try:
+                with httpx.Client(timeout=15.0) as client:
+                    response = client.get(url, headers=_headers(entry["access_token"]))
+                    response.raise_for_status()
+            except httpx.HTTPStatusError:
+                continue
+            logger.warning(
+                "codex - /usage primary credential rejected (%s); served from pool entry %s",
+                status,
+                entry.get("id") or entry.get("label") or "?",
+            )
+            return _codex_usage_snapshot_from_payload(response.json() or {})
+        # Nothing worked - re-raise the ORIGINAL 401/403 so the outer fail-open
+        # guard reports the real cause instead of a silent None.
+        raise
+    return _codex_usage_snapshot_from_payload(response.json() or {})
 
 
 @dataclass(frozen=True)
@@ -898,5 +1001,9 @@ def fetch_account_usage(
         if normalized == "openrouter":
             return _fetch_openrouter_account_usage(base_url, api_key)
     except Exception:
+        # Fail open (callers render nothing) but never silently: this guard
+        # swallowing a 401 is why a revoked Codex credential surfaced as a
+        # confident wrong number instead of an error.
+        logger.warning("account usage fetch failed for %s", normalized, exc_info=True)
         return None
     return None
