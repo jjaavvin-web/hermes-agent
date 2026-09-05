@@ -4820,9 +4820,18 @@ def delegate_task(
                 )
             return json.dumps(payload, ensure_ascii=False)
 
-        # Pool at capacity / schedule failure — children are still attached
-        # (we detach above only on the parent list, but the async unit was
-        # never accepted, so re-attaching isn't needed: we just run inline).
+        # Pool at capacity / schedule failure: the registry never accepted
+        # ownership. Restore parent interrupt propagation BEFORE running inline;
+        # the normal child finalizer removes these entries when each run ends.
+        if hasattr(parent_agent, "_active_children"):
+            _ac_lock = getattr(parent_agent, "_active_children_lock", None)
+            for _c in _child_agents:
+                if _ac_lock:
+                    with _ac_lock:
+                        if _c not in parent_agent._active_children:
+                            parent_agent._active_children.append(_c)
+                elif _c not in parent_agent._active_children:
+                    parent_agent._active_children.append(_c)
         logger.info(
             "delegate_task: async pool at capacity (%s); running the whole "
             "batch synchronously instead.",

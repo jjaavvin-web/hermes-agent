@@ -892,6 +892,33 @@ class GatewaySlashCommandsMixin:
         ])
         if model_line:
             lines.append(model_line)
+        # These attributes are local resolutions, not evidence of what a
+        # transport sent or a provider applied. Never substitute saved config
+        # or another session's runner-wide settings for an absent agent.
+        if status_agent is not None and status_agent is not _AGENT_PENDING_SENTINEL:
+            missing = object()
+            reasoning = getattr(status_agent, "reasoning_config", missing)
+            tier = getattr(status_agent, "service_tier", missing)
+            effort = "UNKNOWN"
+            if reasoning is None:
+                effort = "default (not explicit)"
+            elif isinstance(reasoning, dict):
+                if reasoning.get("enabled") is False:
+                    effort = "disabled"
+                else:
+                    effort = _clean_str(reasoning.get("effort")) or "UNKNOWN"
+            tier_label = (
+                "default (not explicit)" if tier is None
+                else _clean_str(tier) or "UNKNOWN"
+            )
+            provenance = "live agent" if is_running else "cached agent"
+            lines.append(
+                f"**Settings (resolved locally, {provenance}):** "
+                f"reasoning={effort}; service tier={tier_label}"
+            )
+        else:
+            lines.append("**Settings (resolved locally):** UNKNOWN (no live/cached agent)")
+        lines.append("**Wire-request settings:** UNKNOWN; **Provider-applied settings:** UNKNOWN")
         if context_line:
             lines.append(context_line)
         lines.extend([
