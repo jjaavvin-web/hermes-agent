@@ -578,3 +578,372 @@ class TestGatewayKanbanWatchersRefuse:
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
         assert kb.kanban_retired() is False
         self._run(lambda s: s._kanban_dispatcher_watcher())
+
+
+class TestPart8EntryPointsRefuse:
+    """(i) Part 8 — six entry points that sat ABOVE or BESIDE the opener
+    chokepoint and could still act on a retired board:
+
+    * ``dispatch_once(conn)`` / ``create_task(conn, …)`` take an already-open
+      connection, so the :func:`connect` gate never runs for them. A
+      connection opened BEFORE the tombstone was laid (long-lived gateway,
+      daemon, or a worker that inherited one) could keep ticking / inserting
+      into read-only history (C18).
+    * ``run_daemon()`` — ``hermes kanban daemon`` — must refuse before its
+      first tick, not rely on each tick's ``connect()`` failing inside the
+      swallow-everything loop.
+    * ``set_current_board()`` writes ``<root>/kanban/current`` without ever
+      opening a DB.
+    * ``remove_board()`` archives or deletes a board directory — read-only
+      history must be neither moved nor destroyed (C9).
+    * ``count_notify_subs()`` opens the DB read-only via raw ``sqlite3``,
+      which on a WAL-mode file still creates ``-wal``/``-shm`` sidecars
+      beside retired history (C16).
+    * ``write_txn(conn)`` — the write CHOKEPOINT every transacting mutator
+      (``archive_task``, ``delete_task``, ``add_comment``, …) funnels
+      through. Gating only ``create_task``/``dispatch_once`` left ~50
+      conn-taking mutators writing on a pre-tombstone connection (fix-pass
+      finding F1).
+    * ``store_attachment_bytes(conn, …)`` writes the blob and ``mkdir``s
+      under ``<root>/kanban/attachments`` BEFORE its metadata transaction.
+    * ``resolve_workspace(task)`` creates ``<root>/kanban/workspaces/<id>``
+      (or a git worktree) without ever opening a DB.
+
+    Every test asserts BOTH the refusal (``KanbanRetiredError``) and that
+    nothing on disk changed.
+    """
+
+    @staticmethod
+    def _seed_wal_db(path: Path) -> None:
+        import sqlite3
+
+        path.parent.mkdir(parents=True, exist_ok=True)
+        conn = sqlite3.connect(str(path))
+        try:
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute("CREATE TABLE tasks (id INTEGER PRIMARY KEY, title TEXT)")
+            conn.execute("INSERT INTO tasks (title) VALUES ('history')")
+            conn.commit()
+        finally:
+            conn.close()
+
+    @staticmethod
+    def _byte_snapshot(root: Path) -> dict[str, str]:
+        """Relative path → sha256 for every file under root (dirs → 'dir')."""
+        import hashlib
+
+        if not root.exists():
+            return {}
+        out: dict[str, str] = {}
+        for p in sorted(root.rglob("*")):
+            rel = str(p.relative_to(root))
+            if p.is_dir():
+                out[rel] = "dir"
+            else:
+                out[rel] = hashlib.sha256(p.read_bytes()).hexdigest()
+        return out
+
+    @staticmethod
+    def _row_counts(conn) -> dict[str, int]:
+        """table → row count for every user table (schema-agnostic)."""
+        names = [
+            r[0]
+            for r in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' "
+                "AND name NOT LIKE 'sqlite_%'"
+            )
+        ]
+        return {n: conn.execute(f'SELECT COUNT(*) FROM "{n}"').fetchone()[0] for n in names}
+
+    def _pre_tombstone_connection(
+        self, tombstone_home, monkeypatch, tmp_path, *, seed_tasks: int = 0
+    ):
+        """Open a real connection on a control home (no tombstone), then move
+        HERMES_HOME onto the tombstoned home while the connection stays open.
+
+        ``seed_tasks`` tasks are created BEFORE the tombstone appears (while
+        writes are still legal) so mutators that need an existing row have
+        one to act on. Returns ``(conn, control_home, task_ids)``. The
+        caller closes ``conn``.
+        """
+        control = tmp_path / "control-home"
+        control.mkdir()
+        (control / "config.yaml").write_text("{}\n", encoding="utf-8")
+        monkeypatch.setenv("HERMES_HOME", str(control))
+        assert kb.kanban_retired() is False
+        conn = kb.connect()  # auto-runs init_db on first open
+        assert (control / "kanban.db").is_file()
+        assert conn.execute("SELECT COUNT(*) FROM tasks").fetchone()[0] == 0
+        task_ids = [
+            kb.create_task(conn, title=f"pre-tombstone history {i}")
+            for i in range(seed_tasks)
+        ]
+        assert conn.execute("SELECT COUNT(*) FROM tasks").fetchone()[0] == seed_tasks
+
+        # Now the tombstone "appears": the canonical root is the retired one.
+        monkeypatch.setenv("HERMES_HOME", str(tombstone_home))
+        assert kb.kanban_retired() is True
+        return conn, control, task_ids
+
+    def test_dispatch_once_refuses_on_pre_tombstone_connection(
+        self, tombstone_home, monkeypatch, tmp_path
+    ):
+        conn, control, _ = self._pre_tombstone_connection(
+            tombstone_home, monkeypatch, tmp_path
+        )
+        try:
+            before_control = _tree_snapshot(control)
+            before_home = _tree_snapshot(tombstone_home)
+            before_rows = self._row_counts(conn)
+            with pytest.raises(kb.KanbanRetiredError, match="dispatch_once"):
+                kb.dispatch_once(conn)
+            assert _tree_snapshot(control) == before_control
+            assert _tree_snapshot(tombstone_home) == before_home
+            assert not (tombstone_home / "kanban").exists()
+            assert conn.execute("SELECT COUNT(*) FROM tasks").fetchone()[0] == 0
+            assert self._row_counts(conn) == before_rows
+        finally:
+            conn.close()
+
+    def test_create_task_refuses_on_pre_tombstone_connection(
+        self, tombstone_home, monkeypatch, tmp_path
+    ):
+        conn, control, _ = self._pre_tombstone_connection(
+            tombstone_home, monkeypatch, tmp_path
+        )
+        try:
+            before_control = _tree_snapshot(control)
+            before_home = _tree_snapshot(tombstone_home)
+            before_rows = self._row_counts(conn)
+            with pytest.raises(kb.KanbanRetiredError, match="create_task"):
+                kb.create_task(conn, title="resurrected task")
+            assert _tree_snapshot(control) == before_control
+            assert _tree_snapshot(tombstone_home) == before_home
+            assert conn.execute("SELECT COUNT(*) FROM tasks").fetchone()[0] == 0
+            assert self._row_counts(conn) == before_rows
+        finally:
+            conn.close()
+
+    def test_run_daemon_refuses_before_first_tick(self, tombstone_home, monkeypatch):
+        import sqlite3
+        import threading
+
+        # The loop must be REACHABLE for "before first tick" to mean anything:
+        # ``stop`` is NOT pre-set, so a guard that is absent — or placed after
+        # the ``while`` — lets the loop body run. That body is made observable
+        # without touching any DB: the opener and the tick are stubbed, and
+        # the first tick records a sentinel and stops the loop.
+        stop = threading.Event()
+        ticks: list = []
+        raised: list = []
+        sentinel = object()
+        monkeypatch.setattr(kb, "connect", lambda *a, **k: sqlite3.connect(":memory:"))
+        monkeypatch.setattr(kb, "dispatch_once", lambda *a, **k: sentinel)
+
+        def _on_tick(res):
+            ticks.append(res)
+            stop.set()
+
+        def _worker():
+            try:
+                kb.run_daemon(stop_event=stop, on_tick=_on_tick, interval=0.01)
+            except BaseException as exc:  # noqa: BLE001 - captured for assert
+                raised.append(exc)
+
+        before = _tree_snapshot(tombstone_home)
+        # Worker thread: run_daemon() only installs SIGINT/SIGTERM handlers on
+        # the main thread, and the test must not touch pytest's handlers.
+        # Safety valve: if a broken guard lets the loop spin without ever
+        # reaching on_tick, stop it so the test fails fast instead of hanging.
+        valve = threading.Timer(5.0, stop.set)
+        valve.daemon = True
+        valve.start()
+        try:
+            t = threading.Thread(target=_worker)
+            t.start()
+            t.join(timeout=30)
+        finally:
+            valve.cancel()
+        assert not t.is_alive()
+        # Guard fired BEFORE the first tick: no tick was ever recorded. A
+        # guard placed after the loop would still raise, but ticks would be
+        # [sentinel] — this assertion is what kills that placement.
+        assert ticks == []
+        assert len(raised) == 1 and isinstance(raised[0], kb.KanbanRetiredError)
+        assert "run_daemon" in str(raised[0])
+        assert _tree_snapshot(tombstone_home) == before
+
+    def test_set_current_board_refuses_and_writes_nothing(self, tombstone_home):
+        before = _tree_snapshot(tombstone_home)
+        with pytest.raises(kb.KanbanRetiredError, match="set_current_board"):
+            kb.set_current_board("history")
+        assert not (tombstone_home / "kanban" / "current").exists()
+        assert not (tombstone_home / "kanban").exists()
+        assert _tree_snapshot(tombstone_home) == before
+
+    @pytest.mark.parametrize("archive", [True, False], ids=["archive=True", "archive=False"])
+    def test_remove_board_refuses_and_deletes_nothing(self, tombstone_home, archive):
+        board = tombstone_home / "kanban" / "boards" / "history"
+        board.mkdir(parents=True)
+        (board / "board.json").write_text('{"slug": "history"}\n', encoding="utf-8")
+        self._seed_wal_db(board / "kanban.db")
+        assert kb.board_exists("history")
+
+        before_board = self._byte_snapshot(board)
+        before_home = _tree_snapshot(tombstone_home)
+        with pytest.raises(kb.KanbanRetiredError, match="remove_board"):
+            kb.remove_board("history", archive=archive)
+        assert board.is_dir()
+        assert self._byte_snapshot(board) == before_board
+        assert _tree_snapshot(tombstone_home) == before_home
+        assert not (tombstone_home / "kanban" / "boards" / "_archived").exists()
+
+    def test_count_notify_subs_refuses_and_creates_no_sidecars(
+        self, tombstone_home, monkeypatch, tmp_path
+    ):
+        copy_dir = tmp_path / "wal-copy"
+        db = copy_dir / "kanban.db"
+        self._seed_wal_db(db)
+        assert db.is_file()
+        assert not (copy_dir / "kanban.db-wal").exists()
+        assert not (copy_dir / "kanban.db-shm").exists()
+        import os
+
+        assert os.access(db, os.W_OK)
+        monkeypatch.setenv("HERMES_KANBAN_DB", str(db))
+
+        before_copy = self._byte_snapshot(copy_dir)
+        before_home = _tree_snapshot(tombstone_home)
+        with pytest.raises(kb.KanbanRetiredError, match="count_notify_subs"):
+            kb.count_notify_subs()
+        assert not (copy_dir / "kanban.db-wal").exists()
+        assert not (copy_dir / "kanban.db-shm").exists()
+        assert self._byte_snapshot(copy_dir) == before_copy
+        assert _tree_snapshot(tombstone_home) == before_home
+
+    @pytest.mark.parametrize(
+        "mutate",
+        [
+            # Two representative callers of the chokepoint (one row UPDATE, one
+            # row INSERT); every other transacting mutator funnels through the
+            # same write_txn() guard, so more cases here would only repeat this.
+            pytest.param(lambda kb_, c, tid: kb_.archive_task(c, tid), id="archive_task"),
+            pytest.param(
+                lambda kb_, c, tid: kb_.add_comment(c, tid, "ghost", "resurrected"),
+                id="add_comment",
+            ),
+        ],
+    )
+    def test_write_txn_mutators_refuse_on_pre_tombstone_connection(
+        self, tombstone_home, monkeypatch, tmp_path, mutate
+    ):
+        """Every transacting mutator is refused at the write_txn chokepoint —
+        including ``archive`` and ``delete`` of a row that legitimately
+        existed before the tombstone — with the row counts untouched."""
+        conn, control, (tid,) = self._pre_tombstone_connection(
+            tombstone_home, monkeypatch, tmp_path, seed_tasks=1
+        )
+        try:
+            before_control = _tree_snapshot(control)
+            before_home = _tree_snapshot(tombstone_home)
+            before_rows = self._row_counts(conn)
+            assert before_rows["tasks"] == 1
+            with pytest.raises(kb.KanbanRetiredError, match="write_txn"):
+                mutate(kb, conn, tid)
+            assert self._row_counts(conn) == before_rows
+            assert not conn.in_transaction
+            assert _tree_snapshot(control) == before_control
+            assert _tree_snapshot(tombstone_home) == before_home
+        finally:
+            conn.close()
+
+    def test_raw_write_txn_refuses_on_pre_tombstone_connection(
+        self, tombstone_home, monkeypatch, tmp_path
+    ):
+        """The chokepoint itself: ``with write_txn(conn)`` never opens a
+        transaction, so a direct caller cannot commit anything either."""
+        conn, control, (tid,) = self._pre_tombstone_connection(
+            tombstone_home, monkeypatch, tmp_path, seed_tasks=1
+        )
+        try:
+            before_rows = self._row_counts(conn)
+            before_control = _tree_snapshot(control)
+            with pytest.raises(kb.KanbanRetiredError, match="write_txn"):
+                with kb.write_txn(conn):
+                    conn.execute(
+                        "INSERT INTO task_comments (task_id, author, body, created_at) "
+                        "VALUES (?, 'ghost', 'resurrected', 0)",
+                        (tid,),
+                    )
+            assert not conn.in_transaction
+            assert self._row_counts(conn) == before_rows
+            assert _tree_snapshot(control) == before_control
+        finally:
+            conn.close()
+
+    def test_store_attachment_bytes_refuses_and_writes_no_blob(
+        self, tombstone_home, monkeypatch, tmp_path
+    ):
+        """The blob write + mkdir precede the metadata transaction, so the
+        function needs its own first-statement guard: nothing may appear
+        under ``<root>/kanban/attachments`` and no row may be recorded."""
+        conn, control, (tid,) = self._pre_tombstone_connection(
+            tombstone_home, monkeypatch, tmp_path, seed_tasks=1
+        )
+        try:
+            before_control = _tree_snapshot(control)
+            before_home = _tree_snapshot(tombstone_home)
+            before_rows = self._row_counts(conn)
+            with pytest.raises(kb.KanbanRetiredError, match="store_attachment_bytes"):
+                kb.store_attachment_bytes(conn, tid, "a.txt", b"resurrected")
+            assert not (tombstone_home / "kanban").exists()
+            assert not (control / "kanban").exists()
+            assert self._row_counts(conn) == before_rows
+            assert _tree_snapshot(control) == before_control
+            assert _tree_snapshot(tombstone_home) == before_home
+        finally:
+            conn.close()
+
+    def test_resolve_workspace_refuses_and_creates_no_workspace(
+        self, tombstone_home, monkeypatch, tmp_path
+    ):
+        """``resolve_workspace`` never opens a DB, so no opener gate covers
+        it: with the tombstone present it must not create
+        ``<root>/kanban/workspaces/<id>``."""
+        conn, control, (tid,) = self._pre_tombstone_connection(
+            tombstone_home, monkeypatch, tmp_path, seed_tasks=1
+        )
+        try:
+            task = kb.get_task(conn, tid)
+        finally:
+            conn.close()
+        assert task is not None
+        before_home = _tree_snapshot(tombstone_home)
+        before_control = _tree_snapshot(control)
+        with pytest.raises(kb.KanbanRetiredError, match="resolve_workspace"):
+            kb.resolve_workspace(task)
+        assert not (tombstone_home / "kanban").exists()
+        assert _tree_snapshot(tombstone_home) == before_home
+        assert _tree_snapshot(control) == before_control
+
+    def test_control_chokepoint_and_entry_points_inert_without_tombstone(
+        self, tmp_path, monkeypatch
+    ):
+        """Control: with no tombstone anywhere, the write_txn() chokepoint and
+        the guarded entry points change nothing — an ordinary create + archive
+        still succeeds, so the guards cannot have broken live-era behaviour."""
+        control = tmp_path / "control-home"
+        control.mkdir()
+        (control / "config.yaml").write_text("{}\n", encoding="utf-8")
+        monkeypatch.setenv("HERMES_HOME", str(control))
+        monkeypatch.delenv("HERMES_KANBAN_DB", raising=False)
+        monkeypatch.delenv("HERMES_KANBAN_HOME", raising=False)
+        assert kb.kanban_retired() is False
+        conn = kb.connect()
+        try:
+            tid = kb.create_task(conn, title="control")
+            assert kb.archive_task(conn, tid) is True
+            row = conn.execute("SELECT status FROM tasks WHERE id = ?", (tid,)).fetchone()
+            assert row[0] == "archived"
+        finally:
+            conn.close()

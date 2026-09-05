@@ -664,6 +664,13 @@ def set_current_board(slug: str) -> Path:
     so that ``hermes kanban boards switch <typo>`` returns an error
     instead of silently pointing at nothing.
     """
+    if kanban_retired():
+        raise KanbanRetiredError(
+            "set_current_board(): Kanban was retired on 2026-09-01; the board "
+            "is read-only history. <root>/kanban/current may not be written — "
+            "this applies regardless of HERMES_KANBAN_DB, HERMES_KANBAN_HOME, "
+            "or board."
+        )
     _assert_not_delegated_child_mutation()
     normed = _normalize_board_slug(slug)
     if not normed:
@@ -1142,6 +1149,13 @@ def remove_board(slug: str, *, archive: bool = True) -> dict:
     Returns a summary dict describing what happened (``{"slug", "action",
     "new_path"}``).
     """
+    if kanban_retired():
+        raise KanbanRetiredError(
+            "remove_board(): Kanban was retired on 2026-09-01; the board is "
+            "read-only history. No board directory may be archived or deleted "
+            "— this applies regardless of HERMES_KANBAN_DB, HERMES_KANBAN_HOME, "
+            "or board."
+        )
     _assert_not_delegated_child_mutation()
     normed = _normalize_board_slug(slug)
     if not normed:
@@ -3244,7 +3258,25 @@ def write_txn(conn: sqlite3.Connection, *, allow_nested: bool = False):
     The explicit ROLLBACK on exception is wrapped in try/except so that
     a SQLite auto-rollback (which leaves no active transaction) does not
     shadow the original exception with a spurious rollback error.
+
+    Raises :class:`KanbanRetiredError` on entry when :func:`kanban_retired`
+    reports the canonical tombstone. This is the write CHOKEPOINT: every
+    public mutator that transacts (``archive_task``, ``delete_task``,
+    ``add_comment``, ``assign_task``, ``link_tasks``, ``block_task``,
+    ``add_notify_sub``, …) funnels through here, so a connection opened
+    BEFORE the tombstone was laid cannot keep writing into read-only
+    history (C18) — the :func:`connect` gate alone never sees such a
+    connection.
     """
+    if kanban_retired():
+        raise KanbanRetiredError(
+            "write_txn(): Kanban was retired on 2026-09-01; the board is "
+            "read-only history. No write transaction may begin — this applies "
+            "to every mutator that transacts (archive, delete, comment, link, "
+            "assign, block, notify-subscribe, …), even on a connection opened "
+            "before the tombstone was laid, and regardless of HERMES_KANBAN_DB, "
+            "HERMES_KANBAN_HOME, or board."
+        )
     _assert_not_delegated_child_mutation()
     if getattr(conn, "in_transaction", False):
         if not allow_nested:
@@ -3408,6 +3440,13 @@ def create_task(
     board can supply the repo and branch convention. Its literal worktree is
     never reused; the new task still gets its own task-id-keyed path.
     """
+    if kanban_retired():
+        raise KanbanRetiredError(
+            "create_task(): Kanban was retired on 2026-09-01; the board is "
+            "read-only history. No task may be created — this applies even on "
+            "a connection opened before the tombstone was laid, and regardless "
+            "of HERMES_KANBAN_DB, HERMES_KANBAN_HOME, or board."
+        )
     model_override = (model_override or "").strip() or None
     provider_override = (provider_override or "").strip() or None
     reasoning_effort = normalize_reasoning_effort(reasoning_effort)
@@ -4342,7 +4381,21 @@ def store_attachment_bytes(
     or :class:`ValueError` for a bad filename / unknown task. On any failure
     after the blob is written (e.g. the task disappeared) the orphaned blob
     is removed before re-raising.
+
+    Raises :class:`KanbanRetiredError` first when the board is tombstoned:
+    the blob write and ``mkdir`` under ``<root>/kanban/attachments`` happen
+    BEFORE :func:`add_attachment`'s :func:`write_txn`, so the transaction
+    chokepoint alone would still leave a directory behind in read-only
+    history.
     """
+    if kanban_retired():
+        raise KanbanRetiredError(
+            "store_attachment_bytes(): Kanban was retired on 2026-09-01; the "
+            "board is read-only history. No attachment blob may be written under "
+            "<root>/kanban/attachments — this applies even on a connection "
+            "opened before the tombstone was laid, and regardless of "
+            "HERMES_KANBAN_DB, HERMES_KANBAN_HOME, or board."
+        )
     if max_bytes is None:
         max_bytes = KANBAN_ATTACHMENT_MAX_BYTES
     if len(data) > max_bytes:
@@ -8179,7 +8232,18 @@ def resolve_workspace(task: Task, *, board: Optional[str] = None) -> Path:
 
     Persist the resolved path back to the task row via ``set_workspace_path``
     so subsequent runs reuse the same directory.
+
+    Raises :class:`KanbanRetiredError` first when the board is tombstoned —
+    this function creates directories (and, for ``worktree``, git worktrees)
+    without ever opening a DB, so no opener gate covers it.
     """
+    if kanban_retired():
+        raise KanbanRetiredError(
+            "resolve_workspace(): Kanban was retired on 2026-09-01; the board is "
+            "read-only history. No workspace directory or worktree may be "
+            "created for a task — this applies regardless of HERMES_KANBAN_DB, "
+            "HERMES_KANBAN_HOME, or board."
+        )
     kind = task.workspace_kind or "scratch"
     if kind == "scratch":
         if task.workspace_path:
@@ -10456,6 +10520,13 @@ def dispatch_once(
     boards tick in parallel. See :func:`_dispatch_tick_lock` for the
     cross-process / cross-platform mechanics.
     """
+    if kanban_retired():
+        raise KanbanRetiredError(
+            "dispatch_once(): Kanban was retired on 2026-09-01; the board is "
+            "read-only history. No dispatcher tick may run — this applies even "
+            "on a connection opened before the tombstone was laid, and "
+            "regardless of HERMES_KANBAN_DB, HERMES_KANBAN_HOME, or board."
+        )
     try:
         db_path = kanban_db_path(board=board)
     except Exception:
@@ -11788,6 +11859,13 @@ def run_daemon(
     dispatcher and ``hermes kanban dispatch`` — the standalone daemon must
     not be the one uncapped entry point (OOF-30).
     """
+    if kanban_retired():
+        raise KanbanRetiredError(
+            "run_daemon(): Kanban was retired on 2026-09-01; the board is "
+            "read-only history. The dispatcher daemon (hermes kanban daemon) "
+            "may not start — this applies regardless of HERMES_KANBAN_DB, "
+            "HERMES_KANBAN_HOME, or board."
+        )
     import signal
     import threading
 
@@ -12459,6 +12537,14 @@ def count_notify_subs(
     :class:`sqlite3.Error` when the DB exists but cannot be read
     (locked, corrupt); callers choose their own fallback.
     """
+    if kanban_retired():
+        raise KanbanRetiredError(
+            "count_notify_subs(): Kanban was retired on 2026-09-01; the board "
+            "is read-only history. No board DB may be opened, even read-only "
+            "(a WAL-mode open creates -wal/-shm sidecars) — this applies "
+            "regardless of HERMES_KANBAN_DB, HERMES_KANBAN_HOME, board, or an "
+            "explicit db_path override."
+        )
     path = db_path if db_path is not None else kanban_db_path(board=board)
     if not path.exists():
         return 0
