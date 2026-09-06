@@ -108,6 +108,14 @@ def _setup_update_mocks(monkeypatch, tmp_path):
     monkeypatch.setattr(hermes_main, "_verify_editable_install", lambda *a, **kw: None)
     monkeypatch.setattr(hermes_main, "_upgrade_pip_before_lazy_refresh", lambda *a, **kw: None)
     monkeypatch.setattr(hermes_main, "_refresh_active_lazy_features", lambda *a, **kw: True)
+    # The ``hermes tools`` dependency snapshot (d1df111ccd) probes which
+    # allowlisted modules (faster_whisper, ddgs, langfuse, ...) are importable
+    # in THIS test process and re-installs each one after the venv sync —
+    # so the recorded ``uv pip install`` list would vary with whatever the
+    # host venv happens to carry. Pin it empty (same seam as
+    # tests/hermes_cli/test_update_parked_branch_guard.py) so the extras
+    # assertions below see only the .[all] / fallback installs.
+    monkeypatch.setattr(hermes_main, "_capture_active_tool_dependencies", lambda: [])
     _patch_gateway_fleet_verification(monkeypatch)
 
 
@@ -123,7 +131,7 @@ def _norm_install(cmd):
 
 
 def _is_extras_install(cmd):
-    return "pip" in cmd and "install" in cmd and not any("faster-whisper" in str(t) for t in cmd)
+    return "pip" in cmd and "install" in cmd
 
 
 def test_cmd_update_retries_optional_extras_individually_when_all_fails(monkeypatch, tmp_path, capsys):
