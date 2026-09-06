@@ -1,0 +1,4487 @@
+[
+  {
+    "function": {
+      "description": "Regression tool 0 from the historic 69-tool Codex request shape",
+      "name": "regression_notion_tool_00",
+      "parameters": {
+        "$defs": {
+          "Filter": {
+            "properties": {
+              "field": {
+                "type": "string"
+              },
+              "value": {
+                "anyOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "format": "date-time",
+                    "type": "string"
+                  }
+                ]
+              }
+            },
+            "type": "object"
+          },
+          "Id": {
+            "description": "Identifier definition 0",
+            "format": "uuid",
+            "type": "string"
+          }
+        },
+        "properties": {
+          "cursor": {
+            "format": "uri",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "filter": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/$defs/Filter"
+              }
+            ]
+          },
+          "id": {
+            "$ref": "#/$defs/Id"
+          },
+          "mode": {
+            "const": "notion"
+          }
+        },
+        "required": [
+          "id",
+          "mode"
+        ],
+        "type": "object"
+      }
+    },
+    "type": "function"
+  },
+  {
+    "function": {
+      "description": "Regression tool 1 from the historic 69-tool Codex request shape",
+      "name": "regression_mvms_tool_01",
+      "parameters": {
+        "$defs": {
+          "Filter": {
+            "properties": {
+              "field": {
+                "type": "string"
+              },
+              "value": {
+                "anyOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "format": "date-time",
+                    "type": "string"
+                  }
+                ]
+              }
+            },
+            "type": "object"
+          },
+          "Id": {
+            "description": "Identifier definition 1",
+            "format": "uuid",
+            "type": "string"
+          }
+        },
+        "properties": {
+          "cursor": {
+            "format": "uri",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "filter": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/$defs/Filter"
+              }
+            ]
+          },
+          "id": {
+            "$ref": "#/$defs/Id"
+          },
+          "mode": {
+            "const": "mvms"
+          }
+        },
+        "required": [
+          "id",
+          "mode"
+        ],
+        "type": "object"
+      }
+    },
+    "type": "function"
+  },
+  {
+    "function": {
+      "description": "Regression tool 2 from the historic 69-tool Codex request shape",
+      "name": "regression_context7_tool_02",
+      "parameters": {
+        "$defs": {
+          "Filter": {
+            "properties": {
+              "field": {
+                "type": "string"
+              },
+              "value": {
+                "anyOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "format": "date-time",
+                    "type": "string"
+                  }
+                ]
+              }
+            },
+            "type": "object"
+          },
+          "Id": {
+            "description": "Identifier definition 2",
+            "format": "uuid",
+            "type": "string"
+          }
+        },
+        "properties": {
+          "cursor": {
+            "format": "uri",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "filter": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/$defs/Filter"
+              }
+            ]
+          },
+          "id": {
+            "$ref": "#/$defs/Id"
+          },
+          "mode": {
+            "const": "context7"
+          }
+        },
+        "required": [
+          "id",
+          "mode"
+        ],
+        "type": "object"
+      }
+    },
+    "type": "function"
+  },
+  {
+    "function": {
+      "description": "Regression tool 3 from the historic 69-tool Codex request shape",
+      "name": "regression_notion_tool_03",
+      "parameters": {
+        "$defs": {
+          "Filter": {
+            "properties": {
+              "field": {
+                "type": "string"
+              },
+              "value": {
+                "anyOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "format": "date-time",
+                    "type": "string"
+                  }
+                ]
+              }
+            },
+            "type": "object"
+          },
+          "Id": {
+            "description": "Identifier definition 3",
+            "format": "uuid",
+            "type": "string"
+          }
+        },
+        "properties": {
+          "cursor": {
+            "format": "uri",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "filter": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/$defs/Filter"
+              }
+            ]
+          },
+          "id": {
+            "$ref": "#/$defs/Id"
+          },
+          "mode": {
+            "const": "notion"
+          }
+        },
+        "required": [
+          "id",
+          "mode"
+        ],
+        "type": "object"
+      }
+    },
+    "type": "function"
+  },
+  {
+    "function": {
+      "description": "Regression tool 4 from the historic 69-tool Codex request shape",
+      "name": "regression_mvms_tool_04",
+      "parameters": {
+        "$defs": {
+          "Filter": {
+            "properties": {
+              "field": {
+                "type": "string"
+              },
+              "value": {
+                "anyOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "format": "date-time",
+                    "type": "string"
+                  }
+                ]
+              }
+            },
+            "type": "object"
+          },
+          "Id": {
+            "description": "Identifier definition 4",
+            "format": "uuid",
+            "type": "string"
+          }
+        },
+        "properties": {
+          "cursor": {
+            "format": "uri",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "filter": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/$defs/Filter"
+              }
+            ]
+          },
+          "id": {
+            "$ref": "#/$defs/Id"
+          },
+          "mode": {
+            "const": "mvms"
+          }
+        },
+        "required": [
+          "id",
+          "mode"
+        ],
+        "type": "object"
+      }
+    },
+    "type": "function"
+  },
+  {
+    "function": {
+      "description": "Regression tool 5 from the historic 69-tool Codex request shape",
+      "name": "regression_context7_tool_05",
+      "parameters": {
+        "$defs": {
+          "Filter": {
+            "properties": {
+              "field": {
+                "type": "string"
+              },
+              "value": {
+                "anyOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "format": "date-time",
+                    "type": "string"
+                  }
+                ]
+              }
+            },
+            "type": "object"
+          },
+          "Id": {
+            "description": "Identifier definition 5",
+            "format": "uuid",
+            "type": "string"
+          }
+        },
+        "properties": {
+          "cursor": {
+            "format": "uri",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "filter": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/$defs/Filter"
+              }
+            ]
+          },
+          "id": {
+            "$ref": "#/$defs/Id"
+          },
+          "mode": {
+            "const": "context7"
+          }
+        },
+        "required": [
+          "id",
+          "mode"
+        ],
+        "type": "object"
+      }
+    },
+    "type": "function"
+  },
+  {
+    "function": {
+      "description": "Regression tool 6 from the historic 69-tool Codex request shape",
+      "name": "regression_notion_tool_06",
+      "parameters": {
+        "$defs": {
+          "Filter": {
+            "properties": {
+              "field": {
+                "type": "string"
+              },
+              "value": {
+                "anyOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "format": "date-time",
+                    "type": "string"
+                  }
+                ]
+              }
+            },
+            "type": "object"
+          },
+          "Id": {
+            "description": "Identifier definition 6",
+            "format": "uuid",
+            "type": "string"
+          }
+        },
+        "properties": {
+          "cursor": {
+            "format": "uri",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "filter": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/$defs/Filter"
+              }
+            ]
+          },
+          "id": {
+            "$ref": "#/$defs/Id"
+          },
+          "mode": {
+            "const": "notion"
+          }
+        },
+        "required": [
+          "id",
+          "mode"
+        ],
+        "type": "object"
+      }
+    },
+    "type": "function"
+  },
+  {
+    "function": {
+      "description": "Regression tool 7 from the historic 69-tool Codex request shape",
+      "name": "regression_mvms_tool_07",
+      "parameters": {
+        "$defs": {
+          "Filter": {
+            "properties": {
+              "field": {
+                "type": "string"
+              },
+              "value": {
+                "anyOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "format": "date-time",
+                    "type": "string"
+                  }
+                ]
+              }
+            },
+            "type": "object"
+          },
+          "Id": {
+            "description": "Identifier definition 7",
+            "format": "uuid",
+            "type": "string"
+          }
+        },
+        "properties": {
+          "cursor": {
+            "format": "uri",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "filter": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/$defs/Filter"
+              }
+            ]
+          },
+          "id": {
+            "$ref": "#/$defs/Id"
+          },
+          "mode": {
+            "const": "mvms"
+          }
+        },
+        "required": [
+          "id",
+          "mode"
+        ],
+        "type": "object"
+      }
+    },
+    "type": "function"
+  },
+  {
+    "function": {
+      "description": "Regression tool 8 from the historic 69-tool Codex request shape",
+      "name": "regression_context7_tool_08",
+      "parameters": {
+        "$defs": {
+          "Filter": {
+            "properties": {
+              "field": {
+                "type": "string"
+              },
+              "value": {
+                "anyOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "format": "date-time",
+                    "type": "string"
+                  }
+                ]
+              }
+            },
+            "type": "object"
+          },
+          "Id": {
+            "description": "Identifier definition 8",
+            "format": "uuid",
+            "type": "string"
+          }
+        },
+        "properties": {
+          "cursor": {
+            "format": "uri",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "filter": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/$defs/Filter"
+              }
+            ]
+          },
+          "id": {
+            "$ref": "#/$defs/Id"
+          },
+          "mode": {
+            "const": "context7"
+          }
+        },
+        "required": [
+          "id",
+          "mode"
+        ],
+        "type": "object"
+      }
+    },
+    "type": "function"
+  },
+  {
+    "function": {
+      "description": "Regression tool 9 from the historic 69-tool Codex request shape",
+      "name": "regression_notion_tool_09",
+      "parameters": {
+        "$defs": {
+          "Filter": {
+            "properties": {
+              "field": {
+                "type": "string"
+              },
+              "value": {
+                "anyOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "format": "date-time",
+                    "type": "string"
+                  }
+                ]
+              }
+            },
+            "type": "object"
+          },
+          "Id": {
+            "description": "Identifier definition 9",
+            "format": "uuid",
+            "type": "string"
+          }
+        },
+        "properties": {
+          "cursor": {
+            "format": "uri",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "filter": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/$defs/Filter"
+              }
+            ]
+          },
+          "id": {
+            "$ref": "#/$defs/Id"
+          },
+          "mode": {
+            "const": "notion"
+          }
+        },
+        "required": [
+          "id",
+          "mode"
+        ],
+        "type": "object"
+      }
+    },
+    "type": "function"
+  },
+  {
+    "function": {
+      "description": "Regression tool 10 from the historic 69-tool Codex request shape",
+      "name": "regression_mvms_tool_10",
+      "parameters": {
+        "$defs": {
+          "Filter": {
+            "properties": {
+              "field": {
+                "type": "string"
+              },
+              "value": {
+                "anyOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "format": "date-time",
+                    "type": "string"
+                  }
+                ]
+              }
+            },
+            "type": "object"
+          },
+          "Id": {
+            "description": "Identifier definition 10",
+            "format": "uuid",
+            "type": "string"
+          }
+        },
+        "properties": {
+          "cursor": {
+            "format": "uri",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "filter": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/$defs/Filter"
+              }
+            ]
+          },
+          "id": {
+            "$ref": "#/$defs/Id"
+          },
+          "mode": {
+            "const": "mvms"
+          }
+        },
+        "required": [
+          "id",
+          "mode"
+        ],
+        "type": "object"
+      }
+    },
+    "type": "function"
+  },
+  {
+    "function": {
+      "description": "Regression tool 11 from the historic 69-tool Codex request shape",
+      "name": "regression_context7_tool_11",
+      "parameters": {
+        "$defs": {
+          "Filter": {
+            "properties": {
+              "field": {
+                "type": "string"
+              },
+              "value": {
+                "anyOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "format": "date-time",
+                    "type": "string"
+                  }
+                ]
+              }
+            },
+            "type": "object"
+          },
+          "Id": {
+            "description": "Identifier definition 11",
+            "format": "uuid",
+            "type": "string"
+          }
+        },
+        "properties": {
+          "cursor": {
+            "format": "uri",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "filter": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/$defs/Filter"
+              }
+            ]
+          },
+          "id": {
+            "$ref": "#/$defs/Id"
+          },
+          "mode": {
+            "const": "context7"
+          }
+        },
+        "required": [
+          "id",
+          "mode"
+        ],
+        "type": "object"
+      }
+    },
+    "type": "function"
+  },
+  {
+    "function": {
+      "description": "Regression tool 12 from the historic 69-tool Codex request shape",
+      "name": "regression_notion_tool_12",
+      "parameters": {
+        "$defs": {
+          "Filter": {
+            "properties": {
+              "field": {
+                "type": "string"
+              },
+              "value": {
+                "anyOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "format": "date-time",
+                    "type": "string"
+                  }
+                ]
+              }
+            },
+            "type": "object"
+          },
+          "Id": {
+            "description": "Identifier definition 12",
+            "format": "uuid",
+            "type": "string"
+          }
+        },
+        "properties": {
+          "cursor": {
+            "format": "uri",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "filter": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/$defs/Filter"
+              }
+            ]
+          },
+          "id": {
+            "$ref": "#/$defs/Id"
+          },
+          "mode": {
+            "const": "notion"
+          }
+        },
+        "required": [
+          "id",
+          "mode"
+        ],
+        "type": "object"
+      }
+    },
+    "type": "function"
+  },
+  {
+    "function": {
+      "description": "Regression tool 13 from the historic 69-tool Codex request shape",
+      "name": "regression_mvms_tool_13",
+      "parameters": {
+        "$defs": {
+          "Filter": {
+            "properties": {
+              "field": {
+                "type": "string"
+              },
+              "value": {
+                "anyOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "format": "date-time",
+                    "type": "string"
+                  }
+                ]
+              }
+            },
+            "type": "object"
+          },
+          "Id": {
+            "description": "Identifier definition 13",
+            "format": "uuid",
+            "type": "string"
+          }
+        },
+        "properties": {
+          "cursor": {
+            "format": "uri",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "filter": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/$defs/Filter"
+              }
+            ]
+          },
+          "id": {
+            "$ref": "#/$defs/Id"
+          },
+          "mode": {
+            "const": "mvms"
+          }
+        },
+        "required": [
+          "id",
+          "mode"
+        ],
+        "type": "object"
+      }
+    },
+    "type": "function"
+  },
+  {
+    "function": {
+      "description": "Regression tool 14 from the historic 69-tool Codex request shape",
+      "name": "regression_context7_tool_14",
+      "parameters": {
+        "$defs": {
+          "Filter": {
+            "properties": {
+              "field": {
+                "type": "string"
+              },
+              "value": {
+                "anyOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "format": "date-time",
+                    "type": "string"
+                  }
+                ]
+              }
+            },
+            "type": "object"
+          },
+          "Id": {
+            "description": "Identifier definition 14",
+            "format": "uuid",
+            "type": "string"
+          }
+        },
+        "properties": {
+          "cursor": {
+            "format": "uri",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "filter": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/$defs/Filter"
+              }
+            ]
+          },
+          "id": {
+            "$ref": "#/$defs/Id"
+          },
+          "mode": {
+            "const": "context7"
+          }
+        },
+        "required": [
+          "id",
+          "mode"
+        ],
+        "type": "object"
+      }
+    },
+    "type": "function"
+  },
+  {
+    "function": {
+      "description": "Regression tool 15 from the historic 69-tool Codex request shape",
+      "name": "regression_notion_tool_15",
+      "parameters": {
+        "$defs": {
+          "Filter": {
+            "properties": {
+              "field": {
+                "type": "string"
+              },
+              "value": {
+                "anyOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "format": "date-time",
+                    "type": "string"
+                  }
+                ]
+              }
+            },
+            "type": "object"
+          },
+          "Id": {
+            "description": "Identifier definition 15",
+            "format": "uuid",
+            "type": "string"
+          }
+        },
+        "properties": {
+          "cursor": {
+            "format": "uri",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "filter": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/$defs/Filter"
+              }
+            ]
+          },
+          "id": {
+            "$ref": "#/$defs/Id"
+          },
+          "mode": {
+            "const": "notion"
+          }
+        },
+        "required": [
+          "id",
+          "mode"
+        ],
+        "type": "object"
+      }
+    },
+    "type": "function"
+  },
+  {
+    "function": {
+      "description": "Regression tool 16 from the historic 69-tool Codex request shape",
+      "name": "regression_mvms_tool_16",
+      "parameters": {
+        "$defs": {
+          "Filter": {
+            "properties": {
+              "field": {
+                "type": "string"
+              },
+              "value": {
+                "anyOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "format": "date-time",
+                    "type": "string"
+                  }
+                ]
+              }
+            },
+            "type": "object"
+          },
+          "Id": {
+            "description": "Identifier definition 16",
+            "format": "uuid",
+            "type": "string"
+          }
+        },
+        "properties": {
+          "cursor": {
+            "format": "uri",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "filter": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/$defs/Filter"
+              }
+            ]
+          },
+          "id": {
+            "$ref": "#/$defs/Id"
+          },
+          "mode": {
+            "const": "mvms"
+          }
+        },
+        "required": [
+          "id",
+          "mode"
+        ],
+        "type": "object"
+      }
+    },
+    "type": "function"
+  },
+  {
+    "function": {
+      "description": "Regression tool 17 from the historic 69-tool Codex request shape",
+      "name": "regression_context7_tool_17",
+      "parameters": {
+        "$defs": {
+          "Filter": {
+            "properties": {
+              "field": {
+                "type": "string"
+              },
+              "value": {
+                "anyOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "format": "date-time",
+                    "type": "string"
+                  }
+                ]
+              }
+            },
+            "type": "object"
+          },
+          "Id": {
+            "description": "Identifier definition 17",
+            "format": "uuid",
+            "type": "string"
+          }
+        },
+        "properties": {
+          "cursor": {
+            "format": "uri",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "filter": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/$defs/Filter"
+              }
+            ]
+          },
+          "id": {
+            "$ref": "#/$defs/Id"
+          },
+          "mode": {
+            "const": "context7"
+          }
+        },
+        "required": [
+          "id",
+          "mode"
+        ],
+        "type": "object"
+      }
+    },
+    "type": "function"
+  },
+  {
+    "function": {
+      "description": "Regression tool 18 from the historic 69-tool Codex request shape",
+      "name": "regression_notion_tool_18",
+      "parameters": {
+        "$defs": {
+          "Filter": {
+            "properties": {
+              "field": {
+                "type": "string"
+              },
+              "value": {
+                "anyOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "format": "date-time",
+                    "type": "string"
+                  }
+                ]
+              }
+            },
+            "type": "object"
+          },
+          "Id": {
+            "description": "Identifier definition 18",
+            "format": "uuid",
+            "type": "string"
+          }
+        },
+        "properties": {
+          "cursor": {
+            "format": "uri",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "filter": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/$defs/Filter"
+              }
+            ]
+          },
+          "id": {
+            "$ref": "#/$defs/Id"
+          },
+          "mode": {
+            "const": "notion"
+          }
+        },
+        "required": [
+          "id",
+          "mode"
+        ],
+        "type": "object"
+      }
+    },
+    "type": "function"
+  },
+  {
+    "function": {
+      "description": "Regression tool 19 from the historic 69-tool Codex request shape",
+      "name": "regression_mvms_tool_19",
+      "parameters": {
+        "$defs": {
+          "Filter": {
+            "properties": {
+              "field": {
+                "type": "string"
+              },
+              "value": {
+                "anyOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "format": "date-time",
+                    "type": "string"
+                  }
+                ]
+              }
+            },
+            "type": "object"
+          },
+          "Id": {
+            "description": "Identifier definition 19",
+            "format": "uuid",
+            "type": "string"
+          }
+        },
+        "properties": {
+          "cursor": {
+            "format": "uri",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "filter": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/$defs/Filter"
+              }
+            ]
+          },
+          "id": {
+            "$ref": "#/$defs/Id"
+          },
+          "mode": {
+            "const": "mvms"
+          }
+        },
+        "required": [
+          "id",
+          "mode"
+        ],
+        "type": "object"
+      }
+    },
+    "type": "function"
+  },
+  {
+    "function": {
+      "description": "Regression tool 20 from the historic 69-tool Codex request shape",
+      "name": "regression_context7_tool_20",
+      "parameters": {
+        "$defs": {
+          "Filter": {
+            "properties": {
+              "field": {
+                "type": "string"
+              },
+              "value": {
+                "anyOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "format": "date-time",
+                    "type": "string"
+                  }
+                ]
+              }
+            },
+            "type": "object"
+          },
+          "Id": {
+            "description": "Identifier definition 20",
+            "format": "uuid",
+            "type": "string"
+          }
+        },
+        "properties": {
+          "cursor": {
+            "format": "uri",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "filter": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/$defs/Filter"
+              }
+            ]
+          },
+          "id": {
+            "$ref": "#/$defs/Id"
+          },
+          "mode": {
+            "const": "context7"
+          }
+        },
+        "required": [
+          "id",
+          "mode"
+        ],
+        "type": "object"
+      }
+    },
+    "type": "function"
+  },
+  {
+    "function": {
+      "description": "Regression tool 21 from the historic 69-tool Codex request shape",
+      "name": "regression_notion_tool_21",
+      "parameters": {
+        "$defs": {
+          "Filter": {
+            "properties": {
+              "field": {
+                "type": "string"
+              },
+              "value": {
+                "anyOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "format": "date-time",
+                    "type": "string"
+                  }
+                ]
+              }
+            },
+            "type": "object"
+          },
+          "Id": {
+            "description": "Identifier definition 21",
+            "format": "uuid",
+            "type": "string"
+          }
+        },
+        "properties": {
+          "cursor": {
+            "format": "uri",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "filter": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/$defs/Filter"
+              }
+            ]
+          },
+          "id": {
+            "$ref": "#/$defs/Id"
+          },
+          "mode": {
+            "const": "notion"
+          }
+        },
+        "required": [
+          "id",
+          "mode"
+        ],
+        "type": "object"
+      }
+    },
+    "type": "function"
+  },
+  {
+    "function": {
+      "description": "Regression tool 22 from the historic 69-tool Codex request shape",
+      "name": "regression_mvms_tool_22",
+      "parameters": {
+        "$defs": {
+          "Filter": {
+            "properties": {
+              "field": {
+                "type": "string"
+              },
+              "value": {
+                "anyOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "format": "date-time",
+                    "type": "string"
+                  }
+                ]
+              }
+            },
+            "type": "object"
+          },
+          "Id": {
+            "description": "Identifier definition 22",
+            "format": "uuid",
+            "type": "string"
+          }
+        },
+        "properties": {
+          "cursor": {
+            "format": "uri",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "filter": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/$defs/Filter"
+              }
+            ]
+          },
+          "id": {
+            "$ref": "#/$defs/Id"
+          },
+          "mode": {
+            "const": "mvms"
+          }
+        },
+        "required": [
+          "id",
+          "mode"
+        ],
+        "type": "object"
+      }
+    },
+    "type": "function"
+  },
+  {
+    "function": {
+      "description": "Regression tool 23 from the historic 69-tool Codex request shape",
+      "name": "regression_context7_tool_23",
+      "parameters": {
+        "$defs": {
+          "Filter": {
+            "properties": {
+              "field": {
+                "type": "string"
+              },
+              "value": {
+                "anyOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "format": "date-time",
+                    "type": "string"
+                  }
+                ]
+              }
+            },
+            "type": "object"
+          },
+          "Id": {
+            "description": "Identifier definition 23",
+            "format": "uuid",
+            "type": "string"
+          }
+        },
+        "properties": {
+          "cursor": {
+            "format": "uri",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "filter": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/$defs/Filter"
+              }
+            ]
+          },
+          "id": {
+            "$ref": "#/$defs/Id"
+          },
+          "mode": {
+            "const": "context7"
+          }
+        },
+        "required": [
+          "id",
+          "mode"
+        ],
+        "type": "object"
+      }
+    },
+    "type": "function"
+  },
+  {
+    "function": {
+      "description": "Regression tool 24 from the historic 69-tool Codex request shape",
+      "name": "regression_notion_tool_24",
+      "parameters": {
+        "$defs": {
+          "Filter": {
+            "properties": {
+              "field": {
+                "type": "string"
+              },
+              "value": {
+                "anyOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "format": "date-time",
+                    "type": "string"
+                  }
+                ]
+              }
+            },
+            "type": "object"
+          },
+          "Id": {
+            "description": "Identifier definition 24",
+            "format": "uuid",
+            "type": "string"
+          }
+        },
+        "properties": {
+          "cursor": {
+            "format": "uri",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "filter": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/$defs/Filter"
+              }
+            ]
+          },
+          "id": {
+            "$ref": "#/$defs/Id"
+          },
+          "mode": {
+            "const": "notion"
+          }
+        },
+        "required": [
+          "id",
+          "mode"
+        ],
+        "type": "object"
+      }
+    },
+    "type": "function"
+  },
+  {
+    "function": {
+      "description": "Regression tool 25 from the historic 69-tool Codex request shape",
+      "name": "regression_mvms_tool_25",
+      "parameters": {
+        "$defs": {
+          "Filter": {
+            "properties": {
+              "field": {
+                "type": "string"
+              },
+              "value": {
+                "anyOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "format": "date-time",
+                    "type": "string"
+                  }
+                ]
+              }
+            },
+            "type": "object"
+          },
+          "Id": {
+            "description": "Identifier definition 25",
+            "format": "uuid",
+            "type": "string"
+          }
+        },
+        "properties": {
+          "cursor": {
+            "format": "uri",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "filter": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/$defs/Filter"
+              }
+            ]
+          },
+          "id": {
+            "$ref": "#/$defs/Id"
+          },
+          "mode": {
+            "const": "mvms"
+          }
+        },
+        "required": [
+          "id",
+          "mode"
+        ],
+        "type": "object"
+      }
+    },
+    "type": "function"
+  },
+  {
+    "function": {
+      "description": "Regression tool 26 from the historic 69-tool Codex request shape",
+      "name": "regression_context7_tool_26",
+      "parameters": {
+        "$defs": {
+          "Filter": {
+            "properties": {
+              "field": {
+                "type": "string"
+              },
+              "value": {
+                "anyOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "format": "date-time",
+                    "type": "string"
+                  }
+                ]
+              }
+            },
+            "type": "object"
+          },
+          "Id": {
+            "description": "Identifier definition 26",
+            "format": "uuid",
+            "type": "string"
+          }
+        },
+        "properties": {
+          "cursor": {
+            "format": "uri",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "filter": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/$defs/Filter"
+              }
+            ]
+          },
+          "id": {
+            "$ref": "#/$defs/Id"
+          },
+          "mode": {
+            "const": "context7"
+          }
+        },
+        "required": [
+          "id",
+          "mode"
+        ],
+        "type": "object"
+      }
+    },
+    "type": "function"
+  },
+  {
+    "function": {
+      "description": "Regression tool 27 from the historic 69-tool Codex request shape",
+      "name": "regression_notion_tool_27",
+      "parameters": {
+        "$defs": {
+          "Filter": {
+            "properties": {
+              "field": {
+                "type": "string"
+              },
+              "value": {
+                "anyOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "format": "date-time",
+                    "type": "string"
+                  }
+                ]
+              }
+            },
+            "type": "object"
+          },
+          "Id": {
+            "description": "Identifier definition 27",
+            "format": "uuid",
+            "type": "string"
+          }
+        },
+        "properties": {
+          "cursor": {
+            "format": "uri",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "filter": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/$defs/Filter"
+              }
+            ]
+          },
+          "id": {
+            "$ref": "#/$defs/Id"
+          },
+          "mode": {
+            "const": "notion"
+          }
+        },
+        "required": [
+          "id",
+          "mode"
+        ],
+        "type": "object"
+      }
+    },
+    "type": "function"
+  },
+  {
+    "function": {
+      "description": "Regression tool 28 from the historic 69-tool Codex request shape",
+      "name": "regression_mvms_tool_28",
+      "parameters": {
+        "$defs": {
+          "Filter": {
+            "properties": {
+              "field": {
+                "type": "string"
+              },
+              "value": {
+                "anyOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "format": "date-time",
+                    "type": "string"
+                  }
+                ]
+              }
+            },
+            "type": "object"
+          },
+          "Id": {
+            "description": "Identifier definition 28",
+            "format": "uuid",
+            "type": "string"
+          }
+        },
+        "properties": {
+          "cursor": {
+            "format": "uri",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "filter": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/$defs/Filter"
+              }
+            ]
+          },
+          "id": {
+            "$ref": "#/$defs/Id"
+          },
+          "mode": {
+            "const": "mvms"
+          }
+        },
+        "required": [
+          "id",
+          "mode"
+        ],
+        "type": "object"
+      }
+    },
+    "type": "function"
+  },
+  {
+    "function": {
+      "description": "Regression tool 29 from the historic 69-tool Codex request shape",
+      "name": "regression_context7_tool_29",
+      "parameters": {
+        "$defs": {
+          "Filter": {
+            "properties": {
+              "field": {
+                "type": "string"
+              },
+              "value": {
+                "anyOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "format": "date-time",
+                    "type": "string"
+                  }
+                ]
+              }
+            },
+            "type": "object"
+          },
+          "Id": {
+            "description": "Identifier definition 29",
+            "format": "uuid",
+            "type": "string"
+          }
+        },
+        "properties": {
+          "cursor": {
+            "format": "uri",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "filter": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/$defs/Filter"
+              }
+            ]
+          },
+          "id": {
+            "$ref": "#/$defs/Id"
+          },
+          "mode": {
+            "const": "context7"
+          }
+        },
+        "required": [
+          "id",
+          "mode"
+        ],
+        "type": "object"
+      }
+    },
+    "type": "function"
+  },
+  {
+    "function": {
+      "description": "Regression tool 30 from the historic 69-tool Codex request shape",
+      "name": "regression_notion_tool_30",
+      "parameters": {
+        "$defs": {
+          "Filter": {
+            "properties": {
+              "field": {
+                "type": "string"
+              },
+              "value": {
+                "anyOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "format": "date-time",
+                    "type": "string"
+                  }
+                ]
+              }
+            },
+            "type": "object"
+          },
+          "Id": {
+            "description": "Identifier definition 30",
+            "format": "uuid",
+            "type": "string"
+          }
+        },
+        "properties": {
+          "cursor": {
+            "format": "uri",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "filter": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/$defs/Filter"
+              }
+            ]
+          },
+          "id": {
+            "$ref": "#/$defs/Id"
+          },
+          "mode": {
+            "const": "notion"
+          }
+        },
+        "required": [
+          "id",
+          "mode"
+        ],
+        "type": "object"
+      }
+    },
+    "type": "function"
+  },
+  {
+    "function": {
+      "description": "Regression tool 31 from the historic 69-tool Codex request shape",
+      "name": "regression_mvms_tool_31",
+      "parameters": {
+        "$defs": {
+          "Filter": {
+            "properties": {
+              "field": {
+                "type": "string"
+              },
+              "value": {
+                "anyOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "format": "date-time",
+                    "type": "string"
+                  }
+                ]
+              }
+            },
+            "type": "object"
+          },
+          "Id": {
+            "description": "Identifier definition 31",
+            "format": "uuid",
+            "type": "string"
+          }
+        },
+        "properties": {
+          "cursor": {
+            "format": "uri",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "filter": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/$defs/Filter"
+              }
+            ]
+          },
+          "id": {
+            "$ref": "#/$defs/Id"
+          },
+          "mode": {
+            "const": "mvms"
+          }
+        },
+        "required": [
+          "id",
+          "mode"
+        ],
+        "type": "object"
+      }
+    },
+    "type": "function"
+  },
+  {
+    "function": {
+      "description": "Regression tool 32 from the historic 69-tool Codex request shape",
+      "name": "regression_context7_tool_32",
+      "parameters": {
+        "$defs": {
+          "Filter": {
+            "properties": {
+              "field": {
+                "type": "string"
+              },
+              "value": {
+                "anyOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "format": "date-time",
+                    "type": "string"
+                  }
+                ]
+              }
+            },
+            "type": "object"
+          },
+          "Id": {
+            "description": "Identifier definition 32",
+            "format": "uuid",
+            "type": "string"
+          }
+        },
+        "properties": {
+          "cursor": {
+            "format": "uri",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "filter": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/$defs/Filter"
+              }
+            ]
+          },
+          "id": {
+            "$ref": "#/$defs/Id"
+          },
+          "mode": {
+            "const": "context7"
+          }
+        },
+        "required": [
+          "id",
+          "mode"
+        ],
+        "type": "object"
+      }
+    },
+    "type": "function"
+  },
+  {
+    "function": {
+      "description": "Regression tool 33 from the historic 69-tool Codex request shape",
+      "name": "regression_notion_tool_33",
+      "parameters": {
+        "$defs": {
+          "Filter": {
+            "properties": {
+              "field": {
+                "type": "string"
+              },
+              "value": {
+                "anyOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "format": "date-time",
+                    "type": "string"
+                  }
+                ]
+              }
+            },
+            "type": "object"
+          },
+          "Id": {
+            "description": "Identifier definition 33",
+            "format": "uuid",
+            "type": "string"
+          }
+        },
+        "properties": {
+          "cursor": {
+            "format": "uri",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "filter": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/$defs/Filter"
+              }
+            ]
+          },
+          "id": {
+            "$ref": "#/$defs/Id"
+          },
+          "mode": {
+            "const": "notion"
+          }
+        },
+        "required": [
+          "id",
+          "mode"
+        ],
+        "type": "object"
+      }
+    },
+    "type": "function"
+  },
+  {
+    "function": {
+      "description": "Regression tool 34 from the historic 69-tool Codex request shape",
+      "name": "regression_mvms_tool_34",
+      "parameters": {
+        "$defs": {
+          "Filter": {
+            "properties": {
+              "field": {
+                "type": "string"
+              },
+              "value": {
+                "anyOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "format": "date-time",
+                    "type": "string"
+                  }
+                ]
+              }
+            },
+            "type": "object"
+          },
+          "Id": {
+            "description": "Identifier definition 34",
+            "format": "uuid",
+            "type": "string"
+          }
+        },
+        "properties": {
+          "cursor": {
+            "format": "uri",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "filter": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/$defs/Filter"
+              }
+            ]
+          },
+          "id": {
+            "$ref": "#/$defs/Id"
+          },
+          "mode": {
+            "const": "mvms"
+          }
+        },
+        "required": [
+          "id",
+          "mode"
+        ],
+        "type": "object"
+      }
+    },
+    "type": "function"
+  },
+  {
+    "function": {
+      "description": "Regression tool 35 from the historic 69-tool Codex request shape",
+      "name": "regression_context7_tool_35",
+      "parameters": {
+        "$defs": {
+          "Filter": {
+            "properties": {
+              "field": {
+                "type": "string"
+              },
+              "value": {
+                "anyOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "format": "date-time",
+                    "type": "string"
+                  }
+                ]
+              }
+            },
+            "type": "object"
+          },
+          "Id": {
+            "description": "Identifier definition 35",
+            "format": "uuid",
+            "type": "string"
+          }
+        },
+        "properties": {
+          "cursor": {
+            "format": "uri",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "filter": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/$defs/Filter"
+              }
+            ]
+          },
+          "id": {
+            "$ref": "#/$defs/Id"
+          },
+          "mode": {
+            "const": "context7"
+          }
+        },
+        "required": [
+          "id",
+          "mode"
+        ],
+        "type": "object"
+      }
+    },
+    "type": "function"
+  },
+  {
+    "function": {
+      "description": "Regression tool 36 from the historic 69-tool Codex request shape",
+      "name": "regression_notion_tool_36",
+      "parameters": {
+        "$defs": {
+          "Filter": {
+            "properties": {
+              "field": {
+                "type": "string"
+              },
+              "value": {
+                "anyOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "format": "date-time",
+                    "type": "string"
+                  }
+                ]
+              }
+            },
+            "type": "object"
+          },
+          "Id": {
+            "description": "Identifier definition 36",
+            "format": "uuid",
+            "type": "string"
+          }
+        },
+        "properties": {
+          "cursor": {
+            "format": "uri",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "filter": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/$defs/Filter"
+              }
+            ]
+          },
+          "id": {
+            "$ref": "#/$defs/Id"
+          },
+          "mode": {
+            "const": "notion"
+          }
+        },
+        "required": [
+          "id",
+          "mode"
+        ],
+        "type": "object"
+      }
+    },
+    "type": "function"
+  },
+  {
+    "function": {
+      "description": "Regression tool 37 from the historic 69-tool Codex request shape",
+      "name": "regression_mvms_tool_37",
+      "parameters": {
+        "$defs": {
+          "Filter": {
+            "properties": {
+              "field": {
+                "type": "string"
+              },
+              "value": {
+                "anyOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "format": "date-time",
+                    "type": "string"
+                  }
+                ]
+              }
+            },
+            "type": "object"
+          },
+          "Id": {
+            "description": "Identifier definition 37",
+            "format": "uuid",
+            "type": "string"
+          }
+        },
+        "properties": {
+          "cursor": {
+            "format": "uri",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "filter": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/$defs/Filter"
+              }
+            ]
+          },
+          "id": {
+            "$ref": "#/$defs/Id"
+          },
+          "mode": {
+            "const": "mvms"
+          }
+        },
+        "required": [
+          "id",
+          "mode"
+        ],
+        "type": "object"
+      }
+    },
+    "type": "function"
+  },
+  {
+    "function": {
+      "description": "Regression tool 38 from the historic 69-tool Codex request shape",
+      "name": "regression_context7_tool_38",
+      "parameters": {
+        "$defs": {
+          "Filter": {
+            "properties": {
+              "field": {
+                "type": "string"
+              },
+              "value": {
+                "anyOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "format": "date-time",
+                    "type": "string"
+                  }
+                ]
+              }
+            },
+            "type": "object"
+          },
+          "Id": {
+            "description": "Identifier definition 38",
+            "format": "uuid",
+            "type": "string"
+          }
+        },
+        "properties": {
+          "cursor": {
+            "format": "uri",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "filter": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/$defs/Filter"
+              }
+            ]
+          },
+          "id": {
+            "$ref": "#/$defs/Id"
+          },
+          "mode": {
+            "const": "context7"
+          }
+        },
+        "required": [
+          "id",
+          "mode"
+        ],
+        "type": "object"
+      }
+    },
+    "type": "function"
+  },
+  {
+    "function": {
+      "description": "Regression tool 39 from the historic 69-tool Codex request shape",
+      "name": "regression_notion_tool_39",
+      "parameters": {
+        "$defs": {
+          "Filter": {
+            "properties": {
+              "field": {
+                "type": "string"
+              },
+              "value": {
+                "anyOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "format": "date-time",
+                    "type": "string"
+                  }
+                ]
+              }
+            },
+            "type": "object"
+          },
+          "Id": {
+            "description": "Identifier definition 39",
+            "format": "uuid",
+            "type": "string"
+          }
+        },
+        "properties": {
+          "cursor": {
+            "format": "uri",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "filter": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/$defs/Filter"
+              }
+            ]
+          },
+          "id": {
+            "$ref": "#/$defs/Id"
+          },
+          "mode": {
+            "const": "notion"
+          }
+        },
+        "required": [
+          "id",
+          "mode"
+        ],
+        "type": "object"
+      }
+    },
+    "type": "function"
+  },
+  {
+    "function": {
+      "description": "Regression tool 40 from the historic 69-tool Codex request shape",
+      "name": "regression_mvms_tool_40",
+      "parameters": {
+        "$defs": {
+          "Filter": {
+            "properties": {
+              "field": {
+                "type": "string"
+              },
+              "value": {
+                "anyOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "format": "date-time",
+                    "type": "string"
+                  }
+                ]
+              }
+            },
+            "type": "object"
+          },
+          "Id": {
+            "description": "Identifier definition 40",
+            "format": "uuid",
+            "type": "string"
+          }
+        },
+        "properties": {
+          "cursor": {
+            "format": "uri",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "filter": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/$defs/Filter"
+              }
+            ]
+          },
+          "id": {
+            "$ref": "#/$defs/Id"
+          },
+          "mode": {
+            "const": "mvms"
+          }
+        },
+        "required": [
+          "id",
+          "mode"
+        ],
+        "type": "object"
+      }
+    },
+    "type": "function"
+  },
+  {
+    "function": {
+      "description": "Regression tool 41 from the historic 69-tool Codex request shape",
+      "name": "regression_context7_tool_41",
+      "parameters": {
+        "$defs": {
+          "Filter": {
+            "properties": {
+              "field": {
+                "type": "string"
+              },
+              "value": {
+                "anyOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "format": "date-time",
+                    "type": "string"
+                  }
+                ]
+              }
+            },
+            "type": "object"
+          },
+          "Id": {
+            "description": "Identifier definition 41",
+            "format": "uuid",
+            "type": "string"
+          }
+        },
+        "properties": {
+          "cursor": {
+            "format": "uri",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "filter": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/$defs/Filter"
+              }
+            ]
+          },
+          "id": {
+            "$ref": "#/$defs/Id"
+          },
+          "mode": {
+            "const": "context7"
+          }
+        },
+        "required": [
+          "id",
+          "mode"
+        ],
+        "type": "object"
+      }
+    },
+    "type": "function"
+  },
+  {
+    "function": {
+      "description": "Regression tool 42 from the historic 69-tool Codex request shape",
+      "name": "regression_notion_tool_42",
+      "parameters": {
+        "$defs": {
+          "Filter": {
+            "properties": {
+              "field": {
+                "type": "string"
+              },
+              "value": {
+                "anyOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "format": "date-time",
+                    "type": "string"
+                  }
+                ]
+              }
+            },
+            "type": "object"
+          },
+          "Id": {
+            "description": "Identifier definition 42",
+            "format": "uuid",
+            "type": "string"
+          }
+        },
+        "properties": {
+          "cursor": {
+            "format": "uri",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "filter": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/$defs/Filter"
+              }
+            ]
+          },
+          "id": {
+            "$ref": "#/$defs/Id"
+          },
+          "mode": {
+            "const": "notion"
+          }
+        },
+        "required": [
+          "id",
+          "mode"
+        ],
+        "type": "object"
+      }
+    },
+    "type": "function"
+  },
+  {
+    "function": {
+      "description": "Regression tool 43 from the historic 69-tool Codex request shape",
+      "name": "regression_mvms_tool_43",
+      "parameters": {
+        "$defs": {
+          "Filter": {
+            "properties": {
+              "field": {
+                "type": "string"
+              },
+              "value": {
+                "anyOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "format": "date-time",
+                    "type": "string"
+                  }
+                ]
+              }
+            },
+            "type": "object"
+          },
+          "Id": {
+            "description": "Identifier definition 43",
+            "format": "uuid",
+            "type": "string"
+          }
+        },
+        "properties": {
+          "cursor": {
+            "format": "uri",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "filter": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/$defs/Filter"
+              }
+            ]
+          },
+          "id": {
+            "$ref": "#/$defs/Id"
+          },
+          "mode": {
+            "const": "mvms"
+          }
+        },
+        "required": [
+          "id",
+          "mode"
+        ],
+        "type": "object"
+      }
+    },
+    "type": "function"
+  },
+  {
+    "function": {
+      "description": "Regression tool 44 from the historic 69-tool Codex request shape",
+      "name": "regression_context7_tool_44",
+      "parameters": {
+        "$defs": {
+          "Filter": {
+            "properties": {
+              "field": {
+                "type": "string"
+              },
+              "value": {
+                "anyOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "format": "date-time",
+                    "type": "string"
+                  }
+                ]
+              }
+            },
+            "type": "object"
+          },
+          "Id": {
+            "description": "Identifier definition 44",
+            "format": "uuid",
+            "type": "string"
+          }
+        },
+        "properties": {
+          "cursor": {
+            "format": "uri",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "filter": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/$defs/Filter"
+              }
+            ]
+          },
+          "id": {
+            "$ref": "#/$defs/Id"
+          },
+          "mode": {
+            "const": "context7"
+          }
+        },
+        "required": [
+          "id",
+          "mode"
+        ],
+        "type": "object"
+      }
+    },
+    "type": "function"
+  },
+  {
+    "function": {
+      "description": "Regression tool 45 from the historic 69-tool Codex request shape",
+      "name": "regression_notion_tool_45",
+      "parameters": {
+        "$defs": {
+          "Filter": {
+            "properties": {
+              "field": {
+                "type": "string"
+              },
+              "value": {
+                "anyOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "format": "date-time",
+                    "type": "string"
+                  }
+                ]
+              }
+            },
+            "type": "object"
+          },
+          "Id": {
+            "description": "Identifier definition 45",
+            "format": "uuid",
+            "type": "string"
+          }
+        },
+        "properties": {
+          "cursor": {
+            "format": "uri",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "filter": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/$defs/Filter"
+              }
+            ]
+          },
+          "id": {
+            "$ref": "#/$defs/Id"
+          },
+          "mode": {
+            "const": "notion"
+          }
+        },
+        "required": [
+          "id",
+          "mode"
+        ],
+        "type": "object"
+      }
+    },
+    "type": "function"
+  },
+  {
+    "function": {
+      "description": "Regression tool 46 from the historic 69-tool Codex request shape",
+      "name": "regression_mvms_tool_46",
+      "parameters": {
+        "$defs": {
+          "Filter": {
+            "properties": {
+              "field": {
+                "type": "string"
+              },
+              "value": {
+                "anyOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "format": "date-time",
+                    "type": "string"
+                  }
+                ]
+              }
+            },
+            "type": "object"
+          },
+          "Id": {
+            "description": "Identifier definition 46",
+            "format": "uuid",
+            "type": "string"
+          }
+        },
+        "properties": {
+          "cursor": {
+            "format": "uri",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "filter": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/$defs/Filter"
+              }
+            ]
+          },
+          "id": {
+            "$ref": "#/$defs/Id"
+          },
+          "mode": {
+            "const": "mvms"
+          }
+        },
+        "required": [
+          "id",
+          "mode"
+        ],
+        "type": "object"
+      }
+    },
+    "type": "function"
+  },
+  {
+    "function": {
+      "description": "Regression tool 47 from the historic 69-tool Codex request shape",
+      "name": "regression_context7_tool_47",
+      "parameters": {
+        "$defs": {
+          "Filter": {
+            "properties": {
+              "field": {
+                "type": "string"
+              },
+              "value": {
+                "anyOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "format": "date-time",
+                    "type": "string"
+                  }
+                ]
+              }
+            },
+            "type": "object"
+          },
+          "Id": {
+            "description": "Identifier definition 47",
+            "format": "uuid",
+            "type": "string"
+          }
+        },
+        "properties": {
+          "cursor": {
+            "format": "uri",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "filter": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/$defs/Filter"
+              }
+            ]
+          },
+          "id": {
+            "$ref": "#/$defs/Id"
+          },
+          "mode": {
+            "const": "context7"
+          }
+        },
+        "required": [
+          "id",
+          "mode"
+        ],
+        "type": "object"
+      }
+    },
+    "type": "function"
+  },
+  {
+    "function": {
+      "description": "Regression tool 48 from the historic 69-tool Codex request shape",
+      "name": "regression_notion_tool_48",
+      "parameters": {
+        "$defs": {
+          "Filter": {
+            "properties": {
+              "field": {
+                "type": "string"
+              },
+              "value": {
+                "anyOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "format": "date-time",
+                    "type": "string"
+                  }
+                ]
+              }
+            },
+            "type": "object"
+          },
+          "Id": {
+            "description": "Identifier definition 48",
+            "format": "uuid",
+            "type": "string"
+          }
+        },
+        "properties": {
+          "cursor": {
+            "format": "uri",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "filter": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/$defs/Filter"
+              }
+            ]
+          },
+          "id": {
+            "$ref": "#/$defs/Id"
+          },
+          "mode": {
+            "const": "notion"
+          }
+        },
+        "required": [
+          "id",
+          "mode"
+        ],
+        "type": "object"
+      }
+    },
+    "type": "function"
+  },
+  {
+    "function": {
+      "description": "Regression tool 49 from the historic 69-tool Codex request shape",
+      "name": "regression_mvms_tool_49",
+      "parameters": {
+        "$defs": {
+          "Filter": {
+            "properties": {
+              "field": {
+                "type": "string"
+              },
+              "value": {
+                "anyOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "format": "date-time",
+                    "type": "string"
+                  }
+                ]
+              }
+            },
+            "type": "object"
+          },
+          "Id": {
+            "description": "Identifier definition 49",
+            "format": "uuid",
+            "type": "string"
+          }
+        },
+        "properties": {
+          "cursor": {
+            "format": "uri",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "filter": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/$defs/Filter"
+              }
+            ]
+          },
+          "id": {
+            "$ref": "#/$defs/Id"
+          },
+          "mode": {
+            "const": "mvms"
+          }
+        },
+        "required": [
+          "id",
+          "mode"
+        ],
+        "type": "object"
+      }
+    },
+    "type": "function"
+  },
+  {
+    "function": {
+      "description": "Regression tool 50 from the historic 69-tool Codex request shape",
+      "name": "regression_context7_tool_50",
+      "parameters": {
+        "$defs": {
+          "Filter": {
+            "properties": {
+              "field": {
+                "type": "string"
+              },
+              "value": {
+                "anyOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "format": "date-time",
+                    "type": "string"
+                  }
+                ]
+              }
+            },
+            "type": "object"
+          },
+          "Id": {
+            "description": "Identifier definition 50",
+            "format": "uuid",
+            "type": "string"
+          }
+        },
+        "properties": {
+          "cursor": {
+            "format": "uri",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "filter": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/$defs/Filter"
+              }
+            ]
+          },
+          "id": {
+            "$ref": "#/$defs/Id"
+          },
+          "mode": {
+            "const": "context7"
+          }
+        },
+        "required": [
+          "id",
+          "mode"
+        ],
+        "type": "object"
+      }
+    },
+    "type": "function"
+  },
+  {
+    "function": {
+      "description": "Regression tool 51 from the historic 69-tool Codex request shape",
+      "name": "regression_notion_tool_51",
+      "parameters": {
+        "$defs": {
+          "Filter": {
+            "properties": {
+              "field": {
+                "type": "string"
+              },
+              "value": {
+                "anyOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "format": "date-time",
+                    "type": "string"
+                  }
+                ]
+              }
+            },
+            "type": "object"
+          },
+          "Id": {
+            "description": "Identifier definition 51",
+            "format": "uuid",
+            "type": "string"
+          }
+        },
+        "properties": {
+          "cursor": {
+            "format": "uri",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "filter": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/$defs/Filter"
+              }
+            ]
+          },
+          "id": {
+            "$ref": "#/$defs/Id"
+          },
+          "mode": {
+            "const": "notion"
+          }
+        },
+        "required": [
+          "id",
+          "mode"
+        ],
+        "type": "object"
+      }
+    },
+    "type": "function"
+  },
+  {
+    "function": {
+      "description": "Regression tool 52 from the historic 69-tool Codex request shape",
+      "name": "regression_mvms_tool_52",
+      "parameters": {
+        "$defs": {
+          "Filter": {
+            "properties": {
+              "field": {
+                "type": "string"
+              },
+              "value": {
+                "anyOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "format": "date-time",
+                    "type": "string"
+                  }
+                ]
+              }
+            },
+            "type": "object"
+          },
+          "Id": {
+            "description": "Identifier definition 52",
+            "format": "uuid",
+            "type": "string"
+          }
+        },
+        "properties": {
+          "cursor": {
+            "format": "uri",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "filter": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/$defs/Filter"
+              }
+            ]
+          },
+          "id": {
+            "$ref": "#/$defs/Id"
+          },
+          "mode": {
+            "const": "mvms"
+          }
+        },
+        "required": [
+          "id",
+          "mode"
+        ],
+        "type": "object"
+      }
+    },
+    "type": "function"
+  },
+  {
+    "function": {
+      "description": "Regression tool 53 from the historic 69-tool Codex request shape",
+      "name": "regression_context7_tool_53",
+      "parameters": {
+        "$defs": {
+          "Filter": {
+            "properties": {
+              "field": {
+                "type": "string"
+              },
+              "value": {
+                "anyOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "format": "date-time",
+                    "type": "string"
+                  }
+                ]
+              }
+            },
+            "type": "object"
+          },
+          "Id": {
+            "description": "Identifier definition 53",
+            "format": "uuid",
+            "type": "string"
+          }
+        },
+        "properties": {
+          "cursor": {
+            "format": "uri",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "filter": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/$defs/Filter"
+              }
+            ]
+          },
+          "id": {
+            "$ref": "#/$defs/Id"
+          },
+          "mode": {
+            "const": "context7"
+          }
+        },
+        "required": [
+          "id",
+          "mode"
+        ],
+        "type": "object"
+      }
+    },
+    "type": "function"
+  },
+  {
+    "function": {
+      "description": "Regression tool 54 from the historic 69-tool Codex request shape",
+      "name": "regression_notion_tool_54",
+      "parameters": {
+        "$defs": {
+          "Filter": {
+            "properties": {
+              "field": {
+                "type": "string"
+              },
+              "value": {
+                "anyOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "format": "date-time",
+                    "type": "string"
+                  }
+                ]
+              }
+            },
+            "type": "object"
+          },
+          "Id": {
+            "description": "Identifier definition 54",
+            "format": "uuid",
+            "type": "string"
+          }
+        },
+        "properties": {
+          "cursor": {
+            "format": "uri",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "filter": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/$defs/Filter"
+              }
+            ]
+          },
+          "id": {
+            "$ref": "#/$defs/Id"
+          },
+          "mode": {
+            "const": "notion"
+          }
+        },
+        "required": [
+          "id",
+          "mode"
+        ],
+        "type": "object"
+      }
+    },
+    "type": "function"
+  },
+  {
+    "function": {
+      "description": "Regression tool 55 from the historic 69-tool Codex request shape",
+      "name": "regression_mvms_tool_55",
+      "parameters": {
+        "$defs": {
+          "Filter": {
+            "properties": {
+              "field": {
+                "type": "string"
+              },
+              "value": {
+                "anyOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "format": "date-time",
+                    "type": "string"
+                  }
+                ]
+              }
+            },
+            "type": "object"
+          },
+          "Id": {
+            "description": "Identifier definition 55",
+            "format": "uuid",
+            "type": "string"
+          }
+        },
+        "properties": {
+          "cursor": {
+            "format": "uri",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "filter": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/$defs/Filter"
+              }
+            ]
+          },
+          "id": {
+            "$ref": "#/$defs/Id"
+          },
+          "mode": {
+            "const": "mvms"
+          }
+        },
+        "required": [
+          "id",
+          "mode"
+        ],
+        "type": "object"
+      }
+    },
+    "type": "function"
+  },
+  {
+    "function": {
+      "description": "Regression tool 56 from the historic 69-tool Codex request shape",
+      "name": "regression_context7_tool_56",
+      "parameters": {
+        "$defs": {
+          "Filter": {
+            "properties": {
+              "field": {
+                "type": "string"
+              },
+              "value": {
+                "anyOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "format": "date-time",
+                    "type": "string"
+                  }
+                ]
+              }
+            },
+            "type": "object"
+          },
+          "Id": {
+            "description": "Identifier definition 56",
+            "format": "uuid",
+            "type": "string"
+          }
+        },
+        "properties": {
+          "cursor": {
+            "format": "uri",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "filter": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/$defs/Filter"
+              }
+            ]
+          },
+          "id": {
+            "$ref": "#/$defs/Id"
+          },
+          "mode": {
+            "const": "context7"
+          }
+        },
+        "required": [
+          "id",
+          "mode"
+        ],
+        "type": "object"
+      }
+    },
+    "type": "function"
+  },
+  {
+    "function": {
+      "description": "Regression tool 57 from the historic 69-tool Codex request shape",
+      "name": "regression_notion_tool_57",
+      "parameters": {
+        "$defs": {
+          "Filter": {
+            "properties": {
+              "field": {
+                "type": "string"
+              },
+              "value": {
+                "anyOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "format": "date-time",
+                    "type": "string"
+                  }
+                ]
+              }
+            },
+            "type": "object"
+          },
+          "Id": {
+            "description": "Identifier definition 57",
+            "format": "uuid",
+            "type": "string"
+          }
+        },
+        "properties": {
+          "cursor": {
+            "format": "uri",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "filter": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/$defs/Filter"
+              }
+            ]
+          },
+          "id": {
+            "$ref": "#/$defs/Id"
+          },
+          "mode": {
+            "const": "notion"
+          }
+        },
+        "required": [
+          "id",
+          "mode"
+        ],
+        "type": "object"
+      }
+    },
+    "type": "function"
+  },
+  {
+    "function": {
+      "description": "Regression tool 58 from the historic 69-tool Codex request shape",
+      "name": "regression_mvms_tool_58",
+      "parameters": {
+        "$defs": {
+          "Filter": {
+            "properties": {
+              "field": {
+                "type": "string"
+              },
+              "value": {
+                "anyOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "format": "date-time",
+                    "type": "string"
+                  }
+                ]
+              }
+            },
+            "type": "object"
+          },
+          "Id": {
+            "description": "Identifier definition 58",
+            "format": "uuid",
+            "type": "string"
+          }
+        },
+        "properties": {
+          "cursor": {
+            "format": "uri",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "filter": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/$defs/Filter"
+              }
+            ]
+          },
+          "id": {
+            "$ref": "#/$defs/Id"
+          },
+          "mode": {
+            "const": "mvms"
+          }
+        },
+        "required": [
+          "id",
+          "mode"
+        ],
+        "type": "object"
+      }
+    },
+    "type": "function"
+  },
+  {
+    "function": {
+      "description": "Regression tool 59 from the historic 69-tool Codex request shape",
+      "name": "regression_context7_tool_59",
+      "parameters": {
+        "$defs": {
+          "Filter": {
+            "properties": {
+              "field": {
+                "type": "string"
+              },
+              "value": {
+                "anyOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "format": "date-time",
+                    "type": "string"
+                  }
+                ]
+              }
+            },
+            "type": "object"
+          },
+          "Id": {
+            "description": "Identifier definition 59",
+            "format": "uuid",
+            "type": "string"
+          }
+        },
+        "properties": {
+          "cursor": {
+            "format": "uri",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "filter": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/$defs/Filter"
+              }
+            ]
+          },
+          "id": {
+            "$ref": "#/$defs/Id"
+          },
+          "mode": {
+            "const": "context7"
+          }
+        },
+        "required": [
+          "id",
+          "mode"
+        ],
+        "type": "object"
+      }
+    },
+    "type": "function"
+  },
+  {
+    "function": {
+      "description": "Regression tool 60 from the historic 69-tool Codex request shape",
+      "name": "regression_notion_tool_60",
+      "parameters": {
+        "$defs": {
+          "Filter": {
+            "properties": {
+              "field": {
+                "type": "string"
+              },
+              "value": {
+                "anyOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "format": "date-time",
+                    "type": "string"
+                  }
+                ]
+              }
+            },
+            "type": "object"
+          },
+          "Id": {
+            "description": "Identifier definition 60",
+            "format": "uuid",
+            "type": "string"
+          }
+        },
+        "properties": {
+          "cursor": {
+            "format": "uri",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "filter": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/$defs/Filter"
+              }
+            ]
+          },
+          "id": {
+            "$ref": "#/$defs/Id"
+          },
+          "mode": {
+            "const": "notion"
+          }
+        },
+        "required": [
+          "id",
+          "mode"
+        ],
+        "type": "object"
+      }
+    },
+    "type": "function"
+  },
+  {
+    "function": {
+      "description": "Regression tool 61 from the historic 69-tool Codex request shape",
+      "name": "regression_mvms_tool_61",
+      "parameters": {
+        "$defs": {
+          "Filter": {
+            "properties": {
+              "field": {
+                "type": "string"
+              },
+              "value": {
+                "anyOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "format": "date-time",
+                    "type": "string"
+                  }
+                ]
+              }
+            },
+            "type": "object"
+          },
+          "Id": {
+            "description": "Identifier definition 61",
+            "format": "uuid",
+            "type": "string"
+          }
+        },
+        "properties": {
+          "cursor": {
+            "format": "uri",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "filter": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/$defs/Filter"
+              }
+            ]
+          },
+          "id": {
+            "$ref": "#/$defs/Id"
+          },
+          "mode": {
+            "const": "mvms"
+          }
+        },
+        "required": [
+          "id",
+          "mode"
+        ],
+        "type": "object"
+      }
+    },
+    "type": "function"
+  },
+  {
+    "function": {
+      "description": "Regression tool 62 from the historic 69-tool Codex request shape",
+      "name": "regression_context7_tool_62",
+      "parameters": {
+        "$defs": {
+          "Filter": {
+            "properties": {
+              "field": {
+                "type": "string"
+              },
+              "value": {
+                "anyOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "format": "date-time",
+                    "type": "string"
+                  }
+                ]
+              }
+            },
+            "type": "object"
+          },
+          "Id": {
+            "description": "Identifier definition 62",
+            "format": "uuid",
+            "type": "string"
+          }
+        },
+        "properties": {
+          "cursor": {
+            "format": "uri",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "filter": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/$defs/Filter"
+              }
+            ]
+          },
+          "id": {
+            "$ref": "#/$defs/Id"
+          },
+          "mode": {
+            "const": "context7"
+          }
+        },
+        "required": [
+          "id",
+          "mode"
+        ],
+        "type": "object"
+      }
+    },
+    "type": "function"
+  },
+  {
+    "function": {
+      "description": "Regression tool 63 from the historic 69-tool Codex request shape",
+      "name": "regression_notion_tool_63",
+      "parameters": {
+        "$defs": {
+          "Filter": {
+            "properties": {
+              "field": {
+                "type": "string"
+              },
+              "value": {
+                "anyOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "format": "date-time",
+                    "type": "string"
+                  }
+                ]
+              }
+            },
+            "type": "object"
+          },
+          "Id": {
+            "description": "Identifier definition 63",
+            "format": "uuid",
+            "type": "string"
+          }
+        },
+        "properties": {
+          "cursor": {
+            "format": "uri",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "filter": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/$defs/Filter"
+              }
+            ]
+          },
+          "id": {
+            "$ref": "#/$defs/Id"
+          },
+          "mode": {
+            "const": "notion"
+          }
+        },
+        "required": [
+          "id",
+          "mode"
+        ],
+        "type": "object"
+      }
+    },
+    "type": "function"
+  },
+  {
+    "function": {
+      "description": "Regression tool 64 from the historic 69-tool Codex request shape",
+      "name": "regression_mvms_tool_64",
+      "parameters": {
+        "$defs": {
+          "Filter": {
+            "properties": {
+              "field": {
+                "type": "string"
+              },
+              "value": {
+                "anyOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "format": "date-time",
+                    "type": "string"
+                  }
+                ]
+              }
+            },
+            "type": "object"
+          },
+          "Id": {
+            "description": "Identifier definition 64",
+            "format": "uuid",
+            "type": "string"
+          }
+        },
+        "properties": {
+          "cursor": {
+            "format": "uri",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "filter": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/$defs/Filter"
+              }
+            ]
+          },
+          "id": {
+            "$ref": "#/$defs/Id"
+          },
+          "mode": {
+            "const": "mvms"
+          }
+        },
+        "required": [
+          "id",
+          "mode"
+        ],
+        "type": "object"
+      }
+    },
+    "type": "function"
+  },
+  {
+    "function": {
+      "description": "Regression tool 65 from the historic 69-tool Codex request shape",
+      "name": "regression_context7_tool_65",
+      "parameters": {
+        "$defs": {
+          "Filter": {
+            "properties": {
+              "field": {
+                "type": "string"
+              },
+              "value": {
+                "anyOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "format": "date-time",
+                    "type": "string"
+                  }
+                ]
+              }
+            },
+            "type": "object"
+          },
+          "Id": {
+            "description": "Identifier definition 65",
+            "format": "uuid",
+            "type": "string"
+          }
+        },
+        "properties": {
+          "cursor": {
+            "format": "uri",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "filter": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/$defs/Filter"
+              }
+            ]
+          },
+          "id": {
+            "$ref": "#/$defs/Id"
+          },
+          "mode": {
+            "const": "context7"
+          }
+        },
+        "required": [
+          "id",
+          "mode"
+        ],
+        "type": "object"
+      }
+    },
+    "type": "function"
+  },
+  {
+    "function": {
+      "description": "Regression tool 66 from the historic 69-tool Codex request shape",
+      "name": "regression_notion_tool_66",
+      "parameters": {
+        "$defs": {
+          "Filter": {
+            "properties": {
+              "field": {
+                "type": "string"
+              },
+              "value": {
+                "anyOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "format": "date-time",
+                    "type": "string"
+                  }
+                ]
+              }
+            },
+            "type": "object"
+          },
+          "Id": {
+            "description": "Identifier definition 66",
+            "format": "uuid",
+            "type": "string"
+          }
+        },
+        "properties": {
+          "cursor": {
+            "format": "uri",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "filter": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/$defs/Filter"
+              }
+            ]
+          },
+          "id": {
+            "$ref": "#/$defs/Id"
+          },
+          "mode": {
+            "const": "notion"
+          }
+        },
+        "required": [
+          "id",
+          "mode"
+        ],
+        "type": "object"
+      }
+    },
+    "type": "function"
+  },
+  {
+    "function": {
+      "description": "Regression tool 67 from the historic 69-tool Codex request shape",
+      "name": "regression_mvms_tool_67",
+      "parameters": {
+        "$defs": {
+          "Filter": {
+            "properties": {
+              "field": {
+                "type": "string"
+              },
+              "value": {
+                "anyOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "format": "date-time",
+                    "type": "string"
+                  }
+                ]
+              }
+            },
+            "type": "object"
+          },
+          "Id": {
+            "description": "Identifier definition 67",
+            "format": "uuid",
+            "type": "string"
+          }
+        },
+        "properties": {
+          "cursor": {
+            "format": "uri",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "filter": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/$defs/Filter"
+              }
+            ]
+          },
+          "id": {
+            "$ref": "#/$defs/Id"
+          },
+          "mode": {
+            "const": "mvms"
+          }
+        },
+        "required": [
+          "id",
+          "mode"
+        ],
+        "type": "object"
+      }
+    },
+    "type": "function"
+  },
+  {
+    "function": {
+      "description": "Regression tool 68 from the historic 69-tool Codex request shape",
+      "name": "regression_context7_tool_68",
+      "parameters": {
+        "$defs": {
+          "Filter": {
+            "properties": {
+              "field": {
+                "type": "string"
+              },
+              "value": {
+                "anyOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "format": "date-time",
+                    "type": "string"
+                  }
+                ]
+              }
+            },
+            "type": "object"
+          },
+          "Id": {
+            "description": "Identifier definition 68",
+            "format": "uuid",
+            "type": "string"
+          }
+        },
+        "properties": {
+          "cursor": {
+            "format": "uri",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "filter": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/$defs/Filter"
+              }
+            ]
+          },
+          "id": {
+            "$ref": "#/$defs/Id"
+          },
+          "mode": {
+            "const": "context7"
+          }
+        },
+        "required": [
+          "id",
+          "mode"
+        ],
+        "type": "object"
+      }
+    },
+    "type": "function"
+  }
+]

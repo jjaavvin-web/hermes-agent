@@ -18,7 +18,9 @@ import {
   Timer,
   Workflow,
   type LucideIcon,
+  type LucideProps,
 } from "lucide-react";
+import { createElement } from "react";
 import type { NexusHealthStatus } from "@/lib/api";
 
 /** Visual metadata for each health status, aligned with the dashboard theme. */
@@ -72,6 +74,10 @@ const KIND_ICON: Record<string, LucideIcon> = {
 
 export function kindIcon(kind: string): LucideIcon {
   return KIND_ICON[kind] ?? Circle;
+}
+
+export function kindIconElement(kind: string, props?: LucideProps) {
+  return createElement(kindIcon(kind), props);
 }
 
 /** Column groups, in left-to-right layout order. */

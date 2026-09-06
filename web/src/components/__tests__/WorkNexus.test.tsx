@@ -139,6 +139,16 @@ async function findByTestId(container: Element, testId: string): Promise<Element
   return match as Element;
 }
 
+async function findMarkerByNodeId(container: Element, nodeId: string): Promise<Element> {
+  let match: Element | null = null;
+  await waitFor(() => {
+    match = container.querySelector(`[data-testid="work-nexus-node-marker"][data-node-id="${nodeId}"]`);
+    expect(match).not.toBeNull();
+  });
+  if (!match) throw new Error(`Node marker not found: ${nodeId}`);
+  return match;
+}
+
 async function findByText(container: Element, pattern: RegExp): Promise<Element> {
   let match: Element | null = null;
   await waitFor(() => {
@@ -238,12 +248,19 @@ afterEach(() => {
 
 describe("WorkNexus", () => {
   it("renders the empty state when the API returns no nodes", async () => {
-    globalThis.fetch = mockFetch({ nodes: [], edges: [] }) as unknown as typeof fetch;
+    globalThis.fetch = mockFetch({ nodes: [], edges: [], degraded_mode: ["kanban_retired"] }) as unknown as typeof fetch;
     const { container } = render(<WorkNexus />);
     await waitFor(() => {
       expect(globalThis.fetch).toHaveBeenCalled();
     });
-    expect(await findByText(container, /No kanban work found/)).toBeTruthy();
+    expect(await findByText(container, /No work graph data is available/)).toBeTruthy();
+    expect(await findByText(container, /Kanban is retired/)).toBeTruthy();
+    expect(await findByText(container, /Overlay degraded: kanban_retired/)).toBeTruthy();
+    expect(globalThis.fetch).toHaveBeenCalledWith(
+      "/api/dashboard/work-nexus",
+      expect.objectContaining({ credentials: "include" }),
+    );
+    expect(container.querySelector("[data-testid='work-nexus-node-marker']")).toBeNull();
   });
 
   it("renders nodes and degraded overlay returned by the API", async () => {
@@ -252,6 +269,18 @@ describe("WorkNexus", () => {
     const markers = await findAllByTestId(container, "work-nexus-node-marker");
     expect(markers).toHaveLength(3);
     expect(await findByText(container, /Overlay degraded: codex_pr_overlay/)).toBeTruthy();
+  });
+
+  it("marks active task nodes for subtle glow while completed tasks stay plain", async () => {
+    globalThis.fetch = mockFetch(sampleResponse) as unknown as typeof fetch;
+    const { container } = render(<WorkNexus />);
+    const active = await findMarkerByNodeId(container, "task:alpha:parent");
+    const completed = await findMarkerByNodeId(container, "task:alpha:child");
+
+    expect(active.getAttribute("data-node-active-work")).toBe("true");
+    expect(active.getAttribute("data-node-completed")).toBe("false");
+    expect(completed.getAttribute("data-node-active-work")).toBe("false");
+    expect(completed.getAttribute("data-node-completed")).toBe("true");
   });
 
   it("opens the detail panel on node click and closes it on background click", async () => {

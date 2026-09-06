@@ -42,7 +42,7 @@ def iso_now() -> str:
 
 
 def run(cmd: list[str], timeout: int = 30) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(cmd, text=True, capture_output=True, timeout=timeout)
+    return subprocess.run(cmd, text=True, encoding="utf-8", errors="replace", capture_output=True, timeout=timeout)
 
 
 def one_line(text: str, limit: int = 360) -> str:
@@ -201,7 +201,7 @@ def codex_session_stuck_rows(threshold: timedelta) -> list[str]:
     if not CODEX_SESSIONS.exists():
         return []
     try:
-        data = json.loads(CODEX_SESSIONS.read_text())
+        data = json.loads(CODEX_SESSIONS.read_text(encoding="utf-8"))
     except Exception as exc:
         return [f"codex_sessions.json unreadable: {type(exc).__name__}: {exc}"]
     now = now_utc()

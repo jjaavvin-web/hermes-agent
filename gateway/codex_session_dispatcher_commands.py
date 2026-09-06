@@ -53,6 +53,9 @@ class _CommandsMixin:
         event = ThreadEvent(
             thread_id=ctx.thread_id,
             channel_id=ctx.channel_id,
+            kanban_card_id=ctx.options.get("kanban_card_id") or ctx.options.get("card_id"),
+            kanban_board=ctx.options.get("kanban_board") or ctx.options.get("board"),
+            isa_path=isa_path_str or None,
         )
         event.isa_slug = Path(isa_path_str).stem if isa_path_str else "task"  # type: ignore[attr-defined]
 
@@ -204,10 +207,12 @@ class _CommandsMixin:
         del state["sessions"][ctx.thread_id]
         self._write_state(state)
 
+        # Prefer ``isa_slug`` (added 2026-05-26); fall back to ``isa_id``
+        # for pre-backfill rows that stored the bare slug in isa_id.
         event = ThreadEvent(
             thread_id=ctx.thread_id,
             channel_id=ctx.channel_id,
-            isa_slug=old_row.get("isa_id", "task"),
+            isa_slug=old_row.get("isa_slug") or old_row.get("isa_id") or "task",
         )
         try:
             await self.on_thread_create(event)

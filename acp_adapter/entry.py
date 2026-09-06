@@ -23,10 +23,16 @@ except ModuleNotFoundError:
     # new code but ``uv pip install -e .`` didn't finish.  Missing bootstrap
     # means UTF-8 stdio setup is skipped on Windows; POSIX is unaffected.
     pass
+else:
+    # Stop a ``utils/``/``proxy/``/``ui/`` package in the launch directory from
+    # shadowing Hermes's own modules — ``hermes acp`` can be started from any
+    # cwd, including a project that has same-named packages on its path.
+    hermes_bootstrap.harden_import_path()
 
 import argparse
 import asyncio
 import logging
+import os
 import sys
 from pathlib import Path
 from hermes_constants import get_hermes_home
@@ -74,9 +80,11 @@ class _BenignProbeMethodFilter(logging.Filter):
 
 def _setup_logging() -> None:
     """Route all logging to stderr so stdout stays clean for ACP stdio."""
+    from agent.redact import RedactingFormatter
+
     handler = logging.StreamHandler(sys.stderr)
     handler.setFormatter(
-        logging.Formatter(
+        RedactingFormatter(
             "%(asctime)s [%(levelname)s] %(name)s: %(message)s",
             datefmt="%Y-%m-%d %H:%M:%S",
         )
@@ -95,6 +103,8 @@ def _setup_logging() -> None:
 
 def _load_env() -> None:
     """Load .env from HERMES_HOME (default ``~/.hermes``)."""
+    if os.environ.get("HERMES_WORKER_AUTHORITY"):
+        return
     from hermes_cli.env_loader import load_hermes_dotenv
 
     hermes_home = get_hermes_home()
@@ -182,56 +192,31 @@ def _run_setup() -> None:
 
 
 def _run_setup_browser(assume_yes: bool = False) -> int:
-    """Bootstrap agent-browser + Playwright Chromium for the registry-install path.
+    """Bootstrap agent-browser + Chromium.
 
-    Shells out to the bundled platform-specific bootstrap script
-    (acp_adapter/bootstrap/bootstrap_browser_tools.{sh,ps1}) so the install
-    logic lives in one place — readable, debuggable, and shareable with
-    install.sh / install.ps1 if we ever want to call it from there too.
+    Routes through dep_ensure -> install.{sh,ps1} --ensure, sharing code
+    with the runtime lazy installer.
 
-    Returns the script's exit code (0 on success).
+    Returns 0 on success, 1 on failure.
     """
-    import platform
-    import subprocess
+    from hermes_cli.dep_ensure import ensure_dependency
 
-    bootstrap_dir = Path(__file__).resolve().parent / "bootstrap"
-
-    if platform.system() == "Windows":
-        script = bootstrap_dir / "bootstrap_browser_tools.ps1"
-        if not script.is_file():
-            print(
-                f"Bootstrap script not found at {script} — wheel may be incomplete.",
-                file=sys.stderr,
-            )
-            return 1
-        cmd = [
-            "powershell.exe",
-            "-NoProfile",
-            "-ExecutionPolicy", "Bypass",
-            "-File", str(script),
-        ]
-        if assume_yes:
-            cmd.append("-Yes")
-    else:
-        script = bootstrap_dir / "bootstrap_browser_tools.sh"
-        if not script.is_file():
-            print(
-                f"Bootstrap script not found at {script} — wheel may be incomplete.",
-                file=sys.stderr,
-            )
-            return 1
-        cmd = ["bash", str(script)]
-        if assume_yes:
-            cmd.append("--yes")
-
-    # stdio is inherited so the user sees the bootstrap's progress live.
     try:
-        result = subprocess.run(cmd, check=False)
-    except FileNotFoundError as exc:
-        # bash / powershell.exe not on PATH
-        print(f"Could not launch browser bootstrap: {exc}", file=sys.stderr)
+        node_ok = ensure_dependency("node", interactive=not assume_yes)
+        if not node_ok:
+            print("Node.js installation failed — cannot proceed with browser tools.",
+                  file=sys.stderr)
+            return 1
+
+        browser_ok = ensure_dependency("browser", interactive=not assume_yes)
+        if not browser_ok:
+            print("Browser tools installation failed.", file=sys.stderr)
+            return 1
+
+        return 0
+    except OSError as exc:
+        print(f"Browser bootstrap failed: {exc}", file=sys.stderr)
         return 1
-    return result.returncode
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -253,7 +238,8 @@ def main(argv: list[str] | None = None) -> None:
         return
 
     _setup_logging()
-    _load_env()
+    if not os.environ.get("HERMES_WORKER_AUTHORITY"):
+        _load_env()
 
     logger = logging.getLogger(__name__)
     logger.info("Starting hermes-agent ACP adapter")
@@ -266,16 +252,27 @@ def main(argv: list[str] | None = None) -> None:
     import acp
     from .server import HermesACPAgent
 
-    # MCP tool discovery from config.yaml — run before asyncio.run() so
-    # it's safe to use blocking waits.  (ACP also registers per-session
-    # MCP servers dynamically via asyncio.to_thread inside the event
-    # loop; that path is unaffected.)  Moved from model_tools.py module
-    # scope to avoid freezing the gateway's loop on lazy import (#16856).
-    try:
-        from tools.mcp_tool import discover_mcp_tools
-        discover_mcp_tools()
-    except Exception:
-        logger.debug("MCP tool discovery failed at ACP startup", exc_info=True)
+    # MCP tool discovery from config.yaml — fire-and-forget in a
+    # background daemon thread so the ACP server becomes responsive
+    # immediately while MCP servers connect.  Previously this blocked
+    # asyncio.run() for 2-5 s.  (ACP also registers per-session MCP
+    # servers dynamically via asyncio.to_thread inside the event loop;
+    # that path is unaffected.)  Moved from model_tools.py module scope
+    # to avoid freezing the gateway's loop on lazy import (#16856).
+    # Metadata-only hosts can opt out of unrelated global MCP startup.
+    if (
+        not os.environ.get("HERMES_WORKER_AUTHORITY")
+        and os.environ.get("HERMES_ACP_SKIP_CONFIGURED_MCP", "").strip() != "1"
+    ):
+        try:
+            from hermes_cli.mcp_startup import start_background_mcp_discovery
+
+            start_background_mcp_discovery(
+                logger=logger,
+                thread_name="acp-mcp-discovery",
+            )
+        except Exception:
+            logger.debug("MCP tool discovery failed at ACP startup", exc_info=True)
 
     agent = HermesACPAgent()
     try:

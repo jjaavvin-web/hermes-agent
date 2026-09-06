@@ -1,0 +1,5 @@
+token_found True
+status 200
+live_has_dailySeries False
+live_has_cacheLatency7d False
+live_legacy {'today': True, 'last7d': True, 'meteredLeak': True, 'meteredLeakCount': True, 'meteredLeakCostUsd': True}

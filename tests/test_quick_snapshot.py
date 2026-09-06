@@ -117,40 +117,44 @@ def test_daily_quick_snapshot_retain_above_twenty_is_not_capped(tmp_path, monkey
     assert "20260100-000000-nightly" not in names  # the oldest is pruned
 
 
-def test_quick_snapshot_goal_anchor_has_no_literal_secret_file_names():
+def test_quick_snapshot_cli_creates_nightly_snapshot_and_reports_actual_pruning(tmp_path, monkeypatch, capsys):
     from hermes_cli import backup
 
-    source = backup.Path(backup.__file__).read_text()
+    home = _make_home(tmp_path)
+    root = home / "state-snapshots"
+    root.mkdir()
+    for i in range(3):
+        old = root / f"2026010{i + 1}-000000-nightly"
+        old.mkdir()
+        (old / "manifest.json").write_text(json.dumps({"id": old.name, "files": {}}), encoding="utf-8")
+    monkeypatch.setattr(backup, "get_hermes_home", lambda: home)
 
-    assert '".env"' not in source
-    assert '"auth.json"' not in source
+    assert backup.main(["quick-snapshot", "--retain", "2"]) == 0
 
-
-def test_quick_snapshot_cli_reuses_helpers_for_nightly_snapshot(monkeypatch, capsys):
-    from hermes_cli import backup
-
-    calls = []
-
-    def fake_create_quick_snapshot(*, label=None, hermes_home=None, keep=None):
-        calls.append(("create", label, hermes_home, keep))
-        return "snapshot-id"
-
-    def fake_prune_quick_snapshots(*, keep=None, hermes_home=None):
-        calls.append(("prune", keep, hermes_home))
-        return 2
-
-    monkeypatch.setattr(backup, "create_quick_snapshot", fake_create_quick_snapshot)
-    monkeypatch.setattr(backup, "prune_quick_snapshots", fake_prune_quick_snapshots)
-
-    rc = backup.main(["quick-snapshot", "--retain", "7"])
-
-    assert rc == 0
-    # create_quick_snapshot must receive keep=retain (7), so its create-time
-    # auto-prune matches the explicit prune and never caps at the default 20.
-    assert calls == [
-        ("create", "nightly", None, 7),
-        ("prune", 7, None),
-    ]
+    snapshots = [p for p in root.iterdir() if p.is_dir()]
+    assert len(snapshots) == 2
+    newest = max(snapshots, key=lambda p: p.name)
+    assert newest.name.endswith("-nightly")
+    assert (newest / "state.db").is_file()
+    assert not (newest / ".env").exists()
+    assert not (newest / "auth.json").exists()
     out = capsys.readouterr().out
-    assert "State snapshot created: snapshot-id" in out
+    assert "State snapshot created:" in out
     assert "Pruned 2 old snapshot" in out
+
+
+def test_daily_quick_snapshot_preserves_recovery_when_database_copy_fails(tmp_path, monkeypatch):
+    from hermes_cli import backup
+
+    home = _make_home(tmp_path)
+    old = home / "state-snapshots" / "20260101-000000-nightly"
+    old.mkdir(parents=True)
+    (old / "manifest.json").write_text(json.dumps({"id": old.name, "files": {}}), encoding="utf-8")
+    monkeypatch.setattr(backup, "_safe_copy_db", lambda *args, **kwargs: False)
+
+    snapshot_id = backup.create_daily_quick_snapshot(hermes_home=home, retain=1)
+
+    assert snapshot_id is not None
+    manifest = json.loads((_snapshot_dir(home, snapshot_id) / "manifest.json").read_text(encoding="utf-8"))
+    assert manifest["failed_dbs"] == ["state.db"]
+    assert old.is_dir(), "The last recovery snapshot must survive an incomplete nightly backup"

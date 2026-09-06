@@ -1,0 +1,14 @@
+{
+  "ok": true,
+  "baseUrl": "http://127.0.0.1:9129",
+  "dailySeriesLength": 5,
+  "rectCount": 5,
+  "screenshotPath": "/home/josep/hermes-lane-wt/burn-01-cost-tab-30-day-spend-trend-cach/scratchpad/cost-verify.png",
+  "apiPath": "/home/josep/hermes-lane-wt/burn-01-cost-tab-30-day-spend-trend-cach/scratchpad/cost-api-verify.json",
+  "cacheLatency7d": {
+    "cacheHitRatio": 0.9055,
+    "avgLatencyMs": 360231.9,
+    "p95LatencyMs": 1364980.1
+  },
+  "legacyPresent": true
+}

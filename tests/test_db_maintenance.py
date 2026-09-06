@@ -30,7 +30,7 @@ def test_db_maintenance_runs_checkpoint_optimize_incremental_vacuum_in_order():
     db.run_db_maintenance()
 
     assert db._conn.statements == [
-        "PRAGMA wal_checkpoint(TRUNCATE)",
+        "PRAGMA wal_checkpoint(PASSIVE)",
         "PRAGMA optimize",
         "PRAGMA incremental_vacuum",
     ]
@@ -100,7 +100,7 @@ def test_db_maintenance_cli_smoke_preserves_trigram_table(tmp_path: Path):
     )
 
     assert result.returncode == 0, result.stderr
-    assert "wal_checkpoint(TRUNCATE)" in result.stdout
+    assert "wal_checkpoint(PASSIVE)" in result.stdout
     assert "optimize" in result.stdout
     assert "incremental_vacuum" in result.stdout
 

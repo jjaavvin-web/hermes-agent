@@ -1,4 +1,4 @@
-import { ConfirmDialog } from "@/components/ui/confirm-dialog";
+import { ConfirmDialog } from "@/components/ui-shims";
 import { useI18n } from "@/i18n";
 
 export function DeleteConfirmDialog({

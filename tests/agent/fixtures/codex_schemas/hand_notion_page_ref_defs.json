@@ -1,0 +1,62 @@
+{
+  "$defs": {
+    "PageProperty": {
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "title": {
+          "items": {
+            "$ref": "#/$defs/RichText"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "id"
+      ],
+      "type": "object"
+    },
+    "RichText": {
+      "description": "Notion-style rich text object",
+      "properties": {
+        "href": {
+          "format": "uri",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "plain_text": {
+          "description": "Human readable title text",
+          "type": "string"
+        }
+      },
+      "required": [
+        "plain_text"
+      ],
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "Create a Notion-style nested page object",
+  "properties": {
+    "parent_page_id": {
+      "description": "Parent Notion page identifier",
+      "format": "uuid",
+      "type": "string"
+    },
+    "properties": {
+      "additionalProperties": {
+        "$ref": "#/$defs/PageProperty"
+      },
+      "description": "Page properties keyed by display name",
+      "type": "object"
+    }
+  },
+  "required": [
+    "parent_page_id",
+    "properties"
+  ],
+  "type": "object"
+}

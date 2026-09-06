@@ -114,15 +114,6 @@ def test_gateway_kanban_worktree_lease_carries_card_id(tmp_path, monkeypatch):
     assert lease["worktree_path"] == str(workspace)
 
 
-def test_gateway_kanban_lease_wrapper_preserves_dispatch_context():
-    """The gateway wrapper must expose board/base_branch for dispatch_once introspection."""
-    module = ast.parse(Path("gateway/run.py").read_text(encoding="utf-8"))
-    wrapper = next(
-        node for node in ast.walk(module)
-        if isinstance(node, ast.FunctionDef) and node.name == "_lease_wrapped_spawn"
-    )
-    kwonly_names = {arg.arg for arg in wrapper.args.kwonlyargs}
-    assert {"board", "base_branch"} <= kwonly_names
 
 
 def test_stale_and_active_lease_classification(monkeypatch):

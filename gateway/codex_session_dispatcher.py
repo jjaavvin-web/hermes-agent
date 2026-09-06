@@ -7,15 +7,17 @@ Slash command sub-handlers delegated to _CommandsMixin (codex_session_dispatcher
 from __future__ import annotations
 
 import fcntl
+import importlib.util
 import json
 import logging
 import os
 import subprocess
 import uuid
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Awaitable, Callable, Optional
+from typing import Any, Awaitable, Callable, Iterator, Optional
 
 from agent.worktree_broker import slugify_ref
 from gateway.codex_session_dispatcher_commands import _CommandsMixin
@@ -26,6 +28,252 @@ CURRENT_VERSION = 1
 
 # _MIGRATIONS: (from_ver, to_ver) → fn. No migrations needed at v1.
 _MIGRATIONS: dict[tuple[int, int], Any] = {}
+_KANBAN_COMPLETION_SUMMARY = "Codex session completed by dispatcher."
+
+
+def _fsync_directory(path: Path) -> None:
+    try:
+        fd = os.open(str(path), os.O_RDONLY)
+    except OSError:
+        return
+    try:
+        os.fsync(fd)
+    except OSError:
+        pass
+    finally:
+        os.close(fd)
+
+
+@contextmanager
+def locked_codex_sessions_file(path: Path, *, exclusive: bool) -> Iterator[Any]:
+    """Lock the codex_sessions.json state file with dispatcher/dashboard discipline."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    mode = "a+" if exclusive else "r"
+    with open(path, mode, encoding="utf-8") as fd:
+        fcntl.flock(fd, fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH)
+        try:
+            fd.seek(0)
+            yield fd
+        finally:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+
+
+def load_locked_json(path: Path) -> Any:
+    with locked_codex_sessions_file(path, exclusive=False) as fd:
+        return json.load(fd)
+
+
+def write_locked_json(path: Path, payload: Any, *, indent: int | None = 2) -> None:
+    tmp_path = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    with locked_codex_sessions_file(path, exclusive=True):
+        try:
+            with open(tmp_path, "w", encoding="utf-8") as tmp_fd:
+                json.dump(payload, tmp_fd, indent=indent)
+                tmp_fd.flush()
+                os.fsync(tmp_fd.fileno())
+            os.replace(tmp_path, path)
+            _fsync_directory(path.parent)
+        finally:
+            try:
+                tmp_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+
+
+def _quarantine_state_file(path: Path, exc: BaseException) -> Path | None:
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    quarantine = path.with_name(f"{path.name}.corrupt-{stamp}")
+    try:
+        os.replace(path, quarantine)
+        _fsync_directory(path.parent)
+        return quarantine
+    except OSError as qexc:
+        log.warning("Failed to quarantine corrupt codex_sessions.json (%s): %s", exc, qexc)
+        return None
+
+
+def _clean_optional_ref(value: Any) -> str | None:
+    """Normalize optional cross-system ids from slash args / ISA fields."""
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text or text == "-":
+        return None
+    return text
+
+
+def _read_isa_frontmatter(path: Path) -> dict[str, str]:
+    """Read the flat YAML-ish ISA frontmatter without importing script modules."""
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except (OSError, UnicodeDecodeError):
+        return {}
+    if not lines or lines[0].strip() != "---":
+        return {}
+    frontmatter: dict[str, str] = {}
+    for line in lines[1:]:
+        if line.strip() == "---":
+            break
+        if ":" not in line:
+            continue
+        key, value = line.split(":", 1)
+        key = key.strip()
+        value = value.strip()
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
+            value = value[1:-1]
+        if key:
+            frontmatter[key] = value
+    return frontmatter
+
+
+def _find_isa_frontmatter_for_thread(
+    hermes_home: Path,
+    thread_id: str,
+) -> tuple[Path, dict[str, str]] | None:
+    """Find an existing ISA whose frontmatter ``thread:`` links this Discord thread."""
+    if not thread_id:
+        return None
+    work_root = hermes_home / "work"
+    if not work_root.is_dir():
+        return None
+    for isa_path in sorted(work_root.glob("*/ISA.md")):
+        frontmatter = _read_isa_frontmatter(isa_path)
+        if str(frontmatter.get("thread", "")).strip() == thread_id:
+            return isa_path, frontmatter
+    return None
+
+
+def _load_claude_kanban_bridge() -> Any:
+    """Load ``scripts/claude_kanban_bridge.py`` from this checkout."""
+    repo_root = Path(__file__).resolve().parents[1]
+    bridge_path = repo_root / "scripts" / "claude_kanban_bridge.py"
+    spec = importlib.util.spec_from_file_location("hermes_claude_kanban_bridge", bridge_path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"could not load claude_kanban_bridge from {bridge_path}")
+    module = importlib.util.module_from_spec(spec)
+    previous_repo_root = os.environ.get("HERMES_REPO_ROOT")
+    os.environ["HERMES_REPO_ROOT"] = str(repo_root)
+    try:
+        spec.loader.exec_module(module)
+    finally:
+        if previous_repo_root is None:
+            os.environ.pop("HERMES_REPO_ROOT", None)
+        else:
+            os.environ["HERMES_REPO_ROOT"] = previous_repo_root
+    return module
+
+
+def _complete_kanban_via_bridge(
+    card_id: str,
+    board: str | None = None,
+    *,
+    summary: str = _KANBAN_COMPLETION_SUMMARY,
+) -> None:
+    """Complete a Kanban card via the ISA-gated claude bridge seam."""
+    bridge = _load_claude_kanban_bridge()
+    rc = bridge.run(card_id, board, summary=summary)
+    if rc != 0:
+        raise RuntimeError(f"claude_kanban_bridge returned exit code {rc} for {card_id}")
+
+
+def _canonical_isa_id(slug: str, sid: str, created_at_iso: str) -> str:
+    """Build a canonical ISA id per ISA-SPEC §2: ``YYYYMMDD-HHMM_<slug>-<sid8>``.
+
+    The sid8 suffix disambiguates same-slug sessions (two threads named
+    ``config`` would otherwise collide on the same ISA dir).
+    """
+    try:
+        ts = datetime.fromisoformat(created_at_iso.replace("Z", "+00:00"))
+    except Exception:
+        ts = datetime.now(timezone.utc)
+    date_part = ts.strftime("%Y%m%d-%H%M")
+    slug_clean = slug or "task"
+    return f"{date_part}_{slug_clean}-{sid[:8]}"
+
+
+_ISA_STUB_TEMPLATE = """---
+isa:      {isa_id}
+task:     "{task}"
+tier:     E2
+phase:    scaffold
+progress: 0/0
+card:     "-"
+board:    "-"
+branch:   {branch}
+hive:     "-"
+owner:    hermes-codex
+started:  {started}
+updated:  {started}
+session:  {sid}
+worktree: {worktree}
+thread:   {thread_id}
+---
+
+# {task}
+
+> **Workflow contract for this session**
+>
+> 1. **scaffold** — fill in Goals, Constraints, ISCs below. You are in phase `scaffold` until the plan is concrete enough to start executing.
+> 2. **execute** — write the code in this worktree (`{worktree}`). Edit/Write are sandboxed to that path. When you finish an iteration, `git add -A && git commit -m "..."` inside the worktree. Tick the matching ISC `[x]`.
+> 3. **verify** — when the iteration is implementation-complete, run `/review` in this thread to trigger Opus peer review. **Do not push manually** — the merge broker takes over on APPROVE.
+> 4. **complete** — set on PR-merge by the dispatcher. Hands-off.
+
+## 1. Goals
+- TODO: what is this session's outcome?
+
+## 2. Constraints
+- Stay inside worktree `{worktree}` (sandbox enforced).
+- Branch `{branch}` is yours. Other sessions own their own branches.
+
+## 3. ISCs (Independent State Checks)
+- [ ] TODO — replace with verifiable checkboxes the reviewer can run.
+
+## 4. Plan
+TODO.
+
+## 5. Decisions
+"""
+
+
+def _bootstrap_isa(
+    *,
+    isa_path: Path,
+    isa_id: str,
+    task: str,
+    branch: str,
+    sid: str,
+    worktree: str,
+    thread_id: str,
+    started: str,
+    card_id: str | None = None,
+    board: str | None = None,
+) -> None:
+    """Write an ISA stub if one doesn't already exist at ``isa_path``.
+
+    Idempotent — if the file is already there (operator pre-wrote it,
+    or a prior session crashed mid-flight), we leave it alone.
+    """
+    try:
+        isa_path.parent.mkdir(parents=True, exist_ok=True)
+        if isa_path.exists():
+            return
+        text = _ISA_STUB_TEMPLATE.format(
+            isa_id=isa_id,
+            task=task or isa_id,
+            branch=branch,
+            sid=sid,
+            worktree=worktree,
+            thread_id=thread_id,
+            started=started,
+        )
+        if card_id:
+            text = text.replace('card:     "-"', f'card:     "{card_id}"', 1)
+        if board:
+            text = text.replace('board:    "-"', f'board:    "{board}"', 1)
+        isa_path.write_text(text, encoding="utf-8")
+        log.info("bootstrap_isa: wrote %s", isa_path)
+    except Exception as exc:
+        log.warning("bootstrap_isa: failed for %s: %s", isa_path, exc)
 
 
 class SessionNotFoundError(KeyError):
@@ -66,6 +314,9 @@ class ThreadEvent:
     text: str = ""
     author_id: str = ""
     isa_slug: str = "task"
+    kanban_card_id: str | None = None
+    kanban_board: str | None = None
+    isa_path: str | None = None
 
 
 @dataclass
@@ -119,7 +370,7 @@ class CodexSessionDispatcher(_CommandsMixin):
         peer_review_orchestrator: Any,
         merge_broker: Any,
         discord_send: Callable[[str, str], Awaitable[None]],
-        kanban_complete: Callable[[str], Any] | None = None,
+        kanban_complete: Callable[..., Any] | None = None,
         discord_archive_thread: Callable[[str], Awaitable[None]] | None = None,
         base_branch: str | None = None,
     ) -> None:
@@ -141,7 +392,10 @@ class CodexSessionDispatcher(_CommandsMixin):
         self._peer_review = peer_review_orchestrator  # P2+ — stored, not called in P1
         self._merge_broker = merge_broker              # P3+ — stored, not called in P1
         self._discord_send = discord_send
-        self._kanban_complete = kanban_complete
+        self._kanban_complete = kanban_complete or _complete_kanban_via_bridge
+        self._kanban_complete_uses_bridge = (
+            kanban_complete is None or kanban_complete is _complete_kanban_via_bridge
+        )
         self._discord_archive_thread = discord_archive_thread  # P3.5+ — closeout archive
         if base_branch is None:
             base_branch = os.environ.get("HERMES_CODEX_BASE_BRANCH", "").strip() or "fork/main"
@@ -203,15 +457,53 @@ class CodexSessionDispatcher(_CommandsMixin):
             raise WorktreeAllocationError(str(exc)) from exc
 
         now = _now_iso()
+        linked_isa_meta: dict[str, str] = {}
+        explicit_isa_path = _clean_optional_ref(getattr(event, "isa_path", None))
+        if explicit_isa_path:
+            linked_isa_meta = _read_isa_frontmatter(Path(explicit_isa_path))
+        else:
+            linked = _find_isa_frontmatter_for_thread(self._hermes_home, thread_id)
+            if linked is not None:
+                _, linked_isa_meta = linked
+
+        kanban_card_id = _clean_optional_ref(getattr(event, "kanban_card_id", None))
+        if kanban_card_id is None:
+            kanban_card_id = _clean_optional_ref(linked_isa_meta.get("card"))
+        kanban_board = _clean_optional_ref(getattr(event, "kanban_board", None))
+        if kanban_board is None:
+            kanban_board = _clean_optional_ref(linked_isa_meta.get("board"))
+
+        # Per ISA-SPEC §2 the canonical isa-id is
+        # ``YYYYMMDD-HHMM_<slug>-<sid8>``. The bare-slug path used in P1
+        # collided across same-slug sessions and never existed on disk.
+        # Bootstrap the ISA stub (the worker's plan doc) at the canonical
+        # location now.
+        isa_id = _canonical_isa_id(isa_slug, sid, now)
+        isa_path = self._hermes_home / "work" / isa_id / "ISA.md"
+        branch_name = f"codex/{sid}/{isa_slug}"
+        _bootstrap_isa(
+            isa_path=isa_path,
+            isa_id=isa_id,
+            task=isa_slug,
+            branch=branch_name,
+            sid=sid,
+            worktree=str(wt.path),
+            thread_id=thread_id,
+            started=now,
+            card_id=kanban_card_id,
+            board=kanban_board,
+        )
         row = {
             "session_id": sid,
             "thread_id": thread_id,
             "channel_id": event.channel_id,
-            "kanban_card_id": None,
+            "kanban_card_id": kanban_card_id,
+            "kanban_board": kanban_board,
             "worktree_path": str(wt.path),
             "tmux_session": None,  # deprecated — kept for schema back-compat
-            "isa_id": isa_slug,
-            "isa_path": str(self._hermes_home / "work" / isa_slug / "ISA.md"),
+            "isa_id": isa_id,
+            "isa_slug": isa_slug,
+            "isa_path": str(isa_path),
             "state": "CLAIMED",
             "paused": False,
             "queued_messages": [],
@@ -359,7 +651,14 @@ class CodexSessionDispatcher(_CommandsMixin):
         try:
             if row["state"] in terminal_states and self._kanban_complete and row.get("kanban_card_id"):
                 try:
-                    self._kanban_complete(row["kanban_card_id"])
+                    if self._kanban_complete_uses_bridge:
+                        self._kanban_complete(
+                            row["kanban_card_id"],
+                            row.get("kanban_board"),
+                            summary=_KANBAN_COMPLETION_SUMMARY,
+                        )
+                    else:
+                        self._kanban_complete(row["kanban_card_id"])
                 except Exception as exc:
                     log.warning("on_thread_archive: kanban_complete failed: %s", exc)
             try:
@@ -391,9 +690,9 @@ class CodexSessionDispatcher(_CommandsMixin):
                 # P3.5: COMPLETE / ESCALATED sessions have already been
                 # finalized; their worktree may have been released, but
                 # that's expected and must not flip them to ORPHANED.
-                if row.get("state") in {"COMPLETE", "ESCALATED"}:
+                if row.get("state") in {"COMPLETE", "ESCALATED", "MERGING"}:
                     log.debug(
-                        "on_bot_restart: session %s in terminal state %s — skipping",
+                        "on_bot_restart: session %s in terminal/in-flight state %s — skipping",
                         sid, row.get("state"),
                     )
                     continue
@@ -440,7 +739,8 @@ class CodexSessionDispatcher(_CommandsMixin):
     async def on_phase_verify(self, thread_id: str) -> None:
         """Auto-trigger Opus peer-review for a session that hit phase: verify.
 
-        Called by CodexPhaseWatcher when an ISA transitions into ``verify``.
+        Called by the ``/review`` slash command (see
+        codex_session_dispatcher_commands) when the worker is ready for review.
         Looks up the session row, collects the diff from the worktree, asks
         the orchestrator for a verdict, then runs the verdict-specific
         side effects (Discord post, kanban comment, ISA Decisions append).
@@ -533,7 +833,14 @@ class CodexSessionDispatcher(_CommandsMixin):
         card_id = row.get("kanban_card_id")
         if card_id and self._kanban_complete is not None:
             try:
-                self._kanban_complete(card_id)
+                if self._kanban_complete_uses_bridge:
+                    self._kanban_complete(
+                        card_id,
+                        row.get("kanban_board"),
+                        summary=_KANBAN_COMPLETION_SUMMARY,
+                    )
+                else:
+                    self._kanban_complete(card_id)
             except Exception as exc:
                 log.warning(
                     "on_pr_merged: kanban_complete failed for %s: %s", card_id, exc,
@@ -665,11 +972,18 @@ class CodexSessionDispatcher(_CommandsMixin):
             # MergeResult with the PR URL + classification + auto-merge label
             # (which Mergify / Actions handles server-side).
             if self._merge_broker is not None:
+                # ``isa_slug`` is the git-ref-safe slug used by the broker
+                # when the worktree was allocated.  ``isa_id`` since 2026-05-26
+                # is the dated canonical ISA-SPEC id (e.g.
+                # ``20260526-1645_notionformat-b5728e4a``) and would NOT
+                # match the actual branch name. Old rows pre-backfill store
+                # the slug in ``isa_id`` directly — keep the fallback.
+                _branch_slug = row.get("isa_slug") or row.get("isa_id") or "task"
                 try:
                     result = await self._merge_broker.merge(
                         session_id=sid,
                         worktree=Path(row.get("worktree_path", "")),
-                        branch=f"codex/{sid}/{row.get('isa_id', 'task')}",
+                        branch=f"codex/{sid}/{_branch_slug}",
                         isa_path=Path(row.get("isa_path", "")),
                         summary=rationale_short,
                     )
@@ -691,7 +1005,7 @@ class CodexSessionDispatcher(_CommandsMixin):
                 # data it needs to poll this PR and close the loop.
                 row["pr_number"] = result.pr_number
                 row["pr_url"] = result.pr_url
-                row["head_branch"] = f"codex/{sid}/{row.get('isa_id', 'task')}"
+                row["head_branch"] = f"codex/{sid}/{_branch_slug}"
                 row["merge_label"] = result.classification
                 row["merge_requested_at"] = _now_iso()
                 row["pr_state"] = "OPEN"
@@ -792,14 +1106,21 @@ class CodexSessionDispatcher(_CommandsMixin):
         if not self._sessions_path.exists():
             return {"version": CURRENT_VERSION, "sessions": {}}
         try:
-            with open(self._sessions_path, "r", encoding="utf-8") as fd:
-                fcntl.flock(fd, fcntl.LOCK_SH)
-                try:
-                    data = json.load(fd)
-                finally:
-                    fcntl.flock(fd, fcntl.LOCK_UN)
-        except (json.JSONDecodeError, OSError) as exc:
-            log.warning("codex_sessions.json unreadable, starting empty: %s", exc)
+            data = load_locked_json(self._sessions_path)
+        except json.JSONDecodeError as exc:
+            quarantine = _quarantine_state_file(self._sessions_path, exc)
+            data = {"version": CURRENT_VERSION, "sessions": {}}
+            if quarantine is not None:
+                log.warning(
+                    "codex_sessions.json corrupt; quarantined to %s and starting fresh: %s",
+                    quarantine,
+                    exc,
+                )
+            else:
+                log.warning("codex_sessions.json corrupt; starting fresh without quarantine: %s", exc)
+            return data
+        except OSError as exc:
+            log.warning("codex_sessions.json unreadable, starting empty with loud signal: %s", exc)
             return {"version": CURRENT_VERSION, "sessions": {}}
 
         version = data.get("version", 1)
@@ -820,17 +1141,7 @@ class CodexSessionDispatcher(_CommandsMixin):
 
     def _write_state(self, state: dict) -> None:
         """Write codex_sessions.json with exclusive lock + atomic rename (spec §5)."""
-        self._sessions_path.parent.mkdir(parents=True, exist_ok=True)
-        tmp_path = self._sessions_path.with_suffix(".json.tmp")
-
-        with open(self._sessions_path, "a+", encoding="utf-8") as lock_fd:
-            fcntl.flock(lock_fd, fcntl.LOCK_EX)
-            try:
-                with open(tmp_path, "w", encoding="utf-8") as tmp_fd:
-                    json.dump(state, tmp_fd, indent=2)
-                os.replace(tmp_path, self._sessions_path)
-            finally:
-                fcntl.flock(lock_fd, fcntl.LOCK_UN)
+        write_locked_json(self._sessions_path, state, indent=2)
 
     # ── tmux helpers ──────────────────────────────────────────────────────────
 

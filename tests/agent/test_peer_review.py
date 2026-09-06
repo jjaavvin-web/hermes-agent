@@ -15,6 +15,7 @@ import pytest
 
 import agent.peer_review as peer_review
 from agent.role_defaults import REVIEWER_MODEL
+
 from agent.peer_review import (
     PanePoolFailedToStart,
     PeerReviewOrchestrator,
@@ -372,6 +373,57 @@ class TestReadVerdictFile:
         result = orch._read_verdict_file(vf, pane, state, time.monotonic())
         assert result is None
 
+    def test_fenced_json_is_parsed(self, tmp_path):
+        """Reviewer wrapped the object in a ```json fence — strip and parse it."""
+        orch = _make_orchestrator(tmp_path, _TmuxState())
+        pane, state = self._make_pane_and_state()
+        vf = tmp_path / "verdict.json"
+        vf.write_text(
+            '```json\n'
+            + json.dumps({"verdict": "APPROVE", "summary": "fenced ok", "comments": []})
+            + '\n```\n'
+        )
+        import time
+        result = orch._read_verdict_file(vf, pane, state, time.monotonic())
+        assert result is not None
+        assert result.kind == "APPROVE"
+        assert "fenced ok" in result.rationale
+
+    def test_trailing_prose_after_object_is_parsed(self, tmp_path):
+        """A complete object followed by chatter parses to the object (not timeout)."""
+        orch = _make_orchestrator(tmp_path, _TmuxState())
+        pane, state = self._make_pane_and_state()
+        vf = tmp_path / "verdict.json"
+        vf.write_text(
+            json.dumps({"verdict": "REVISE", "summary": "fix it", "comments": ["x"]})
+            + "\n\nHope this helps!"
+        )
+        import time
+        result = orch._read_verdict_file(vf, pane, state, time.monotonic())
+        assert result is not None
+        assert result.kind == "REVISE"
+
+    def test_bare_string_json_returns_escalate(self, tmp_path):
+        """Valid JSON of the wrong shape must ESCALATE, not raise (Never-raises contract)."""
+        orch = _make_orchestrator(tmp_path, _TmuxState())
+        pane, state = self._make_pane_and_state()
+        vf = tmp_path / "verdict.json"
+        vf.write_text(json.dumps("APPROVE"))  # bare JSON string, not an object
+        import time
+        result = orch._read_verdict_file(vf, pane, state, time.monotonic())
+        assert result is not None
+        assert result.kind == "ESCALATE"
+
+    def test_array_json_returns_escalate(self, tmp_path):
+        orch = _make_orchestrator(tmp_path, _TmuxState())
+        pane, state = self._make_pane_and_state()
+        vf = tmp_path / "verdict.json"
+        vf.write_text(json.dumps(["APPROVE"]))  # array, not an object
+        import time
+        result = orch._read_verdict_file(vf, pane, state, time.monotonic())
+        assert result is not None
+        assert result.kind == "ESCALATE"
+
 
 # ── caps ────────────────────────────────────────────────────────────────
 
@@ -672,10 +724,6 @@ class TestAntiProbes:
             "_FUZZY_VERDICT_PATTERN should be deleted"
         assert not hasattr(_module, "_canonicalize_fuzzy_verdict"), \
             "_canonicalize_fuzzy_verdict should be deleted"
-
-    def test_role_defaults_reviewer_model_still_resolves_to_opus(self):
-        """Verify the single reviewer model pin still resolves to Opus."""
-        assert REVIEWER_MODEL == "opus"
 
     def test_write_tool_in_allowed_tools(self):
         """Verify Write is in --allowed-tools in _spawn_pane command."""

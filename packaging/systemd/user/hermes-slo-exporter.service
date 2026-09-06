@@ -1,0 +1,9 @@
+[Unit]
+Description=Hermes SLO metrics exporter
+OnFailure=hermes-onfailure@%n.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/.local/share/hermes-agent
+Environment=PYTHONPATH=%h/.local/share/hermes-agent
+ExecStart=%h/.local/share/hermes-agent/venv/bin/python %h/.local/share/hermes-agent/scripts/observability/slo_exporter.py

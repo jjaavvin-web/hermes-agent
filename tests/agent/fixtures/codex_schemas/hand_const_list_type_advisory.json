@@ -1,0 +1,33 @@
+{
+  "$comment": "advisory keywords should be stripped for Codex",
+  "$id": "https://example.invalid/codex/sanitizer/advisory",
+  "properties": {
+    "email": {
+      "description": "Contact email with advisory validation keywords",
+      "examples": [
+        "lane@example.com"
+      ],
+      "format": "email",
+      "pattern": "^.+@example\\.com$",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "mode": {
+      "const": "strict",
+      "description": "Literal strict mode marker"
+    },
+    "payload": {
+      "contentEncoding": "base64",
+      "contentMediaType": "application/json",
+      "description": "Encoded payload blob",
+      "type": "string"
+    }
+  },
+  "required": [
+    "mode",
+    "email"
+  ],
+  "type": "object"
+}

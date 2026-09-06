@@ -23,7 +23,7 @@ def _make_adapter() -> WebhookAdapter:
 def _capture_worktree_adds(monkeypatch):
     add_cmds: list[list[str]] = []
 
-    def _fake_run(cmd, capture_output=True, text=True):
+    def _fake_run(cmd, capture_output=True, text=True, **kwargs):
         if cmd[:5] == ["git", "-C", cmd[2], "rev-parse", "--verify"]:
             return SimpleNamespace(returncode=1, stdout="", stderr="")
         if len(cmd) >= 6 and cmd[0] == "git" and cmd[3:6] == ["worktree", "add", cmd[5]]:
@@ -103,3 +103,16 @@ def test_worktree_paths_are_cached_per_route(tmp_path, monkeypatch):
         "relay": str(hermes_home / "relay-wt" / "relay"),
         "proj-b": str(hermes_home / "relay-wt" / "proj-b"),
     }
+
+
+def test_route_worktree_base_override_is_used_for_new_branch(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes-home"))
+    add_cmds = _capture_worktree_adds(monkeypatch)
+    adapter = _make_adapter()
+
+    path = adapter._ensure_relay_worktree(
+        "project-c", {"worktree_branch": "project-c/work", "worktree_base": "fork/release"},
+    )
+
+    assert path == str(tmp_path / "hermes-home" / "relay-wt" / "project-c")
+    assert add_cmds[0][-3:] == ["-b", "project-c/work", "fork/release"]

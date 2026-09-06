@@ -151,6 +151,10 @@ async def test_merge_sensitive_change_labels_needs_human(tmp_path):
             _FakeProc(returncode=0),  # fetch
             _FakeProc(returncode=0),  # rebase
             _FakeProc(returncode=0),  # push
+            # _resolve_gh_repo first call (cached afterwards) — returns
+            # the fork URL so _ensure_pr can build ``--repo`` args.
+            _FakeProc(returncode=0,
+                       stdout="git@github.com:owner/repo.git\n"),
             _FakeProc(returncode=0, stdout="agent/runtime.py\n"),  # diff
         ],
         "python3": _FakeProc(returncode=0),

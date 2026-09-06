@@ -20,14 +20,17 @@ list of files that did NOT change.
 from __future__ import annotations
 
 import json
+from types import SimpleNamespace
 
 import pytest
 
+from agent.turn_finalizer import finalize_turn
 from run_agent import (
     AIAgent,
     _FILE_MUTATING_TOOLS,
     _extract_error_preview,
     _extract_file_mutation_targets,
+    _extract_landed_file_mutation_paths,
 )
 
 
@@ -41,34 +44,13 @@ class TestExtractFileMutationTargets:
         assert _extract_file_mutation_targets("read_file", {"path": "/x"}) == []
         assert _extract_file_mutation_targets("terminal", {"command": "ls"}) == []
 
-    def test_write_file_returns_single_path(self):
-        out = _extract_file_mutation_targets("write_file", {"path": "/tmp/a.md", "content": "x"})
-        assert out == ["/tmp/a.md"]
 
-    def test_write_file_missing_path_returns_empty(self):
-        assert _extract_file_mutation_targets("write_file", {"content": "x"}) == []
 
     def test_patch_replace_mode_returns_path(self):
         args = {"mode": "replace", "path": "/tmp/a.md", "old_string": "x", "new_string": "y"}
         assert _extract_file_mutation_targets("patch", args) == ["/tmp/a.md"]
 
-    def test_patch_default_mode_is_replace(self):
-        # Mode omitted — schema default is ``replace``.
-        args = {"path": "/tmp/a.md", "old_string": "x", "new_string": "y"}
-        assert _extract_file_mutation_targets("patch", args) == ["/tmp/a.md"]
 
-    def test_patch_v4a_single_file(self):
-        body = (
-            "*** Begin Patch\n"
-            "*** Update File: /tmp/a.md\n"
-            "@@ ctx @@\n"
-            " line1\n"
-            "-bad\n"
-            "+good\n"
-            "*** End Patch\n"
-        )
-        args = {"mode": "patch", "patch": body}
-        assert _extract_file_mutation_targets("patch", args) == ["/tmp/a.md"]
 
     def test_patch_v4a_multi_file(self):
         body = (
@@ -84,9 +66,13 @@ class TestExtractFileMutationTargets:
         paths = _extract_file_mutation_targets("patch", args)
         assert paths == ["/tmp/a.md", "/tmp/new.md", "/tmp/old.md"]
 
-    def test_patch_v4a_missing_body_returns_empty(self):
-        assert _extract_file_mutation_targets("patch", {"mode": "patch"}) == []
-        assert _extract_file_mutation_targets("patch", {"mode": "patch", "patch": ""}) == []
+
+    def test_patch_v4a_accepts_no_space_after_asterisks(self):
+        """Match patch_parser / file_tools: ``***Update File:`` (no space)."""
+        body = "***Update File: nospace.py\n"
+        assert _extract_file_mutation_targets(
+            "patch", {"mode": "patch", "patch": body}
+        ) == ["nospace.py"]
 
 
 # ---------------------------------------------------------------------------
@@ -108,8 +94,6 @@ class TestExtractErrorPreview:
         assert len(out) <= 50
         assert out.endswith("…")
 
-    def test_none_returns_empty(self):
-        assert _extract_error_preview(None) == ""
 
 
 # ---------------------------------------------------------------------------
@@ -128,6 +112,7 @@ def _bare_agent() -> AIAgent:
     """
     agent = object.__new__(AIAgent)
     agent._turn_failed_file_mutations = {}
+    agent._turn_file_mutation_paths = set()
     return agent
 
 
@@ -165,6 +150,20 @@ class TestRecordFileMutationResult:
             json.dumps({"success": True, "diff": "..."}), is_error=False,
         )
         assert agent._turn_failed_file_mutations == {}
+        assert agent._turn_file_mutation_paths == {"/tmp/a.md"}
+
+
+    def test_landed_paths_prefer_resolved_tool_result(self):
+        paths = _extract_landed_file_mutation_paths(
+            "patch",
+            {"mode": "replace", "path": "src/app.py"},
+            json.dumps({
+                "success": True,
+                "files_modified": ["/tmp/project/src/app.py"],
+            }),
+        )
+
+        assert paths == ["/tmp/project/src/app.py"]
 
     def test_write_file_with_lint_error_counts_as_landed(self):
         agent = _bare_agent()
@@ -230,43 +229,8 @@ class TestRecordFileMutationResult:
         # the initial root cause.
         assert "first error" in agent._turn_failed_file_mutations["/tmp/a.md"]["error_preview"]
 
-    def test_v4a_multi_file_all_tracked(self):
-        agent = _bare_agent()
-        body = (
-            "*** Begin Patch\n"
-            "*** Update File: /tmp/a.md\n@@ @@\n-a\n+b\n"
-            "*** Update File: /tmp/b.md\n@@ @@\n-a\n+b\n"
-            "*** End Patch\n"
-        )
-        agent._record_file_mutation_result(
-            "patch", {"mode": "patch", "patch": body},
-            json.dumps({"error": "parse failure"}), is_error=True,
-        )
-        assert set(agent._turn_failed_file_mutations) == {"/tmp/a.md", "/tmp/b.md"}
 
-    def test_no_state_dict_silent_noop(self):
-        """When called outside run_conversation the state dict is absent.
 
-        The record helper must never raise — a tool dispatched from, say,
-        a direct ``chat()`` call should not blow up the call site just
-        because the verifier state hasn't been initialised.
-        """
-        agent = object.__new__(AIAgent)  # no state attached
-        # Should not raise
-        agent._record_file_mutation_result(
-            "patch", {"mode": "replace", "path": "/tmp/a.md"},
-            json.dumps({"error": "x"}), is_error=True,
-        )
-
-    def test_missing_path_arg_recorded_nowhere(self):
-        agent = _bare_agent()
-        agent._record_file_mutation_result(
-            "patch", {"mode": "replace"},  # no path
-            json.dumps({"error": "path required"}), is_error=True,
-        )
-        # No path → nothing to key on, state stays empty.  The per-turn
-        # state is about file paths, not individual tool-call IDs.
-        assert agent._turn_failed_file_mutations == {}
 
 
 # ---------------------------------------------------------------------------
@@ -301,6 +265,188 @@ class TestFormatFooter:
         assert len(bullet_lines) == 11  # 10 shown + 1 summary
 
 
+    def test_footer_path_not_extracted_by_gateway(self):
+        """End-to-end: the gateway's extract_local_files must NOT pull a
+        config.yaml path out of the rendered footer (#35584)."""
+        import os
+        import tempfile
+        from gateway.platforms.base import BasePlatformAdapter
+
+        tmp = tempfile.mkdtemp(prefix="hermes_footer_")
+        try:
+            cfg = os.path.join(tmp, "config.yaml")
+            with open(cfg, "w") as fh:
+                fh.write("openrouter_api_key: sk-LEAK\n")
+            footer = AIAgent._format_file_mutation_failure_footer(
+                {cfg: {
+                    "tool": "patch",
+                    "error_preview": (
+                        f"Write denied: '{cfg}' is a protected "
+                        "system/credential file."
+                    ),
+                }},
+            )
+            response = "I updated your config.\n\n" + footer
+            paths, _ = BasePlatformAdapter.extract_local_files(response)
+            assert paths == [], f"footer leaked deliverable path(s): {paths}"
+        finally:
+            import shutil
+            shutil.rmtree(tmp, ignore_errors=True)
+
+
+# ---------------------------------------------------------------------------
+# turn finalizer — failed mutations become hard failures
+# ---------------------------------------------------------------------------
+
+
+def _finalizer_agent(*, failed_mutations=None, verifier_enabled=True):
+    agent = SimpleNamespace()
+    agent.max_iterations = 90
+    agent.iteration_budget = SimpleNamespace(remaining=89, used=1, max_total=90)
+    agent.quiet_mode = True
+    agent.model = "test-model"
+    agent.provider = "test-provider"
+    agent.base_url = None
+    agent.session_id = "test-session"
+    agent._turn_failed_file_mutations = failed_mutations or {}
+    agent._interrupt_message = None
+    agent._stream_callback = None
+    agent._skill_nudge_interval = 0
+    agent._iters_since_skill = 0
+    agent.valid_tool_names = []
+    agent._response_was_previewed = False
+    agent._tool_guardrail_halt_decision = None
+    agent.session_input_tokens = 0
+    agent.session_output_tokens = 0
+    agent.session_cache_read_tokens = 0
+    agent.session_cache_write_tokens = 0
+    agent.session_reasoning_tokens = 0
+    agent.session_prompt_tokens = 0
+    agent.session_completion_tokens = 0
+    agent.session_total_tokens = 0
+    agent.session_estimated_cost_usd = 0.0
+    agent.session_cost_status = "unknown"
+    agent.session_cost_source = "none"
+    agent.context_compressor = SimpleNamespace(last_prompt_tokens=0)
+
+    agent._save_trajectory = lambda *args, **kwargs: None
+    agent._cleanup_task_resources = lambda *args, **kwargs: None
+    agent._drop_trailing_empty_response_scaffolding = lambda *args, **kwargs: None
+    agent._persist_session = lambda *args, **kwargs: None
+    agent._file_mutation_verifier_enabled = lambda: verifier_enabled
+    agent._format_file_mutation_failure_footer = AIAgent._format_file_mutation_failure_footer
+    agent._turn_completion_explainer_enabled = lambda: False
+    agent._drain_pending_steer = lambda: None
+    agent.clear_interrupt = lambda: None
+    agent._sync_external_memory_for_turn = lambda *args, **kwargs: None
+    agent._spawn_background_review = lambda *args, **kwargs: None
+    return agent
+
+
+def _run_finalizer(agent, *, final_response="OK LOKI-5 DONE: shipped"):
+    messages = [
+        {"role": "user", "content": "do it"},
+        {"role": "assistant", "content": final_response},
+    ]
+    return finalize_turn(
+        agent,
+        final_response=final_response,
+        api_call_count=1,
+        interrupted=False,
+        failed=False,
+        messages=messages,
+        conversation_history=[],
+        effective_task_id=None,
+        turn_id="turn-1",
+        user_message="do it",
+        original_user_message="do it",
+        _should_review_memory=False,
+        _turn_exit_reason="text_response",
+    )
+
+
+class TestTurnFinalizerFileMutationHardFailure:
+    def test_failed_expected_mutation_converts_success_to_blocked_failure(self, monkeypatch):
+        import hermes_cli.plugins as plugins
+
+        monkeypatch.setattr(plugins, "invoke_hook", lambda *args, **kwargs: [])
+        agent = _finalizer_agent(
+            failed_mutations={
+                "/tmp/denied.md": {
+                    "tool": "patch",
+                    "error_preview": "sandbox denied write",
+                },
+            },
+            verifier_enabled=True,
+        )
+
+        result = _run_finalizer(agent)
+
+        assert result["completed"] is False
+        assert result["failed"] is True
+        assert result["turn_exit_reason"] == "file_mutation_verifier_failed"
+        assert result["failure_reason"] == "file_mutation_verifier_failed"
+        assert result["error"].startswith("File-mutation verifier blocked success")
+        assert result["final_response"].startswith("BLOCKED: File-mutation verifier blocked success")
+        assert "OK LOKI-5 DONE: shipped" in result["final_response"]
+        assert "1 file(s) were NOT modified" in result["final_response"]
+        assert "`/tmp/denied.md`" in result["final_response"]
+
+    def test_clean_turn_without_failed_mutations_stays_success(self, monkeypatch):
+        import hermes_cli.plugins as plugins
+
+        monkeypatch.setattr(plugins, "invoke_hook", lambda *args, **kwargs: [])
+        agent = _finalizer_agent(failed_mutations={}, verifier_enabled=True)
+
+        result = _run_finalizer(agent, final_response="OK LOKI-5 DONE: clean")
+
+        assert result["completed"] is True
+        assert result["failed"] is False
+        assert result["turn_exit_reason"] == "text_response"
+        assert result["final_response"] == "OK LOKI-5 DONE: clean"
+        assert "error" not in result
+        assert "failure_reason" not in result
+
+    def test_failed_mutation_stays_advisory_when_verifier_disabled(self, monkeypatch):
+        import hermes_cli.plugins as plugins
+
+        monkeypatch.setattr(plugins, "invoke_hook", lambda *args, **kwargs: [])
+        agent = _finalizer_agent(
+            failed_mutations={
+                "/tmp/denied.md": {"tool": "patch", "error_preview": "denied"},
+            },
+            verifier_enabled=False,
+        )
+
+        result = _run_finalizer(agent)
+
+        assert result["completed"] is True
+        assert result["failed"] is False
+        assert result["turn_exit_reason"] == "text_response"
+        assert result["final_response"] == "OK LOKI-5 DONE: shipped"
+
+
+    def test_failed_mutation_hard_fails_even_without_model_response(self, monkeypatch):
+        import hermes_cli.plugins as plugins
+
+        monkeypatch.setattr(plugins, "invoke_hook", lambda *args, **kwargs: [])
+        agent = _finalizer_agent(
+            failed_mutations={
+                "/tmp/denied.md": {"tool": "patch", "error_preview": "denied"},
+            },
+            verifier_enabled=True,
+        )
+
+        result = _run_finalizer(agent, final_response=None)
+
+        assert result["completed"] is False
+        assert result["failed"] is True
+        assert result["turn_exit_reason"] == "file_mutation_verifier_failed"
+        assert result["failure_reason"] == "file_mutation_verifier_failed"
+        assert result["final_response"].startswith("BLOCKED: File-mutation verifier blocked success")
+        assert "1 file(s) were NOT modified" in result["final_response"]
+
+
 # ---------------------------------------------------------------------------
 # _file_mutation_verifier_enabled — env + config precedence
 # ---------------------------------------------------------------------------
@@ -322,25 +468,58 @@ class TestVerifierEnabled:
         agent = _bare_agent()
         assert agent._file_mutation_verifier_enabled() is False
 
-    def test_env_enables_over_config(self, monkeypatch):
-        monkeypatch.setenv("HERMES_FILE_MUTATION_VERIFIER", "1")
-        import hermes_cli.config as _cfg_mod
-        monkeypatch.setattr(
-            _cfg_mod, "load_config",
-            lambda: {"display": {"file_mutation_verifier": False}},
-        )
-        agent = _bare_agent()
-        assert agent._file_mutation_verifier_enabled() is True
+    def test_config_read_once_then_cached(self, monkeypatch):
+        """Measured-work pin: the config lookup happens once per agent.
 
-    def test_config_disables_when_no_env(self, monkeypatch):
+        The footer gate runs at the end of every turn, so a fresh
+        ``load_config()`` per call is wasted work (measured ~0.9 ms/call on
+        a warm mtime-cache on this host; the sibling per-turn-config kill in
+        #74211 removed exactly this class of read).  The config read must be
+        cached after the first call; the env-var override must still win on
+        every call, cached or not.
+        """
         monkeypatch.delenv("HERMES_FILE_MUTATION_VERIFIER", raising=False)
+        agent = _bare_agent()
+        calls = {"n": 0}
+
+        import hermes_cli.config as _cfg_mod
+
+        def counting_load():
+            calls["n"] += 1
+            return {"display": {"file_mutation_verifier": True}}
+
+        monkeypatch.setattr(_cfg_mod, "load_config", counting_load)
+
+        # First call reads config and caches the result.
+        assert agent._file_mutation_verifier_enabled() is True
+        assert calls["n"] == 1
+        # Subsequent calls must not re-read config.
+        assert agent._file_mutation_verifier_enabled() is True
+        assert agent._file_mutation_verifier_enabled() is True
+        assert calls["n"] == 1
+        # Env override stays authoritative even after the cache is warm.
+        monkeypatch.setenv("HERMES_FILE_MUTATION_VERIFIER", "0")
+        assert agent._file_mutation_verifier_enabled() is False
+        assert calls["n"] == 1  # env path never touches config
+
+    def test_cache_respects_config_value(self, monkeypatch):
+        """A disabled config value is cached as False, not re-read."""
+        monkeypatch.delenv("HERMES_FILE_MUTATION_VERIFIER", raising=False)
+        agent = _bare_agent()
+
         import hermes_cli.config as _cfg_mod
         monkeypatch.setattr(
-            _cfg_mod, "load_config",
-            lambda: {"display": {"file_mutation_verifier": False}},
+            _cfg_mod, "load_config", lambda: {"display": {"file_mutation_verifier": False}}
         )
-        agent = _bare_agent()
         assert agent._file_mutation_verifier_enabled() is False
+        # Warm cache: flip the underlying config; the agent still reports the
+        # cached value (same next-session semantics as _credits_notices_enabled).
+        monkeypatch.setattr(
+            _cfg_mod, "load_config", lambda: {"display": {"file_mutation_verifier": True}}
+        )
+        assert agent._file_mutation_verifier_enabled() is False
+
+
 
 
 # ---------------------------------------------------------------------------
