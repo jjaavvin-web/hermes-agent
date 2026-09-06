@@ -63,6 +63,10 @@ def test_lineage_binding():
     )
 
 
+# 190 items / 515 anchors / 282 proofs: 6.9 s unloaded here, 2.4 s with the
+# parse cache; the sliced CI job runs 8 pytest workers on a 4-vCPU runner, and
+# the first full-history run hit the fork's 30 s ceiling at this test.
+@pytest.mark.timeout(180)
 def test_all_docket_items_hold_for_this_tree():
     records = [
         fpl.evaluate_item(item, REPO, ancestry_mode=_ANCESTRY_MODE)

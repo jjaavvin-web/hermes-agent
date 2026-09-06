@@ -235,10 +235,31 @@ def split_package_rows(
 # ── Anchor evaluation ───────────────────────────────────────────────────────
 
 
+_PARSE_CACHE: dict = {}
+
+
+def _parse_cached(source: str) -> ast.Module:
+    """``ast.parse`` keyed by the source text's digest.
+
+    The docket walk evaluates ~515 anchors and ~282 proofs that keep hitting
+    the same modules (gateway/run.py alone is ~36k lines); parsing each on
+    every reference cost ~6.5 s unloaded and pushed the walk past the 30 s
+    per-test ceiling on a loaded 4-vCPU CI runner.
+    """
+    key = hashlib.blake2b(source.encode("utf-8", "surrogatepass"), digest_size=16).digest()
+    tree = _PARSE_CACHE.get(key)
+    if tree is None:
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            tree = ast.parse(source)
+        _PARSE_CACHE[key] = tree
+    return tree
+
+
 def _module_defines_symbol(source: str, symbol: str) -> bool:
     """True when ``symbol`` is a module-level def/class/assignment (AST)."""
     try:
-        tree = ast.parse(source)
+        tree = _parse_cached(source)
     except SyntaxError:
         return False
     for node in tree.body:
@@ -270,7 +291,7 @@ def _function_calls_callee(source: str, caller: str, callee: str) -> Tuple[bool,
     """AST call-edge check: some def named ``caller`` (any nesting) contains a
     call whose terminal name is ``callee``."""
     try:
-        tree = ast.parse(source)
+        tree = _parse_cached(source)
     except SyntaxError as exc:
         return False, f"does not parse ({exc})"
     found_caller = False
@@ -373,9 +394,7 @@ def proof_test_status(repo: Path, proof: Mapping[str, Any]) -> Tuple[bool, str]:
         return False, f"{node_id}: no test name in node id"
     base_name = name.split("::")[-1].split("[", 1)[0]
     try:
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore")
-            tree = ast.parse(test_path.read_text(encoding="utf-8", errors="replace"))
+        tree = _parse_cached(test_path.read_text(encoding="utf-8", errors="replace"))
     except SyntaxError as exc:
         return False, f"{node_id}: file does not parse ({exc})"
     for node in ast.walk(tree):
