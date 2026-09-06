@@ -10,6 +10,7 @@ import textwrap
 from pathlib import Path
 from typing import Any, cast
 
+import pytest
 from fastapi import FastAPI, Request
 from fastapi.routing import APIRoute
 
@@ -129,6 +130,12 @@ def test_dashboard_stream_query_token_allowed_and_missing_token_rejected():
     assert response.content_type == "text/event-stream"
 
 
+# Probes ~383 GET routes through the real app: measured 17-32 s unloaded on a
+# 4-vCPU box. Under the sliced CI job (8 parallel per-file pytest workers on a
+# 4-vCPU runner, 8x oversubscription of the thread-based timeout) it exceeds
+# the fork's 30 s addopts ceiling even though the standalone smoke gate step
+# passes. Same 180 s bump as tests/docker/conftest.py; assertions unchanged.
+@pytest.mark.timeout(180)
 def test_dashboard_smoke_enumerates_full_app_and_probes_all_api_get_routes(tmp_path, monkeypatch):
     from hermes_cli import cost_reconcile, web_server
     from hermes_state import SessionDB
