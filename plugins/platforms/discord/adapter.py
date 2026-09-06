@@ -9403,8 +9403,17 @@ def _define_discord_view_classes() -> None:
             self.allowed_user_ids = allowed_user_ids
             self.allowed_role_ids = allowed_role_ids or set()
             self.resolved = False
+            from tools import slash_confirm
+            pending = slash_confirm.get_pending(session_key) or {}
+            self.owner_user_id = pending.get("owner_user_id") if pending.get("confirm_id") == confirm_id else None
+            if self.owner_user_id is not None:
+                self.timeout = 300
+                self.remove_item(self.approve_always)
 
         def _check_auth(self, interaction: discord.Interaction) -> bool:
+            if self.owner_user_id is not None:
+                if str(interaction.user.id) != self.owner_user_id or getattr(interaction.user, "bot", False):
+                    return False
             return _component_check_auth(
                 interaction, self.allowed_user_ids, self.allowed_role_ids,
             )
@@ -9442,6 +9451,7 @@ def _define_discord_view_classes() -> None:
                 from tools import slash_confirm as _slash_confirm_mod
                 result_text = await _slash_confirm_mod.resolve(
                     self.session_key, self.confirm_id, choice,
+                    actor_user_id=str(interaction.user.id),
                 )
                 if result_text:
                     await interaction.followup.send(result_text)

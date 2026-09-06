@@ -511,6 +511,7 @@ TOOLSETS = {
         "tools": _HERMES_CORE_TOOLS + [
             "discord",
             "discord_admin",
+            "mcp_include_propose",
         ],
         "includes": []
     },
