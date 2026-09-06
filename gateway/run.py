@@ -6942,6 +6942,21 @@ class TurnRunner:
         _approval_session_key = ctx.session_key or ""
         _approval_session_token = set_current_session_key(_approval_session_key)
         register_gateway_notify(_approval_session_key, _approval_notify_sync)
+        from tools.mcp_include_tool import register_gateway as _register_mcp_proposal
+        from tools.mcp_include_tool import unregister_gateway as _unregister_mcp_proposal
+        if ctx.mcp_control_allowed and ctx.source.platform == Platform.DISCORD and ctx.source.user_id:
+            def _propose_mcp_include(server, include):
+                from gateway.mcp_include_operation import propose
+                proposal_event = MessageEvent(text="MCP include proposal", source=ctx.source)
+                future = safe_schedule_threadsafe(
+                    propose(self._runner, proposal_event, server, include),
+                    ctx._loop_for_step, logger=logger,
+                    log_message="MCP proposal scheduling failed",
+                )
+                if future is None:
+                    return {"status": "blocked", "message": "No gateway proposal loop."}
+                return future.result(timeout=30)
+            _register_mcp_proposal(_approval_session_key, _propose_mcp_include)
         try:
             # If _prepare_inbound_message_text buffered image paths for native
             # attachment, wrap the user turn as an OpenAI-style multimodal
@@ -7000,6 +7015,7 @@ class TurnRunner:
                 _conversation_kwargs["persist_user_timestamp"] = _persist_user_timestamp_override
             result = agent.run_conversation(_api_run_message, **_conversation_kwargs)
         finally:
+            _unregister_mcp_proposal(_approval_session_key)
             unregister_gateway_notify(_approval_session_key)
             # Drop any per-session terminal-deny patterns registered for this
             # run (webhook/relay routes register them at dispatch, keyed by the
@@ -18981,6 +18997,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             elif _norm_reply in {"cancel", "nevermind", "no"}:
                 _confirm_choice = "cancel"
             if _confirm_choice is not None:
+                if _pending_confirm.get("owner_user_id") is not None:
+                    return "Use the specific operation buttons; plain approval cannot select a config operation."
                 _resolved = await _slash_confirm_mod.resolve(
                     _quick_key, _pending_confirm.get("confirm_id"), _confirm_choice,
                 )
@@ -22710,6 +22728,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 persist_user_timestamp=persist_user_timestamp,
                 persist_user_display_kind=persist_user_display_kind,
                 message_type=event.message_type,
+                mcp_control_allowed=bool(not event.internal and event.allow_gateway_control),
             )
             _turn_seconds = time.monotonic() - _turn_started_monotonic
 
@@ -26059,6 +26078,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
 
     async def _execute_mcp_reload(self, event: MessageEvent) -> str:
+        from gateway.mcp_include_operation import operation_lock
+        lock = operation_lock(self)
+        if lock.locked():
+            return "MCP operation busy; no reload started."
+        async with lock:
+            return await self._execute_mcp_reload_unlocked(event)
+
+    async def _execute_mcp_reload_unlocked(self, event: MessageEvent, *, strict: bool = False) -> str:
         """Actually disconnect, reconnect, and notify MCP tool changes.
 
         Split out from ``_handle_reload_mcp_command`` so the confirmation
@@ -26130,6 +26157,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             # test_reload_mcp_preserves_per_agent_toolset_overrides.)
                             refresh_agent_mcp_tools(_agent, quiet_mode=True)
             except Exception as _exc:
+                if strict:
+                    raise
                 logger.debug(
                     "Failed to update cached agent tools after MCP reload: %s",
                     _exc,
@@ -26162,6 +26191,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             return "\n".join(lines)
 
         except Exception as e:
+            if strict:
+                raise
             logger.warning("MCP reload failed: %s", e)
             return t("gateway.reload_mcp.failed", error=e)
 
@@ -26303,6 +26334,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         title: str,
         message: str,
         handler,
+        owner_user_id: Optional[str] = None,
     ) -> Optional[str]:
         """Ask the user to confirm an expensive slash command.
 
@@ -26329,11 +26361,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             import itertools as _itertools
             counter = _itertools.count(1)
             self._slash_confirm_counter = counter
-        confirm_id = f"{next(counter)}"
+        import uuid
+        confirm_id = uuid.uuid4().hex if owner_user_id else f"{next(counter)}"
 
         # Register the pending confirm FIRST so a super-fast button click
         # cannot race the send_slash_confirm return.
-        _slash_confirm_mod.register(session_key, confirm_id, command, handler)
+        _slash_confirm_mod.register(session_key, confirm_id, command, handler, owner_user_id=owner_user_id)
 
         adapter = self._adapter_for_source(source)
         metadata = self._thread_metadata_for_source(source, self._reply_anchor_for_event(event))
@@ -26360,6 +26393,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if used_buttons:
             # Buttons rendered — no redundant text ack.
             return None
+        if owner_user_id is not None:
+            _slash_confirm_mod.clear(session_key)
+            return "BLOCKED: native operation buttons unavailable; no config changed."
         # Text fallback — return the prompt message as the direct reply.
         return message
 
@@ -30848,6 +30884,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         persist_user_timestamp: Optional[float] = None,
         persist_user_display_kind: Optional[str] = None,
         message_type: Optional[str] = None,
+        mcp_control_allowed: bool = False,
     ) -> Dict[str, Any]:
         """Profile-scoping wrapper around the agent run.
 
@@ -30868,6 +30905,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 persist_user_timestamp=persist_user_timestamp,
                 persist_user_display_kind=persist_user_display_kind,
                 message_type=message_type,
+                mcp_control_allowed=mcp_control_allowed,
             )
 
         profile_home = self._resolve_profile_home_for_source(source)
@@ -30881,6 +30919,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 persist_user_timestamp=persist_user_timestamp,
                 persist_user_display_kind=persist_user_display_kind,
                 message_type=message_type,
+                mcp_control_allowed=mcp_control_allowed,
             )
 
     def _profile_name_for_source(self, source: SessionSource) -> Optional[str]:
@@ -31050,6 +31089,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         persist_user_timestamp: Optional[float] = None,
         persist_user_display_kind: Optional[str] = None,
         message_type: Optional[str] = None,
+        mcp_control_allowed: bool = False,
     ) -> Dict[str, Any]:
         """
         Run the agent with the given message and context.
@@ -31317,6 +31357,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         turn_ctx = TurnContext(
             source=source,
+            mcp_control_allowed=mcp_control_allowed,
             _run_still_current=_run_still_current,
             _live_status_adapter=_live_status_adapter,
             _live_status_mode=_live_status_mode,

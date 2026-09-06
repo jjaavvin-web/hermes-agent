@@ -9,7 +9,7 @@ import stat
 import tempfile
 import time
 from pathlib import Path
-from typing import Any, Union
+from typing import Any, Union, Optional
 from urllib.parse import urlparse
 
 import yaml
@@ -557,6 +557,8 @@ def atomic_roundtrip_yaml_update(
     path: Union[str, Path],
     key_path: str,
     value: Any,
+    *,
+    expected_state: Optional[dict] = None,
 ) -> None:
     """Update one dotted YAML key while preserving comments and readable text.
 
@@ -611,6 +613,16 @@ def atomic_roundtrip_yaml_update(
             current[seg] = next_value
         current = next_value
         i += consumed
+
+    if expected_state is not None:
+        # Native scoped operations must prove the exact semantic delta BEFORE
+        # replacement. The ordinary CLI keeps its literal-dotted-key behavior.
+        import io
+        import yaml as yaml_safe
+        staged = io.StringIO()
+        yaml_rt.dump(config, staged)
+        if yaml_safe.safe_load(staged.getvalue()) != expected_state:
+            raise ValueError("Staged config differs from the approved exact state")
 
     original_mode = _preserve_file_mode(path)
     original_owner = _preserve_file_owner(path)
