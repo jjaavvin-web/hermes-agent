@@ -40,6 +40,21 @@ def _route_spy(monkeypatch):
     import tools.browser_tool as browser_tool
     import tools.browser_cdp_tool as browser_cdp_tool
 
+    # Every legacy ``browser_*`` fallback bottoms out in ``_run_browser_command``
+    # (directly, or via ``_current_page_private_url`` / ``_browser_eval`` /
+    # ``_run_chrome_fallback_command``, which all call it first). On a host
+    # with Chrome on PATH that helper spawns ``npx agent-browser`` and blocks
+    # in ``proc.wait(timeout=30)`` — the same 30 s as the pytest ceiling.
+    # Fail fast instead: no fallback may ever launch a subprocess here.
+    monkeypatch.setattr(
+        browser_tool,
+        "_run_browser_command",
+        lambda *args, **kwargs: {
+            "success": False,
+            "error": "browser backend disabled by test fixture",
+        },
+    )
+
     monkeypatch.setattr(browser_tool, "routed_browser_handler", spy)
     monkeypatch.setattr(browser_cdp_tool, "routed_browser_handler", spy)
     monkeypatch.setattr(

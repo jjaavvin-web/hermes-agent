@@ -80,8 +80,14 @@ class TestStartupPlatformIsolation:
     """Verify one blocked platform cannot prevent later platforms from starting."""
 
     @pytest.mark.asyncio
-    async def test_start_continues_after_platform_connect_timeout(self, tmp_path):
+    async def test_start_continues_after_platform_connect_timeout(self, tmp_path, monkeypatch):
         """A timeout on Telegram should queue it and still connect Feishu."""
+        # ``fake_create_task`` below hands ``_await_startup_boot_sends`` a
+        # MagicMock instead of a Task, so its bounded ``asyncio.wait`` can
+        # only end by timeout — the 30s default made this test take ~32s
+        # and trip the per-test ``--timeout=30``.  Same env knob the
+        # restart-resume tests use (see test_restart_resume_pending.py).
+        monkeypatch.setenv("HERMES_STARTUP_RESTORE_DRAIN_TIMEOUT", "0.05")
         runner = _make_runner()
         runner.config = GatewayConfig(
             platforms={
@@ -870,8 +876,12 @@ class TestVoiceInputCallbackWiring:
         return runner
 
     @pytest.mark.asyncio
-    async def test_startup_wires_voice_input_callback(self, tmp_path):
+    async def test_startup_wires_voice_input_callback(self, tmp_path, monkeypatch):
         """Cold-start connect must wire _voice_input_callback on Discord adapter."""
+        # See TestStartupPlatformIsolation: ``fake_create_task`` returns a
+        # MagicMock, so the boot-send ``asyncio.wait`` always runs to its
+        # timeout (30s default → ~31s test → per-test ``--timeout=30``).
+        monkeypatch.setenv("HERMES_STARTUP_RESTORE_DRAIN_TIMEOUT", "0.05")
         runner = self._make_runner_with_discord()
         adapter = self._make_discord_voice_adapter()
         runner.config.sessions_dir = tmp_path

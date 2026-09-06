@@ -67,6 +67,20 @@ def _messages():
     return [{"role": "user", "content": f"m{i}"} for i in range(20)]
 
 
+# Host budgets for the teardown tests. They must comfortably exceed the
+# latency between arming the fence and the pool thread first entering the
+# worker: under CPU oversubscription (GitHub's 4-vCPU runner with 8 parallel
+# pytest workers; locally 60 busy loops) the FIRST pool-thread spawn was
+# measured at 0.2-0.7 s. With the old 0.1 s / 0.2 s budgets the fence deadline
+# expired before the worker ran at all, so the host saw a silent "stall",
+# the grace join reaped nothing, and ``worker_done`` was never set. 2 s idle
+# keeps ~3x headroom over the worst measured spawn; the ceiling stays above
+# idle so it is still the TOTAL ceiling that expires for a worker that keeps
+# touching progress.
+_TEARDOWN_IDLE_SECONDS = 2.0
+_TEARDOWN_CEILING_SECONDS = 4.0
+
+
 class TestWorkerTeardownOnCeiling:
     def test_cooperative_worker_joined_within_grace(self):
         """A worker that exits promptly after cancel is joined on the
@@ -81,7 +95,8 @@ class TestWorkerTeardownOnCeiling:
             # Continuous progress (the #97488 'last progress 0.0s ago'
             # shape) so only the TOTAL ceiling expires; poll the poison
             # fence like the production worker does between provider phases.
-            deadline = time.monotonic() + 5.0
+            # Backstop only: the host cancels at the ceiling long before this.
+            deadline = time.monotonic() + 5.0 * _TEARDOWN_CEILING_SECONDS
             while time.monotonic() < deadline:
                 if fence.is_cancelled:
                     break
@@ -90,7 +105,7 @@ class TestWorkerTeardownOnCeiling:
             # Cooperative-but-not-instant exit: the unwind after seeing the
             # poison takes real time (rollback, telemetry). Long enough that
             # a host WITHOUT the bounded-grace join returns first; far
-            # inside the 5s grace for a host WITH it.
+            # inside the min(5s, ceiling) grace for a host WITH it.
             time.sleep(0.08)
             worker_done.set()
             return (original, "late")
@@ -100,8 +115,8 @@ class TestWorkerTeardownOnCeiling:
             worker=cooperative_worker,
             messages=original,
             system_prompt_fallback="fallback",
-            idle_timeout_seconds=0.1,
-            total_ceiling_seconds=0.2,
+            idle_timeout_seconds=_TEARDOWN_IDLE_SECONDS,
+            total_ceiling_seconds=_TEARDOWN_CEILING_SECONDS,
             fence=fence,
             stall_fallback=False,
         )
@@ -150,8 +165,8 @@ class TestWorkerTeardownOnCeiling:
             worker=stuck_worker,
             messages=original,
             system_prompt_fallback="fallback",
-            idle_timeout_seconds=0.1,
-            total_ceiling_seconds=0.3,
+            idle_timeout_seconds=_TEARDOWN_IDLE_SECONDS,
+            total_ceiling_seconds=_TEARDOWN_CEILING_SECONDS,
             fence=fence,
             stall_fallback=False,
         )
