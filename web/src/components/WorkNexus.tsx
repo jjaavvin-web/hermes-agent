@@ -682,7 +682,7 @@ export default function WorkNexus() {
       {isEmpty && (
         <div className="pulse-constellation__overlay">
           <div className="pulse-constellation__overlay-text pulse-constellation__overlay-text--dim">
-            No kanban work found — ship something and the web grows here.
+            No work graph data is available. Kanban is retired.
           </div>
         </div>
       )}

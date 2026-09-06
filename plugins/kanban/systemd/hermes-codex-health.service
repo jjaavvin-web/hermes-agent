@@ -1,0 +1,7 @@
+[Unit]
+Description=Hermes Codex parallel health check (silent on green)
+Documentation=https://hermes-agent.nousresearch.com/docs
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/env bash -lc 'OUT="$($HOME/.local/share/hermes-agent/scripts/codex-parallel-health-check.py)"; if [ -n "$OUT" ] && [ -x "$HOME/.hermes/scripts/discord-notify.sh" ]; then "$HOME/.hermes/scripts/discord-notify.sh" "$OUT"; elif [ -n "$OUT" ]; then printf "%s\n" "$OUT" | systemd-cat -t hermes-codex-health -p warning; fi'

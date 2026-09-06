@@ -47,6 +47,7 @@ LEGACY_AUTHOR_MAP = {
     # Fork maintainer identity — pre-existing historical mapping, so it stays
     # in the frozen dict (the directory still wins if it ever gains an entry).
     "jjaavvin@gmail.com": "jjaavvin-web",
+    "Josepjjaavvin@gmail.com": "jjaavvin-web",
     "declanbatesmith@outlook.com": "cat-thats-fat",  # PR #60489 (desktop: first-run remote connection option)
     "drbs2004@me.com": "cat-thats-fat",  # PR #60489 (desktop: first-run remote connection option; historical merge email)
     "122438640+ragingbulld@users.noreply.github.com": "ragingbulld",  # PR #65606 salvage (non-finite API wait deadlines; #65746)

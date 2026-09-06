@@ -7,7 +7,7 @@ Usage: fork_line_survival.py <TREE-ish> <out.json> [conflict-list-file] [--min-l
 import subprocess, sys, json, re, collections
 REPO='/home/josep/.local/share/hermes-agent'; BASE='f80f453ae067'; FORK='938b676d7ab8'
 TREE=sys.argv[1]; OUT=sys.argv[2]
-conflicts=set(l.strip() for l in open(sys.argv[3])) if len(sys.argv)>3 and not sys.argv[3].startswith('--') else set()
+conflicts=set(l.strip() for l in open(sys.argv[3], encoding='utf-8')) if len(sys.argv)>3 and not sys.argv[3].startswith('--') else set()
 MINLEN=int(sys.argv[sys.argv.index('--min-len')+1]) if '--min-len' in sys.argv else 8
 GENERIC=set(['return','return True','return False','return None','pass','continue','break','else:','try:','finally:','raise','return result','return out','return {}','return []','})','],',')','}',']','),','}),','])','"""','if not ok:','except Exception:','except Exception as e:','except Exception as exc:','except Exception as exc:  # noqa: BLE001','yield','return data','return None  # noqa'])
 def git(*a):
@@ -66,7 +66,7 @@ for f in sorted(added):
         report['files'][f]={'status':status,'fork_added_distinct':len(added[f]),'dropped':len(drops),'gone_everywhere':len(gone),
             'dropped_lines':[{'line':l[:160],'fork_count':a,'tree_count':b,'elsewhere':(l in at)} for l,a,b in drops[:80]]}
 report['totals']={'files_with_fork_adds':n_files,'fork_added_lines':n_lines,'dropped_in_file':n_drop,'gone_everywhere':n_gone,'min_len':MINLEN}
-json.dump(report,open(OUT,'w'),indent=1)
+json.dump(report,open(OUT,'w', encoding='utf-8'),indent=1)
 print(json.dumps(report['totals']))
 for st in ('CLEAN_MERGE','FILE_ABSENT_IN_TREE','CONFLICT_PENDING'):
     fs=[(f,v) for f,v in report['files'].items() if v['status']==st]

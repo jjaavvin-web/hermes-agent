@@ -19,6 +19,12 @@ def _route_spy(monkeypatch):
     exercising real routing or a real browser backend."""
     calls = []
 
+    # Missing browser dependencies are a fixture condition; never invoke the
+    # real Node/browser installer while exercising the legacy fallback.
+    monkeypatch.setattr(
+        "hermes_cli.dep_ensure.ensure_dependency", lambda *args, **kwargs: False
+    )
+
     def spy(action, args, *, fallback, task_id=None, session_id=None, tool_call_id=None):
         calls.append(
             {

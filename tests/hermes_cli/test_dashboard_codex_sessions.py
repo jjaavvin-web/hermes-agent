@@ -598,3 +598,36 @@ class TestForceMerge:
         sessions = json.loads((tmp_path / "codex_sessions.json").read_text())
         assert sessions["sessions"]["t1"]["state"] == "MERGING"
         assert sessions["sessions"]["t1"]["force_merge_requested_at"]
+
+
+@pytest.mark.parametrize(
+    ("state", "age_minutes", "worktree_alive", "expected"),
+    [
+        ("EXECUTING", 14, True, "green"),
+        ("EXECUTING", 15, True, "yellow"),
+        ("EXECUTING", 30, True, "red"),
+        ("EXECUTING", 1, False, "red"),
+        ("COMPLETE", 60, False, "green"),
+        ("EXECUTING", None, True, "green"),
+    ],
+)
+def test_snapshot_surfaces_activity_liveness(
+    app_with_router, tmp_path, monkeypatch, state, age_minutes, worktree_alive, expected,
+):
+    from datetime import datetime, timedelta, timezone
+
+    now = datetime(2026, 9, 5, 12, tzinfo=timezone.utc)
+    worktree = tmp_path / "worktree"
+    if worktree_alive:
+        worktree.mkdir()
+    last_activity = (now - timedelta(minutes=age_minutes)).isoformat() if age_minutes is not None else "not-a-date"
+    _seed(tmp_path, {"thread-1": _make_row(
+        "session-1", "thread-1", state=state,
+        worktree_path=str(worktree), last_message_at=last_activity,
+    )})
+    monkeypatch.setattr(mod, "_now_dt", lambda: now)
+
+    snapshot = mod._build_snapshot()
+    session = snapshot["sessions"][0]
+    assert session["liveness"] == expected
+    assert session["last_activity_age_seconds"] == (age_minutes * 60 if age_minutes is not None else None)

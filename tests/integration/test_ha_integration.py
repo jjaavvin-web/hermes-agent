@@ -51,12 +51,14 @@ class TestGatewayWebSocket:
         """Full WS handshake succeeds: auth_required -> auth -> auth_ok -> subscribe -> ACK."""
         async with FakeHAServer() as server:
             adapter = _adapter_for(server)
-            connected = await adapter.connect()
-            assert connected is True
-            assert adapter._running is True
-            assert adapter._ws is not None
-            assert not adapter._ws.closed
-            await adapter.disconnect()
+            try:
+                connected = await adapter.connect()
+                assert connected is True
+                assert adapter._running is True
+                assert adapter._ws is not None
+                assert not adapter._ws.closed
+            finally:
+                await adapter.disconnect()
 
     @pytest.mark.asyncio
     async def test_connect_auth_rejected(self):
@@ -71,7 +73,7 @@ class TestGatewayWebSocket:
     async def test_event_received_and_forwarded(self):
         """Server pushes event -> adapter calls handle_message with correct MessageEvent."""
         async with FakeHAServer() as server:
-            adapter = _adapter_for(server)
+            adapter = _adapter_for(server, watch_all=True, cooldown_seconds=0)
             adapter.handle_message = AsyncMock()
 
             await adapter.connect()

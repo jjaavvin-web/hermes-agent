@@ -1,4 +1,5 @@
 import asyncio
+import inspect
 import json
 import sys
 from pathlib import Path
@@ -158,6 +159,32 @@ async def test_send_retries_without_reference_when_reply_target_is_deleted():
 import discord as _discord_mod  # noqa: E402 — imported after _ensure_discord_mock
 
 
+def _make_forum_channel(**attrs):
+    forum_cls = getattr(_discord_mod, "ForumChannel", None)
+    if forum_cls is not None:
+        try:
+            params = inspect.signature(forum_cls).parameters
+        except (TypeError, ValueError):
+            params = {}
+        required = [
+            p for p in params.values()
+            if p.default is inspect.Signature.empty
+            and p.kind in (p.KEYWORD_ONLY, p.POSITIONAL_ONLY, p.POSITIONAL_OR_KEYWORD)
+        ]
+        if not required:
+            try:
+                ch = forum_cls()
+                for name, value in attrs.items():
+                    setattr(ch, name, value)
+                return ch
+            except TypeError:
+                pass
+    ch = SimpleNamespace(type=15)
+    for name, value in attrs.items():
+        setattr(ch, name, value)
+    return ch
+
+
 class TestIsForumParent:
     def test_none_returns_false(self):
         adapter = DiscordAdapter(PlatformConfig(enabled=True, token="***"))
@@ -165,12 +192,7 @@ class TestIsForumParent:
 
     def test_forum_channel_class_instance(self):
         adapter = DiscordAdapter(PlatformConfig(enabled=True, token="***"))
-        forum_cls = getattr(_discord_mod, "ForumChannel", None)
-        if forum_cls is None:
-            # Re-create a type for the mock
-            forum_cls = type("ForumChannel", (), {})
-            _discord_mod.ForumChannel = forum_cls
-        ch = forum_cls()
+        ch = _make_forum_channel()
         assert adapter._is_forum_parent(ch) is True
 
 
@@ -193,7 +215,7 @@ async def test_forum_post_file_creates_thread_with_attachment():
         ),
         thread=thread_ch,
     )
-    forum_channel = _discord_mod.ForumChannel()
+    forum_channel = _make_forum_channel()
     forum_channel.id = 999
     forum_channel.name = "ideas"
     forum_channel.create_thread = AsyncMock(return_value=thread)
@@ -227,7 +249,7 @@ async def test_forum_post_file_fails_when_starter_has_no_attachments():
         message=SimpleNamespace(id=8, attachments=[]),
         thread=SimpleNamespace(id=7, send=AsyncMock()),
     )
-    forum_channel = _discord_mod.ForumChannel()
+    forum_channel = _make_forum_channel()
     forum_channel.id = 999
     forum_channel.create_thread = AsyncMock(return_value=thread)
 

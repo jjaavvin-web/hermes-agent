@@ -44,8 +44,11 @@ def _add_task(
     created_at: int | None = None,
     started_at: int | None = None,
     completed_at: int | None = None,
+    conn=None,
 ) -> str:
-    conn = kb.connect(board=slug)
+    owns_connection = conn is None
+    if owns_connection:
+        conn = kb.connect(board=slug)
     try:
         task_id = kb.create_task(
             conn,
@@ -66,7 +69,8 @@ def _add_task(
         )
         return task_id
     finally:
-        conn.close()
+        if owns_connection:
+            conn.close()
 
 
 def _link_tasks(slug: str, parent_id: str, child_id: str) -> None:
@@ -186,15 +190,23 @@ def test_work_nexus_bounds_task_nodes_and_rolls_up_backlog(monkeypatch, tmp_path
     total_tasks = 0
     for idx, slug in enumerate(slugs):
         _create_board(slug, name=f"Project {idx:02d}", icon="✦", color="#76e4f7")
-        for task_idx in range(80):
-            _add_task(
-                slug,
-                f"{slug} task {task_idx:02d}",
-                status=statuses[task_idx % len(statuses)],
-                priority=task_idx % 5,
-                created_at=1_700_000_000 + task_idx,
-            )
-            total_tasks += 1
+        conn = kb.connect(board=slug)
+        try:
+            # Keep the complete 960-task graph fixture while committing once
+            # per board; per-task fsyncs consumed the 30-second test budget.
+            with kb.write_txn(conn):
+                for task_idx in range(80):
+                    _add_task(
+                        slug,
+                        f"{slug} task {task_idx:02d}",
+                        status=statuses[task_idx % len(statuses)],
+                        priority=task_idx % 5,
+                        created_at=1_700_000_000 + task_idx,
+                        conn=conn,
+                    )
+                    total_tasks += 1
+        finally:
+            conn.close()
     overlay_pr_nodes = [
         {"id": f"pr:{idx}", "kind": "pr", "label": f"PR #{idx}"}
         for idx in range(25)
@@ -233,3 +245,42 @@ def test_work_nexus_overlay_failures_degrade_without_raising(monkeypatch, tmp_pa
     assert "codex_pr_overlay" in payload["degraded_mode"]
     assert any(node["id"] == "project:alpha" for node in payload["nodes"])
     assert any(node["id"].startswith("task:alpha:") for node in payload["nodes"])
+
+
+def test_retired_get_some_is_empty_without_reading_board_or_overlays(monkeypatch, tmp_path):
+    home = _setup_home(tmp_path, monkeypatch)
+    get_some = _import_module(monkeypatch)
+    tombstone = home / "kanban.db"
+    tombstone.mkdir()
+    (tombstone / "RETIRED").write_text("retired", encoding="utf-8")
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("retired Kanban and overlays must not be read")
+
+    for name in ("_iter_kanban_dbs", "_open_kanban_ro", "_iter_codex_sessions", "_git_river_pr_overlay"):
+        monkeypatch.setattr(get_some, name, forbidden)
+    monkeypatch.setattr(kb, "list_boards", forbidden)
+    monkeypatch.setattr(kb, "read_board_metadata", forbidden)
+
+    assert get_some._build_projects_snapshot()["projects"] == []
+    assert get_some.get_projects()["projects"] == []
+    assert get_some._read_core_nexus() == ([], [], {}, {})
+    for snapshot in (get_some._build_nexus_snapshot(), get_some.get_work_nexus()):
+        assert snapshot["nodes"] == []
+        assert snapshot["edges"] == []
+        assert snapshot["degraded_mode"] == ["kanban_retired"]
+
+
+def test_retirement_overrides_cached_get_some_board_data(monkeypatch, tmp_path):
+    home = _setup_home(tmp_path, monkeypatch)
+    get_some = _import_module(monkeypatch)
+    expires = time.monotonic() + 60
+    get_some._PROJECTS_CACHE = ({"projects": [{"slug": "retired-board"}]}, expires)
+    get_some._NEXUS_CACHE = ({"nodes": [{"id": "old-task"}], "edges": []}, expires)
+    tombstone = home / "kanban.db"
+    tombstone.mkdir()
+    (tombstone / "RETIRED").write_text("retired", encoding="utf-8")
+
+    assert get_some.get_projects()["projects"] == []
+    assert get_some.get_work_nexus()["nodes"] == []
+    assert get_some.get_work_nexus()["degraded_mode"] == ["kanban_retired"]

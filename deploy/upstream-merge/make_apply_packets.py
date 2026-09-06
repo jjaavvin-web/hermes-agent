@@ -6,15 +6,15 @@ Writes conflict-analysis/apply-packets/<slug>.md and INDEX-apply.json
 """
 import json,sys,os,glob
 AUD=sys.argv[1]; WAVE=sys.argv[2] if len(sys.argv)>2 else 'all'
-idx=json.load(open(f'{AUD}/conflict-analysis/INDEX.json'))
-ovr=json.load(open(f'{AUD}/conflict-analysis/lead-overrides.json')) if os.path.exists(f'{AUD}/conflict-analysis/lead-overrides.json') else {}
+idx=json.load(open(f'{AUD}/conflict-analysis/INDEX.json', encoding='utf-8'))
+ovr=json.load(open(f'{AUD}/conflict-analysis/lead-overrides.json', encoding='utf-8')) if os.path.exists(f'{AUD}/conflict-analysis/lead-overrides.json') else {}
 os.makedirs(f'{AUD}/conflict-analysis/apply-packets',exist_ok=True)
 out=[]
 for it in idx:
     if WAVE!='all' and str(it['wave'])!=WAVE: continue
     p=it['path']; slug=p.replace('/','__')
-    a=json.load(open(f'{AUD}/conflict-analysis/out/{slug}.json')) if os.path.exists(f'{AUD}/conflict-analysis/out/{slug}.json') else None
-    r=json.load(open(f'{AUD}/conflict-analysis/refute/{slug}.json')) if os.path.exists(f'{AUD}/conflict-analysis/refute/{slug}.json') else None
+    a=json.load(open(f'{AUD}/conflict-analysis/out/{slug}.json', encoding='utf-8')) if os.path.exists(f'{AUD}/conflict-analysis/out/{slug}.json') else None
+    r=json.load(open(f'{AUD}/conflict-analysis/refute/{slug}.json', encoding='utf-8')) if os.path.exists(f'{AUD}/conflict-analysis/refute/{slug}.json') else None
     o=ovr.get(p,{})
     if not a: out.append({'path':p,'status':'NO_ANALYSIS'}); continue
     L=[f"# APPLY PACKET — {p} (wave {it['wave']})",'',
@@ -42,7 +42,7 @@ for it in idx:
         "3. For .py: `python3 -m py_compile <file>` succeeds. For .json/.toml/.yml: a parse succeeds. For .ts/.tsx: no markers only.",
         "4. Do NOT run any git command that writes (no add/commit/checkout/stash/reset). The lead stages files. Read-only git show/diff/log are fine.",
         "5. Return a JSON report: {path, hunks_resolved, kind_per_hunk, identifiers_checked: [..], deviations_from_packet: [..], notes}."]
-    open(f'{AUD}/conflict-analysis/apply-packets/{slug}.md','w').write('\n'.join(L))
+    open(f'{AUD}/conflict-analysis/apply-packets/{slug}.md','w', encoding='utf-8').write('\n'.join(L))
     out.append({'path':p,'wave':it['wave'],'status':'READY','needs_lead':a.get('needs_lead'),'refuter':r.get('verdict') if r else 'NONE','override':bool(o)})
-json.dump(out,open(f'{AUD}/conflict-analysis/INDEX-apply.json','w'),indent=1)
+json.dump(out,open(f'{AUD}/conflict-analysis/INDEX-apply.json','w', encoding='utf-8'),indent=1)
 print(json.dumps({'packets':len([x for x in out if x['status']=='READY']),'no_analysis':[x['path'] for x in out if x['status']=='NO_ANALYSIS'],'needs_lead':[x['path'] for x in out if x.get('needs_lead')],'refuter_not_accept':[x['path'] for x in out if x.get('refuter') not in ('accept',None)]},indent=1))

@@ -1317,7 +1317,8 @@
 
 .pulse-root .get-some-nexus {
   flex: 1 1 auto;
-  min-height: clamp(520px, calc(100vh - 250px), 820px);
+  /* The command-center grid owns the viewport height; let the graph fit its panel. */
+  min-height: 260px;
   display: flex;
   flex-direction: column;
   gap: 8px;
@@ -1530,6 +1531,8 @@
     align-items: flex-start;
   }
   .pulse-root .get-some-command-grid {
+    /* Stacked zones must grow to their contents inside the scrolling page. */
+    flex: 0 0 auto;
     grid-template-columns: minmax(0, 1fr);
     grid-template-rows: auto auto auto auto;
     grid-template-areas:

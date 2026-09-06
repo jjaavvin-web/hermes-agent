@@ -59,7 +59,7 @@ def proof_exists(node):
     src=show(f); return bool(src) and re.search(rf'^\s*(async\s+)?def\s+{re.escape(t)}\s*\(',src,re.M) is not None
 items=[]; report=[]; seen=set(); nid=START
 for fn in sorted(glob.glob(f'{AUD}/manifest-extension/pins/*.json')):
-    try: p=json.load(open(fn))
+    try: p=json.load(open(fn, encoding='utf-8'))
     except Exception as e: report.append(f'- {os.path.basename(fn)}: UNREADABLE {e}'); continue
     # accept both shapes: PIN wrapper {decision,item,...} OR a bare item {verdict,kind,anchors,...}
     if 'decision' not in p and 'anchors' in p:
@@ -85,7 +85,7 @@ for fn in sorted(glob.glob(f'{AUD}/manifest-extension/pins/*.json')):
         'docket_item':docket,'docket_item_sha256_16':hashlib.sha256(docket.encode()).hexdigest()[:16],
         'anchors':[a for a,_ in good],'proofs':proofs,'notes':f"v021 extension from custody ledger row idx {p.get('ledger_index')}: {it.get('notes','')}"[:400]})
     report.append(f"- {tag}: fp-{nid:03d} {kind} anchors={len(good)} dropped_anchors={len(bad)} proofs={len(proofs)} badproofs={badproofs}"); nid+=1
-json.dump(items,open(f'{AUD}/manifest-extension/extension-items.json','w'),indent=1)
-open(f'{AUD}/manifest-extension/docket-v021.txt','w').write(''.join(f"{i['id']}\t{i['docket_item']}\n" for i in items))
-open(f'{AUD}/manifest-extension/extension-report.md','w').write(f"# extension report — {len(items)} items built from {len(report)} proposals at {REV}\n\n"+'\n'.join(report)+'\n')
+json.dump(items,open(f'{AUD}/manifest-extension/extension-items.json','w', encoding='utf-8'),indent=1)
+open(f'{AUD}/manifest-extension/docket-v021.txt','w', encoding='utf-8').write(''.join(f"{i['id']}\t{i['docket_item']}\n" for i in items))
+open(f'{AUD}/manifest-extension/extension-report.md','w', encoding='utf-8').write(f"# extension report — {len(items)} items built from {len(report)} proposals at {REV}\n\n"+'\n'.join(report)+'\n')
 print(f"built {len(items)} items; security_invariant={sum(1 for i in items if i['kind']=='security_invariant')}; report lines={len(report)}")

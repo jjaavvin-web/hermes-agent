@@ -153,3 +153,23 @@ class TestWebhookEnabledGate:
         import hermes_cli.webhook as wh_mod
         assert wh_mod._is_webhook_enabled() is False
 
+
+
+def test_extracted_webhook_parser_persists_route_worktree_overrides():
+    from argparse import ArgumentParser
+    from hermes_cli.subcommands.webhook import build_webhook_parser
+
+    parser = ArgumentParser()
+    subparsers = parser.add_subparsers(dest="command")
+    build_webhook_parser(subparsers, cmd_webhook=webhook_command)
+    args = parser.parse_args([
+        "webhook", "subscribe", "fixture-route",
+        "--worktree-branch", "relay/fixture", "--worktree-base", "fork/main",
+        "--script", "fixture.py",
+    ])
+    args.func(args)
+
+    route = _load_subscriptions()["fixture-route"]
+    assert route["worktree_branch"] == "relay/fixture"
+    assert route["worktree_base"] == "fork/main"
+    assert route["script"] == "fixture.py"

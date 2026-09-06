@@ -341,7 +341,9 @@ class WebhookAdapter(BasePlatformAdapter):
         )
         self._wt_base_branch: str = self._wt_base_branch_ref
         self._wt_branch: str = "relay/work"
-        self._wt_path: Optional[str] = None   # set lazily by _ensure_relay_worktree()
+        self._wt_paths: Dict[str, str] = {}
+        self._wt_route_init_failed: Dict[str, bool] = {}
+        self._wt_path: Optional[str] = None   # default relay compatibility
         self._wt_init_failed: bool = False    # latched so we refuse, not retry-spam
         self._wt_broker = None
         self._wt_broker_lock = threading.Lock()
@@ -738,17 +740,24 @@ class WebhookAdapter(BasePlatformAdapter):
         except Exception as e:
             logger.error("[webhook] Failed to reload dynamic routes: %s", e)
 
-    def _ensure_relay_worktree(self) -> Optional[str]:
-        """Lazily create (or reuse) the persistent relay git worktree.
+    def _ensure_relay_worktree(
+        self, route_name: str = "relay", route_config: Optional[dict] = None,
+    ) -> Optional[str]:
+        """Lazily create (or reuse) the persistent route git worktree.
 
         Returns the absolute path, or None if it cannot be guaranteed — in
         which case the caller MUST refuse the run rather than fall through to
         the gateway's live cwd. gc-immune: lives OUTSIDE ~/.hermes/codex-wt/ so
         CodexGcWatcher never scans it; uses no port (no codex pool contention).
         """
-        if self._wt_path is not None and Path(self._wt_path).is_dir():
-            return self._wt_path
-        if self._wt_init_failed:
+        route_config = route_config or {}
+        if route_name == "relay" and not route_config and self._wt_path is not None:
+            if Path(self._wt_path).is_dir():
+                return self._wt_path
+        cached_path = self._wt_paths.get(route_name)
+        if cached_path is not None and Path(cached_path).is_dir():
+            return cached_path
+        if self._wt_route_init_failed.get(route_name, False):
             return None
         try:
             from hermes_constants import get_hermes_home
@@ -756,41 +765,57 @@ class WebhookAdapter(BasePlatformAdapter):
             repo_root = os.environ.get(
                 "HERMES_REPO_ROOT", str(Path(__file__).resolve().parents[2])
             )
-            wt_dir = hermes_home / "relay-wt" / "relay"
+            branch = route_config.get("worktree_branch") or self._wt_branch
+            base = route_config.get("worktree_base") or self._wt_base_branch
+            wt_dir = (
+                Path(route_config["worktree_dir"])
+                if route_config.get("worktree_dir")
+                else hermes_home / "relay-wt" / route_name
+            )
+            if route_name == "relay" and self._wt_init_failed:
+                return None
             if wt_dir.is_dir():
-                self._wt_path = str(wt_dir)
-                return self._wt_path
+                self._wt_paths[route_name] = str(wt_dir)
+                if route_name == "relay":
+                    self._wt_path = str(wt_dir)
+                return self._wt_paths[route_name]
             wt_dir.parent.mkdir(parents=True, exist_ok=True)
             # Idempotent: re-attach to the branch if it already exists from a prior boot.
             ref_check = subprocess.run(
                 ["git", "-C", repo_root, "rev-parse", "--verify", "--quiet",
-                 f"refs/heads/{self._wt_branch}"],
+                 f"refs/heads/{branch}"],
                 capture_output=True, text=True, timeout=25,
             )
             add_cmd = ["git", "-C", repo_root, "worktree", "add", str(wt_dir)]
             if ref_check.returncode == 0:
-                add_cmd.append(self._wt_branch)
+                add_cmd.append(branch)
             else:
-                add_cmd += ["-b", self._wt_branch, self._wt_base_branch]
-            res = subprocess.run(add_cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=25)
+                add_cmd += ["-b", branch, base]
+            res = subprocess.run(
+                add_cmd, capture_output=True, text=True, encoding="utf-8",
+                errors="replace", timeout=25,
+            )
             if res.returncode != 0 or not wt_dir.is_dir():
                 logger.error(
                     "[webhook] relay worktree add failed rc=%s: %s",
                     res.returncode, (res.stderr or "").strip(),
                 )
-                self._wt_init_failed = True
+                self._wt_route_init_failed[route_name] = True
                 return None
-            self._wt_path = str(wt_dir)
+            self._wt_paths[route_name] = str(wt_dir)
+            if route_name == "relay":
+                self._wt_path = str(wt_dir)
             logger.info(
-                "[webhook] relay worktree ready at %s on branch %s (base %s)",
-                self._wt_path, self._wt_branch, self._wt_base_branch,
+                "[webhook] relay worktree ready for route %s at %s on branch %s (base %s)",
+                route_name, self._wt_paths[route_name], branch, base,
             )
-            return self._wt_path
+            return self._wt_paths[route_name]
         except Exception:
             logger.exception(
-                "[webhook] relay worktree init crashed; refusing write-capable relayed runs"
+                "[webhook] relay worktree init crashed; refusing write-capable relayed runs route=%s",
+                route_name,
             )
-            self._wt_init_failed = True
+            self._wt_route_init_failed[route_name] = True
             return None
 
     def _lease_ledger_path(self) -> Path:
@@ -1862,7 +1887,17 @@ class WebhookAdapter(BasePlatformAdapter):
                         status=503,
                     )
             else:
-                _wt_for_run = await asyncio.to_thread(self._ensure_relay_worktree)
+                # Explicit route overrides select a route worktree. Without
+                # overrides, keep the established singleton rollback path.
+                if not any(
+                    route_config.get(key)
+                    for key in ("worktree_branch", "worktree_base", "worktree_dir")
+                ):
+                    _wt_for_run = await asyncio.to_thread(self._ensure_relay_worktree)
+                else:
+                    _wt_for_run = await asyncio.to_thread(
+                        self._ensure_relay_worktree, route_name, route_config,
+                    )
                 if _wt_for_run is None:
                     self._agent_run_semaphore.release()
                     self._seen_deliveries.pop(delivery_id, None)

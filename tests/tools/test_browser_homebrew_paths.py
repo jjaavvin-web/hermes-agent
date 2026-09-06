@@ -22,8 +22,13 @@ import tools.browser_tool as _bt
 
 
 @pytest.fixture(autouse=True)
-def _clear_browser_caches():
+def _clear_browser_caches(monkeypatch):
     """Clear lru_cache and manual caches between tests."""
+    # A missing CLI is part of the discovery fixture, not permission to run
+    # the real dependency installer.
+    monkeypatch.setattr(
+        "hermes_cli.dep_ensure.ensure_dependency", lambda *args, **kwargs: False
+    )
     _discover_homebrew_node_dirs.cache_clear()
     _bt._cached_agent_browser = None
     _bt._agent_browser_resolved = False

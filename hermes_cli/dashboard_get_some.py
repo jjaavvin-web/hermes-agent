@@ -1,9 +1,9 @@
 """Get Some dashboard API — project roster + living work nexus graph.
 
 All routes live under ``/api/dashboard`` and are protected by the existing
-SPA/session middleware.  The handlers are intentionally read-only: Kanban board
-state is the source of truth; this module only projects it into dashboard-ready
-shapes.
+SPA/session middleware. The handlers are read-only historical projections.
+A retired Kanban returns empty data before metadata, database, or cached-board
+access; MVMS Projects remains the canonical source of project state.
 """
 from __future__ import annotations
 
@@ -62,6 +62,8 @@ def _now_iso() -> str:
 
 
 def _metadata_by_slug() -> dict[str, dict]:
+    if kanban_db.kanban_retired():
+        return {}
     try:
         boards = kanban_db.list_boards(include_archived=True)
     except Exception as exc:  # pragma: no cover - defensive against malformed board dirs
@@ -144,6 +146,8 @@ def _completion_pct(by_status: dict[str, int]) -> int:
 
 
 def _build_projects_snapshot() -> dict:
+    if kanban_db.kanban_retired():
+        return {"scanned_at": _now_iso(), "projects": []}
     metadata = _metadata_by_slug()
     projects: list[dict] = []
     for slug, db_path in _iter_kanban_dbs():
@@ -182,6 +186,8 @@ def _build_projects_snapshot() -> dict:
 
 
 def _cached_projects_snapshot() -> dict:
+    if kanban_db.kanban_retired():
+        return {"scanned_at": _now_iso(), "projects": []}
     global _PROJECTS_CACHE
     now = time.monotonic()
     with _PROJECTS_LOCK:
@@ -316,6 +322,8 @@ def _selected_task_ids_by_board(
 
 
 def _read_core_nexus() -> tuple[list[dict], list[dict], dict[str, list[str]], dict[str, list[str]]]:
+    if kanban_db.kanban_retired():
+        return [], [], {}, {}
     metadata = _metadata_by_slug()
     nodes: list[dict] = []
     edges: list[dict] = []
@@ -508,6 +516,8 @@ def _enforce_nexus_node_cap(nodes: list[dict], edges: list[dict], max_nodes: int
 
 
 def _build_nexus_snapshot() -> dict:
+    if kanban_db.kanban_retired():
+        return {"scanned_at": _now_iso(), "nodes": [], "edges": [], "degraded_mode": ["kanban_retired"]}
     nodes, edges, tasks_by_branch, tasks_by_session = _read_core_nexus()
     degraded_mode: list[str] = []
 
@@ -539,6 +549,8 @@ def _build_nexus_snapshot() -> dict:
 
 
 def _cached_nexus_snapshot() -> dict:
+    if kanban_db.kanban_retired():
+        return {"scanned_at": _now_iso(), "nodes": [], "edges": [], "degraded_mode": ["kanban_retired"]}
     global _NEXUS_CACHE
     now = time.monotonic()
     with _NEXUS_LOCK:
@@ -551,7 +563,7 @@ def _cached_nexus_snapshot() -> dict:
         return snapshot
 
 
-@router.get("/projects", summary="Project roster across kanban boards")
+@router.get("/projects", summary="Historical project roster; empty when Kanban is retired")
 def get_projects(include_archived: bool = False) -> dict:
     snapshot = _cached_projects_snapshot()
     projects = snapshot.get("projects", [])

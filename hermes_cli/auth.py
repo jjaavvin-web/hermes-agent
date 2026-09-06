@@ -1326,7 +1326,7 @@ def _file_lock(
             pass
 
     with lock_path.open("r+" if msvcrt else "a+", encoding="utf-8") as lock_file:
-        deadline = time.monotonic() + max(1.0, timeout_seconds)
+        deadline = time.monotonic() + max(0.0, timeout_seconds)
         while True:
             try:
                 if fcntl:

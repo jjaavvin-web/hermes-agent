@@ -644,14 +644,15 @@ class _FakeTextChannel:
 
 
 class _FakeThreadChannel(_discord_mod.Thread):
-    """isinstance(ch, discord.Thread) → True."""
+    """isinstance(ch, discord.Thread) -> True, with the fork thread metadata."""
 
     def __init__(self, channel_id=200, name="existing-thread", guild_name="TestGuild", parent_id=100):
-        # Don't call super().__init__ — mock Thread is just an empty type
         self.id = channel_id
         self.name = name
         self.guild = SimpleNamespace(name=guild_name, id=1)
         self.topic = None
+        self.type = 11
+        self.parent_id = parent_id
         self.parent = SimpleNamespace(id=parent_id, name="general", guild=SimpleNamespace(name=guild_name, id=1))
 
     def history(self, *args, **kwargs):

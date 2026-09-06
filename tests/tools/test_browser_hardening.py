@@ -24,7 +24,12 @@ def _reset_caches():
 
 
 @pytest.fixture(autouse=True)
-def _clean_caches():
+def _clean_caches(monkeypatch):
+    # Discovery's not-found path must stay synthetic instead of installing
+    # Node/browser dependencies on the test host.
+    monkeypatch.setattr(
+        "hermes_cli.dep_ensure.ensure_dependency", lambda *args, **kwargs: False
+    )
     _reset_caches()
     yield
     _reset_caches()

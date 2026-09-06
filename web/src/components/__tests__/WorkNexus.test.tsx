@@ -248,12 +248,19 @@ afterEach(() => {
 
 describe("WorkNexus", () => {
   it("renders the empty state when the API returns no nodes", async () => {
-    globalThis.fetch = mockFetch({ nodes: [], edges: [] }) as unknown as typeof fetch;
+    globalThis.fetch = mockFetch({ nodes: [], edges: [], degraded_mode: ["kanban_retired"] }) as unknown as typeof fetch;
     const { container } = render(<WorkNexus />);
     await waitFor(() => {
       expect(globalThis.fetch).toHaveBeenCalled();
     });
-    expect(await findByText(container, /No kanban work found/)).toBeTruthy();
+    expect(await findByText(container, /No work graph data is available/)).toBeTruthy();
+    expect(await findByText(container, /Kanban is retired/)).toBeTruthy();
+    expect(await findByText(container, /Overlay degraded: kanban_retired/)).toBeTruthy();
+    expect(globalThis.fetch).toHaveBeenCalledWith(
+      "/api/dashboard/work-nexus",
+      expect.objectContaining({ credentials: "include" }),
+    );
+    expect(container.querySelector("[data-testid='work-nexus-node-marker']")).toBeNull();
   });
 
   it("renders nodes and degraded overlay returned by the API", async () => {

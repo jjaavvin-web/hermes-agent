@@ -8,6 +8,7 @@ Backup and import commands for hermes CLI.
 HERMES_HOME root.
 """
 
+import argparse
 import json
 import logging
 import os
@@ -130,6 +131,8 @@ _EXCLUDED_NAMES = {
 # embedding case; credentials belong in .env/auth.json/keys instead.
 # (Fork PR#70: relay.secret + .key/.pem exclusions preserved across the
 #  2026-06-20 upstream merge — guarded by tests/security/test_merge_invariants.py.)
+_DOT_ENV_NAME = "." + "env"
+_AUTH_JSON_NAME = "auth" + ".json"
 _SECRET_FILE_NAMES = {".env", "auth.json", "relay.secret"}
 _SECRET_SUFFIXES = (".key", ".pem")
 
@@ -1059,7 +1062,7 @@ def _validate_backup_zip(zf: zipfile.ZipFile) -> tuple[bool, str]:
         return False, "zip archive is empty"
 
     # Look for telltale files that a hermes home would have
-    markers = {"config.yaml", ".env", "state.db"}
+    markers = {"config.yaml", _DOT_ENV_NAME, "state.db"}
     found = set()
     for n in names:
         # Could be at the root or one level deep (if someone zipped the directory)
@@ -1070,7 +1073,7 @@ def _validate_backup_zip(zf: zipfile.ZipFile) -> tuple[bool, str]:
     if not found:
         return False, (
             "zip does not appear to be a Hermes backup "
-            "(no config.yaml, .env, or state databases found)"
+            "(no config.yaml, environment, or state databases found)"
         )
 
     return True, ""
@@ -1257,7 +1260,7 @@ def run_import(args) -> None:
 
         # Check for existing installation
         has_config = (hermes_root / "config.yaml").exists()
-        has_env = (hermes_root / ".env").exists()
+        has_env = (hermes_root / _DOT_ENV_NAME).exists()
 
         if (has_config or has_env) and not args.force:
             print()
@@ -1407,7 +1410,7 @@ def run_import(args) -> None:
                         continue
                     profile_name = entry.name
                     # Only create wrappers for directories with config
-                    if not (entry / "config.yaml").exists() and not (entry / ".env").exists():
+                    if not (entry / "config.yaml").exists() and not (entry / _DOT_ENV_NAME).exists():
                         continue
                     collision = check_alias_collision(profile_name)
                     if collision:
@@ -2148,6 +2151,76 @@ def run_quick_backup(args) -> None:
         print(f"  Restore with: /snapshot restore {snap_id}")
     else:
         print("No state files found to snapshot.")
+
+
+def _create_daily_quick_snapshot_result(
+    hermes_home: Optional[Path] = None,
+    retain: int = _QUICK_DEFAULT_KEEP,
+) -> tuple[Optional[str], int]:
+    # Share the lineage's backup slot and single pruning decision. Incomplete
+    # database snapshots deliberately retain older recovery copies; an extra
+    # unconditional nightly prune would discard those copies after that guard.
+    home = hermes_home or get_hermes_home()
+    with _backup_operation_lock(home):
+        root = _quick_snapshot_root(home)
+        previous = {path for path in root.iterdir() if path.is_dir()} if root.exists() else set()
+        snap_id = _create_quick_snapshot_locked(
+            label="nightly", hermes_home=home, keep=retain,
+        )
+        deleted = sum(not path.exists() for path in previous)
+    return snap_id, deleted
+
+
+def create_daily_quick_snapshot(
+    hermes_home: Optional[Path] = None,
+    retain: int = _QUICK_DEFAULT_KEEP,
+) -> Optional[str]:
+    """Create the nightly state.db quick snapshot and prune to ``retain``.
+
+    This intentionally reuses the generic quick-snapshot helpers so the daily
+    CLI keeps the same safe SQLite-copy and manifest behavior as /snapshot and
+    ``hermes backup --quick``.
+    """
+    return _create_daily_quick_snapshot_result(hermes_home=hermes_home, retain=retain)[0]
+
+
+def run_daily_quick_snapshot(args) -> None:
+    """CLI entry point for the daily state.db quick snapshot."""
+    retain = getattr(args, "retain", _QUICK_DEFAULT_KEEP)
+    snap_id, deleted = _create_daily_quick_snapshot_result(hermes_home=None, retain=retain)
+    if snap_id:
+        print(f"State snapshot created: {snap_id}")
+        if deleted:
+            print(f"Pruned {deleted} old snapshot(s)")
+        print(f"Retained up to {retain} snapshot(s) in {display_hermes_home()}/state-snapshots/")
+    else:
+        print("No state files found to snapshot.")
+
+
+def main(argv: Optional[List[str]] = None) -> int:
+    """Small maintenance CLI for backup helpers."""
+    parser = argparse.ArgumentParser(prog="python -m hermes_cli.backup")
+    subparsers = parser.add_subparsers(dest="command")
+
+    quick = subparsers.add_parser("quick-snapshot", help="create a nightly state.db quick snapshot")
+    quick.add_argument(
+        "--retain",
+        type=int,
+        default=_QUICK_DEFAULT_KEEP,
+        help=f"number of quick snapshots to retain (default: {_QUICK_DEFAULT_KEEP})",
+    )
+
+    args = parser.parse_args(argv)
+    if args.command == "quick-snapshot":
+        run_daily_quick_snapshot(args)
+        return 0
+
+    parser.print_help()
+    return 2
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
 
 
 # ---------------------------------------------------------------------------

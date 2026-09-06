@@ -175,3 +175,48 @@ def test_resume_snapshot_parses_json(monkeypatch, tmp_path):
     monkeypatch.setattr(mod.subprocess, "run", lambda *_args, **_kwargs: completed)
 
     assert mod._resume_snapshot() == {"summary": "Pick up the dashboard thread"}
+
+
+def test_retired_command_center_skips_board_reads_and_preserves_other_data(monkeypatch, tmp_path):
+    home = _setup_home(tmp_path, monkeypatch)
+    mod = _import_module()
+    tombstone = home / "kanban.db"
+    tombstone.mkdir()
+    (tombstone / "RETIRED").write_text("retired", encoding="utf-8")
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("retired boards must not be accessed")
+
+    monkeypatch.setattr(mod, "_iter_kanban_dbs", forbidden)
+    monkeypatch.setattr(mod, "_open_kanban_ro", forbidden)
+    monkeypatch.setattr(mod, "_projects_snapshot", forbidden)
+    monkeypatch.setattr(mod, "_live_snapshot", lambda: {"runtimes": [{"name": "codex"}]})
+    monkeypatch.setattr(mod, "_decisions_snapshot", lambda: [{"source": "github", "title": "Review PR"}])
+    monkeypatch.setattr(mod, "_resume_snapshot", lambda: {"summary": "Resume current work"})
+
+    app = FastAPI()
+    app.include_router(mod.router)
+    response = TestClient(app).get("/api/dashboard/command-center")
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["projects"] == []
+    assert payload["stalled"] == []
+    assert payload["live"]["runtimes"] == [{"name": "codex"}]
+    assert payload["decisions"][0]["source"] == "github"
+    assert payload["resume"]["summary"] == "Resume current work"
+
+
+def test_retirement_hides_cached_command_center_board_fields(monkeypatch, tmp_path):
+    home = _setup_home(tmp_path, monkeypatch)
+    mod = _import_module()
+    cached = {"projects": [{"slug": "old"}], "stalled": [{"title": "old task"}],
+              "live": {"runtimes": []}, "decisions": [], "resume": None}
+    mod._COMMAND_CENTER_CACHE = (cached, time.monotonic() + 60)
+    tombstone = home / "kanban.db"
+    tombstone.mkdir()
+    (tombstone / "RETIRED").write_text("retired", encoding="utf-8")
+
+    payload = mod.get_command_center()
+    assert payload["projects"] == []
+    assert payload["stalled"] == []
+    assert payload["live"] == cached["live"]

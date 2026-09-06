@@ -124,6 +124,25 @@ afterEach(() => {
 });
 
 describe("GetSomePage", () => {
+  it("renders an empty retired-work snapshot without claiming completion", async () => {
+    const payload = { projects: [], live: {}, decisions: [], stalled: [], resume: null };
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify(payload), { status: 200 }));
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+    const { container } = render(<GetSomePage />);
+
+    await waitFor(() => {
+      expect(container.textContent).toContain("No project data is available. Kanban is retired.");
+      expect(container.textContent).toContain("No resume context available yet.");
+      expect(container.querySelector("[data-testid='mock-work-nexus']")).not.toBeNull();
+    });
+    expect(container.textContent).not.toContain("fully complete");
+    expect(container.querySelector("[data-testid='get-some-remaining-panel']")).toBeNull();
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/dashboard/command-center",
+      expect.objectContaining({ credentials: "include" }),
+    );
+  });
+
   it("renders the Command Center zones from the unified endpoint", async () => {
     const fetchMock = mockFetch();
     globalThis.fetch = fetchMock as unknown as typeof fetch;

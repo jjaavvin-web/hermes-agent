@@ -407,6 +407,22 @@ export const api = {
   buildWsUrl,
   getStatus: () => fetchJSON<StatusResponse>("/api/status"),
   getCost: () => fetchJSON<CostSnapshot>("/api/dashboard/cost"),
+  getReflectPromoteCandidates: () =>
+    fetchJSON<ReflectPromoteResponse>("/api/reflect-promote/candidates"),
+  approveReflectCandidate: (id: string) =>
+    fetchJSON<ReflectPromoteActionResponse>(
+      `/api/reflect-promote/candidates/${encodeURIComponent(id)}/approve`,
+      { method: "POST" },
+    ),
+  rejectReflectCandidate: (id: string, reason?: string) =>
+    fetchJSON<ReflectPromoteActionResponse>(
+      `/api/reflect-promote/candidates/${encodeURIComponent(id)}/reject`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ reason: reason ?? "" }),
+      },
+    ),
   /**
    * Identity probe for the dashboard auth gate (Phase 7).
    *
@@ -1994,6 +2010,28 @@ interface FetchJSONOptions {
    *  whose 401 is an expected signal (e.g. /api/auth/me in non-gated mode)
    *  rather than evidence of a rotated session token. */
   allowUnauthorized?: boolean;
+}
+
+export interface ReflectCandidate {
+  id: string;
+  project: string;
+  situation: string;
+  mistake_or_insight: string;
+  correction: string;
+  status: "pending" | "promoted" | "rejected";
+  created_at?: string | null;
+  source?: string | null;
+  tags?: string[];
+  review_reason?: string | null;
+}
+
+export interface ReflectPromoteResponse {
+  candidates: ReflectCandidate[];
+}
+
+export interface ReflectPromoteActionResponse {
+  ok: boolean;
+  candidate: ReflectCandidate;
 }
 
 export interface ActionStatusResponse {

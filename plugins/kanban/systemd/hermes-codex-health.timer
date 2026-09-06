@@ -1,0 +1,10 @@
+[Unit]
+Description=Run Hermes Codex health check every 15 minutes
+
+[Timer]
+OnCalendar=*:0/15
+Persistent=true
+Unit=hermes-codex-health.service
+
+[Install]
+WantedBy=timers.target

@@ -1,9 +1,8 @@
 """Command Center dashboard API — unified read-only operator snapshot.
 
 Phase 1 aggregates existing dashboard layers instead of rebuilding their data
-pipelines.  The endpoint is intentionally read-only: kanban boards remain the
-source of truth and this module only projects them into a compact command
-center shape.
+pipelines. The endpoint is read-only and omits historical Kanban fields when
+the board is retired. MVMS Projects owns canonical project state.
 """
 from __future__ import annotations
 
@@ -83,6 +82,8 @@ def _select_task_rows(conn, *, statuses: set[str] | None = None) -> list[Any]:
 
 
 def _iter_task_rows(*, statuses: set[str] | None = None) -> Iterable[tuple[str, Any]]:
+    if kanban_db.kanban_retired():
+        return
     for board_slug, db_path in _iter_kanban_dbs():
         try:
             conn = _open_kanban_ro(db_path)
@@ -358,7 +359,7 @@ def _resume_snapshot() -> dict | None:
 
 def _build_command_center_snapshot() -> dict:
     try:
-        projects = _projects_snapshot()
+        projects = [] if kanban_db.kanban_retired() else _projects_snapshot()
     except Exception as exc:
         log.warning("Project roster unavailable for Command Center: %s", exc)
         projects = []
@@ -386,4 +387,9 @@ def _cached_command_center_snapshot() -> dict:
 
 @router.get("/command-center", summary="Unified Command Center dashboard snapshot")
 def get_command_center() -> dict:
-    return _cached_command_center_snapshot()
+    snapshot = _cached_command_center_snapshot()
+    if kanban_db.kanban_retired():
+        # A tombstone takes effect immediately, even while a prior snapshot
+        # remains cached. Keep independent live/PR/resume information useful.
+        return {**snapshot, "projects": [], "stalled": []}
+    return snapshot

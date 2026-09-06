@@ -247,8 +247,10 @@ class CodexGcWatcher:
         poll_interval_sec: float = 3600.0,
         reap_max_age_days: int = 7,
         gh_list_open_branches: Callable[[], set[str]] | None = None,
+        dry_run: bool = False,
     ) -> None:
         self._dispatcher = dispatcher
+        self._dry_run = dry_run
         self._broker = worktree_broker
         self._poll_interval = poll_interval_sec
         self._reap_max_age_days = reap_max_age_days
@@ -352,17 +354,25 @@ class CodexGcWatcher:
             return
 
         try:
-            actions = self._broker.gc(
-                tracked_sids=tracked_sids,
-                live_branches=live_branches,
-            )
+            gc_kwargs: dict[str, Any] = {
+                "tracked_sids": tracked_sids,
+                "live_branches": live_branches,
+            }
+            if self._dry_run:
+                gc_kwargs["dry_run"] = True
+            actions = self._broker.gc(**gc_kwargs)
             if actions:
                 log.info(
-                    "CodexGcWatcher: gc renamed %d orphan(s) to .deleted-<ts>",
+                    "CodexGcWatcher: gc %s %d orphan(s) to .deleted-<ts>",
+                    "would rename" if self._dry_run else "renamed",
                     len(actions),
                 )
         except Exception as exc:
             log.warning("CodexGcWatcher: broker.gc failed: %s", exc)
+
+        if self._dry_run:
+            log.info("CodexGcWatcher: dry-run enabled; skipping reapers")
+            return
 
         try:
             purged = self._broker.reap_deleted(max_age_days=self._reap_max_age_days)

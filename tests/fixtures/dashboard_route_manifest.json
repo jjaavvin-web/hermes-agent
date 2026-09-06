@@ -2497,6 +2497,30 @@
       "route_type": "APIRoute"
     },
     {
+      "path": "/api/reflect-promote/candidates",
+      "methods": [
+        "GET"
+      ],
+      "name": "get_reflect_promote_candidates",
+      "route_type": "APIRoute"
+    },
+    {
+      "path": "/api/reflect-promote/candidates/{candidate_id}/approve",
+      "methods": [
+        "POST"
+      ],
+      "name": "approve_reflect_promote_candidate",
+      "route_type": "APIRoute"
+    },
+    {
+      "path": "/api/reflect-promote/candidates/{candidate_id}/reject",
+      "methods": [
+        "POST"
+      ],
+      "name": "reject_reflect_promote_candidate",
+      "route_type": "APIRoute"
+    },
+    {
       "path": "/api/sessions",
       "methods": [
         "GET"

@@ -233,7 +233,7 @@ function RemainingWorkPanel({ project, onClose }: { project: ProjectSummary | nu
           </button>
         </div>
         <div className="get-some-remaining-panel__body">
-          {total <= 0 && <div className="get-some-remaining-empty">No remaining kanban tasks — this project is fully complete.</div>}
+          {total <= 0 && <div className="get-some-remaining-empty">No remaining work is available in this snapshot.</div>}
           {statuses.map((status) => {
             const items = grouped.get(status) ?? [];
             const count = statusCounts[status] ?? items.length;
@@ -462,11 +462,11 @@ export default function GetSomePage() {
               <div className="get-some-zone__header">
                 <span>Zone ②</span>
                 <h2 id="get-some-project-title">② Project status</h2>
-                <small>{projects.length} board{projects.length === 1 ? "" : "s"}</small>
+                <small>{projects.length} project{projects.length === 1 ? "" : "s"}</small>
               </div>
               <div className="get-some-roster" aria-label="Project roster">
                 {projects.length === 0 ? (
-                  <div className="get-some-state">No active kanban boards found.</div>
+                  <div className="get-some-state">No project data is available. Kanban is retired.</div>
                 ) : (
                   <div className="get-some-roster__scroller">
                     {projects.map((project) => (

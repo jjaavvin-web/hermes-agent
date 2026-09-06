@@ -109,6 +109,8 @@ const LearningPage = lazy(() => import("@/pages/LearningPage"));
 const ExplorerPage = lazy(() => import("@/pages/ExplorerPage"));
 const WelcomePage = lazy(() => import("@/pages/WelcomePage"));
 const LifePage = lazy(() => import("@/pages/LifePage"));
+const GetSomePage = lazy(() => import("@/pages/GetSomePage"));
+const ReflectPromotePage = lazy(() => import("@/pages/ReflectPromotePage"));
 import { LanguageSwitcher } from "@/components/LanguageSwitcher";
 import { ThemeSwitcher } from "@/components/ThemeSwitcher";
 import { useI18n } from "@/i18n";
@@ -181,6 +183,8 @@ const CHAT_NAV_ITEM: NavItem = {
 const BUILTIN_ROUTES_CORE: Record<string, ComponentType> = {
   "/": RootRedirect,
   "/life": LifePage,
+  "/get-some": GetSomePage,
+  "/reflect-promote": ReflectPromotePage,
   "/sessions": SessionsPage,
   "/files": FilesPage,
   "/analytics": AnalyticsPage,
@@ -217,6 +221,8 @@ function ChatRouteSink() {
 
 const BUILTIN_NAV_REST: NavItem[] = [
   { path: "/life", label: "Life", icon: LayoutDashboard },
+  { path: "/get-some", labelKey: "get_some", label: "Get Some", icon: Sparkles },
+  { path: "/reflect-promote", labelKey: "reflect_promote", label: "Reflect Promote", icon: Sparkles },
   {
     path: "/sessions",
     labelKey: "sessions",
@@ -445,6 +451,7 @@ export default function App() {
   const isDocsRoute = pathname === "/docs" || pathname === "/docs/";
   const normalizedPath = pathname.replace(/\/$/, "") || "/";
   const isExplorerRoute = normalizedPath === "/explorer";
+  const isGetSomeRoute = normalizedPath === "/get-some";
   const isChatRoute = normalizedPath === "/chat";
   const embeddedChat = isDashboardEmbeddedChatEnabled();
   // Defer mounting the persistent chat host (and its xterm chunk) until the
@@ -824,7 +831,7 @@ export default function App() {
                   : isChatRoute
                     ? "pb-0 pt-1 sm:pt-2 lg:pt-4"
                     : "pt-2 sm:pt-4 lg:pt-6",
-                (isDocsRoute || isExplorerRoute) && "min-h-0 flex-1",
+                (isDocsRoute || isExplorerRoute || isGetSomeRoute) && "min-h-0 flex-1",
                 "focus:outline-none",
               )}
             >
@@ -834,7 +841,7 @@ export default function App() {
                   "w-full min-w-0",
                   !isChatRoute && !isExplorerRoute &&
                     "pb-[calc(2rem+env(safe-area-inset-bottom,0px))] lg:pb-8",
-                  (isDocsRoute || isChatRoute || isExplorerRoute) &&
+                  (isDocsRoute || isChatRoute || isExplorerRoute || isGetSomeRoute) &&
                     "min-h-0 flex flex-1 flex-col",
                 )}
               >

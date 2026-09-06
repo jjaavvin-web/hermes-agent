@@ -30,6 +30,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Literal, Optional
 
+from agent.role_defaults import REVIEWER_MODEL
+
 log = logging.getLogger(__name__)
 
 
@@ -234,7 +236,7 @@ class PeerReviewOrchestrator:
         spawn = self._tmux(
             "new-session", "-d", "-s", pane_id,
             "claude",
-            "--model", "opus",
+            "--model", REVIEWER_MODEL,
             "--allowed-tools", "Read,Bash,Write",
             "--add-dir", "/tmp",
             check=False,
