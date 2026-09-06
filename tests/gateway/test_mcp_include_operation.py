@@ -383,8 +383,10 @@ async def test_discord_button_owner_bot_and_choice(fixture):
     f = fixture
     _, p = await propose(f)
     # Real adapter class (fixture interaction, no network).
+    ordinary = SlashConfirmView('discord:unscoped', 'fixture-confirm', {'human'})
+    assert [child.label for child in ordinary.children] == ['Approve Once', 'Always Approve', 'Cancel']
     view = SlashConfirmView('discord:room:thread', p['confirm_id'], {'human', 'other'})
-    good = SimpleNamespace(user=SimpleNamespace(id='human', bot=False))
+    good = SimpleNamespace(user=SimpleNamespace(id='human', bot=False, display_name='Human'))
     other = SimpleNamespace(user=SimpleNamespace(id='other', bot=False))
     bot = SimpleNamespace(user=SimpleNamespace(id='human', bot=True))
     assert view._check_auth(good)
@@ -392,13 +394,14 @@ async def test_discord_button_owner_bot_and_choice(fixture):
     assert not view._check_auth(bot)
     assert view.timeout == 300
     assert all(getattr(child, 'label', None) != 'Always Approve' for child in view.children)
+    assert [child.label for child in view.children] == ['Approve Once', 'Cancel']
     good.message = SimpleNamespace(embeds=[])
     good.response = SimpleNamespace(edit_message=AsyncMock(), send_message=AsyncMock())
     good.followup = SimpleNamespace(send=AsyncMock())
-    from plugins.platforms.discord.adapter import discord
-    await view._resolve(good, 'once', discord.Color.green(), 'Approved')
+    await view.children[0].callback(good)
     assert f.runner._execute_mcp_reload_unlocked.await_count == 1
     assert 'VERIFIED' in good.followup.send.await_args.args[0]
+    assert all(child.disabled for child in view.children)
 
 
 @pytest.mark.asyncio

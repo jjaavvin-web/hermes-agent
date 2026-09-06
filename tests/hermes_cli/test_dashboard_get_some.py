@@ -275,8 +275,8 @@ def test_retirement_overrides_cached_get_some_board_data(monkeypatch, tmp_path):
     home = _setup_home(tmp_path, monkeypatch)
     get_some = _import_module(monkeypatch)
     expires = time.monotonic() + 60
-    get_some._PROJECTS_CACHE = ({"projects": [{"slug": "retired-board"}]}, expires)
-    get_some._NEXUS_CACHE = ({"nodes": [{"id": "old-task"}], "edges": []}, expires)
+    monkeypatch.setattr(get_some, "_PROJECTS_CACHE", ({"projects": [{"slug": "retired-board"}]}, expires))
+    monkeypatch.setattr(get_some, "_NEXUS_CACHE", ({"nodes": [{"id": "old-task"}], "edges": []}, expires))
     tombstone = home / "kanban.db"
     tombstone.mkdir()
     (tombstone / "RETIRED").write_text("retired", encoding="utf-8")

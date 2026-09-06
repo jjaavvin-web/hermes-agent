@@ -129,8 +129,31 @@ def test_dashboard_stream_query_token_allowed_and_missing_token_rejected():
     assert response.content_type == "text/event-stream"
 
 
-def test_dashboard_smoke_enumerates_full_app_and_probes_all_api_get_routes(tmp_path):
-    from hermes_cli import web_server
+def test_dashboard_smoke_enumerates_full_app_and_probes_all_api_get_routes(tmp_path, monkeypatch):
+    from hermes_cli import cost_reconcile, web_server
+    from hermes_state import SessionDB
+
+    # Exercise the real cost route with an initialized, isolated ledger. An
+    # absent database would return early and never exercise policy loading.
+    ledger_path = tmp_path / "cost-smoke.db"
+    SessionDB(db_path=ledger_path).close()
+    monkeypatch.setattr(cost_reconcile, "_state_db_path", lambda: ledger_path)
+
+    policy_path = tmp_path / "provider-stack.lock.yaml"
+    policy_path.write_text(
+        "lock:\n"
+        "  default_lane: {provider: fixture-provider, model: fixture-model}\n"
+        "  forbidden: [paid_fallback]\n",
+        encoding="utf-8",
+    )
+    load_lane_policy = cost_reconcile.load_lane_policy
+    policy_reads = []
+
+    def load_smoke_policy(_path):
+        policy_reads.append(policy_path)
+        return load_lane_policy(policy_path)
+
+    monkeypatch.setattr(cost_reconcile, "load_lane_policy", load_smoke_policy)
 
     report = dashboard_smoke.run_dashboard_smoke(
         web_server.app,
@@ -138,6 +161,10 @@ def test_dashboard_smoke_enumerates_full_app_and_probes_all_api_get_routes(tmp_p
         expected_manifest=dashboard_smoke.load_route_manifest(_ROUTE_MANIFEST),
     )
 
+    cost_route = next(route for route in report.route_results if route.path == "/api/dashboard/cost/reconcile")
+    assert policy_reads, "cost reconciliation did not exercise the temporary policy"
+    assert cost_route.probe is not None
+    assert cost_route.probe.status_code == 200, cost_route.probe.error
     assert report.ok is True
     assert report.route_count_total == len(web_server.app.routes)
     assert report.route_count_total >= 273

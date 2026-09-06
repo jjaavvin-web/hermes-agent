@@ -290,9 +290,30 @@ def _ensure_discord_mock() -> None:
         def __init__(self, timeout=None):
             self.timeout = timeout
             self.children = []
+            self._decorated_items = {}
+            decorated = {}
+            for cls in reversed(type(self).__mro__):
+                for name, fn in vars(cls).items():
+                    if "__discord_ui_model_kwargs__" in getattr(fn, "__dict__", {}):
+                        decorated[name] = fn
+            for fn in decorated.values():
+                item = _FakeButton(**fn.__discord_ui_model_kwargs__)
+                item.callback = lambda interaction, fn=fn, item=item: fn(self, interaction, item)
+                self._decorated_items[fn] = item
+                self.add_item(item)
         def add_item(self, item):
             self.children.append(item)
             return item
+        def remove_item(self, item):
+            # Keep decorated methods callable in the fake while resolving
+            # remove_item(self.button_method) to its per-instance button.
+            if getattr(item, "__self__", None) is self:
+                item = self._decorated_items.get(item.__func__, item)
+            try:
+                self.children.remove(item)
+            except ValueError:
+                pass
+            return self
         def clear_items(self):
             self.children.clear()
             return self
@@ -318,6 +339,12 @@ def _ensure_discord_mock() -> None:
             self.sku_id = sku_id
             self.callback = None
 
+    def _fake_button(**kwargs):
+        def decorate(fn):
+            fn.__discord_ui_model_kwargs__ = kwargs
+            return fn
+        return decorate
+
     class _FakeSelectOption:
         def __init__(self, *, label=None, value=None, description=None, **_):
             self.label = label
@@ -341,7 +368,7 @@ def _ensure_discord_mock() -> None:
         View=_FakeView,
         Select=_FakeSelect,
         Button=_FakeButton,
-        button=lambda *a, **k: (lambda fn: fn),
+        button=_fake_button,
     )
     discord_mod.ButtonStyle = SimpleNamespace(
         success=1, primary=2, secondary=2, danger=3,
