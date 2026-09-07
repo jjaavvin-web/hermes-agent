@@ -43,6 +43,19 @@ CHAIN_ENTRY = {
     "timeout": 45,
 }
 
+# Host budgets for the stalled primary attempt. They must comfortably exceed
+# the latency between arming the fence and the pool thread first entering the
+# worker: under CPU oversubscription (GitHub's 4-vCPU runner with 8 parallel
+# pytest workers; locally 60 busy loops) the FIRST pool-thread spawn was
+# measured at 0.2-0.7 s. With the old 0.05 s / 0.2 s budgets the primary's
+# fence deadline expired before the worker ever ran, so the fallback retry
+# consumed the worker's one stall and ``attempts`` came back 1 instead of 2.
+# 2 s idle keeps ~3x headroom over the worst measured spawn; the 1:4
+# idle:ceiling ratio of the original values is preserved so the stall is
+# still classified as an idle stall, not a total-ceiling exhaustion.
+IDLE_SECONDS = 2.0
+CEILING_SECONDS = 8.0
+
 
 def _patch_chain(chain):
     """Pin auxiliary.compression config without touching the real config.yaml."""
@@ -90,7 +103,9 @@ class _StalledSummaryWorker:
             fence.finish_commit()
 
 
-def _run(worker, *, chain, timeouts, messages, idle=0.05, ceiling=0.2):
+def _run(
+    worker, *, chain, timeouts, messages, idle=IDLE_SECONDS, ceiling=CEILING_SECONDS
+):
     with _patch_chain(chain):
         return run_compress_context_with_progress_timeout(
             worker=worker,
@@ -151,8 +166,8 @@ def test_retry_runs_on_a_host_published_fence():
                 worker=worker,
                 messages=original,
                 system_prompt_fallback="degraded-prompt",
-                idle_timeout_seconds=0.05,
-                total_ceiling_seconds=0.2,
+                idle_timeout_seconds=IDLE_SECONDS,
+                total_ceiling_seconds=CEILING_SECONDS,
                 new_fence=_new_fence,
             )
     finally:
@@ -181,8 +196,8 @@ def test_hard_interrupt_suppresses_the_fallback_attempt():
                 worker=worker,
                 messages=original,
                 system_prompt_fallback="degraded-prompt",
-                idle_timeout_seconds=0.05,
-                total_ceiling_seconds=0.2,
+                idle_timeout_seconds=IDLE_SECONDS,
+                total_ceiling_seconds=CEILING_SECONDS,
                 on_timeout=lambda *args: timeouts.append(args),
                 telemetry_agent=agent,
             )
@@ -217,7 +232,9 @@ def test_fallback_that_also_stalls_degrades_after_one_attempt():
         [{"role": "user", "content": "unused"}], stall_attempts=2
     )
     timeouts = []
-    entry = dict(CHAIN_ENTRY, timeout=0.05)
+    # The entry timeout becomes the retry's idle window, so it needs the same
+    # spawn headroom as the primary or the retry never enters the worker.
+    entry = dict(CHAIN_ENTRY, timeout=IDLE_SECONDS)
 
     try:
         msgs, prompt = _run(worker, chain=[entry], timeouts=timeouts, messages=original)

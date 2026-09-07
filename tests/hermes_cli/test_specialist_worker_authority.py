@@ -8,6 +8,8 @@ from pathlib import Path
 
 import pytest
 
+from tests.hermes_cli.conftest_userns import requires_userns
+
 
 def _guard(profile: str, workspace: Path, tool: str, args: dict):
     from hermes_cli.worker_authority import authorize_worker_tool
@@ -138,6 +140,7 @@ def test_spawn_sets_authority_and_strips_provider_credentials(monkeypatch, tmp_p
     assert "HTTPS_PROXY" not in captured["env"]
 
 
+@requires_userns
 def test_specialist_test_runner_executes_only_workspace_pytest(monkeypatch, tmp_path):
     monkeypatch.setenv("HERMES_WORKER_AUTHORITY", "sol-verifier")
     monkeypatch.setenv("HERMES_KANBAN_WORKSPACE", str(tmp_path))
@@ -167,6 +170,7 @@ def test_specialist_test_denies_workspace_symlinks(monkeypatch, tmp_path):
     assert "symlink" in result["error"]
 
 
+@requires_userns
 def test_specialist_test_sandbox_blocks_host_reads_network_writes_and_pytest_env(monkeypatch, tmp_path):
     monkeypatch.setenv("HERMES_WORKER_AUTHORITY", "sol-verifier")
     monkeypatch.setenv("HERMES_KANBAN_WORKSPACE", str(tmp_path))
@@ -246,6 +250,7 @@ def test_host_proc_read_denied():
     assert "8 passed" in result["output"]
 
 
+@requires_userns
 def test_specialist_test_sandbox_denies_host_unix_socket(monkeypatch, tmp_path):
     import socket
     import threading
@@ -288,6 +293,7 @@ def test_specialist_test_sandbox_denies_host_unix_socket(monkeypatch, tmp_path):
     assert accepted == []
 
 
+@requires_userns
 def test_specialist_test_pid_namespace_blocks_host_signals(monkeypatch, tmp_path):
     monkeypatch.setenv("HERMES_WORKER_AUTHORITY", "sol-verifier")
     monkeypatch.setenv("HERMES_KANBAN_WORKSPACE", str(tmp_path))

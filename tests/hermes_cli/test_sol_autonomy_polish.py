@@ -6,6 +6,8 @@ from pathlib import Path
 
 import pytest
 
+from tests.hermes_cli.conftest_userns import requires_userns
+
 
 @pytest.fixture
 def kanban_home(tmp_path, monkeypatch):
@@ -239,6 +241,7 @@ def test_unknown_specialist_toolset_fails_before_spawn_side_effects(monkeypatch,
     assert not log_dir.exists()
 
 
+@requires_userns
 def test_builder_specialist_test_leaves_workspace_byte_identical(monkeypatch, tmp_path):
     _pin(monkeypatch, tmp_path)
     test_file = tmp_path / "test_artifact.py"

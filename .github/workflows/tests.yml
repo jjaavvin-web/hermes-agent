@@ -56,6 +56,11 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          # Full history: tests/security/test_fork_parity_guard.py asserts the
+          # lineage base commit is an ancestor of HEAD; a depth-1 checkout
+          # cannot see it and fails all four lineage nodes.
+          fetch-depth: 0
 
       - name: Install ripgrep (prebuilt binary)
         run: |
@@ -63,7 +68,9 @@ jobs:
           RG_VERSION=15.1.0
           RG_SHA256=1c9297be4a084eea7ecaedf93eb03d058d6faae29bbc57ecdaf5063921491599
           RG_TARBALL=ripgrep-${RG_VERSION}-x86_64-unknown-linux-musl.tar.gz
-          curl -sSfL --retry 3 --retry-delay 5 -o "$RG_TARBALL" \
+          # --retry-all-errors: plain --retry skips curl exit 35 (connection
+          # reset during TLS handshake), which killed slice 8 of run 34043492703.
+          curl -sSfL --retry 3 --retry-delay 5 --retry-all-errors -o "$RG_TARBALL" \
             "https://github.com/BurntSushi/ripgrep/releases/download/${RG_VERSION}/${RG_TARBALL}"
           echo "${RG_SHA256}  ${RG_TARBALL}" | sha256sum -c -
           tar -xzf "$RG_TARBALL"
@@ -230,7 +237,7 @@ jobs:
           RG_VERSION=15.1.0
           RG_SHA256=1c9297be4a084eea7ecaedf93eb03d058d6faae29bbc57ecdaf5063921491599
           RG_TARBALL=ripgrep-${RG_VERSION}-x86_64-unknown-linux-musl.tar.gz
-          curl -sSfL --retry 3 --retry-delay 5 -o "$RG_TARBALL" \
+          curl -sSfL --retry 3 --retry-delay 5 --retry-all-errors -o "$RG_TARBALL" \
             "https://github.com/BurntSushi/ripgrep/releases/download/${RG_VERSION}/${RG_TARBALL}"
           echo "${RG_SHA256}  ${RG_TARBALL}" | sha256sum -c -
           tar -xzf "$RG_TARBALL"

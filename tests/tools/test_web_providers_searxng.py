@@ -211,6 +211,13 @@ class TestCheckWebApiKey:
         monkeypatch.setattr(web_tools, "_is_tool_gateway_ready", lambda: False)
         monkeypatch.setattr(web_tools, "check_firecrawl_api_key", lambda: False)
         monkeypatch.setattr(web_tools, "_ddgs_package_importable", lambda: False)
+        # The registry-side ddgs provider runs its own ``import ddgs`` probe
+        # (plugins/web/ddgs/provider.py::is_available) and is the default
+        # active search provider — so on a venv where the optional ``ddgs``
+        # package happens to be installed, zero credentials still resolves
+        # True. Disable it the same way the legacy probe above is disabled.
+        from plugins.web.ddgs.provider import DDGSWebSearchProvider
+        monkeypatch.setattr(DDGSWebSearchProvider, "is_available", lambda self: False)
         # Disable the keyless free tier — with it on, zero credentials still
         # resolves (Parallel/Exa anonymous MCP; see test_web_keyless_fallback.py).
         monkeypatch.setattr(web_search_registry, "_keyless_tier_enabled", lambda: False)

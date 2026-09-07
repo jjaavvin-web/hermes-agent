@@ -307,6 +307,11 @@ def test_honesty_caps_locked(monkeypatch: pytest.MonkeyPatch) -> None:
     for section in fixture["os"]["sections"]:
         for item in section.get("items", []):
             item["status"] = "green"
+    # ``graph/*`` selectors (ict-brain, opus_extractor, x_search) read the OS graph nodes,
+    # which ``_fixture()`` builds from live host probes -- force them green too so the
+    # cap is exercised regardless of which paths exist on the running machine.
+    for node in fixture["os"]["graph"]["nodes"]:
+        node["status"] = "green"
     for node in fixture["connectome"]["nodes"]:
         node["status"] = "ok"
     env = _envelope(monkeypatch, fixture)

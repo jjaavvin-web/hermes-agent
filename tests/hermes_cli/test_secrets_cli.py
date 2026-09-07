@@ -363,7 +363,9 @@ def test_cmd_install_success_and_failure(monkeypatch, tmp_path, capsys):
 
     assert secrets_cli.cmd_install(_ns(force=True)) == 0
     install_mock.assert_called_once_with(force=True)
-    assert str(fake_binary) in capsys.readouterr().out
+    # Rich soft-wraps long paths at 80 cols on a non-TTY (CI); drop the wrap
+    # newlines before the substring check.
+    assert str(fake_binary) in capsys.readouterr().out.replace("\n", "")
 
     monkeypatch.setattr(
         secrets_cli.bw,
