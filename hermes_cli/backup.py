@@ -131,8 +131,6 @@ _EXCLUDED_NAMES = {
 # embedding case; credentials belong in .env/auth.json/keys instead.
 # (Fork PR#70: relay.secret + .key/.pem exclusions preserved across the
 #  2026-06-20 upstream merge — guarded by tests/security/test_merge_invariants.py.)
-_DOT_ENV_NAME = "." + "env"
-_AUTH_JSON_NAME = "auth" + ".json"
 _SECRET_FILE_NAMES = {".env", "auth.json", "relay.secret"}
 _SECRET_SUFFIXES = (".key", ".pem")
 
@@ -1062,7 +1060,7 @@ def _validate_backup_zip(zf: zipfile.ZipFile) -> tuple[bool, str]:
         return False, "zip archive is empty"
 
     # Look for telltale files that a hermes home would have
-    markers = {"config.yaml", _DOT_ENV_NAME, "state.db"}
+    markers = {"config.yaml", ".env", "state.db"}
     found = set()
     for n in names:
         # Could be at the root or one level deep (if someone zipped the directory)
@@ -1260,7 +1258,7 @@ def run_import(args) -> None:
 
         # Check for existing installation
         has_config = (hermes_root / "config.yaml").exists()
-        has_env = (hermes_root / _DOT_ENV_NAME).exists()
+        has_env = (hermes_root / ".env").exists()
 
         if (has_config or has_env) and not args.force:
             print()
@@ -1410,7 +1408,7 @@ def run_import(args) -> None:
                         continue
                     profile_name = entry.name
                     # Only create wrappers for directories with config
-                    if not (entry / "config.yaml").exists() and not (entry / _DOT_ENV_NAME).exists():
+                    if not (entry / "config.yaml").exists() and not (entry / ".env").exists():
                         continue
                     collision = check_alias_collision(profile_name)
                     if collision:
