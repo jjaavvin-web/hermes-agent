@@ -3,7 +3,7 @@
 These tests codify the B-slice acceptance criteria from the audit TASK-LIST:
 B1 janitor systemd dry-run + no /tmp roots, B2 Codex GC dry-run/terminal-row
 safety, B3 scheduled health check + dashboard liveness badge data, and B4
-run-registry bootstrap + janitor reader.
+synthetic run-registry lease + janitor reader.
 """
 
 from __future__ import annotations
@@ -21,7 +21,6 @@ from agent.worktree_broker import WorktreeBroker
 from gateway.codex_gc_watcher import CodexGcWatcher
 from hermes_cli import dashboard_codex_sessions as dcs
 from hermes_cli import git_janitor as gj
-from hermes_cli import kanban_db as kb
 
 
 @pytest.fixture
@@ -81,7 +80,13 @@ def test_b2_worktree_gc_supports_dry_run_without_renaming(tmp_path):
     broker = WorktreeBroker(repo_root=repo, hermes_home=home)
     broker._git = MagicMock()
 
-    actions = broker.gc(tracked_sids=set(), live_branches=set(), dry_run=True)
+    # Empty registry truth cannot authorize an automatic sweep. A manual
+    # preview may explicitly opt in without touching worktrees or Git state.
+    assert broker.gc(tracked_sids=set(), live_branches=set(), dry_run=True) == []
+    actions = broker.gc(
+        tracked_sids=set(), live_branches=set(), dry_run=True,
+        allow_empty_tracked_sids=True,
+    )
 
     assert orphan.exists(), "dry-run GC must not rename or delete the orphan"
     assert actions
@@ -94,7 +99,7 @@ def test_b2_worktree_gc_supports_dry_run_without_renaming(tmp_path):
 async def test_b2_gc_watcher_dry_run_passes_through_to_broker(tmp_path):
     sessions = tmp_path / "codex_sessions.json"
     sessions.write_text(json.dumps({"version": 1, "sessions": {}}), encoding="utf-8")
-    disp = SimpleNamespace(_load_state=lambda: json.loads(sessions.read_text()))
+    disp = SimpleNamespace(_sessions_path=sessions)
     broker = MagicMock()
     broker.gc.return_value = []
     broker.reap_deleted.return_value = 0
@@ -112,40 +117,44 @@ async def test_b2_gc_watcher_dry_run_passes_through_to_broker(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_b2_gc_watcher_excludes_terminal_rows_from_tracked_sids(tmp_path):
+async def test_b2_gc_watcher_preserves_terminal_rows_in_checked_tracked_sids(tmp_path):
     rows = {
         "t-active": {"session_id": "sid-active", "state": "EXECUTING"},
         "t-complete": {"session_id": "sid-complete", "state": "COMPLETE"},
         "t-escalated": {"session_id": "sid-escalated", "state": "ESCALATED"},
     }
-    disp = SimpleNamespace(_load_state=lambda: {"version": 1, "sessions": rows})
+    sessions = tmp_path / "codex_sessions.json"
+    sessions.write_text(json.dumps({"version": 1, "sessions": rows}), encoding="utf-8")
+    disp = SimpleNamespace(_sessions_path=sessions)
     broker = MagicMock()
     broker.gc.return_value = []
     broker.reap_deleted.return_value = 0
-    watcher = CodexGcWatcher(dispatcher=disp, worktree_broker=broker, gh_list_open_branches=lambda: set())
+    watcher = CodexGcWatcher(
+        dispatcher=disp, worktree_broker=broker,
+        gh_list_open_branches=lambda: set(), dry_run=True,
+    )
 
     await watcher._tick()
 
-    assert broker.gc.call_args.kwargs["tracked_sids"] == {"sid-active"}
+    assert broker.gc.call_args.kwargs["tracked_sids"] == {
+        "sid-active", "sid-complete", "sid-escalated",
+    }
+    broker.reap_deleted.assert_not_called()
 
 
-def test_b2_worktree_gc_can_dry_run_tracked_merged_inactive_sid(tmp_path, monkeypatch):
+def test_b2_worktree_gc_dry_run_preserves_tracked_sid_without_git_probes(tmp_path):
     repo = tmp_path / "repo"
     repo.mkdir()
     home = tmp_path / ".hermes"
     tracked = home / "codex-wt" / "sid-tracked"
     tracked.mkdir(parents=True)
     broker = WorktreeBroker(repo_root=repo, hermes_home=home)
-    monkeypatch.setattr(broker, "_tmux_session_alive", lambda sid: False)
-    monkeypatch.setattr(broker, "_worktree_head", lambda path: "abc123")
-    monkeypatch.setattr(broker, "_head_is_ancestor", lambda head, base: True)
     broker._git = MagicMock()
 
     actions = broker.gc(tracked_sids={"sid-tracked"}, live_branches=set(), dry_run=True)
 
     assert tracked.exists()
-    assert actions[0].sid == "sid-tracked"
-    assert "merged into fork/main" in actions[0].reason
+    assert actions == [], "tracked custody remains protective regardless of terminal state"
     broker._git.assert_not_called()
 
 
@@ -213,11 +222,6 @@ def test_b3_dashboard_snapshot_surfaces_red_liveness(monkeypatch, tmp_path):
     assert row["last_activity_age_seconds"] == 3600
 
 
-def test_b4_run_registry_dir_bootstrapped_by_kanban_init(kanban_home):
-    kb.init_db()
-    registry = kanban_home / "run-registry"
-    assert registry.is_dir()
-    assert (registry / ".gitignore").read_text(encoding="utf-8").strip() == "*.lock"
 
 
 def test_b4_janitor_lock_reader_tolerates_missing_run_registry(tmp_path, monkeypatch):
@@ -226,7 +230,8 @@ def test_b4_janitor_lock_reader_tolerates_missing_run_registry(tmp_path, monkeyp
 
 
 def test_b4_janitor_lock_reader_consumes_seeded_b4_lease(kanban_home):
-    registry = kb.ensure_run_registry()
+    registry = kanban_home / "run-registry"
+    registry.mkdir()
     lease = {
         "branch": "worker/b4-lease",
         "worktree_path": "/repo/.worktrees/b4-lease",

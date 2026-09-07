@@ -95,7 +95,7 @@ def _generate_module(
         lines.append(f'        return "{status}"\n')
 
     (tmp / "entities").mkdir(exist_ok=True)
-    (tmp / "entities" / filename).write_text("\n".join(lines))
+    (tmp / "entities" / filename).write_text("\n".join(lines), encoding="utf-8")
     return class_names
 
 
@@ -170,7 +170,7 @@ def _generate_topology(
                 f"        return ({src_cls}(), {tgt_cls}())\n\n"
             )
 
-    (tmp / "topology.py").write_text("".join(lines))
+    (tmp / "topology.py").write_text("".join(lines), encoding="utf-8")
 
 
 def generate_code(snap: RuntimeSnapshot, dest: Path) -> None:
@@ -204,7 +204,7 @@ def generate_code(snap: RuntimeSnapshot, dest: Path) -> None:
             "edges": len(snap["edges"]),
         },
     }
-    (dest / "runtime_meta.json").write_text(json.dumps(meta, indent=2))
+    (dest / "runtime_meta.json").write_text(json.dumps(meta, indent=2), encoding="utf-8")
 
 
 # ---------------------------------------------------------------------------

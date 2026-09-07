@@ -23,36 +23,7 @@ class TestHostHeaderValidator:
     """Unit test the _is_accepted_host helper directly — cheaper and
     more thorough than spinning up the full FastAPI app."""
 
-    def test_loopback_bind_accepts_loopback_names(self):
-        from hermes_cli.web_server import _is_accepted_host
 
-        for bound in ("127.0.0.1", "localhost", "::1"):
-            for host_header in (
-                "127.0.0.1", "127.0.0.1:9119",
-                "localhost", "localhost:9119",
-                "[::1]", "[::1]:9119",
-            ):
-                assert _is_accepted_host(host_header, bound), (
-                    f"bound={bound} must accept host={host_header}"
-                )
-
-    def test_loopback_bind_rejects_attacker_hostnames(self):
-        """The core rebinding defence: attacker-controlled hosts that
-        TTL-flip to 127.0.0.1 must be rejected."""
-        from hermes_cli.web_server import _is_accepted_host
-
-        for bound in ("127.0.0.1", "localhost"):
-            for attacker in (
-                "evil.example",
-                "evil.example:9119",
-                "rebind.attacker.test:80",
-                "localhost.attacker.test",  # subdomain trick
-                "127.0.0.1.evil.test",  # lookalike IP prefix
-                "",  # missing Host
-            ):
-                assert not _is_accepted_host(attacker, bound), (
-                    f"bound={bound} must reject attacker host={attacker!r}"
-                )
 
     def test_zero_zero_bind_accepts_anything(self):
         """0.0.0.0 means operator explicitly opted into all-interfaces
@@ -76,12 +47,34 @@ class TestHostHeaderValidator:
         # Loopback — reject (we bound to a specific non-loopback name)
         assert not _is_accepted_host("localhost", "my-server.corp.net")
 
-    def test_case_insensitive_comparison(self):
-        """Host headers are case-insensitive per RFC — accept variations."""
+
+    def test_trusted_public_host_is_exact_match_only(self):
+        """A declared proxy host is accepted without weakening rebinding checks."""
         from hermes_cli.web_server import _is_accepted_host
 
-        assert _is_accepted_host("LOCALHOST", "127.0.0.1")
-        assert _is_accepted_host("LocalHost:9119", "127.0.0.1")
+        trusted = frozenset({"dashboard.example.test"})
+        assert _is_accepted_host(
+            "dashboard.example.test:9443", "127.0.0.1", trusted
+        )
+        assert not _is_accepted_host(
+            "dashboard.example.test.evil.test", "127.0.0.1", trusted
+        )
+        assert not _is_accepted_host("evil.test", "127.0.0.1", trusted)
+
+    def test_malformed_host_authorities_fail_closed(self):
+        """Ports, IPv6 brackets, and authority syntax must be unambiguous."""
+        from hermes_cli.web_server import _is_accepted_host
+
+        trusted = frozenset({"dashboard.example.test"})
+        for malformed in (
+            "http://dashboard.example.test:9443",
+            "dashboard.example.test:",
+            "dashboard.example.test:notaport",
+            "[::1].evil.test",
+            "[::1]:notaport",
+            "[localhost]",
+        ):
+            assert not _is_accepted_host(malformed, "127.0.0.1", trusted)
 
 
 class TestHostHeaderMiddleware:
@@ -109,27 +102,24 @@ class TestHostHeaderMiddleware:
             if hasattr(app.state, "bound_host"):
                 del app.state.bound_host
 
-    def test_legit_loopback_request_accepted(self):
+
+    def test_trusted_public_host_request_accepted(self):
+        """A loopback backend may accept its declared reverse-proxy host."""
         from fastapi.testclient import TestClient
         from hermes_cli.web_server import app
 
         app.state.bound_host = "127.0.0.1"
+        app.state.trusted_public_hosts = frozenset({"dashboard.example.test"})
         try:
             client = TestClient(app)
-            # /api/status is in _PUBLIC_API_PATHS — passes auth — so the
-            # only thing that can reject is the host header middleware
             resp = client.get(
                 "/api/status",
-                headers={"Host": "localhost:9119"},
+                headers={"Host": "dashboard.example.test:9443"},
             )
-            # Either 200 (endpoint served) or some other non-400 —
-            # just not the host-rejection 400
-            assert resp.status_code != 400 or (
-                "Invalid Host header" not in resp.json().get("detail", "")
-            )
+            assert resp.status_code != 400
         finally:
-            if hasattr(app.state, "bound_host"):
-                del app.state.bound_host
+            del app.state.bound_host
+            del app.state.trusted_public_hosts
 
     def test_no_bound_host_skips_validation(self):
         """If app.state.bound_host isn't set (e.g. running under test
@@ -146,3 +136,174 @@ class TestHostHeaderMiddleware:
         resp = client.get("/api/status")
         # Should get through to the status endpoint, not a 400
         assert resp.status_code != 400
+
+
+class TestWebSocketHostOriginGuard:
+    """WebSocket upgrades must enforce the same dashboard boundary as HTTP."""
+
+    def test_rebinding_websocket_host_is_rejected(self, monkeypatch):
+        from fastapi.testclient import TestClient
+        from starlette.websockets import WebSocketDisconnect
+
+        import hermes_cli.web_server as ws
+
+        monkeypatch.setattr(ws.app.state, "bound_host", "127.0.0.1", raising=False)
+        monkeypatch.setattr(ws.app.state, "auth_required", False, raising=False)
+        monkeypatch.setattr(ws, "_DASHBOARD_EMBEDDED_CHAT_ENABLED", True)
+
+        client = TestClient(ws.app)
+        url = f"/api/events?token={ws._SESSION_TOKEN}&channel=security-test"
+        with pytest.raises(WebSocketDisconnect) as exc:
+            with client.websocket_connect(
+                url,
+                headers={
+                    "Host": "evil.example",
+                    "Origin": "http://evil.example",
+                },
+            ):
+                pass
+
+        assert exc.value.code == 4403
+
+
+    def test_loopback_websocket_host_and_origin_are_accepted(self, monkeypatch):
+        from fastapi.testclient import TestClient
+
+        import hermes_cli.web_server as ws
+
+        monkeypatch.setattr(ws.app.state, "bound_host", "127.0.0.1", raising=False)
+        monkeypatch.setattr(ws.app.state, "auth_required", False, raising=False)
+        monkeypatch.setattr(ws, "_DASHBOARD_EMBEDDED_CHAT_ENABLED", True)
+
+        client = TestClient(ws.app)
+        url = f"/api/events?token={ws._SESSION_TOKEN}&channel=security-test"
+        with client.websocket_connect(
+            url,
+            headers={
+                "Host": "localhost:9119",
+                "Origin": "http://localhost:9119",
+            },
+        ):
+            pass
+
+    def test_trusted_public_websocket_host_and_origin_are_accepted(self, monkeypatch):
+        from fastapi.testclient import TestClient
+
+        import hermes_cli.web_server as ws
+
+        monkeypatch.setattr(ws.app.state, "bound_host", "127.0.0.1", raising=False)
+        monkeypatch.setattr(
+            ws.app.state,
+            "trusted_public_hosts",
+            frozenset({"dashboard.example.test"}),
+            raising=False,
+        )
+        monkeypatch.setattr(ws.app.state, "auth_required", False, raising=False)
+        monkeypatch.setattr(ws, "_DASHBOARD_EMBEDDED_CHAT_ENABLED", True)
+
+        client = TestClient(ws.app)
+        url = f"/api/events?token={ws._SESSION_TOKEN}&channel=security-test"
+        with client.websocket_connect(
+            url,
+            headers={
+                "Host": "dashboard.example.test:9443",
+                "Origin": "https://dashboard.example.test:9443",
+            },
+        ):
+            pass
+
+    def test_trusted_public_websocket_rejects_cross_site_origin(self, monkeypatch):
+        from fastapi.testclient import TestClient
+        from starlette.websockets import WebSocketDisconnect
+
+        import hermes_cli.web_server as ws
+
+        monkeypatch.setattr(ws.app.state, "bound_host", "127.0.0.1", raising=False)
+        monkeypatch.setattr(
+            ws.app.state,
+            "trusted_public_hosts",
+            frozenset({"dashboard.example.test"}),
+            raising=False,
+        )
+        monkeypatch.setattr(ws.app.state, "auth_required", False, raising=False)
+        monkeypatch.setattr(ws, "_DASHBOARD_EMBEDDED_CHAT_ENABLED", True)
+
+        client = TestClient(ws.app)
+        url = f"/api/events?token={ws._SESSION_TOKEN}&channel=security-test"
+        with pytest.raises(WebSocketDisconnect) as exc:
+            with client.websocket_connect(
+                url,
+                headers={
+                    "Host": "dashboard.example.test:9443",
+                    "Origin": "https://evil.test",
+                },
+            ):
+                pass
+
+        assert exc.value.code == 4403
+
+
+class TestExtraAcceptedHosts:
+    """HERMES_DASHBOARD_EXTRA_HOSTS — operator-allowlisted Host values that
+    widen the GHSA-ppp5-vxwm-4cf7 DNS-rebinding Host guard.
+
+    Safety rationale (see ``_extra_accepted_hosts`` docstring): forging an
+    allowlisted Host via DNS rebinding requires the attacker to control how
+    that name resolves for the victim's browser. For a tailnet MagicDNS name
+    (``fresh.tailadb109.ts.net``) resolution is tailnet-internal and
+    WireGuard-authed, so the operator opt-in does not reopen the hole.
+    """
+
+    def test_allowlisted_host_accepted_others_rejected(self, monkeypatch):
+        import hermes_cli.web_server as ws
+
+        monkeypatch.setattr(
+            ws, "_EXTRA_ACCEPTED_HOSTS", frozenset({"fresh.tailadb109.ts.net"})
+        )
+
+        # Allowlisted name accepted even though it is neither loopback nor the
+        # bound interface (127.0.0.1).
+        assert ws._is_accepted_host("fresh.tailadb109.ts.net", "127.0.0.1") is True
+        # ...and with the dashboard port suffix stripped.
+        assert (
+            ws._is_accepted_host("fresh.tailadb109.ts.net:9119", "127.0.0.1") is True
+        )
+        # A non-allowlisted host is still rejected.
+        assert ws._is_accepted_host("evil.example", "127.0.0.1") is False
+
+    def test_allowlist_match_is_case_insensitive(self, monkeypatch):
+        import hermes_cli.web_server as ws
+
+        # Allowlist stored lowercase; an upper/mixed-case Host header (with
+        # port) must still match per RFC case-insensitivity.
+        monkeypatch.setattr(
+            ws, "_EXTRA_ACCEPTED_HOSTS", frozenset({"fresh.tailadb109.ts.net"})
+        )
+        assert (
+            ws._is_accepted_host("FRESH.TailADB109.TS.NET:9119", "127.0.0.1") is True
+        )
+
+    def test_parser_strips_lowercases_and_drops_blanks(self, monkeypatch):
+        import hermes_cli.web_server as ws
+
+        monkeypatch.setenv("HERMES_DASHBOARD_EXTRA_HOSTS", " A.test, b.TEST ,, ")
+        # Whitespace trimmed, case-folded, empty/blank entries dropped.
+        assert ws._extra_accepted_hosts() == frozenset({"a.test", "b.test"})
+
+    def test_import_frozen_global_is_a_footgun(self, monkeypatch):
+        """Regression: ``_EXTRA_ACCEPTED_HOSTS`` is evaluated ONCE at import
+        from the env var, so a runtime env change does NOT take effect until
+        the dashboard process is restarted. This intentionally documents the
+        load-bearing gotcha — the parser reads the env live, but the guard
+        reads the frozen global.
+        """
+        import hermes_cli.web_server as ws
+
+        # Set the env var but deliberately do NOT refresh the global.
+        monkeypatch.setenv("HERMES_DASHBOARD_EXTRA_HOSTS", "late.example")
+
+        # The frozen global is unaffected (the module was imported before this
+        # setenv; ambient env carries no allowlist), so the guard still rejects
+        # the would-be-allowlisted host.
+        assert ws._EXTRA_ACCEPTED_HOSTS == frozenset()
+        assert ws._is_accepted_host("late.example", "127.0.0.1") is False

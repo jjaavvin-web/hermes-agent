@@ -19,7 +19,61 @@ import os
 import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional
+from typing import TYPE_CHECKING, Literal, TypeAlias, TypedDict, cast
+
+if TYPE_CHECKING:
+    from argparse import Namespace
+
+GitRepo: TypeAlias = str | os.PathLike[str]
+WorktreeClass: TypeAlias = Literal["ACTIVE", "MERGED", "STALE", "ORPHANED"]
+ReapClass: TypeAlias = Literal["MERGED", "STALE", "ORPHANED"]
+ReapAction: TypeAlias = Literal["skipped", "removed", "renamed", "error"]
+ConflictPrediction: TypeAlias = Literal["CLEAN", "CONFLICT", "UNKNOWN"]
+HookMode: TypeAlias = Literal["pre-commit", "error", "fallback"]
+
+
+class Worktree(TypedDict):
+    path: str
+    head: str | None
+    branch: str | None
+    bare: bool
+    detached: bool
+    locked: bool
+    prunable: bool
+
+
+class RunLock(TypedDict, total=False):
+    branch: str
+    tracking_card: str
+    tmux_session: str
+    _path: str
+
+
+class MergeReadySuccessReport(TypedDict):
+    branch: str
+    base: str
+    ahead: int | None
+    behind: int | None
+    changed_files: list[str]
+    overlaps: dict[str, list[str]]
+    conflict_prediction: ConflictPrediction
+    kanban_card: str | None
+    kanban_status: str | None
+
+
+class MergeReadyErrorReport(TypedDict):
+    branch: str
+    base: str
+    error: str
+
+
+MergeReadyReport: TypeAlias = MergeReadySuccessReport | MergeReadyErrorReport
+
+
+class HookResult(TypedDict):
+    repo: str
+    mode: HookMode
+    detail: str
 
 # Branches that must never be reaped, regardless of classification.
 PROTECTED_BRANCHES = {"main", "master", "dashboard-live"}
@@ -27,7 +81,7 @@ DEFAULT_BASE = "fork/main"
 DEFAULT_STALE_DAYS = 7
 # Classes a caller may pass to ``--confirm``. ``ACTIVE`` is excluded by
 # design — an active worktree is never reapable.
-REAP_CLASSES = ("MERGED", "STALE", "ORPHANED")
+REAP_CLASSES: tuple[ReapClass, ...] = ("MERGED", "STALE", "ORPHANED")
 BRANCH_REAP_CONFIRM = "BRANCHES"
 BRANCH_REAPER_PROTECTED_PREFIXES = ("backup/", "candidate/")
 logger = logging.getLogger(__name__)
@@ -80,7 +134,7 @@ def validate_janitor_repo_root(repo: str | Path) -> Path:
     return path
 
 
-def _lock_card_id(lock: dict) -> Optional[str]:
+def _lock_card_id(lock: dict) -> str | None:
     """Return the card id from either legacy or B4 lease-schema names."""
     val = lock.get("kanban_card_id") or lock.get("tracking_card")
     return str(val) if val else None
@@ -92,7 +146,7 @@ def _utc_stamp() -> str:
 
 # ── Git plumbing ──────────────────────────────────────────────────────────
 
-def _git(repo, *args: str) -> subprocess.CompletedProcess:
+def _git(repo: GitRepo, *args: str) -> subprocess.CompletedProcess[str]:
     """Run ``git -C <repo> <args>``, capturing output; never raises."""
     return subprocess.run(
         ["git", "-C", str(repo), *args],
@@ -100,17 +154,17 @@ def _git(repo, *args: str) -> subprocess.CompletedProcess:
     )
 
 
-def _is_protected_branch(branch: Optional[str]) -> bool:
+def _is_protected_branch(branch: str | None) -> bool:
     return bool(branch) and branch in PROTECTED_BRANCHES
 
 
-def _is_protected_reaper_branch(branch: Optional[str]) -> bool:
+def _is_protected_reaper_branch(branch: str | None) -> bool:
     if not branch:
         return True
     return _is_protected_branch(branch) or branch.startswith(BRANCH_REAPER_PROTECTED_PREFIXES)
 
 
-def inventory_worktrees(repo) -> list[dict]:
+def inventory_worktrees(repo: GitRepo) -> list[Worktree]:
     """Parse ``git worktree list --porcelain`` into a list of dicts.
 
     Each entry: ``{path, head, branch, bare, detached, locked, prunable}``;
@@ -119,12 +173,12 @@ def inventory_worktrees(repo) -> list[dict]:
     cp = _git(repo, "worktree", "list", "--porcelain")
     if cp.returncode != 0:
         return []
-    worktrees: list[dict] = []
+    worktrees: list[Worktree] = []
     cur: dict = {}
     for line in cp.stdout.splitlines():
         if not line.strip():
             if cur:
-                worktrees.append(cur)
+                worktrees.append(cast(Worktree, cur))
                 cur = {}
             continue
         if line.startswith("worktree "):
@@ -147,18 +201,18 @@ def inventory_worktrees(repo) -> list[dict]:
         elif line.startswith("prunable"):
             cur["prunable"] = True
     if cur:
-        worktrees.append(cur)
+        worktrees.append(cast(Worktree, cur))
     return worktrees
 
 
-def _is_ancestor(repo, head: Optional[str], base: str) -> bool:
+def _is_ancestor(repo: GitRepo, head: str | None, base: str) -> bool:
     """True when ``head`` is an ancestor of ``base`` (already merged)."""
     if not head:
         return False
     return _git(repo, "merge-base", "--is-ancestor", head, base).returncode == 0
 
 
-def _commit_age_days(repo, head: Optional[str]) -> Optional[float]:
+def _commit_age_days(repo: GitRepo, head: str | None) -> float | None:
     """Age in days of ``head``'s commit, or ``None`` if unreadable."""
     if not head:
         return None
@@ -174,7 +228,7 @@ def _commit_age_days(repo, head: Optional[str]) -> Optional[float]:
 
 # ── Run-registry + kanban linkage ─────────────────────────────────────────
 
-def _read_run_registry() -> list[dict]:
+def _read_run_registry() -> list[RunLock]:
     """Every ``*.lock`` in the run-registry as a dict (``_path`` added).
 
     Unreadable or malformed locks are skipped.
@@ -182,20 +236,20 @@ def _read_run_registry() -> list[dict]:
     registry = _run_registry_dir()
     if not registry.is_dir():
         return []
-    locks: list[dict] = []
+    locks: list[RunLock] = []
     for lock in sorted(registry.glob("*.lock")):
         try:
-            data = json.loads(lock.read_text())
+            data = json.loads(lock.read_text(encoding="utf-8"))
         except (OSError, ValueError) as exc:
             logger.warning("Skipping malformed run-registry lease %s: %s", lock, exc)
             continue
         if isinstance(data, dict):
             data["_path"] = str(lock)
-            locks.append(data)
+            locks.append(cast(RunLock, data))
     return locks
 
 
-def _lock_for_branch(locks: list[dict], branch: Optional[str]) -> Optional[dict]:
+def _lock_for_branch(locks: list[RunLock], branch: str | None) -> RunLock | None:
     """First registry lock whose ``branch`` field matches, else ``None``."""
     if not branch:
         return None
@@ -205,7 +259,7 @@ def _lock_for_branch(locks: list[dict], branch: Optional[str]) -> Optional[dict]
     return None
 
 
-def _tmux_alive(session: Optional[str]) -> bool:
+def _tmux_alive(session: str | None) -> bool:
     """True when a tmux session named ``session`` currently exists."""
     if not session:
         return False
@@ -218,7 +272,7 @@ def _tmux_alive(session: Optional[str]) -> bool:
         return False
 
 
-def _card_status(card_id: Optional[str]) -> Optional[str]:
+def _card_status(card_id: str | None) -> str | None:
     """Kanban status for ``card_id``, or ``None`` on any failure.
 
     Degrades gracefully so the janitor keeps working when the kanban DB
@@ -238,15 +292,15 @@ def _card_status(card_id: Optional[str]) -> Optional[str]:
 # ── Worktree classification (pure) ────────────────────────────────────────
 
 def classify_worktree(
-    wt: dict,
+    wt: Worktree,
     *,
-    lock: Optional[dict],
+    lock: RunLock | None,
     is_merged: bool,
-    card_status: Optional[str],
+    card_status: str | None,
     tmux_alive: bool,
-    age_days: Optional[float],
+    age_days: float | None,
     stale_days: int = DEFAULT_STALE_DAYS,
-) -> str:
+) -> WorktreeClass:
     """Classify a worktree ``ACTIVE | MERGED | STALE | ORPHANED``.
 
     Pure — every I/O-derived input is passed in, so the decision is unit
@@ -278,14 +332,14 @@ def classify_worktree(
 
 
 def select_reapable(
-    classified: list[tuple[dict, str]], confirm_class: str
-) -> list[tuple[dict, str]]:
+    classified: list[tuple[Worktree, WorktreeClass]], confirm_class: str
+) -> list[tuple[Worktree, WorktreeClass]]:
     """Filter ``(worktree, class)`` pairs to those safe to reap.
 
     Survivors match ``confirm_class`` and are never ``ACTIVE`` nor a
     protected branch — the guard the ``--confirm`` path relies on.
     """
-    out: list[tuple[dict, str]] = []
+    out: list[tuple[Worktree, WorktreeClass]] = []
     for wt, klass in classified:
         if klass != confirm_class or klass == "ACTIVE":
             continue
@@ -295,7 +349,9 @@ def select_reapable(
     return out
 
 
-def reap_worktree(repo, wt: dict, klass: str) -> tuple[str, str]:
+def reap_worktree(
+    repo: GitRepo, wt: Worktree, klass: WorktreeClass
+) -> tuple[ReapAction, str]:
     """Reap one worktree. Returns ``(action, detail)``.
 
     ``MERGED`` worktrees are removed after a fresh ancestor re-check (the
@@ -328,7 +384,7 @@ def reap_worktree(repo, wt: dict, klass: str) -> tuple[str, str]:
 
 # ── merge-ready ───────────────────────────────────────────────────────────
 
-def _rev_count(repo, rev_range: str) -> Optional[int]:
+def _rev_count(repo: GitRepo, rev_range: str) -> int | None:
     cp = _git(repo, "rev-list", "--count", rev_range)
     if cp.returncode != 0 or not cp.stdout.strip():
         return None
@@ -338,12 +394,12 @@ def _rev_count(repo, rev_range: str) -> Optional[int]:
         return None
 
 
-def _diff_name_only(repo, rev_range: str) -> list[str]:
+def _diff_name_only(repo: GitRepo, rev_range: str) -> list[str]:
     cp = _git(repo, "diff", "--name-only", rev_range)
     return [ln for ln in cp.stdout.splitlines() if ln.strip()] if cp.returncode == 0 else []
 
 
-def _predict_conflict(repo, base: str, branch: str) -> str:
+def _predict_conflict(repo: GitRepo, base: str, branch: str) -> ConflictPrediction:
     """Predict a merge outcome: ``CLEAN | CONFLICT | UNKNOWN``."""
     # Modern git (>=2.38): --write-tree exits 0 clean, 1 on conflict.
     cp = _git(repo, "merge-tree", "--write-tree", base, branch)
@@ -362,7 +418,9 @@ def _predict_conflict(repo, base: str, branch: str) -> str:
     return "UNKNOWN"
 
 
-def merge_ready_report(branch: str, repo, *, base: str = DEFAULT_BASE) -> dict:
+def merge_ready_report(
+    branch: str, repo: GitRepo, *, base: str = DEFAULT_BASE
+) -> MergeReadyReport:
     """Build the merge-readiness report for ``branch`` against ``base``."""
     if _git(repo, "rev-parse", "--verify", branch).returncode != 0:
         return {"branch": branch, "base": base, "error": f"unknown branch '{branch}'"}
@@ -420,7 +478,7 @@ exit 0
 """
 
 
-def _git_hooks_dir(repo) -> Optional[Path]:
+def _git_hooks_dir(repo: GitRepo) -> Path | None:
     """Resolve the effective git hooks directory for ``repo``."""
     cp = _git(repo, "rev-parse", "--git-path", "hooks")
     if cp.returncode != 0 or not cp.stdout.strip():
@@ -429,7 +487,7 @@ def _git_hooks_dir(repo) -> Optional[Path]:
     return hooks if hooks.is_absolute() else Path(repo) / hooks
 
 
-def _install_hook_into(repo) -> dict:
+def _install_hook_into(repo: GitRepo) -> HookResult:
     """Install hooks into a single repo. Returns a result dict."""
     import shutil
     repo = str(repo)
@@ -450,17 +508,17 @@ def _install_hook_into(repo) -> dict:
     try:
         hooks_dir.mkdir(parents=True, exist_ok=True)
         hook = hooks_dir / "pre-commit"
-        if hook.exists() and _HOOK_MARKER not in hook.read_text(errors="ignore"):
+        if hook.exists() and _HOOK_MARKER not in hook.read_text(encoding="utf-8", errors="ignore"):
             # Preserve a pre-existing third-party hook before overwriting.
             hook.rename(hook.with_name(f"pre-commit.pre-hermes.{_utc_stamp()}"))
-        hook.write_text(_FALLBACK_HOOK)
+        hook.write_text(_FALLBACK_HOOK, encoding="utf-8")
         hook.chmod(0o755)
     except OSError as exc:
         return {"repo": repo, "mode": "error", "detail": str(exc)}
     return {"repo": repo, "mode": "fallback", "detail": str(hook)}
 
 
-def install_hooks(repo, *, all_worktrees: bool = False) -> list[dict]:
+def install_hooks(repo: GitRepo, *, all_worktrees: bool = False) -> list[HookResult]:
     """Install pre-commit hooks into ``repo`` (and active worktrees)."""
     if not all_worktrees:
         return [_install_hook_into(repo)]
@@ -507,7 +565,7 @@ def reclaimable_bytes(classified: list[tuple[dict, str]]) -> int:
     )
 
 
-def _branch_has_open_pr(repo, branch: str) -> Optional[bool]:
+def _branch_has_open_pr(repo, branch: str) -> bool | None:
     """Return True/False for open PR status; raise when status is unknown."""
     try:
         cp = subprocess.run(
@@ -539,7 +597,7 @@ def _local_branches(repo) -> list[str]:
     return [line.strip() for line in cp.stdout.splitlines() if line.strip()]
 
 
-def _current_branch(repo) -> Optional[str]:
+def _current_branch(repo) -> str | None:
     cp = _git(repo, "branch", "--show-current")
     if cp.returncode != 0:
         return None
@@ -616,11 +674,11 @@ def reap_branches(repo, branches: list[dict]) -> list[tuple[str, str, str]]:
 # ── janitor orchestration + CLI dispatch ──────────────────────────────────
 
 def gather_classified(
-    repo, *, stale_days: int = DEFAULT_STALE_DAYS
-) -> list[tuple[dict, str]]:
+    repo: GitRepo, *, stale_days: int = DEFAULT_STALE_DAYS
+) -> list[tuple[Worktree, WorktreeClass]]:
     """Inventory and classify every worktree of ``repo``."""
     locks = _read_run_registry()
-    classified: list[tuple[dict, str]] = []
+    classified: list[tuple[Worktree, WorktreeClass]] = []
     for wt in inventory_worktrees(repo):
         lock = _lock_for_branch(locks, wt.get("branch"))
         card_id = _lock_card_id(lock) if lock else None
@@ -637,13 +695,13 @@ def gather_classified(
     return classified
 
 
-def _resolve_repo(arg: Optional[str]) -> str:
+def _resolve_repo(arg: str | None) -> str:
     """Resolve ``--repo`` to a usable path (default: cwd)."""
     return str(Path(arg).expanduser()) if arg else os.getcwd()
 
 
 def run_janitor(
-    repo, *, stale_days: int = DEFAULT_STALE_DAYS, confirm: Optional[str] = None
+    repo: GitRepo, *, stale_days: int = DEFAULT_STALE_DAYS, confirm: str | None = None
 ) -> int:
     """Execute ``hermes git-health janitor``. Returns a process exit code."""
     classified = gather_classified(repo, stale_days=stale_days)
@@ -705,31 +763,34 @@ def run_janitor(
     return 0
 
 
-def _print_merge_ready(report: dict) -> int:
-    if report.get("error"):
-        print(f"merge-ready: {report['error']}")
-        return 1
-    print(f"merge-ready — {report['branch']}  (base {report['base']})")
-    print(f"  ahead:  {report['ahead']}    behind: {report['behind']}")
-    print(f"  conflict prediction: {report['conflict_prediction']}")
-    print(f"  kanban card: {report['kanban_card'] or '-'}  "
-          f"status: {report['kanban_status'] or '-'}")
-    changed = report["changed_files"]
+def _print_merge_ready(report: MergeReadyReport) -> int:
+    if "error" in report:
+        error = report["error"]
+        if error:
+            print(f"merge-ready: {error}")
+            return 1
+    ok_report = cast(MergeReadySuccessReport, report)
+    print(f"merge-ready — {ok_report['branch']}  (base {ok_report['base']})")
+    print(f"  ahead:  {ok_report['ahead']}    behind: {ok_report['behind']}")
+    print(f"  conflict prediction: {ok_report['conflict_prediction']}")
+    print(f"  kanban card: {ok_report['kanban_card'] or '-'}  "
+          f"status: {ok_report['kanban_status'] or '-'}")
+    changed = ok_report["changed_files"]
     print(f"  changed files ({len(changed)}):")
     for path in changed[:40]:
         print(f"    {path}")
     if len(changed) > 40:
         print(f"    ... and {len(changed) - 40} more")
-    if report["overlaps"]:
+    if ok_report["overlaps"]:
         print("  file overlap with sibling worktree branches:")
-        for other, files in report["overlaps"].items():
+        for other, files in ok_report["overlaps"].items():
             print(f"    {other}: {len(files)} file(s) — {', '.join(files[:6])}")
     else:
         print("  file overlap with sibling worktree branches: none")
     return 0
 
 
-def git_health_command(args) -> int:
+def git_health_command(args: Namespace) -> int:
     """Dispatch ``hermes git-health <subcommand>``."""
     sub = getattr(args, "git_health_command", None)
     if not sub:

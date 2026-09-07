@@ -18,7 +18,7 @@ import subprocess
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import Any, Mapping, Tuple
 
 try:
     from hermes_cli.config import cfg_get, read_raw_config
@@ -42,11 +42,19 @@ class BranchCollisionError(ValueError):
     """
 
 
+class LeaseCapacityError(RuntimeError):
+    """Raised when the configured active worktree lease cap is exhausted."""
+
+
 class RepoStateError(RuntimeError):
     """Raised when git worktree add fails due to dirty parent repo state.
 
     Broker does NOT stash — that would silently discard operator work.
     """
+
+
+class InvalidSessionIdError(ValueError):
+    """Raised before any side effect when a session path is not broker-contained."""
 
 
 # ── Data classes ──────────────────────────────────────────────────────────────
@@ -59,6 +67,10 @@ _LOCK_TYPE_FILES = [
 
 _SLUG_INVALID_RE = re.compile(r"[^a-z0-9-]+")
 _SLUG_REPEAT_DASH_RE = re.compile(r"-+")
+_IDENTITY_PATH_INVALID_RE = re.compile(r"[^A-Za-z0-9._-]+")
+_SESSION_ID_RE = re.compile(r"^[A-Za-z0-9._-]+$")
+
+
 _TRUE_VALUES = {"1", "true", "yes", "on", "y"}
 
 
@@ -108,8 +120,8 @@ def write_lease(
     *,
     repo_root: Path,
     spawner: str = "worktree_broker",
-    tmux_session: Optional[str] = None,
-    kanban_card_id: Optional[str] = None,
+    tmux_session: str | None = None,
+    kanban_card_id: str | None = None,
 ) -> None:
     """Best-effort write of the janitor-compatible run-registry lease."""
     if not _lease_write_enabled():
@@ -168,6 +180,8 @@ class Worktree:
     port: int | None       # None if no port was available
     created_at: datetime
     lock_type: str | None = field(default=None)  # pnpm | npm | yarn | None
+    base_sha: str | None = None
+    identity: str | None = None
 
 
 @dataclass
@@ -206,7 +220,11 @@ class WorktreeBroker:
         repo_root: Path,
         hermes_home: Path,
         port_range: Tuple[int, int] = (50000, 50008),
-        existing_sessions: dict[str, str] | None = None,
+        existing_sessions: Mapping[str, str | Mapping[str, Any]] | None = None,
+        wt_dir_name: str = "codex-wt",
+        branch_prefix: str = "codex",
+        ports_enabled: bool = True,
+        max_active_leases: int | None = None,
     ) -> None:
         """Initialise the broker.
 
@@ -215,37 +233,59 @@ class WorktreeBroker:
         port_range        — half-open [lo, hi); default covers 50000-50007.
         existing_sessions — optional {session_id: worktree_path} mapping read
                             from codex_sessions.json by the caller on restart.
+        wt_dir_name       — directory below hermes_home for worktrees.
+        branch_prefix     — first git-ref component for new branches.
+        ports_enabled     — when false, never create/recover/touch codex-ports.json.
+        max_active_leases — optional cap for active registry entries.
         """
         self.repo_root = Path(repo_root)
         self.hermes_home = Path(hermes_home)
         self.port_range = port_range
+        self.wt_dir_name = wt_dir_name
+        self.branch_prefix = branch_prefix
+        self.ports_enabled = ports_enabled
+        self.max_active_leases = max_active_leases
+        self._wt_root = self.hermes_home / wt_dir_name
 
         # In-memory registry keyed by session_id → Worktree
         self._registry: dict[str, Worktree] = {}
 
         # Pre-populate from existing_sessions (M7 amendment — bot-restart path)
         if existing_sessions:
-            for sid, wt_path_str in existing_sessions.items():
-                wt_path = Path(wt_path_str)
-                branch = f"codex/{sid}/unknown"
+            for sid, entry in existing_sessions.items():
+                if isinstance(entry, Mapping):
+                    wt_path = Path(str(entry.get("path", self._wt_root / sid)))
+                    branch = str(entry.get("branch") or f"{self.branch_prefix}/{sid}/unknown")
+                    base_sha = entry.get("base_sha") or entry.get("base")
+                    identity = entry.get("identity")
+                else:
+                    wt_path = Path(entry)
+                    branch = f"{self.branch_prefix}/{sid}/unknown"
+                    base_sha = None
+                    identity = None
+                if identity is None:
+                    identity = self._read_identity(session_id=sid)
                 self._registry[sid] = Worktree(
                     session_id=sid,
                     path=wt_path,
                     branch=branch,
                     port=None,
                     created_at=datetime.now(timezone.utc),
+                    base_sha=str(base_sha) if base_sha else None,
+                    identity=str(identity) if identity is not None else None,
                 )
 
-        # Ensure codex-wt/ directory exists (no-op if already present)
-        wt_dir = self.hermes_home / "codex-wt"
-        wt_dir.mkdir(parents=True, exist_ok=True)
+        # Ensure the worktree root exists (no-op if already present).
+        self._wt_root.mkdir(parents=True, exist_ok=True)
 
-        # Initialise ports file if absent; run recovery if present
-        ports_path = self._ports_path()
-        if not ports_path.exists():
-            self._init_ports_file()
-        else:
-            self._recover_ports()
+        # Initialise ports file if absent; run recovery if present. Webhook
+        # brokers pass ports_enabled=False and must not touch codex-ports.json.
+        if self.ports_enabled:
+            ports_path = self._ports_path()
+            if not ports_path.exists():
+                self._init_ports_file()
+            else:
+                self._recover_ports()
 
     # ── Public API ────────────────────────────────────────────────────────────
 
@@ -255,8 +295,20 @@ class WorktreeBroker:
         *,
         isa_slug: str,
         base_branch: str = "origin/main",
+        branch_name: str | None = None,
+        base_sha: str | None = None,
+        identity: str | None = None,
     ) -> Worktree:
         """Create a git worktree and claim a port for the given session."""
+        wt_path = self._validated_candidate_path(session_id)
+        registered = self._registry.get(session_id)
+        if registered is not None:
+            self._validated_registered_path(
+                session_id=session_id,
+                registered_path=registered.path,
+                candidate_path=wt_path,
+            )
+
         # Step 1: disk-pressure check
         free = self._disk_free_bytes()
         if free < _DISK_HARD_FLOOR:
@@ -273,22 +325,60 @@ class WorktreeBroker:
 
         # Step 2: idempotency check
         if session_id in self._registry:
-            return self._registry[session_id]
+            wt = self._registry[session_id]
+            if identity is not None and wt.identity != identity:
+                raise BranchCollisionError(
+                    f"Session {session_id} already has a lease for a different identity. "
+                    "Refusing to share a worktree."
+                )
+            return wt
+
+        if (
+            self.max_active_leases is not None
+            and len(self._registry) >= self.max_active_leases
+        ):
+            raise LeaseCapacityError(
+                f"Active worktree lease capacity exhausted "
+                f"({self.max_active_leases}). Retry after another run completes."
+            )
 
         # Step 3: git worktree add (slugify isa_slug — git refs disallow
         # spaces / capitals / punctuation that Discord thread titles freely use)
         isa_slug = slugify_ref(isa_slug)
-        branch = f"codex/{session_id}/{isa_slug}"
-        wt_path = self.hermes_home / "codex-wt" / session_id
+        branch = branch_name or f"{self.branch_prefix}/{session_id}/{isa_slug}"
+        if wt_path.is_dir() and identity is None:
+            raise BranchCollisionError(
+                f"Worktree path {wt_path} already exists. Operator intervention required."
+            )
+        if wt_path.is_dir() and identity is not None:
+            stored_identity = self._read_identity(session_id=session_id)
+            if stored_identity != identity or not self._is_registered_worktree_path(wt_path):
+                raise BranchCollisionError(
+                    f"Worktree {wt_path} already exists but is not a registered broker-owned "
+                    "worktree for the requested identity. Refusing to share a worktree."
+                )
+            wt = Worktree(
+                session_id=session_id,
+                path=wt_path,
+                branch=branch,
+                port=None,
+                created_at=datetime.now(timezone.utc),
+                lock_type=self._detect_lock_type(wt_path),
+                base_sha=base_sha,
+                identity=stored_identity,
+            )
+            self._registry[session_id] = wt
+            write_lease(self.hermes_home, wt, repo_root=self.repo_root)
+            return wt
         result = self._git(
             "worktree", "add",
             str(wt_path), "-b", branch, base_branch,
         )
         if result.returncode != 0:
             stderr = result.stderr or ""
-            if "already exists" in stderr:
+            if "already exists" in stderr or "not a git repository" in stderr:
                 raise BranchCollisionError(
-                    f"Branch {branch} already exists. "
+                    f"Worktree path or branch already exists for {branch}. "
                     "Operator intervention required."
                 )
             if "modified files" in stderr or "untracked files" in stderr:
@@ -301,8 +391,8 @@ class WorktreeBroker:
             )
 
         # Step 4: port allocation
-        port = self._allocate_port(session_id)
-        if port is None:
+        port = self._allocate_port(session_id) if self.ports_enabled else None
+        if self.ports_enabled and port is None:
             log.warning(
                 "All ports in range %s-%s occupied; session %s has no port.",
                 self.port_range[0],
@@ -315,7 +405,7 @@ class WorktreeBroker:
         if lock_type == "pnpm":
             workspace_yaml = wt_path / "pnpm-workspace.yaml"
             if workspace_yaml.exists():
-                content = workspace_yaml.read_text(errors="replace")
+                content = workspace_yaml.read_text(encoding="utf-8", errors="replace")
                 if "enableGlobalVirtualStore" not in content:
                     log.info(
                         "Project uses pnpm. Adding enableGlobalVirtualStore: "
@@ -339,18 +429,39 @@ class WorktreeBroker:
             port=port,
             created_at=datetime.now(timezone.utc),
             lock_type=lock_type,
+            base_sha=base_sha,
+            identity=identity,
         )
         self._registry[session_id] = wt
+        self._write_identity(session_id=session_id, identity=identity)
         write_lease(self.hermes_home, wt, repo_root=self.repo_root)
         return wt
 
     def release(self, session_id: str) -> None:
-        """Tear down the worktree for the given session (idempotent)."""
-        if session_id not in self._registry:
-            return
+        """Tear down the worktree for the given session (idempotent).
 
-        wt = self._registry[session_id]
-        wt_path = wt.path
+        Works in two cases:
+          - sid is in the in-memory registry (normal: same-process allocate)
+          - sid was allocated by a prior gateway run (registry empty after
+            restart) but the worktree dir is still on disk under the
+            canonical path. Without the fallback, post-restart releases
+            (most notably the closeout fired by ``on_pr_merged`` after the
+            MergeWatcher catches a merge) would silently no-op and leave
+            the worktree checked out forever. Discovered 2026-05-26.
+        """
+        candidate_path = self._validated_candidate_path(session_id)
+        wt = self._registry.get(session_id)
+        wt_path = (
+            self._validated_registered_path(
+                session_id=session_id,
+                registered_path=wt.path,
+                candidate_path=candidate_path,
+            )
+            if wt
+            else candidate_path
+        )
+        if not wt and not wt_path.exists():
+            return
 
         # Step 1: kill tmux session
         tmux_result = subprocess.run(
@@ -364,7 +475,8 @@ class WorktreeBroker:
                 tmux_result.stderr.strip(),
             )
 
-        # Step 2: remove git worktree
+        # Step 2: remove git worktree (git-level — clears worktree index
+        # entry + removes the dir when there's no uncommitted work).
         rm_result = self._git(
             "worktree", "remove", "--force", str(wt_path)
         )
@@ -375,40 +487,117 @@ class WorktreeBroker:
                 rm_result.stderr.strip(),
             )
 
-        # Step 3: free port
-        self._free_port(session_id)
+        # Step 3: filesystem cleanup — ``git worktree remove`` leaves the
+        # directory behind in edge cases (e.g. the worktree was never
+        # registered with git, or rm failed). Fall back to a direct
+        # direct recursive cleanup so the closeout actually frees the disk.
+        if wt_path.exists():
+            try:
+                import shutil  # noqa: PLC0415
+                shutil.rmtree(wt_path, ignore_errors=True)
+            except Exception as exc:  # pragma: no cover — defensive
+                log.warning("worktree dir cleanup failed for %s: %s", wt_path, exc)
 
-        # Step 4: remove run-registry lease, if this broker wrote one.
+        # Step 4: free port
+        if self.ports_enabled:
+            self._free_port(session_id)
+        self._remove_identity(session_id=session_id)
         remove_lease(self.hermes_home, session_id)
 
-        # Step 5: remove from registry
-        del self._registry[session_id]
+        # Step 5: remove from registry (if it was there)
+        self._registry.pop(session_id, None)
+
+
+    def complete_lease(self, session_id: str, *, base_sha: str | None = None) -> str:
+        """Complete an active lease, removing only evidence-free worktrees.
+
+        Returns ``"removed"`` when the tree had no commits past ``base_sha`` and
+        no dirty/untracked state, otherwise ``"awaiting-harvest"``. Retained
+        worktrees are intentionally left on disk for operator harvest, but the
+        active lease registry entry is cleared so completed runs do not consume
+        live capacity.
+        """
+        candidate_path = self._validated_candidate_path(session_id)
+        wt = self._registry.get(session_id)
+        wt_path = (
+            self._validated_registered_path(
+                session_id=session_id,
+                registered_path=wt.path,
+                candidate_path=candidate_path,
+            )
+            if wt
+            else candidate_path
+        )
+        effective_base = base_sha or (wt.base_sha if wt else None)
+        outcome = "awaiting-harvest"
+
+        if not wt_path.exists():
+            outcome = "removed"
+        elif self._worktree_is_clean_for_removal(wt_path, effective_base):
+            rm_result = self._git("worktree", "remove", str(wt_path))
+            if rm_result.returncode == 0 or not wt_path.exists():
+                outcome = "removed"
+            else:
+                log.warning(
+                    "git worktree remove failed for completed lease %s: %s",
+                    wt_path,
+                    rm_result.stderr.strip(),
+                )
+                outcome = "awaiting-harvest"
+
+        if self.ports_enabled:
+            self._free_port(session_id)
+        self._remove_identity(session_id=session_id)
+        remove_lease(self.hermes_home, session_id)
+        self._registry.pop(session_id, None)
+        return outcome
 
     def gc(
         self,
         *,
         tracked_sids: set[str],
         live_branches: set[str] | None = None,
+        allow_empty_tracked_sids: bool = False,
         dry_run: bool = False,
-        merged_base: str = "fork/main",
     ) -> list[GcAction]:
-        """Sweep stale/orphan worktrees out of ``~/.hermes/codex-wt/``.
+        """Sweep orphan worktrees out of ``~/.hermes/codex-wt/``.
 
-        Default behavior remains conservative: untracked worktrees whose
-        branch is not protected by an open PR are renamed into
-        ``codex-wt/.deleted-<ts>/<sid>/``.  B2 adds two alert-first rails:
+        An orphan is a worktree directory under ``codex-wt/`` whose sid
+        is NOT in ``tracked_sids`` (the dispatcher's ``codex_sessions.json``
+        rows) AND whose branch is NOT in ``live_branches`` (open PRs on
+        fork — caller passes ``None`` to skip that check).  Each orphan
+        is RENAMED to ``codex-wt/.deleted-<ts>/<sid>/`` so the
+        operator can recover; the reaper purges entries older than 7 days.
 
-        * ``dry_run=True`` returns the exact actions without renaming or
-          pruning anything.
-        * a *tracked* sid can become eligible only when its worktree HEAD is
-          already an ancestor of ``merged_base`` and its tmux session is dead.
-          This prevents terminal/merged rows from protecting stale worktrees
-          forever while still preserving active sessions.
+        ``allow_empty_tracked_sids`` is a manual-recovery override.  Production
+        watchers must leave it false: an empty registry alongside any visible
+        worktree is ambiguous and therefore cannot authorize a sweep.
+
+        ``dry_run=True`` reports eligible renames without changing the filesystem
+        or Git metadata. All normal eligibility and safety checks still apply.
+
+        Per WORKFLOW-LESSONS §3 rule 5: no direct recursive cleanup; renames are the
+        safe deletion pattern.
         """
         actions: list[GcAction] = []
-        wt_root = self.hermes_home / "codex-wt"
+        wt_root = getattr(self, "_wt_root", self.hermes_home / "codex-wt")
         if not wt_root.is_dir():
             return actions
+        if not tracked_sids and not allow_empty_tracked_sids:
+            try:
+                has_visible_worktree = any(
+                    entry.is_dir() and not entry.name.startswith(".")
+                    for entry in wt_root.iterdir()
+                )
+            except OSError as exc:
+                log.warning("gc: cannot verify empty-registry safety floor: %s", exc)
+                return actions
+            if has_visible_worktree:
+                log.warning(
+                    "gc: refusing empty tracked_sids sweep while visible worktrees exist; "
+                    "manual override required"
+                )
+                return actions
         live_branches = live_branches or set()
         ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
         deleted_root = wt_root / f".deleted-{ts}"
@@ -419,34 +608,22 @@ class WorktreeBroker:
             # Skip our own .deleted-* dirs and any other dotfiles.
             if name.startswith("."):
                 continue
-
-            reason: str | None = None
             if name in tracked_sids:
-                if self._tracked_worktree_reapable(entry, name, merged_base):
-                    reason = f"tracked sid merged into {merged_base} with no live tmux"
-                else:
-                    continue
-            else:
-                # If the sid's branch is in the live-branches set (open PR),
-                # leave the worktree alone — operator hasn't merged yet.
-                branch_match = any(
-                    b.endswith(f"/{name}/") or f"/{name}/" in b
-                    for b in live_branches
-                )
-                if branch_match:
-                    continue
-                reason = "orphan: not in tracked_sids and no open PR"
-
+                continue
+            # If the sid's branch is in the live-branches set (open PR),
+            # leave the worktree alone — operator hasn't merged yet.
+            branch_match = any(b.endswith(f"/{name}/") or f"/{name}/" in b for b in live_branches)
+            if branch_match:
+                continue
             new_path = deleted_root / name
             if dry_run:
                 actions.append(GcAction(
                     sid=name,
                     old_path=entry,
                     new_path=new_path,
-                    reason=f"dry-run: {reason}",
+                    reason="dry-run: orphan: not in tracked_sids and no open PR",
                 ))
                 continue
-
             # Rename into the deleted-<ts> bucket.
             deleted_root.mkdir(parents=True, exist_ok=True)
             try:
@@ -461,43 +638,9 @@ class WorktreeBroker:
                 sid=name,
                 old_path=entry,
                 new_path=new_path,
-                reason=reason,
+                reason="orphan: not in tracked_sids and no open PR",
             ))
         return actions
-
-    def _tracked_worktree_reapable(self, wt_path: Path, sid: str, base: str) -> bool:
-        """True when a tracked Codex worktree is terminal/merged and inactive."""
-        if self._tmux_session_alive(sid):
-            return False
-        head = self._worktree_head(wt_path)
-        if not head:
-            return False
-        return self._head_is_ancestor(head, base)
-
-    def _tmux_session_alive(self, sid: str) -> bool:
-        try:
-            return subprocess.run(
-                ["tmux", "has-session", "-t", f"codex-sess-{sid}"],
-                capture_output=True, text=True, check=False,
-            ).returncode == 0
-        except OSError:
-            return False
-
-    def _worktree_head(self, wt_path: Path) -> str | None:
-        try:
-            cp = subprocess.run(
-                ["git", "-C", str(wt_path), "rev-parse", "HEAD"],
-                capture_output=True, text=True, check=False,
-            )
-        except OSError:
-            return None
-        if cp.returncode != 0:
-            return None
-        head = (cp.stdout or "").strip()
-        return head or None
-
-    def _head_is_ancestor(self, head: str, base: str) -> bool:
-        return self._git("merge-base", "--is-ancestor", head, base).returncode == 0
 
     def reap_deleted(self, *, max_age_days: int = 7) -> int:
         """Purge ``codex-wt/.deleted-<ts>/`` dirs older than ``max_age_days``.
@@ -508,7 +651,7 @@ class WorktreeBroker:
         owns.  No risk of stomping a live worktree.
         """
         import shutil as _shutil  # noqa: PLC0415 — local import to keep top-of-module tidy
-        wt_root = self.hermes_home / "codex-wt"
+        wt_root = getattr(self, "_wt_root", self.hermes_home / "codex-wt")
         if not wt_root.is_dir():
             return 0
         cutoff = datetime.now(timezone.utc) - timedelta(days=max_age_days)
@@ -529,6 +672,8 @@ class WorktreeBroker:
 
     def free_port(self, port: int) -> None:
         """Release a specific port back to the pool (by port number)."""
+        if not self.ports_enabled:
+            return
         ports_path = self._ports_path()
         with open(ports_path, "r+", encoding="utf-8") as fd:
             fcntl.flock(fd, fcntl.LOCK_EX)
@@ -576,6 +721,96 @@ class WorktreeBroker:
             capture_output=True, text=True, check=False,
         )
 
+    def _validated_candidate_path(self, session_id: str) -> Path:
+        """Return the canonical broker path or raise before any side effect."""
+        if (
+            not isinstance(session_id, str)
+            or session_id in {"", ".", ".."}
+            or _SESSION_ID_RE.fullmatch(session_id) is None
+        ):
+            raise InvalidSessionIdError("session_id is not a safe broker path component")
+        try:
+            root = self._wt_root.resolve(strict=False)
+            candidate = (self._wt_root / session_id).resolve(strict=False)
+            relative = candidate.relative_to(root)
+        except (OSError, RuntimeError, ValueError) as exc:
+            raise InvalidSessionIdError(
+                "session worktree path could not be proven broker-contained"
+            ) from exc
+        if relative == Path("."):
+            raise InvalidSessionIdError("session worktree path must be a strict child")
+        return candidate
+
+    def _validated_registered_path(
+        self,
+        *,
+        session_id: str,
+        registered_path: Path,
+        candidate_path: Path,
+    ) -> Path:
+        """Reject hydrated paths outside, across, or symlinked beyond the sid path."""
+        try:
+            root = self._wt_root.resolve(strict=False)
+            registered = Path(registered_path).resolve(strict=False)
+            relative = registered.relative_to(root)
+        except (OSError, RuntimeError, ValueError) as exc:
+            raise InvalidSessionIdError(
+                "registered worktree path could not be proven broker-contained"
+            ) from exc
+        if relative == Path(".") or registered != candidate_path:
+            raise InvalidSessionIdError(
+                f"registered worktree path does not match session {session_id!r}"
+            )
+        return registered
+
+    def _identity_path(self, *, session_id: str) -> Path:
+        safe_sid = _IDENTITY_PATH_INVALID_RE.sub("_", session_id).strip("._") or "session"
+        return self.hermes_home / "state" / "worktree-broker-identities" / f"{safe_sid}.json"
+
+    def _is_registered_worktree_path(self, wt_path: Path) -> bool:
+        result = self._git("worktree", "list", "--porcelain")
+        if result.returncode != 0:
+            return False
+        try:
+            target = wt_path.resolve()
+        except OSError:
+            target = wt_path.absolute()
+        for line in result.stdout.splitlines():
+            if not line.startswith("worktree "):
+                continue
+            candidate = Path(line.removeprefix("worktree "))
+            try:
+                candidate = candidate.resolve()
+            except OSError:
+                candidate = candidate.absolute()
+            if candidate == target:
+                return True
+        return False
+
+    def _read_identity(self, *, session_id: str) -> str | None:
+        path = self._identity_path(session_id=session_id)
+        if not path.exists():
+            return None
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return None
+        identity = data.get("identity") if isinstance(data, dict) else None
+        return str(identity) if identity is not None else None
+
+    def _write_identity(self, *, session_id: str, identity: str | None) -> None:
+        if identity is None:
+            return
+        path = self._identity_path(session_id=session_id)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({"identity": identity}, sort_keys=True), encoding="utf-8")
+
+    def _remove_identity(self, *, session_id: str) -> None:
+        try:
+            self._identity_path(session_id=session_id).unlink(missing_ok=True)
+        except OSError:
+            log.debug("failed to remove worktree identity for %s", session_id, exc_info=True)
+
     def _disk_free_bytes(self) -> int:
         """df -P hermes_home; parse 'Available' column; return bytes."""
         result = subprocess.run(
@@ -599,8 +834,32 @@ class WorktreeBroker:
         log.warning("Could not parse df output; assuming unlimited free space")
         return 2 ** 63
 
+
+    def _worktree_is_clean_for_removal(self, wt_path: Path, base_sha: str | None) -> bool:
+        """True when the worktree has no uncommitted files and no new commits."""
+        status = subprocess.run(
+            ["git", "-C", str(wt_path), "status", "--porcelain"],
+            capture_output=True, text=True, check=False,
+        )
+        if status.returncode != 0 or status.stdout.strip():
+            return False
+        if not base_sha:
+            return False
+        commits = subprocess.run(
+            ["git", "-C", str(wt_path), "rev-list", "--count", f"{base_sha}..HEAD"],
+            capture_output=True, text=True, check=False,
+        )
+        if commits.returncode != 0:
+            return False
+        try:
+            return int((commits.stdout or "0").strip() or "0") == 0
+        except ValueError:
+            return False
+
     def _allocate_port(self, session_id: str) -> int | None:
         """Atomic port claim per spec §4."""
+        if not self.ports_enabled:
+            return None
         ports_path = self._ports_path()
         with open(ports_path, "r+", encoding="utf-8") as fd:
             fcntl.flock(fd, fcntl.LOCK_EX)
@@ -620,6 +879,8 @@ class WorktreeBroker:
 
     def _free_port(self, session_id: str) -> None:
         """Atomic port release per spec §4 — scans by value (session_id)."""
+        if not self.ports_enabled:
+            return
         ports_path = self._ports_path()
         if not ports_path.exists():
             return
@@ -686,29 +947,38 @@ class WorktreeBroker:
         null it and write back (spec §4 "Recovery on broker init").
         """
         sessions_path = self._sessions_path()
-        live_sids: set[str] = set()
-        if sessions_path.exists():
-            try:
-                raw = json.loads(sessions_path.read_text())
-                # codex_sessions.json may be a dict or list; extract keys/ids
-                if isinstance(raw, dict):
-                    live_sids = set(raw.keys())
-                elif isinstance(raw, list):
-                    for entry in raw:
-                        if isinstance(entry, dict) and "session_id" in entry:
-                            live_sids.add(entry["session_id"])
-                        elif isinstance(entry, str):
-                            live_sids.add(entry)
-            except (json.JSONDecodeError, OSError):
-                log.warning(
-                    "codex_sessions.json unreadable during port recovery; "
-                    "treating all ports as stale."
-                )
-        else:
+        live_sids: set[str]
+        try:
+            sessions_exists = sessions_path.exists()
+        except OSError:
+            log.warning(
+                "codex_sessions.json could not be inspected during port recovery; "
+                "leaving ports unchanged."
+            )
+            return
+        if not sessions_exists:
             log.warning(
                 "codex_sessions.json absent during port recovery; "
                 "nulling all non-null ports."
             )
+            live_sids = set()
+        else:
+            try:
+                raw = json.loads(sessions_path.read_text(encoding="utf-8"))
+            except (json.JSONDecodeError, OSError, UnicodeError):
+                log.warning(
+                    "codex_sessions.json unreadable during port recovery; "
+                    "leaving ports unchanged."
+                )
+                return
+            parsed_sids = self._parse_registry_live_sids(raw)
+            if parsed_sids is None:
+                log.warning(
+                    "codex_sessions.json has an unsupported or malformed shape; "
+                    "leaving ports unchanged."
+                )
+                return
+            live_sids = parsed_sids
 
         ports_path = self._ports_path()
         with open(ports_path, "r+", encoding="utf-8") as fd:
@@ -726,6 +996,51 @@ class WorktreeBroker:
                     fd.truncate()
             finally:
                 fcntl.flock(fd, fcntl.LOCK_UN)
+
+    @staticmethod
+    def _parse_registry_live_sids(raw: Any) -> set[str] | None:
+        """Parse known v1/legacy registry shapes; ``None`` means unknown truth."""
+        if isinstance(raw, dict) and ("version" in raw or "sessions" in raw):
+            if type(raw.get("version")) is not int or raw.get("version") != 1:
+                return None
+            sessions = raw.get("sessions")
+            if not isinstance(sessions, dict):
+                return None
+            live_sids: set[str] = set()
+            for thread_id, row in sessions.items():
+                if not isinstance(thread_id, str) or not thread_id.strip():
+                    return None
+                if not isinstance(row, Mapping):
+                    return None
+                sid = row.get("session_id")
+                if not isinstance(sid, str) or not sid.strip():
+                    return None
+                live_sids.add(sid)
+            return live_sids
+
+        if isinstance(raw, dict):
+            live_sids = set()
+            for sid, row in raw.items():
+                if not isinstance(sid, str) or not sid.strip() or not isinstance(row, Mapping):
+                    return None
+                live_sids.add(sid)
+            return live_sids
+
+        if isinstance(raw, list):
+            live_sids = set()
+            for entry in raw:
+                if isinstance(entry, str) and entry.strip():
+                    live_sids.add(entry)
+                    continue
+                if isinstance(entry, Mapping):
+                    sid = entry.get("session_id")
+                    if isinstance(sid, str) and sid.strip():
+                        live_sids.add(sid)
+                        continue
+                return None
+            return live_sids
+
+        return None
 
     def _detect_lock_type(self, wt_path: Path) -> str | None:
         """Scan worktree root for JS lock files; return lock type or None."""

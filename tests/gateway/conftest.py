@@ -2,7 +2,7 @@
 
 The ``_ensure_telegram_mock`` helper guarantees that a minimal mock of
 the ``telegram`` package is registered in :data:`sys.modules` **before**
-any test file triggers ``from gateway.platforms.telegram import ...``.
+any test file triggers ``from plugins.platforms.telegram.adapter import ...``.
 
 Without this, ``pytest-xdist`` workers that happen to collect
 ``test_telegram_caption_merge.py`` (bare top-level import, no per-file
@@ -39,6 +39,137 @@ from unittest.mock import MagicMock
 import pytest
 
 
+@pytest.fixture(scope="session", autouse=True)
+def _bind_lark_sdk_globals_when_installed():
+    """Bind the feishu adapter's lark SDK globals once per test session.
+
+    The adapter defers ``import lark_oapi`` to first use
+    (``_load_lark_oapi`` — called from connect()/probe_bot()/standalone
+    send), so the request-builder globals (``CreateMessageRequestBody``
+    etc.) stay ``None`` at module import time. Feishu tests across many
+    files inject a mock ``_client`` and skip connect() entirely, then call
+    send paths that reference those globals. Bind them eagerly when the
+    SDK is installed; when it isn't, the affected tests already skip via
+    their own ``skipUnless`` guards.
+    """
+    try:
+        import lark_oapi  # noqa: F401
+    except ImportError:
+        yield
+        return
+    try:
+        from plugins.platforms.feishu.adapter import _load_lark_oapi
+
+        _load_lark_oapi()
+    except Exception:
+        pass  # adapter not importable in this environment — tests will skip
+    yield
+
+
+def make_async_session_db(sync_mock=None):
+    """Wrap a sync mock SessionDB in AsyncSessionDB so gateway code that awaits
+    the facade works in tests. Returns (facade, sync_mock); configure return
+    values and assert calls on sync_mock."""
+    from hermes_state import AsyncSessionDB
+    sync_mock = sync_mock if sync_mock is not None else MagicMock()
+    return AsyncSessionDB(sync_mock), sync_mock
+
+
+_UPDATE_MARKER_TEST_MODULES = {
+    "test_update_command.py",
+    "test_update_streaming.py",
+}
+_UPDATE_MARKER_NAMES = (
+    ".update_pending.json",
+    ".update_pending.claimed.json",
+    ".update_output.txt",
+    ".update_exit_code",
+    ".update_prompt.json",
+    ".update_response",
+)
+
+
+def _marker_fingerprint(home: Path) -> dict[str, tuple[bool, int | None, int | None]]:
+    """Stat-only fingerprint for update marker files under ``home``."""
+    result: dict[str, tuple[bool, int | None, int | None]] = {}
+    for name in _UPDATE_MARKER_NAMES:
+        path = home / name
+        try:
+            st = path.stat()
+        except FileNotFoundError:
+            result[name] = (False, None, None)
+        else:
+            result[name] = (True, st.st_mtime_ns, st.st_size)
+    return result
+
+
+@pytest.fixture(autouse=True)
+def _isolate_update_marker_home(request, tmp_path, monkeypatch):
+    """Keep update-marker tests from touching the operator's real Hermes home.
+
+    ``gateway.run`` snapshots ``_hermes_home`` at import time, while
+    ``hermes_cli.main._gateway_prompt()`` resolves paths through
+    ``HERMES_HOME`` / ``get_hermes_home()`` at call time.  The update-marker
+    suites exercise both paths, so isolate both resolvers and assert the real
+    platform-default home did not gain or mutate marker artifacts.
+    """
+    module_name = Path(str(request.fspath)).name
+    if module_name not in _UPDATE_MARKER_TEST_MODULES:
+        yield
+        return
+
+    isolated_home = tmp_path / "isolated-hermes-home"
+    isolated_home.mkdir()
+    real_home = Path.home() / ".hermes"
+    before = _marker_fingerprint(real_home)
+
+    monkeypatch.setenv("HERMES_HOME", str(isolated_home))
+    monkeypatch.setattr("gateway.run._hermes_home", isolated_home, raising=False)
+
+    yield
+
+    after = _marker_fingerprint(real_home)
+    assert after == before, (
+        "update-marker test mutated marker artifacts in the real Hermes home: "
+        f"before={before!r} after={after!r}"
+    )
+
+
+class _FakeEnumMember(str):
+    """A python-telegram-bot-faithful stand-in for a ``StrEnum`` member.
+
+    PTB constants (``ParseMode``, ``ChatType``) are ``StrEnum`` members:
+    ``str(x)`` and equality give the *value* (``"supergroup"``) while
+    ``repr(x)`` shows the qualified *member name*
+    (``<ChatType.SUPERGROUP>``). Test stubs that pick only one of those
+    shapes break the other consumer: plain strings fail assertions like
+    ``"MARKDOWN_V2" in repr(parse_mode)``, while auto-generated MagicMock
+    attributes fail the adapter's ``str(chat.type)`` normalization
+    (``adapter.py`` ``_build_message_event``). This class satisfies both,
+    so every telegram test sees the same semantics regardless of which
+    file's mock installed first.
+    """
+
+    _qualname: str
+
+    def __new__(cls, enum_name: str, member_name: str, value: str):
+        obj = str.__new__(cls, value)
+        obj._qualname = f"{enum_name}.{member_name}"
+        return obj
+
+    def __repr__(self) -> str:  # pragma: no cover - trivial
+        return f"<{self._qualname}: {str.__repr__(self)}>"
+
+
+def _fake_str_enum(enum_name: str, **members: str):
+    """Build a ``SimpleNamespace``-like enum of :class:`_FakeEnumMember`."""
+    from types import SimpleNamespace
+
+    return SimpleNamespace(
+        **{name: _FakeEnumMember(enum_name, name, value) for name, value in members.items()}
+    )
+
+
 def _ensure_telegram_mock() -> None:
     """Install a comprehensive telegram mock in sys.modules.
 
@@ -52,23 +183,42 @@ def _ensure_telegram_mock() -> None:
 
     mod = MagicMock()
     mod.ext.ContextTypes.DEFAULT_TYPE = type(None)
-    mod.constants.ParseMode.MARKDOWN = "Markdown"
-    mod.constants.ParseMode.MARKDOWN_V2 = "MarkdownV2"
-    mod.constants.ParseMode.HTML = "HTML"
-    mod.constants.ChatType.PRIVATE = "private"
-    mod.constants.ChatType.GROUP = "group"
-    mod.constants.ChatType.SUPERGROUP = "supergroup"
-    mod.constants.ChatType.CHANNEL = "channel"
+    # One shared PTB-faithful enum namespace per constant, attached to BOTH
+    # access paths: ``sys.modules["telegram.constants"]`` is registered as
+    # the root mock below, so ``from telegram.constants import ParseMode``
+    # resolves ``mod.ParseMode`` — while config/docs-style access reads
+    # ``telegram.constants.ParseMode``. Binding the same object to both
+    # keeps every consumer comparing against identical members.
+    _parse_mode = _fake_str_enum(
+        "ParseMode", MARKDOWN="Markdown", MARKDOWN_V2="MarkdownV2", HTML="HTML"
+    )
+    _chat_type = _fake_str_enum(
+        "ChatType",
+        PRIVATE="private",
+        GROUP="group",
+        SUPERGROUP="supergroup",
+        CHANNEL="channel",
+    )
+    mod.ParseMode = _parse_mode
+    mod.constants.ParseMode = _parse_mode
+    mod.ChatType = _chat_type
+    mod.constants.ChatType = _chat_type
 
-    # Real exception classes so ``except (NetworkError, ...)`` clauses
-    # in production code don't blow up with TypeError.
-    mod.error.NetworkError = type("NetworkError", (OSError,), {})
-    mod.error.TimedOut = type("TimedOut", (OSError,), {})
-    mod.error.BadRequest = type("BadRequest", (Exception,), {})
-    mod.error.Forbidden = type("Forbidden", (Exception,), {})
-    mod.error.InvalidToken = type("InvalidToken", (Exception,), {})
-    mod.error.RetryAfter = type("RetryAfter", (Exception,), {"retry_after": 1})
-    mod.error.Conflict = type("Conflict", (Exception,), {})
+    # Mirror PTB's exception hierarchy: BadRequest is a semantic API error,
+    # but inherits from NetworkError in python-telegram-bot 22.x.
+    mod.error.TelegramError = type("TelegramError", (Exception,), {})
+    mod.error.NetworkError = type("NetworkError", (mod.error.TelegramError,), {})
+    mod.error.TimedOut = type("TimedOut", (mod.error.NetworkError,), {})
+    mod.error.BadRequest = type("BadRequest", (mod.error.NetworkError,), {})
+    mod.error.Forbidden = type("Forbidden", (mod.error.TelegramError,), {})
+    mod.error.InvalidToken = type("InvalidToken", (mod.error.TelegramError,), {})
+
+    class RetryAfter(mod.error.TelegramError):
+        def __init__(self, retry_after=1):
+            self.retry_after = retry_after
+
+    mod.error.RetryAfter = RetryAfter
+    mod.error.Conflict = type("Conflict", (mod.error.TelegramError,), {})
 
     # Update.ALL_TYPES used in start_polling()
     mod.Update.ALL_TYPES = []
@@ -140,9 +290,30 @@ def _ensure_discord_mock() -> None:
         def __init__(self, timeout=None):
             self.timeout = timeout
             self.children = []
+            self._decorated_items = {}
+            decorated = {}
+            for cls in reversed(type(self).__mro__):
+                for name, fn in vars(cls).items():
+                    if "__discord_ui_model_kwargs__" in getattr(fn, "__dict__", {}):
+                        decorated[name] = fn
+            for fn in decorated.values():
+                item = _FakeButton(**fn.__discord_ui_model_kwargs__)
+                item.callback = lambda interaction, fn=fn, item=item: fn(self, interaction, item)
+                self._decorated_items[fn] = item
+                self.add_item(item)
         def add_item(self, item):
             self.children.append(item)
             return item
+        def remove_item(self, item):
+            # Keep decorated methods callable in the fake while resolving
+            # remove_item(self.button_method) to its per-instance button.
+            if getattr(item, "__self__", None) is self:
+                item = self._decorated_items.get(item.__func__, item)
+            try:
+                self.children.remove(item)
+            except ValueError:
+                pass
+            return self
         def clear_items(self):
             self.children.clear()
             return self
@@ -168,6 +339,12 @@ def _ensure_discord_mock() -> None:
             self.sku_id = sku_id
             self.callback = None
 
+    def _fake_button(**kwargs):
+        def decorate(fn):
+            fn.__discord_ui_model_kwargs__ = kwargs
+            return fn
+        return decorate
+
     class _FakeSelectOption:
         def __init__(self, *, label=None, value=None, description=None, **_):
             self.label = label
@@ -175,11 +352,23 @@ def _ensure_discord_mock() -> None:
             self.description = description
     discord_mod.SelectOption = _FakeSelectOption
 
+    # AudioSource: real class so VoiceMixer(discord.AudioSource) can subclass
+    # it cleanly in tests.  MagicMock auto-attributes would make is_opus()
+    # return a Mock instead of False, breaking 9 TestVoiceMixerCore tests.
+    class _FakeAudioSource:
+        def is_opus(self):
+            return False
+        def read(self):
+            return b"\x00" * 3840  # one silent stereo s16 frame
+        def cleanup(self):
+            pass
+    discord_mod.AudioSource = _FakeAudioSource
+
     discord_mod.ui = SimpleNamespace(
         View=_FakeView,
         Select=_FakeSelect,
         Button=_FakeButton,
-        button=lambda *a, **k: (lambda fn: fn),
+        button=_fake_button,
     )
     discord_mod.ButtonStyle = SimpleNamespace(
         success=1, primary=2, secondary=2, danger=3,
@@ -188,6 +377,7 @@ def _ensure_discord_mock() -> None:
     discord_mod.Color = SimpleNamespace(
         orange=lambda: 1, green=lambda: 2, blue=lambda: 3,
         red=lambda: 4, purple=lambda: 5, greyple=lambda: 6,
+        gold=lambda: 7,
     )
 
     # app_commands — needed by _register_slash_commands auto-registration
@@ -275,7 +465,7 @@ def _scan_for_plugin_adapter_antipattern(source: str) -> list[str]:
                     and isinstance(func.value.value, ast.Name)
                     and func.value.value.id == "sys"
                     and func.value.attr == "path"
-                    and func.attr in ("insert", "append", "extend")
+                    and func.attr in {"insert", "append", "extend"}
                 ):
                     target_name = f"sys.path.{func.attr}"
 
@@ -319,19 +509,30 @@ def _scan_for_plugin_adapter_antipattern(source: str) -> list[str]:
     return offenses
 
 
-def pytest_configure(config):
-    """Reject plugin-adapter tests that use the sys.path anti-pattern.
+def _fingerprint_gateway_tests() -> str:
+    """Return a short fingerprint that changes when any gateway test file changes.
 
-    Runs once per pytest session on the controller, BEFORE any xdist
-    worker is spawned. If any file under ``tests/gateway/`` matches the
-    anti-pattern, we fail the whole session with a clear message —
-    before a polluted ``sys.path`` can cascade across workers.
+    Uses (mtime, size) pairs instead of content hashing — fast to compute
+    (stat-only, no reads) and sufficient for cache invalidation across
+    per-file subprocess runs.
     """
-    # Only run on the xdist controller (or in non-xdist runs). Skip on
-    # worker subprocesses so we don't scan the filesystem N times.
-    if hasattr(config, "workerinput"):
-        return
+    import hashlib
 
+    h = hashlib.sha256()
+    for path in sorted(_GATEWAY_DIR.rglob("test_*.py")):
+        try:
+            st = path.stat()
+            h.update(f"{path.name}:{st.st_mtime_ns}:{st.st_size}".encode())
+        except OSError:
+            h.update(f"{path.name}:missing".encode())
+    return h.hexdigest()[:16]
+
+
+def _run_adapter_antipattern_scan() -> list[str]:
+    """Scan gateway test files for the plugin-adapter anti-pattern.
+
+    Returns a list of violation strings (empty if clean).
+    """
     violations: list[str] = []
     for path in _GATEWAY_DIR.rglob("test_*.py"):
         if path.name in {"_plugin_adapter_loader.py", "conftest.py"}:
@@ -340,7 +541,16 @@ def pytest_configure(config):
             source = path.read_text(encoding="utf-8")
         except OSError:
             continue
+        # Fast string pre-filter: skip files that can't possibly violate.
+        # A violating file MUST contain both (a) an adapter/plugins/platforms
+        # reference AND (b) either sys.path manipulation or a bare adapter import.
         if "adapter" not in source and "plugins/platforms" not in source:
+            continue
+        if not (
+            "sys.path" in source
+            or "import adapter" in source
+            or "from adapter import" in source
+        ):
             continue
         offenses = _scan_for_plugin_adapter_antipattern(source)
         if offenses:
@@ -348,12 +558,90 @@ def pytest_configure(config):
                 f"  {path.relative_to(_GATEWAY_DIR.parent.parent)}:\n    "
                 + "\n    ".join(offenses)
             )
+    return violations
 
-    if violations:
-        raise pytest.UsageError(
-            "Plugin-adapter-import anti-pattern detected in gateway tests:\n"
-            + "\n".join(violations)
-            + "\n\n"
-            + _GUARD_HINT
-        )
+
+def pytest_configure(config):
+    """Reject plugin-adapter tests that use the sys.path anti-pattern.
+
+    Runs once per pytest session on the controller, BEFORE any xdist
+    worker is spawned. If any file under ``tests/gateway/`` matches the
+    anti-pattern, we fail the whole session with a clear message —
+    before a polluted ``sys.path`` can cascade across workers.
+
+    **Performance**: in the per-file subprocess isolation model (no xdist),
+    every subprocess is a "controller" — so the naive scan would run 257
+    times, each costing ~1s of AST walking.  We avoid this with two
+    strategies:
+
+    1. **Tight string pre-filter**: a file can only violate if it contains
+       *both* an adapter/plugins/platforms reference *and* a sys.path
+       manipulation or bare ``import adapter``.  This drops ~95% of files
+       from needing AST parsing.
+    2. **File-locked cache**: the scan result is cached in
+       ``.pytest-cache/gw-adapter-guard-<fingerprint>`` keyed on a
+       fingerprint of the gateway test file mtimes/sizes.  Concurrent
+       subprocesses acquire a lock; only the first performs the scan;
+       the rest wait and read the cached result.
+    """
+    # Only run on the xdist controller (or in non-xdist runs). Skip on
+    # worker subprocesses so we don't scan the filesystem N times.
+    if hasattr(config, "workerinput"):
+        return
+
+    fp = _fingerprint_gateway_tests()
+    cache_dir = Path.cwd() / ".pytest-cache"
+    cache_file = cache_dir / f"gw-adapter-guard-{fp}"
+    lock_file = cache_dir / f".gw-adapter-guard-{fp}.lock"
+
+    cache_dir.mkdir(parents=True, exist_ok=True)
+
+    # Evict stale cache entries from previous fingerprints (best-effort).
+    try:
+        for old in cache_dir.glob("gw-adapter-guard-*"):
+            if old.name != f"gw-adapter-guard-{fp}":
+                old.unlink(missing_ok=True)
+        for old in cache_dir.glob(".gw-adapter-guard-*.lock"):
+            if old.name != f".gw-adapter-guard-{fp}.lock":
+                old.unlink(missing_ok=True)
+    except OSError:
+        pass  # Non-critical; old files are harmless.
+
+    # Use filelock to ensure only one process scans at a time.
+    # Concurrent subprocesses all hit pytest_configure simultaneously;
+    # without a lock they'd all find no cache and all run the scan.
+    try:
+        from filelock import FileLock
+        lock = FileLock(str(lock_file), timeout=120)
+    except ImportError:
+        # Fallback: no locking (still correct, just slower under contention).
+
+        class _NoLock:
+            def __enter__(self):
+                return self
+            def __exit__(self, *a):
+                pass
+        lock = _NoLock()
+
+    with lock:
+        if cache_file.exists():
+            cached = cache_file.read_text(encoding="utf-8")
+            if cached == "clean":
+                return
+            raise pytest.UsageError(cached)
+
+        # Slow path: this process is the first to acquire the lock.
+        violations = _run_adapter_antipattern_scan()
+
+        if violations:
+            msg = (
+                "Plugin-adapter-import anti-pattern detected in gateway tests:\n"
+                + "\n".join(violations)
+                + "\n\n"
+                + _GUARD_HINT
+            )
+            cache_file.write_text(msg, encoding="utf-8")
+            raise pytest.UsageError(msg)
+        else:
+            cache_file.write_text("clean", encoding="utf-8")
 

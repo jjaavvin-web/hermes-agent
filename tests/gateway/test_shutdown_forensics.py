@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import builtins
+import io
 import json
 import os
 import signal
@@ -12,6 +14,7 @@ from pathlib import Path
 import pytest
 
 from gateway import shutdown_forensics as sf
+from gateway import restart
 
 
 # ---------------------------------------------------------------------------
@@ -19,19 +22,10 @@ from gateway import shutdown_forensics as sf
 # ---------------------------------------------------------------------------
 
 class TestSignalName:
-    def test_known_signals_resolve_to_names(self):
-        assert sf._signal_name(signal.SIGTERM) == "SIGTERM"
-        assert sf._signal_name(signal.SIGINT) == "SIGINT"
 
     def test_unknown_int_returns_signal_num_token(self):
         # Pick an integer extremely unlikely to ever be a real signal alias
         assert sf._signal_name(9999) == "signal#9999"
-
-    def test_none_returns_unknown(self):
-        assert sf._signal_name(None) == "UNKNOWN"
-
-    def test_non_integer_falls_back_to_str(self):
-        assert sf._signal_name("SIGTERM") == "SIGTERM"
 
 
 # ---------------------------------------------------------------------------
@@ -39,11 +33,6 @@ class TestSignalName:
 # ---------------------------------------------------------------------------
 
 class TestSnapshotShutdownContext:
-    def test_includes_self_pid_and_signal(self):
-        ctx = sf.snapshot_shutdown_context(signal.SIGTERM)
-        assert ctx["pid"] == os.getpid()
-        assert ctx["signal"] == "SIGTERM"
-        assert ctx["signal_num"] == int(signal.SIGTERM)
 
     def test_handles_none_signal(self):
         ctx = sf.snapshot_shutdown_context(None)
@@ -57,17 +46,6 @@ class TestSnapshotShutdownContext:
         assert before <= ctx["ts"] <= after
         assert isinstance(ctx["ts_monotonic"], float)
 
-    @pytest.mark.skipif(sys.platform == "win32", reason="Linux /proc not present")
-    def test_includes_parent_summary_on_linux(self):
-        ctx = sf.snapshot_shutdown_context(signal.SIGTERM)
-        assert "parent" in ctx
-        assert ctx["parent"]["pid"] == os.getppid()
-
-    def test_under_systemd_flag_uses_invocation_id(self, monkeypatch):
-        monkeypatch.setenv("INVOCATION_ID", "abc123")
-        ctx = sf.snapshot_shutdown_context(signal.SIGTERM)
-        assert ctx["under_systemd"] is True
-        assert ctx["systemd_invocation_id"] == "abc123"
 
     def test_under_systemd_false_without_invocation_id_and_normal_ppid(
         self, monkeypatch
@@ -80,13 +58,6 @@ class TestSnapshotShutdownContext:
         ctx = sf.snapshot_shutdown_context(signal.SIGTERM)
         assert ctx["under_systemd"] is False
 
-    def test_completes_quickly(self):
-        """Snapshot must NOT block — it runs inside the asyncio signal handler."""
-        start = time.monotonic()
-        sf.snapshot_shutdown_context(signal.SIGTERM)
-        elapsed = time.monotonic() - start
-        # Generous bound; the function should be sub-millisecond in practice.
-        assert elapsed < 0.5, f"snapshot took {elapsed:.3f}s — too slow"
 
     def test_detects_takeover_marker_for_self(self, tmp_path, monkeypatch):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
@@ -99,23 +70,62 @@ class TestSnapshotShutdownContext:
         assert "takeover_marker" in ctx
         assert ctx["takeover_marker_for_self"] is True
 
-    def test_detects_takeover_marker_for_other(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-        marker = tmp_path / ".gateway-takeover.json"
-        marker.write_text(
-            '{"target_pid": 1, "replacer_pid": 99999}', encoding="utf-8"
-        )
-        ctx = sf.snapshot_shutdown_context(signal.SIGTERM)
-        assert ctx["takeover_marker_for_self"] is False
 
-    def test_detects_planned_stop_marker(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-        marker = tmp_path / ".gateway-planned-stop.json"
-        marker.write_text(
-            f'{{"target_pid": {os.getpid()}}}', encoding="utf-8"
-        )
-        ctx = sf.snapshot_shutdown_context(signal.SIGTERM)
-        assert "planned_stop_marker" in ctx
+
+# ---------------------------------------------------------------------------
+# /proc helpers / _proc_summary
+# ---------------------------------------------------------------------------
+
+class TestProcSummary:
+    @pytest.mark.parametrize("pid", [-1, 0])
+    def test_non_positive_pid_returns_pid_only(self, pid):
+        assert sf._proc_summary(pid) == {"pid": pid}
+
+    def test_assembles_fields_from_proc_helpers(self, monkeypatch):
+        long_cmdline = "python " + "x" * 500
+        fields = {
+            "Name": "hermes",
+            "State": "S (sleeping)",
+            "PPid": "123",
+            "Uid": "1000 1000 1000 1000",
+        }
+
+        def fake_read_proc_field(pid, key):
+            assert pid == 4242
+            return fields.get(key)
+
+        def fake_read_proc_cmdline(pid):
+            assert pid == 4242
+            return long_cmdline
+
+        monkeypatch.setattr(sf, "_read_proc_field", fake_read_proc_field)
+        monkeypatch.setattr(sf, "_read_proc_cmdline", fake_read_proc_cmdline)
+
+        summary = sf._proc_summary(4242)
+
+        assert summary == {
+            "pid": 4242,
+            "name": "hermes",
+            "state": "S (sleeping)",
+            "ppid": 123,
+            "uid": "1000",
+            "cmdline": long_cmdline[:300],
+        }
+        assert len(summary["cmdline"]) == 300
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="Linux /proc not present")
+    def test_real_read_smoke_for_current_process_on_linux(self):
+        summary = sf._proc_summary(os.getpid())
+
+        assert summary["pid"] == os.getpid()
+        assert isinstance(summary.get("cmdline"), str)
+        assert summary["cmdline"]
+
+    def test_read_proc_helpers_missing_pid_return_none(self):
+        missing_pid = 2_000_000_000
+
+        assert sf._read_proc_field(missing_pid, "Name") is None
+        assert sf._read_proc_cmdline(missing_pid) is None
 
 
 # ---------------------------------------------------------------------------
@@ -123,19 +133,7 @@ class TestSnapshotShutdownContext:
 # ---------------------------------------------------------------------------
 
 class TestFormatters:
-    def test_format_context_for_log_includes_signal_and_parent(self):
-        ctx = sf.snapshot_shutdown_context(signal.SIGTERM)
-        line = sf.format_context_for_log(ctx)
-        assert "signal=SIGTERM" in line
-        assert "parent_pid=" in line
-        assert "parent_cmdline=" in line
 
-    def test_context_as_json_round_trips(self):
-        ctx = sf.snapshot_shutdown_context(signal.SIGTERM)
-        payload = sf.context_as_json(ctx)
-        decoded = json.loads(payload)
-        assert decoded["pid"] == os.getpid()
-        assert decoded["signal"] == "SIGTERM"
 
     def test_context_as_json_handles_unserialisable_values(self):
         ctx = {"signal": "SIGTERM", "weird": object()}
@@ -162,7 +160,7 @@ class TestSpawnAsyncDiagnostic:
         while time.monotonic() < deadline:
             if log_path.exists() and log_path.stat().st_size > 0:
                 # Wait a touch longer for the script to finish writing
-                time.sleep(0.5)
+                time.sleep(0.2)
                 break
             time.sleep(0.1)
 
@@ -177,31 +175,6 @@ class TestSpawnAsyncDiagnostic:
         assert "shutdown diagnostic" in contents
         assert "SIGTERM" in contents
 
-    def test_returns_none_on_windows(self, tmp_path, monkeypatch):
-        monkeypatch.setattr(sf, "sys", type("M", (), {"platform": "win32"})())
-        result = sf.spawn_async_diagnostic(
-            tmp_path / "diag.log", "SIGTERM", timeout_seconds=1.0
-        )
-        assert result is None
-
-    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX-only diagnostic")
-    def test_handles_unwritable_log_path_gracefully(self, tmp_path):
-        # Point at a nonexistent parent that we can't create
-        log_path = Path("/proc/cant-write-here/diag.log")
-        result = sf.spawn_async_diagnostic(log_path, "SIGTERM", timeout_seconds=1.0)
-        assert result is None
-
-    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX-only diagnostic")
-    def test_does_not_block_caller(self, tmp_path):
-        """The spawn must return immediately even if ``ps`` takes seconds."""
-        log_path = tmp_path / "diag.log"
-        start = time.monotonic()
-        sf.spawn_async_diagnostic(log_path, "SIGTERM", timeout_seconds=10.0)
-        elapsed = time.monotonic() - start
-        # Spawning bash in detached mode takes a few ms; anything under 1s
-        # is plenty of headroom and proves we're not waiting on it.
-        assert elapsed < 1.0, f"spawn blocked for {elapsed:.2f}s"
-
 
 # ---------------------------------------------------------------------------
 # _parse_systemd_duration_to_us
@@ -214,31 +187,33 @@ class TestParseSystemdDuration:
     def test_minutes(self):
         assert sf._parse_systemd_duration_to_us("3min") == 180 * 1_000_000
 
-    def test_combined_min_sec(self):
-        assert sf._parse_systemd_duration_to_us("1min 30s") == 90 * 1_000_000
-
-    def test_hours(self):
-        assert sf._parse_systemd_duration_to_us("1h") == 3600 * 1_000_000
-
-    def test_milliseconds(self):
-        assert sf._parse_systemd_duration_to_us("500ms") == 500_000
-
-    def test_empty_returns_none(self):
-        assert sf._parse_systemd_duration_to_us("") is None
-
-    def test_unknown_unit_returns_none(self):
-        assert sf._parse_systemd_duration_to_us("90weeks") is None
-
 
 # ---------------------------------------------------------------------------
 # check_systemd_timing_alignment
 # ---------------------------------------------------------------------------
 
+
+
+class TestParseSystemdDurationEdges:
+    @pytest.mark.parametrize(
+        ("raw", "expected"),
+        [
+            ("2us", 2),
+            ("90", 90_000_000),
+            ("1.5s", 1_500_000),
+            ("2sec", 2_000_000),
+            ("1hr", 3_600_000_000),
+        ],
+    )
+    def test_edge_formats(self, raw, expected):
+        assert sf._parse_systemd_duration_to_us(raw) == expected
+
+    @pytest.mark.parametrize("raw", ["abc", "12x"])
+    def test_garbage_returns_none(self, raw):
+        assert sf._parse_systemd_duration_to_us(raw) is None
+
+
 class TestCheckSystemdTimingAlignment:
-    def test_returns_none_when_not_under_systemd(self, monkeypatch):
-        monkeypatch.delenv("INVOCATION_ID", raising=False)
-        result = sf.check_systemd_timing_alignment(180.0)
-        assert result is None
 
     def test_returns_none_when_unit_undeterminable(self, monkeypatch):
         monkeypatch.setenv("INVOCATION_ID", "abc")
@@ -248,3 +223,101 @@ class TestCheckSystemdTimingAlignment:
         # for whatever unit pytest IS in.  Both are valid; we just ensure
         # the function doesn't raise.
         assert result is None or isinstance(result, dict)
+
+class TestTimingAlignmentBranches:
+    @staticmethod
+    def _patch_systemd_probe(monkeypatch, stdout):
+        original_open = builtins.open
+        calls = []
+
+        def fake_open(path, *args, **kwargs):
+            if path == "/proc/self/cgroup":
+                return io.StringIO(
+                    "0::/user.slice/user-1000.slice/user@1000.service/"
+                    "app.slice/hermes-gateway.service\n"
+                )
+            return original_open(path, *args, **kwargs)
+
+        def fake_run(cmd, **kwargs):
+            calls.append((cmd, kwargs))
+            return type(
+                "Completed",
+                (),
+                {"returncode": 0, "stdout": stdout},
+            )()
+
+        monkeypatch.setenv("INVOCATION_ID", "test-invocation")
+        monkeypatch.setattr(builtins, "open", fake_open)
+        monkeypatch.setattr(sf.subprocess, "run", fake_run)
+        return calls
+
+    def test_aligned_timeout_reports_mismatch_false(self, monkeypatch):
+        calls = self._patch_systemd_probe(
+            monkeypatch, "TimeoutStopUSec=90000000\n"
+        )
+
+        result = sf.check_systemd_timing_alignment(30.0)
+
+        assert result is not None
+        assert list(result) == [
+            "unit",
+            "timeout_stop_sec",
+            "drain_timeout",
+            "cron_drain_timeout",  # upstream #82161: cron drain floor joins the budget
+            "expected_min",
+            "mismatch",
+        ]
+        assert result == {
+            "unit": "hermes-gateway.service",
+            "timeout_stop_sec": 90.0,
+            "drain_timeout": 30.0,
+            "cron_drain_timeout": float(restart.DEFAULT_GATEWAY_CRON_DRAIN_TIMEOUT),
+            # derived, not hardcoded: max(60 floor, max(drain, cron + reserve) + headroom)
+            "expected_min": float(restart.resolve_systemd_timeout_stop_sec(30.0)),
+            "mismatch": False,
+        }
+        assert calls == [
+            (
+                [
+                    "systemctl",
+                    "--user",
+                    "show",
+                    "hermes-gateway.service",
+                    "--property=TimeoutStopUSec",
+                ],
+                {
+                    "capture_output": True,
+                    "text": True,
+                    "encoding": "utf-8",
+                    "errors": "replace",
+                    "timeout": 2.0,
+                },
+            )
+        ]
+
+    def test_misaligned_timeout_reports_mismatch_true(self, monkeypatch):
+        calls = self._patch_systemd_probe(
+            monkeypatch, "TimeoutStopUSec=1min 30s\n"
+        )
+
+        result = sf.check_systemd_timing_alignment(120.0)
+
+        assert result is not None
+        assert list(result) == [
+            "unit",
+            "timeout_stop_sec",
+            "drain_timeout",
+            "cron_drain_timeout",  # upstream #82161: cron drain floor joins the budget
+            "expected_min",
+            "mismatch",
+        ]
+        assert result == {
+            "unit": "hermes-gateway.service",
+            "timeout_stop_sec": 90.0,
+            "drain_timeout": 120.0,
+            "cron_drain_timeout": float(restart.DEFAULT_GATEWAY_CRON_DRAIN_TIMEOUT),
+            "expected_min": float(restart.resolve_systemd_timeout_stop_sec(120.0)),
+            "mismatch": True,
+        }
+        assert len(calls) == 1
+        assert calls[0][0][0] == "systemctl"

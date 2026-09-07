@@ -1,0 +1,42 @@
+[
+  {
+    "content": "Recall memory architecture lessons.",
+    "role": "user"
+  },
+  {
+    "content": "",
+    "role": "assistant",
+    "tool_calls": [
+      {
+        "call_id": "call_rWlYbjkFAlZIBa4CMCBvjZlK",
+        "function": {
+          "arguments": "{\"query\":\"Honcho MVMS memory role split live durable project decision KB\",\"mode\":\"hybrid\",\"limit\":5,\"include_compacts\":true}",
+          "name": "mcp_mvms_mvms_search"
+        },
+        "id": "call_rWlYbjkFAlZIBa4CMCBvjZlK",
+        "response_item_id": "fc_0d9ec9ae8413c91c016a03c255785c8198979a66ba52741f08",
+        "type": "function"
+      },
+      {
+        "call_id": "call_w0ODTsGaXqQViPDwtwwOnnJG",
+        "function": {
+          "arguments": "{\"query\":\"read-only MCP bridge tool allowlist arbitrary SQL mutating tools\",\"mode\":\"hybrid\",\"limit\":5,\"include_compacts\":true}",
+          "name": "mcp_mvms_mvms_search"
+        },
+        "id": "call_w0ODTsGaXqQViPDwtwwOnnJG",
+        "response_item_id": "fc_0d9ec9ae8413c91c016a03c255786c8198bef4a4e04d5ec821",
+        "type": "function"
+      },
+      {
+        "call_id": "call_315DBguPUWlQCW46hXcBsKls",
+        "function": {
+          "arguments": "{\"query\":\"OUZY KB source of truth no corpus duplication MVMS links\",\"mode\":\"hybrid\",\"limit\":5,\"include_compacts\":true}",
+          "name": "mcp_mvms_mvms_search"
+        },
+        "id": "call_315DBguPUWlQCW46hXcBsKls",
+        "response_item_id": "fc_0d9ec9ae8413c91c016a03c25578748198bb1180118504c7d5",
+        "type": "function"
+      }
+    ]
+  }
+]

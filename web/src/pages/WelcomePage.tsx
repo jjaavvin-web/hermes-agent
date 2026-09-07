@@ -1,6 +1,6 @@
 import { type FC, useState, useEffect } from "react";
 import type React from "react";
-import { useNavigate } from "react-router-dom";
+import { useNavigate } from "react-router";
 import HermesFlying from "@/components/mythos/HermesFlying";
 import TriadThrones from "@/components/mythos/TriadThrones";
 import WhileYouSleep from "@/components/mythos/WhileYouSleep";

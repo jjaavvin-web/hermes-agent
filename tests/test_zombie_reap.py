@@ -164,3 +164,21 @@ def test_reap_zombie_sessions_preserves_trigram_fts_table_and_triggers(tmp_path)
         assert _fts_hits("trigram") == 1
     finally:
         db.close()
+
+
+def test_zombie_dry_run_uses_readonly_attach_without_schema_initialization(monkeypatch, tmp_path, capsys):
+    db_path = tmp_path / "state.db"
+    db = SessionDB(db_path=db_path)
+    try:
+        db.create_session(session_id="readonly-zombie", source="cli")
+        _set_session_started_at(db, "readonly-zombie", time.time() - 40 * 86400)
+    finally:
+        db.close()
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("dry-run must not initialize schema or open a writer")
+
+    monkeypatch.setattr(SessionDB, "_init_schema", forbidden)
+    monkeypatch.setattr(SessionDB, "_execute_write", forbidden)
+    assert hermes_state_main(["reap-zombies", "--db-path", str(db_path), "--dry-run"]) == 0
+    assert "would reap 1 zombie session" in capsys.readouterr().out

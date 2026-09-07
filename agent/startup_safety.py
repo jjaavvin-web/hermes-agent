@@ -48,17 +48,46 @@ def _truthy(value: Any) -> bool:
     return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
 
 
-def _iter_model_paths(node: Any, prefix: str = "cfg"):
+def _selected_model_paths(value: Any, path: str):
+    """Follow the selected model shape, ignoring lower-priority aliases."""
+    if isinstance(value, str) and value.strip():
+        yield path, value.strip()
+    elif isinstance(value, Mapping):
+        # load_config normalizes these aliases to model.default. Accept the
+        # unnormalized and provider/model nested forms for direct callers too.
+        for key in ("default", "model", "name"):
+            candidate = value.get(key)
+            if candidate:
+                yield from _selected_model_paths(candidate, f"{path}.{key}")
+                break
+
+
+def _iter_model_fields(node: Any, prefix: str):
     if isinstance(node, Mapping):
         for key, value in node.items():
             path = f"{prefix}.{key}"
-            if key == "model" and isinstance(value, str) and value.strip():
-                yield path, value.strip()
+            if key == "model":
+                yield from _selected_model_paths(value, path)
             else:
-                yield from _iter_model_paths(value, path)
+                yield from _iter_model_fields(value, path)
     elif isinstance(node, list):
         for idx, value in enumerate(node):
-            yield from _iter_model_paths(value, f"{prefix}[{idx}]")
+            yield from _iter_model_fields(value, f"{prefix}[{idx}]")
+
+
+def _iter_model_paths(cfg: Mapping[str, Any]):
+    """Enumerate chat, role and auxiliary pins within this guard's scope.
+
+    Media/provider option tables contain dormant defaults for many backends;
+    those are not selected chat models and must not block startup.
+    """
+    yield from _selected_model_paths(cfg.get("model"), "cfg.model")
+    roles = cfg.get("roles")
+    if isinstance(roles, Mapping):
+        for name, value in roles.items():
+            yield from _selected_model_paths(value, f"cfg.roles.{name}")
+    yield from _selected_model_paths(cfg.get("reviewer"), "cfg.reviewer")
+    yield from _iter_model_fields(cfg.get("auxiliary"), "cfg.auxiliary")
 
 
 def _resolve_reviewer_model(cfg: Mapping[str, Any]) -> str | None:

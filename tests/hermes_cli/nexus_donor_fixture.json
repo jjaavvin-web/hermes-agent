@@ -1,0 +1,675 @@
+{
+  "connectome": {
+    "edges": [
+      {
+        "id": "projects-brain",
+        "label": "kanban-mvms-bridge",
+        "provenance": {
+          "field": "unit.enabled",
+          "lastSeen": "2026-07-03T07:53:30.983074+00:00",
+          "query": "is-enabled kanban-mvms-bridge.timer",
+          "source": "systemctl --user",
+          "value": "enabled"
+        },
+        "source": "projects",
+        "target": "brain",
+        "verified": true
+      },
+      {
+        "id": "brain-lanes",
+        "label": "recall\u2192dispatch",
+        "provenance": {
+          "field": "ok",
+          "lastSeen": "2026-07-03T07:53:31.007727+00:00",
+          "query": "GET /health",
+          "source": "http://127.0.0.1:8745/health",
+          "value": "True"
+        },
+        "source": "brain",
+        "target": "lanes",
+        "verified": true
+      },
+      {
+        "id": "learning-brain",
+        "label": "write-back",
+        "provenance": {
+          "field": "recall close-loop write-back",
+          "lastSeen": "2026-07-03T07:53:31.035146+00:00",
+          "query": "GET /health + read close_loop.py/record_loop_lesson.py",
+          "source": "http://127.0.0.1:8745/health + [HOME]/.hermes/mcp/recall",
+          "value": "model_warmed=True; close_loop\u2192record_loop_lesson\u2192mvms_record_lesson"
+        },
+        "source": "learning",
+        "target": "brain",
+        "verified": true
+      },
+      {
+        "id": "config-infra",
+        "label": "gateway runs model",
+        "provenance": {
+          "field": "model.default/provider",
+          "lastSeen": "2026-07-03T07:53:31.099949+00:00",
+          "query": "yaml.safe_load + systemctl --user is-active hermes-gateway.service",
+          "source": "[HOME]/.hermes/config.yaml",
+          "value": "gpt-5.5/openai-codex; gateway=active"
+        },
+        "source": "config",
+        "target": "infra",
+        "verified": true
+      }
+    ],
+    "meta": {
+      "cache_ttl_seconds": 20.0,
+      "canonical_hubs": [
+        "projects",
+        "brain",
+        "code",
+        "infra",
+        "learning",
+        "lanes",
+        "config",
+        "programs",
+        "deploy"
+      ],
+      "edge_count": 4,
+      "generated_at": "2026-07-03T07:53:31.100085+00:00",
+      "hub_count": 9,
+      "status": "ok",
+      "stub": false
+    },
+    "nodes": [
+      {
+        "detail": null,
+        "id": "projects",
+        "label": "Kanban work",
+        "metric": {
+          "blocked": 2,
+          "completed": 91,
+          "in-progress": 1,
+          "queued": 5
+        },
+        "provenance": {
+          "field": "tasks.status",
+          "lastSeen": "2026-07-03T07:53:30.878010+00:00",
+          "query": "SELECT id,title,status,priority,started_at,completed_at,branch_name FROM tasks WHERE status!='archived' ORDER BY priority DESC, created_at DESC",
+          "source": "[HOME]/.hermes/kanban/boards/hermes/kanban.db",
+          "value": "99 non-archived rows"
+        },
+        "status": "active"
+      },
+      {
+        "detail": "MVMS signal 1159; ICT-excluded clean pool 5460",
+        "id": "brain",
+        "label": "MVMS agent-engineering memory",
+        "metric": {
+          "clean_total": 5460,
+          "ict_excluded": 35201,
+          "leaf_cap": 150,
+          "signal_count": 1159,
+          "unfiltered_total": 40661
+        },
+        "provenance": {
+          "field": "count",
+          "lastSeen": "2026-07-03T07:53:30.921135+00:00",
+          "query": "source IS DISTINCT FROM 'ict-brain'\n  AND source !~ ':(gave_up|crashed|blocked)$'\n  AND source !~* 'compactor|superseder|reflect-promote|curator'\n  AND source !~ '^kanban-mvms-bridge:' AND kind IN ('completion','lesson') ORDER BY importance DESC, id ASC LIMIT 150",
+          "source": "memory.observations",
+          "value": "signal=1159; clean_total=5460"
+        },
+        "status": "completed"
+      },
+      {
+        "detail": "3 repos; 277610 GitNexus nodes summarized, not shipped as leaves",
+        "id": "code",
+        "label": "GitNexus-indexed source",
+        "metric": {
+          "byte_ceiling": 200000,
+          "file_total": 11148,
+          "node_total": 277610,
+          "repo_leaf_count": 3,
+          "repos": 3,
+          "underlying_nodes_materialized": 0
+        },
+        "provenance": {
+          "field": "indexedAt",
+          "lastSeen": "2026-07-03T07:53:30.949152+00:00",
+          "query": "GET /api/repos",
+          "source": "http://127.0.0.1:4747/api/repos",
+          "value": "2026-07-03T03:21:11.286Z, 2026-06-18T16:33:15.301Z, 2026-06-18T16:42:31.968Z"
+        },
+        "status": "ok"
+      },
+      {
+        "detail": null,
+        "id": "infra",
+        "label": "Live infra",
+        "metric": {
+          "os_overall": "red",
+          "os_snapshot_generated_at": "2026-07-03T07:53:30.816037+00:00"
+        },
+        "provenance": {
+          "field": "graph.nodes[group!='learning']",
+          "lastSeen": "2026-07-03T07:53:30.817790+00:00",
+          "query": "snapshot['graph']['nodes']",
+          "source": "hermes_cli.dashboard_os.get_os_snapshot()",
+          "value": "32"
+        },
+        "status": "ok"
+      },
+      {
+        "detail": null,
+        "id": "learning",
+        "label": "Recall flywheel",
+        "metric": {
+          "os_overall": "red",
+          "os_snapshot_generated_at": "2026-07-03T07:53:30.816037+00:00"
+        },
+        "provenance": {
+          "field": "graph.nodes[group=='learning']",
+          "lastSeen": "2026-07-03T07:53:30.818003+00:00",
+          "query": "snapshot['graph']['nodes']",
+          "source": "hermes_cli.dashboard_os.get_os_snapshot()",
+          "value": "3"
+        },
+        "status": "ok"
+      },
+      {
+        "detail": "Primary signal is live Kanban task_runs; codex/** branches are secondary stale refs only.",
+        "id": "lanes",
+        "label": "Delegation workforce",
+        "metric": {
+          "codex_branch_cap": 25,
+          "codex_branch_nodes": 25,
+          "codex_branch_query": "refs/heads/codex/**",
+          "codex_branches_secondary_stale": true,
+          "live_focus_count": 18,
+          "loki_lane_nodes": 15,
+          "projects_lanes_branch_name_edge": "dropped: branch_name has no live join key",
+          "task_runs_normalized_counts": {
+            "blocked": 11,
+            "completed": 106,
+            "queued": 6,
+            "running": 1,
+            "stale": 2
+          },
+          "task_runs_status_counts": {
+            "blocked": 11,
+            "completed": 73,
+            "done": 33,
+            "reclaimed": 2,
+            "running": 1,
+            "scheduled": 6
+          },
+          "task_runs_total": 126
+        },
+        "provenance": {
+          "field": "task_runs.status",
+          "lastSeen": "2026-07-03T07:53:30.935690+00:00",
+          "query": "SELECT id,task_id,profile,step_key,status,outcome,last_heartbeat_at,started_at,ended_at FROM task_runs ORDER BY COALESCE(ended_at,last_heartbeat_at,started_at) DESC, id DESC",
+          "source": "[HOME]/.hermes/kanban/boards/hermes/kanban.db",
+          "value": "126 task_runs; statuses={'running': 1, 'done': 33, 'completed': 73, 'reclaimed': 2, 'blocked': 11, 'scheduled': 6}"
+        },
+        "status": "active"
+      },
+      {
+        "detail": null,
+        "id": "config",
+        "label": "AI-config spine",
+        "metric": {
+          "active_profile": "default",
+          "auxiliary": 14,
+          "mcp_servers": 4,
+          "providers": 1,
+          "toolsets": 1
+        },
+        "provenance": {
+          "field": "model.default",
+          "lastSeen": "2026-07-03T07:53:30.852071+00:00",
+          "query": "yaml.safe_load([HOME]/.hermes/config.yaml)",
+          "source": "[HOME]/.hermes/config.yaml",
+          "value": "gpt-5.5"
+        },
+        "status": "ok"
+      },
+      {
+        "detail": null,
+        "id": "programs",
+        "label": "Active flagship programs",
+        "metric": {
+          "active": 2,
+          "stale": 1
+        },
+        "provenance": {
+          "field": "mtime",
+          "lastSeen": "2026-07-03T07:53:30.936944+00:00",
+          "query": "glob [HOME]/.hermes/audits/*/MASTER-GAMEPLAN.md + active */BUILD-SPEC.md (<14d)",
+          "source": "[HOME]/.hermes/audits",
+          "value": "3 gameplans"
+        },
+        "status": "active"
+      },
+      {
+        "detail": null,
+        "id": "deploy",
+        "label": "Live deploy state",
+        "metric": {
+          "branch": "w2a/truth-api",
+          "head": "559451941",
+          "head_equals_serving": false,
+          "serving_branch": "deploy/dashboard-both",
+          "serving_head": "527fc08dbae5"
+        },
+        "provenance": {
+          "field": "HEAD",
+          "lastSeen": "2026-07-03T07:53:30.961137+00:00",
+          "query": "git rev-parse HEAD && git rev-parse deploy/dashboard-both",
+          "source": "[HOME]/.hermes/worktrees/w2a-build",
+          "value": "w2a/truth-api 559451941"
+        },
+        "status": "not-serving"
+      }
+    ]
+  },
+  "os": {
+    "generated_at": "2026-07-03T07:53:30.816037+00:00",
+    "sections": [
+      {
+        "id": "gateway",
+        "items": [
+          {
+            "detail": "pid=582111 state=running uptime=1h46m",
+            "metric": null,
+            "name": "gateway_state",
+            "status": "green"
+          },
+          {
+            "detail": "hermes-gateway.service: active",
+            "metric": null,
+            "name": "systemd_unit",
+            "status": "green"
+          },
+          {
+            "detail": "last event: ok at 2026-07-03T07:48:58Z",
+            "metric": null,
+            "name": "watchdog_events",
+            "status": "green"
+          }
+        ],
+        "status": "green",
+        "title": null
+      },
+      {
+        "id": "providers",
+        "items": [
+          {
+            "detail": "backend lane (HTTP); snapshot loaded; 49 sessions tracked",
+            "metric": "49",
+            "name": "codex_pipeline_load",
+            "status": "info"
+          },
+          {
+            "detail": "49 sessions: EXECUTING=12, ORPHANED=37; blocked_count=0",
+            "metric": "49",
+            "name": "codex_live_sessions",
+            "status": "red"
+          },
+          {
+            "detail": "binary=[HOME]/.hermes/node/bin/claude",
+            "metric": null,
+            "name": "claude_cli",
+            "status": "green"
+          },
+          {
+            "detail": "honcho-managed (capped)",
+            "metric": null,
+            "name": "openrouter_key",
+            "status": "green"
+          }
+        ],
+        "status": "red",
+        "title": null
+      },
+      {
+        "id": "containers",
+        "items": [
+          {
+            "detail": "running \u2014 Up 17 hours",
+            "metric": null,
+            "name": "honcho-api-1",
+            "status": "green"
+          },
+          {
+            "detail": "running \u2014 Up 17 hours (healthy)",
+            "metric": null,
+            "name": "honcho-database-1",
+            "status": "green"
+          },
+          {
+            "detail": "running \u2014 Up 17 hours",
+            "metric": null,
+            "name": "honcho-deriver-1",
+            "status": "green"
+          },
+          {
+            "detail": "running \u2014 Up 17 hours (healthy)",
+            "metric": null,
+            "name": "honcho-redis-1",
+            "status": "green"
+          },
+          {
+            "detail": "running \u2014 Up 17 hours (healthy)",
+            "metric": null,
+            "name": "supabase_db_goattrade-system",
+            "status": "green"
+          },
+          {
+            "detail": "running \u2014 Up 17 hours (healthy)",
+            "metric": null,
+            "name": "supabase_kong_goattrade-system",
+            "status": "green"
+          },
+          {
+            "detail": "14 non-core container(s) present",
+            "metric": "14",
+            "name": "extras",
+            "status": "green"
+          }
+        ],
+        "status": "green",
+        "title": null
+      },
+      {
+        "id": "systemd",
+        "items": [
+          {
+            "detail": "1 failed: \u25cf",
+            "metric": "1",
+            "name": "failed_units",
+            "status": "red"
+          },
+          {
+            "detail": "all 7 expected KEEP timers active",
+            "metric": "28",
+            "name": "timers_keep",
+            "status": "green"
+          },
+          {
+            "detail": "mvms-compactor.timer (disabled pending compactor rebuild); other-intentionally-disabled.timer (disabled by design)",
+            "metric": "2",
+            "name": "timers_disabled_by_design",
+            "status": "info"
+          }
+        ],
+        "status": "red",
+        "title": null
+      },
+      {
+        "id": "backups",
+        "items": [
+          {
+            "detail": "mvms-canonical-schemas-20260702T093203Z.sql.gz age=22.3h size=200.2MB",
+            "metric": "22.3h",
+            "name": "mvms-canonical-*.sql.gz",
+            "status": "info"
+          },
+          {
+            "detail": "honcho-live-store-20260702T093203Z.sql.gz age=22.3h size=1070.1MB",
+            "metric": "22.3h",
+            "name": "honcho-live-store-*.sql.gz",
+            "status": "info"
+          },
+          {
+            "detail": "hermes-app-state-20260702T093203Z.tar.gz age=22.3h size=166.1MB",
+            "metric": "22.3h",
+            "name": "hermes-app-state-*.tar.gz",
+            "status": "info"
+          },
+          {
+            "detail": "no off-box replication marker found",
+            "metric": null,
+            "name": "mvms-backup-gap-offbox",
+            "status": "amber"
+          },
+          {
+            "detail": "weekly-veracrypt-backup-20260629-115440 age=3.5d",
+            "metric": "3.5d",
+            "name": "veracrypt_weekly",
+            "status": "green"
+          }
+        ],
+        "status": "amber",
+        "title": null
+      },
+      {
+        "id": "memory_stores",
+        "items": [
+          {
+            "detail": "size=4471476KB mtime=0.0h ago",
+            "metric": "4471476KB",
+            "name": "state_db",
+            "status": "green"
+          },
+          {
+            "detail": "8 open / 227 total",
+            "metric": "8",
+            "name": "kanban_db",
+            "status": "green"
+          },
+          {
+            "detail": "size=18007 bytes",
+            "metric": "18007B",
+            "name": "memory_md",
+            "status": "green"
+          },
+          {
+            "detail": "40,661 observations in memory.observations",
+            "metric": "40661",
+            "name": "mvms_observations",
+            "status": "green"
+          },
+          {
+            "detail": "23,630 messages in honcho.messages",
+            "metric": "23630",
+            "name": "honcho_messages",
+            "status": "green"
+          }
+        ],
+        "status": "green",
+        "title": null
+      },
+      {
+        "id": "cron",
+        "items": [
+          {
+            "detail": "13/19 jobs enabled",
+            "metric": "13",
+            "name": "cron_enabled",
+            "status": "green"
+          },
+          {
+            "detail": "all recent runs ok",
+            "metric": null,
+            "name": "cron_last_status",
+            "status": "green"
+          }
+        ],
+        "status": "green",
+        "title": null
+      },
+      {
+        "id": "host",
+        "items": [
+          {
+            "detail": "31G free / 196G total",
+            "metric": "31G",
+            "name": "disk_free",
+            "status": "green"
+          },
+          {
+            "detail": "24096MB available",
+            "metric": "24096MB",
+            "name": "mem_available",
+            "status": "green"
+          },
+          {
+            "detail": "1m=0.56 5m=0.73 15m=0.65 (20 cores, 3% of capacity)",
+            "metric": "0.56",
+            "name": "load_avg",
+            "status": "green"
+          },
+          {
+            "detail": "up 16h 55m",
+            "metric": "16h55m",
+            "name": "wsl_uptime",
+            "status": "green"
+          }
+        ],
+        "status": "green",
+        "title": null
+      },
+      {
+        "id": "infra",
+        "items": [
+          {
+            "detail": "today cost=$0.0000 across 201 turn(s)",
+            "metric": "$0.00",
+            "name": "cost",
+            "status": "green"
+          },
+          {
+            "detail": "config_drift=0 authz_drift=0 authority_drift=1; latest age=16.8h",
+            "metric": "combined rc=1",
+            "name": "config_drift",
+            "status": "red"
+          },
+          {
+            "detail": "mvms=RED; honcho=GREEN; app_state=GREEN; state_db=GREEN",
+            "metric": "3/4 drilled \u00b7 1 red",
+            "name": "DR",
+            "status": "red"
+          },
+          {
+            "detail": "worst [RECENT] holdout holdout_wave2.jsonl: RECALL@10=0.6667 over n=18; 3 set(s) tracked",
+            "metric": "worst 67%",
+            "name": "evals",
+            "status": "red"
+          },
+          {
+            "detail": "run_redteam.py --json passed=38/38 breach_count=0; script age=253.9h",
+            "metric": "0 breaches",
+            "name": "security",
+            "status": "green"
+          }
+        ],
+        "status": "red",
+        "title": null
+      },
+      {
+        "id": "repo",
+        "items": [
+          {
+            "detail": "0/49 lanes ready",
+            "metric": "0%",
+            "name": "readiness",
+            "status": "green"
+          },
+          {
+            "detail": "4 uncommitted files across lanes",
+            "metric": "4",
+            "name": "uncommitted",
+            "status": "green"
+          },
+          {
+            "detail": "6556 commits ahead total",
+            "metric": "6556",
+            "name": "ahead_total",
+            "status": "green"
+          },
+          {
+            "detail": "health: 3 uncommitted file(s) \u2014 the worker must commit before /review",
+            "metric": null,
+            "name": "best_move",
+            "status": "green"
+          },
+          {
+            "detail": "3858 files changed across lanes",
+            "metric": "3858",
+            "name": "files_changed",
+            "status": "green"
+          }
+        ],
+        "status": "green",
+        "title": null
+      },
+      {
+        "id": "work",
+        "items": [
+          {
+            "detail": "2 active project cards averaged",
+            "metric": "98%",
+            "name": "projects_completion",
+            "status": "green"
+          },
+          {
+            "detail": "2 decision items",
+            "metric": "2",
+            "name": "pending_decisions",
+            "status": "amber"
+          },
+          {
+            "detail": "4/6 runtimes live",
+            "metric": "4",
+            "name": "live_runtimes",
+            "status": "green"
+          },
+          {
+            "detail": "1 stalled workers/tasks",
+            "metric": "1",
+            "name": "stalled",
+            "status": "amber"
+          }
+        ],
+        "status": "amber",
+        "title": null
+      },
+      {
+        "id": "activity",
+        "items": [
+          {
+            "detail": "tasks created in the last 7 days",
+            "metric": "29",
+            "name": "created_7d",
+            "status": "green"
+          },
+          {
+            "detail": "currently open kanban tasks",
+            "metric": "8",
+            "name": "open_now",
+            "status": "green"
+          },
+          {
+            "detail": "ready/triage cards waiting",
+            "metric": "5",
+            "name": "pending_cards",
+            "status": "green"
+          },
+          {
+            "detail": "active hive runs",
+            "metric": "0",
+            "name": "active_hives",
+            "status": "green"
+          }
+        ],
+        "status": "green",
+        "title": null
+      }
+    ]
+  },
+  "redactions": [
+    "home path -> [HOME]",
+    "username -> [USER]",
+    "hostname -> [HOSTNAME]",
+    "f-r-e-s-h substring -> [RECENT]",
+    ">=40 hex/base64-like runs -> [REDACTED-LONG]",
+    "SQL where clauses removed from connectome metrics"
+  ]
+}

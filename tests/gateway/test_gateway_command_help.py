@@ -45,6 +45,7 @@ async def test_help_sanitizes_slash_command_mentions_for_telegram(monkeypatch):
     assert "`/custom_thing`" in result
     assert "`/Linear`" not in result
     assert "`/Custom-Thing`" not in result
+    assert "`/sol " not in result
 
 
 @pytest.mark.asyncio
@@ -61,6 +62,7 @@ async def test_commands_sanitizes_slash_command_mentions_for_telegram(monkeypatc
 
     assert "`/linear`" in result
     assert "`/Linear`" not in result
+    assert "`/sol " not in result
 
 
 @pytest.mark.asyncio
@@ -76,3 +78,4 @@ async def test_help_keeps_non_telegram_slash_command_mentions_unchanged(monkeypa
     )
 
     assert "`/Linear`" in result
+    assert "`/sol <title>" in result

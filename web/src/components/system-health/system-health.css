@@ -45,3 +45,15 @@
 .sh-pulse {
   animation: sh-pulse 1.8s ease-in-out infinite;
 }
+
+@media (pointer: coarse) {
+  .os-flow .react-flow__controls-button {
+    width: 40px;
+    height: 40px;
+  }
+
+  .os-flow .react-flow__controls-button svg {
+    max-width: 18px;
+    max-height: 18px;
+  }
+}

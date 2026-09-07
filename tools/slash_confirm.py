@@ -53,6 +53,8 @@ def register(
     confirm_id: str,
     command: str,
     handler: Callable[[str], Awaitable[Optional[str]]],
+    *,
+    owner_user_id: Optional[str] = None,
 ) -> None:
     """Register a pending slash-command confirmation.
 
@@ -65,6 +67,7 @@ def register(
             "command": command,
             "handler": handler,
             "created_at": time.time(),
+            "owner_user_id": owner_user_id,
         }
 
 
@@ -101,6 +104,8 @@ async def resolve(
     confirm_id: str,
     choice: str,
     timeout: float = DEFAULT_TIMEOUT_SECONDS,
+    *,
+    actor_user_id: Optional[str] = None,
 ) -> Optional[str]:
     """Resolve a pending confirm.
 
@@ -119,6 +124,11 @@ async def resolve(
         if entry.get("confirm_id") != confirm_id:
             # Stale confirm_id — superseded by a newer prompt on the same session.
             return None
+        if choice not in {"once", "always", "cancel"}:
+            return None
+        if entry.get("owner_user_id") is not None:
+            if actor_user_id != entry["owner_user_id"] or choice == "always":
+                return None
         # Pop before we run the handler to prevent duplicate callbacks
         # (e.g. button double-click) from running it twice.
         _pending.pop(session_key, None)

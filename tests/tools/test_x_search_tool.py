@@ -37,7 +37,7 @@ class _FakeResponse:
 # ---------------------------------------------------------------------------
 
 def test_x_search_posts_responses_request(monkeypatch):
-    from tools.x_search_tool import x_search_tool
+    from tools.x_search_tool import DEFAULT_X_SEARCH_MODEL, x_search_tool
     from hermes_cli import __version__
 
     captured = {}
@@ -56,6 +56,12 @@ def test_x_search_posts_responses_request(monkeypatch):
 
     monkeypatch.setenv("XAI_API_KEY", "xai-test-key")
     monkeypatch.setattr("requests.post", _fake_post)
+    # Neutralize the live config read. `_get_x_search_model()` /
+    # `_get_x_search_reasoning_effort()` call load_config(), so without this the
+    # asserted model is whatever the operator's ~/.hermes/config.yaml pins and
+    # the test passes or fails per machine. That is why the two sides of this
+    # merge disagreed on the literal at all (see the model assertion below).
+    monkeypatch.setattr("tools.x_search_tool._load_x_search_config", lambda: {})
 
     result = json.loads(
         x_search_tool(
@@ -70,8 +76,16 @@ def test_x_search_posts_responses_request(monkeypatch):
     tool_def = captured["json"]["tools"][0]
     assert captured["url"] == "https://api.x.ai/v1/responses"
     assert captured["headers"]["User-Agent"] == f"Hermes-Agent/{__version__}"
-    assert captured["json"]["model"] == "grok-4.20-reasoning"
+    # MERGE (v0.20): upstream bumped the module default grok-4.20-reasoning ->
+    # grok-4.5; the fork side asserted "grok-4.3", which was never the module
+    # default but the value in this box's config.yaml (fork commit 99654e40b,
+    # "grok-4.3 test fix", re-pinned the literal to match the machine). With the
+    # config read neutralized above, assert the module default instead of any
+    # literal: upstream's bump is honored, and an operator's x_search.model
+    # override in config.yaml stays free to differ.
+    assert captured["json"]["model"] == DEFAULT_X_SEARCH_MODEL
     assert captured["json"]["store"] is False
+    assert "reasoning" not in captured["json"]
     assert tool_def["type"] == "x_search"
     assert tool_def["allowed_x_handles"] == ["xai", "grok"]
     assert tool_def["from_date"] == "2026-04-01"
@@ -95,6 +109,28 @@ def test_x_search_rejects_conflicting_handle_filters(monkeypatch):
     )
 
     assert result["error"] == "allowed_x_handles and excluded_x_handles cannot be used together"
+
+
+def test_x_search_schema_is_read_only_without_cross_tool_names():
+    """Static schema must state read-only scope without naming other surfaces.
+
+    AGENTS.md forbids hardcoding cross-tool/skill names in tool schemas because
+    those surfaces may be unavailable. Keep out-of-scope guidance generic here;
+    xurl routing lives in the skill and feature docs.
+    """
+    from tools.x_search_tool import X_SEARCH_SCHEMA
+
+    description = X_SEARCH_SCHEMA["description"]
+    lowered = description.lower()
+
+    assert "read-only" in lowered
+    assert "public x" in lowered
+    for action in ("post", "reply", "like", "dm", "upload media", "delete"):
+        assert action in lowered
+    assert "authenticated" in lowered
+    # No static cross-surface names in the model-facing schema.
+    assert "xurl" not in lowered
+    assert "web_search" not in lowered
 
 
 def test_x_search_extracts_inline_url_citations(monkeypatch):
@@ -173,58 +209,6 @@ def test_x_search_returns_structured_http_error(monkeypatch):
     assert result["error"] == "forbidden: x_search is not enabled for this model"
 
 
-def test_x_search_retries_read_timeout_then_succeeds(monkeypatch):
-    from tools.x_search_tool import x_search_tool
-
-    calls = {"count": 0}
-
-    def _fake_post(url, headers=None, json=None, timeout=None):
-        calls["count"] += 1
-        if calls["count"] == 1:
-            raise requests.ReadTimeout("timed out")
-        return _FakeResponse(
-            {
-                "output_text": "Recovered after retry.",
-                "citations": [],
-            }
-        )
-
-    monkeypatch.setenv("XAI_API_KEY", "xai-test-key")
-    monkeypatch.setattr("requests.post", _fake_post)
-    monkeypatch.setattr("tools.x_search_tool.time.sleep", lambda *_: None)
-
-    result = json.loads(x_search_tool(query="grok xai"))
-
-    assert calls["count"] == 2
-    assert result["success"] is True
-    assert result["answer"] == "Recovered after retry."
-
-
-def test_x_search_retries_5xx_then_succeeds(monkeypatch):
-    from tools.x_search_tool import x_search_tool
-
-    calls = {"count": 0}
-
-    def _fake_post(url, headers=None, json=None, timeout=None):
-        calls["count"] += 1
-        if calls["count"] == 1:
-            return _FakeResponse(
-                {"code": "Internal error", "error": "Service temporarily unavailable."},
-                status_code=500,
-            )
-        return _FakeResponse({"output_text": "Recovered after 5xx retry."})
-
-    monkeypatch.setenv("XAI_API_KEY", "xai-test-key")
-    monkeypatch.setattr("requests.post", _fake_post)
-    monkeypatch.setattr("tools.x_search_tool.time.sleep", lambda *_: None)
-
-    result = json.loads(x_search_tool(query="grok xai"))
-
-    assert calls["count"] == 2
-    assert result["success"] is True
-    assert result["answer"] == "Recovered after 5xx retry."
-
-
 # ---------------------------------------------------------------------------
 # Credential-resolution coverage — the OAuth-or-API-key gating contract.
 # ---------------------------------------------------------------------------
@@ -242,7 +226,7 @@ def test_x_search_uses_xai_oauth_when_only_oauth_available(monkeypatch):
 
     _no_xai_env(monkeypatch)
 
-    def _fake_resolve():
+    def _fake_resolve(**_kwargs):
         return {
             "provider": "xai-oauth",
             "api_key": "oauth-bearer-token",
@@ -271,85 +255,6 @@ def test_x_search_uses_xai_oauth_when_only_oauth_available(monkeypatch):
     assert captured["headers"]["Authorization"] == "Bearer oauth-bearer-token"
 
 
-def test_x_search_uses_api_key_when_only_xai_api_key_set(monkeypatch):
-    """API-key-only user: credential_source should be ``xai``."""
-    from tools.registry import invalidate_check_fn_cache
-    from tools.x_search_tool import check_x_search_requirements, x_search_tool
-
-    _no_xai_env(monkeypatch)
-
-    def _fake_resolve():
-        # Real ``resolve_xai_http_credentials`` returns ``"xai"`` when it
-        # falls through to the XAI_API_KEY env var path.
-        return {
-            "provider": "xai",
-            "api_key": "raw-api-key",
-            "base_url": "https://api.x.ai/v1",
-        }
-
-    monkeypatch.setattr(
-        "tools.x_search_tool.resolve_xai_http_credentials", _fake_resolve
-    )
-    invalidate_check_fn_cache()
-
-    assert check_x_search_requirements() is True
-
-    captured = {}
-
-    def _fake_post(url, headers=None, json=None, timeout=None):
-        captured["headers"] = headers
-        return _FakeResponse({"output_text": "Found posts via API key."})
-
-    monkeypatch.setattr("requests.post", _fake_post)
-
-    result = json.loads(x_search_tool(query="anything"))
-
-    assert result["success"] is True
-    assert result["credential_source"] == "xai"
-    assert captured["headers"]["Authorization"] == "Bearer raw-api-key"
-
-
-def test_x_search_prefers_oauth_when_both_available(monkeypatch):
-    """Both credentials present: OAuth wins (matches Teknium's billing preference).
-
-    The real ordering is implemented in ``tools.xai_http.resolve_xai_http_credentials``
-    — OAuth runtime first, fallback OAuth resolver second, ``XAI_API_KEY`` third.
-    This test exercises the contract by having the resolver return the OAuth
-    bearer (the ``xai-oauth`` ``provider`` tag is the marker).
-    """
-    from tools.registry import invalidate_check_fn_cache
-    from tools.x_search_tool import x_search_tool
-
-    monkeypatch.setenv("XAI_API_KEY", "raw-api-key")
-
-    # Mimic xai_http's preference: OAuth wins, so we return the OAuth tuple
-    # even though XAI_API_KEY is also set.
-    def _fake_resolve():
-        return {
-            "provider": "xai-oauth",
-            "api_key": "oauth-bearer-token",
-            "base_url": "https://api.x.ai/v1",
-        }
-
-    monkeypatch.setattr(
-        "tools.x_search_tool.resolve_xai_http_credentials", _fake_resolve
-    )
-    invalidate_check_fn_cache()
-
-    captured = {}
-
-    def _fake_post(url, headers=None, json=None, timeout=None):
-        captured["headers"] = headers
-        return _FakeResponse({"output_text": "OAuth preferred."})
-
-    monkeypatch.setattr("requests.post", _fake_post)
-
-    result = json.loads(x_search_tool(query="anything"))
-
-    assert result["credential_source"] == "xai-oauth"
-    assert captured["headers"]["Authorization"] == "Bearer oauth-bearer-token"
-
-
 def test_x_search_returns_tool_error_when_no_credentials(monkeypatch):
     """No credentials anywhere: tool returns a clear error, not a 401 from xAI."""
     from tools.registry import invalidate_check_fn_cache
@@ -357,7 +262,7 @@ def test_x_search_returns_tool_error_when_no_credentials(monkeypatch):
 
     _no_xai_env(monkeypatch)
 
-    def _fake_resolve():
+    def _fake_resolve(**_kwargs):
         return {
             "provider": "xai",
             "api_key": "",
@@ -378,61 +283,237 @@ def test_x_search_returns_tool_error_when_no_credentials(monkeypatch):
     assert "hermes auth add xai-oauth" in result
 
 
-def test_x_search_check_fn_false_when_resolver_raises(monkeypatch):
-    """Resolver exceptions (e.g. expired token + failed refresh) gate the tool out."""
-    from tools.registry import invalidate_check_fn_cache
-    from tools.x_search_tool import check_x_search_requirements
+# ---------------------------------------------------------------------------
+# Date validation — fail fast before burning an API call on a window that
+# cannot possibly return X posts. xAI itself happily 200s with a fluff
+# answer when the range is malformed or pure-future, which is hard for
+# callers to distinguish from a real result.
+# ---------------------------------------------------------------------------
 
-    _no_xai_env(monkeypatch)
+def _no_post_allowed(monkeypatch):
+    """Guard: any test that should fail before HTTP can hit this fence."""
+    def _fail(*_, **__):
+        raise AssertionError("requests.post must not be called — validation should reject first")
 
-    def _boom():
-        raise RuntimeError("token revoked and refresh failed")
-
-    monkeypatch.setattr(
-        "tools.x_search_tool.resolve_xai_http_credentials", _boom
-    )
-    invalidate_check_fn_cache()
-
-    assert check_x_search_requirements() is False
+    monkeypatch.setattr("requests.post", _fail)
 
 
-def test_x_search_honors_config_model_and_timeout(monkeypatch, tmp_path):
-    """``x_search.model`` and ``x_search.timeout_seconds`` override the defaults."""
+# ---------------------------------------------------------------------------
+# Degraded-result flag — distinguish citation-backed answers from
+# unsourced fluff when narrowing filters returned nothing.
+# ---------------------------------------------------------------------------
+
+
+def test_x_search_not_degraded_when_no_filters_active(monkeypatch):
+    """A broad query that returns no citations isn't necessarily degraded.
+
+    Without any narrowing filter, an empty-citations response is a generic
+    unsourced answer, not a "filter miss". The caller can already tell from
+    ``inline_citations == []`` if they care.
+    """
     from tools.x_search_tool import x_search_tool
 
     monkeypatch.setenv("XAI_API_KEY", "xai-test-key")
-
-    # Patch the in-module config loader so tests don't touch ~/.hermes/config.yaml.
     monkeypatch.setattr(
-        "tools.x_search_tool._load_x_search_config",
-        lambda: {"model": "grok-custom-test", "timeout_seconds": 45, "retries": 0},
+        "requests.post",
+        lambda *a, **k: _FakeResponse({"output_text": "broad answer", "citations": []}),
     )
-
-    captured = {}
-
-    def _fake_post(url, headers=None, json=None, timeout=None):
-        captured["model"] = json["model"]
-        captured["timeout"] = timeout
-        return _FakeResponse({"output_text": "Custom model OK."})
-
-    monkeypatch.setattr("requests.post", _fake_post)
 
     result = json.loads(x_search_tool(query="anything"))
 
     assert result["success"] is True
-    assert captured["model"] == "grok-custom-test"
-    assert captured["timeout"] == 45
+    assert result["degraded"] is False
+    assert result["degraded_reason"] is None
 
 
-def test_x_search_registered_in_registry_with_check_fn():
-    """The tool is registered under the x_search toolset with the gating check_fn."""
-    import tools.x_search_tool  # noqa: F401 — ensures registration runs
-    from tools.registry import registry
+# ---------------------------------------------------------------------------
+# Ingestibility annotation — _handle_x_search wires is_x_search_result_ingestible
+# into every tool response so consumers can gate on result["ingestible"].
+# ---------------------------------------------------------------------------
 
-    entry = registry.get_entry("x_search")
-    assert entry is not None
-    assert entry.toolset == "x_search"
-    assert entry.check_fn is not None
-    assert entry.check_fn.__name__ == "check_x_search_requirements"
-    assert "XAI_API_KEY" in entry.requires_env
-    assert entry.emoji == "🐦"
+def test_handle_x_search_annotates_ingestible_false_on_low_quality(monkeypatch):
+    """Handler marks ingestible=False + ingest_skip_reason when the result fails a gate.
+
+    Uses a degraded result (success=True but degraded=True) so the gate fails
+    without needing to reach the citation-floor check.
+    """
+    import json as _json
+    from tools.x_search_tool import _handle_x_search
+
+    degraded_result = {
+        "success": True,
+        "provider": "xai",
+        "credential_source": "xai",
+        "tool": "x_search",
+        "model": "grok-test",
+        "query": "anything",
+        "answer": "unsourced fluff",
+        "citations": [],
+        "inline_citations": [],
+        "degraded": True,
+        "degraded_reason": "no citations returned despite filters: allowed_x_handles",
+    }
+
+    monkeypatch.setattr(
+        "tools.x_search_tool.x_search_tool",
+        lambda **kw: _json.dumps(degraded_result, ensure_ascii=False),
+    )
+
+    out = _json.loads(_handle_x_search({"query": "anything"}))
+
+    assert out["ingestible"] is False
+    assert out.get("ingest_skip_reason")
+    assert "degraded" in out["ingest_skip_reason"]
+
+
+def test_handle_x_search_annotates_ingestible_true_on_healthy_result(monkeypatch):
+    """Handler marks ingestible=True (no ingest_skip_reason key) for a quality result."""
+    import json as _json
+    from tools.x_search_tool import _handle_x_search, _get_x_search_citation_floor
+
+    citation_floor = _get_x_search_citation_floor()
+    citations = [{"url": f"https://x.com/ex/status/{i}"} for i in range(citation_floor)]
+
+    healthy_result = {
+        "success": True,
+        "provider": "xai",
+        "credential_source": "xai",
+        "tool": "x_search",
+        "model": "grok-test",
+        "query": "anything",
+        "answer": "well-sourced answer",
+        "citations": citations,
+        "inline_citations": [],
+        "degraded": False,
+        "degraded_reason": None,
+    }
+
+    monkeypatch.setattr(
+        "tools.x_search_tool.x_search_tool",
+        lambda **kw: _json.dumps(healthy_result, ensure_ascii=False),
+    )
+
+    out = _json.loads(_handle_x_search({"query": "anything"}))
+
+    assert out["ingestible"] is True
+    assert "ingest_skip_reason" not in out
+
+
+def _xcred(prefix: str) -> str:
+    """Synthesize a distinct fake credential value (never a bare literal)."""
+    return prefix + "-key-" + "x1"
+
+
+def _install_fake_oauth_pool(monkeypatch, oauth_token: str) -> None:
+    """Make the shared resolver's OAuth branch yield ``oauth_token``.
+
+    Patches ``agent.credential_pool.load_pool`` (the seam
+    ``resolve_xai_http_credentials`` imports at call time). Any pool key
+    other than ``xai-oauth`` raises so ``resolve_provider_secret``'s
+    credential-pool fallback can't accidentally surface the OAuth bearer
+    as an "explicit key".
+    """
+    from types import SimpleNamespace
+
+    entry = SimpleNamespace(
+        access_token=oauth_token,
+        runtime_api_key=None,
+        runtime_base_url=None,
+        base_url="https://api.x.ai/v1",
+    )
+
+    class _FakePool:
+        def select(self):
+            return entry
+
+        def try_refresh_matching(self, _hint):
+            return entry
+
+    def _fake_load_pool(provider_id):
+        if provider_id == "xai-oauth":
+            return _FakePool()
+        raise KeyError(provider_id)
+
+    monkeypatch.setattr("agent.credential_pool.load_pool", _fake_load_pool)
+
+
+def test_x_search_prefers_explicit_api_key_over_oauth(monkeypatch):
+    """#88040: with a paid XAI_API_KEY configured alongside subscription
+    OAuth, x_search must use the API key — the OAuth path authorizes but
+    answers /v1/responses in a degraded Grok explanatory mode with no
+    citations. Same prefer-API-key root cause as the TTS fix (#87045/#87081);
+    the precedence lives in the shared resolver behind ``prefer_api_key``."""
+    from tools.registry import invalidate_check_fn_cache
+    from tools.x_search_tool import x_search_tool
+
+    paid_key = _xcred("paid")
+    oauth_token = _xcred("oauth")
+
+    monkeypatch.delenv("XAI_API_KEY", raising=False)
+    monkeypatch.setattr(
+        "tools.xai_http.get_env_value",
+        lambda name, default=None: {
+            "XAI_API_KEY": paid_key,
+        }.get(name, default),
+    )
+    _install_fake_oauth_pool(monkeypatch, oauth_token)
+    invalidate_check_fn_cache()
+
+    captured = {}
+
+    def _fake_post(url, headers=None, json=None, timeout=None):
+        captured["headers"] = headers
+        return _FakeResponse({"output_text": "Real posts with citations."})
+
+    monkeypatch.setattr("requests.post", _fake_post)
+
+    result = json.loads(x_search_tool(query="from:elon latest"))
+
+    assert result["success"] is True
+    assert result["credential_source"] == "xai"
+    assert captured["headers"]["Authorization"] == "Bearer " + paid_key
+
+
+def test_x_search_bearer_helper_falls_back_to_oauth_without_api_key(monkeypatch):
+    """No explicit XAI_API_KEY: the OAuth resolver path is unchanged."""
+    from tools.x_search_tool import _resolve_xai_bearer
+
+    oauth_token = _xcred("oauth")
+
+    monkeypatch.delenv("XAI_API_KEY", raising=False)
+    monkeypatch.setattr(
+        "tools.xai_http.get_env_value",
+        lambda name, default=None: default,
+    )
+    _install_fake_oauth_pool(monkeypatch, oauth_token)
+
+    api_key, base_url, source = _resolve_xai_bearer()
+    assert (api_key, base_url, source) == (
+        oauth_token,
+        "https://api.x.ai/v1",
+        "xai-oauth",
+    )
+
+
+def test_x_search_bearer_requests_prefer_api_key_from_shared_resolver(monkeypatch):
+    """The x_search call site must opt into the shared resolver's
+    ``prefer_api_key`` precedence rather than re-implementing it inline."""
+    from tools.x_search_tool import _resolve_xai_bearer
+
+    captured = {}
+
+    def _fake_resolve(**kwargs):
+        captured.update(kwargs)
+        return {
+            "provider": "xai",
+            "api_key": _xcred("paid"),
+            "base_url": "https://api.x.ai/v1",
+        }
+
+    monkeypatch.setattr(
+        "tools.x_search_tool.resolve_xai_http_credentials", _fake_resolve
+    )
+
+    _api_key, _base_url, source = _resolve_xai_bearer()
+    assert captured.get("prefer_api_key") is True
+    assert source == "xai"

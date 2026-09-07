@@ -365,7 +365,7 @@ def build_pulse_kpis(*, now: float | None = None) -> dict:
                     if wd:
                         obj = Path(wd) / "objective.md"
                         if obj.exists():
-                            summary = obj.read_text(errors="replace")[:200].strip()
+                            summary = obj.read_text(encoding="utf-8", errors="replace")[:200].strip()
                 except Exception as exc:
                     logger.warning("reading objective.md: %s", exc)
             last_completion = {

@@ -1,0 +1,24 @@
+[
+  {
+    "content": "Recall memory architecture lessons.",
+    "role": "user"
+  },
+  {
+    "arguments": "{\"query\":\"Honcho MVMS memory role split live durable project decision KB\",\"mode\":\"hybrid\",\"limit\":5,\"include_compacts\":true}",
+    "call_id": "call_rWlYbjkFAlZIBa4CMCBvjZlK",
+    "name": "mcp_mvms_mvms_search",
+    "type": "function_call"
+  },
+  {
+    "arguments": "{\"query\":\"read-only MCP bridge tool allowlist arbitrary SQL mutating tools\",\"mode\":\"hybrid\",\"limit\":5,\"include_compacts\":true}",
+    "call_id": "call_w0ODTsGaXqQViPDwtwwOnnJG",
+    "name": "mcp_mvms_mvms_search",
+    "type": "function_call"
+  },
+  {
+    "arguments": "{\"query\":\"OUZY KB source of truth no corpus duplication MVMS links\",\"mode\":\"hybrid\",\"limit\":5,\"include_compacts\":true}",
+    "call_id": "call_315DBguPUWlQCW46hXcBsKls",
+    "name": "mcp_mvms_mvms_search",
+    "type": "function_call"
+  }
+]

@@ -87,6 +87,7 @@ const FALLBACK_COLORS = {
   running: "#f6e05e",
   blocked: "#fc8181",
   review: "#68d391",
+  aggregate: "#b794f4",
   dim: "#4a5568",
   pr: "#f687b3",
   white: "#f8fdff",
@@ -103,6 +104,7 @@ function resolvePalette(root: HTMLElement | null) {
     running: pick("--pulse-yellow", FALLBACK_COLORS.running),
     blocked: pick("--pulse-red", FALLBACK_COLORS.blocked),
     review: pick("--pulse-green", FALLBACK_COLORS.review),
+    aggregate: pick("--pulse-purple", FALLBACK_COLORS.aggregate),
     dim: pick("--pulse-gray", FALLBACK_COLORS.dim),
     pr: pick("--pulse-pink", FALLBACK_COLORS.pr),
     white: FALLBACK_COLORS.white,
@@ -130,10 +132,20 @@ function easeOutCubic(t: number): number {
   return 1 - Math.pow(1 - t, 3);
 }
 
+function isCompletedNode(node: WorkNexusNode): boolean {
+  return Boolean(node.completed || node.status === "done" || node.status === "archived");
+}
+
+function isActiveWorkNode(node: WorkNexusNode): boolean {
+  if (node.kind !== "task" || node.aggregate === true) return false;
+  return !isCompletedNode(node);
+}
+
 function nodeColor(node: WorkNexusNode, palette: typeof FALLBACK_COLORS): string {
   if (node.kind === "project") return node.color || palette.project;
   if (node.kind === "pr") return palette.pr;
-  if (node.completed || node.status === "done" || node.status === "archived") {
+  if (node.aggregate === true) return palette.aggregate;
+  if (isCompletedNode(node)) {
     return palette.completed;
   }
   switch (node.status) {
@@ -149,11 +161,42 @@ function nodeColor(node: WorkNexusNode, palette: typeof FALLBACK_COLORS): string
 }
 
 function nodeRadius(node: WorkNexusNode): number {
-  if (node.kind === "project") return 12;
-  if (node.kind === "pr") return 7;
-  if (node.completed || node.status === "done" || node.status === "archived") return 5.5;
-  if (node.status === "running" || node.status === "review") return 5;
-  return 4;
+  if (node.kind === "project") return 16;
+  if (node.kind === "pr") return 9;
+  if (node.aggregate === true) return 9.5;
+  if (node.status === "blocked") return 8.5;
+  if (node.status === "running" || node.status === "review") return 8;
+  if (isCompletedNode(node)) return 5.8;
+  return 6;
+}
+
+function nodeImportance(node: WorkNexusNode): number {
+  if (node.kind === "project") return 1;
+  if (node.aggregate === true) return 0.82;
+  if (node.kind === "pr") return 0.78;
+  if (node.status === "running" || node.status === "review" || node.status === "blocked") return 0.66;
+  if (isCompletedNode(node)) return 0.22;
+  return 0.42;
+}
+
+function stableHash(value: string): number {
+  let hash = 0;
+  for (let i = 0; i < value.length; i += 1) {
+    hash = (hash * 31 + value.charCodeAt(i)) >>> 0;
+  }
+  return hash;
+}
+
+function endpointId(endpoint: string | SimNode): string {
+  return typeof endpoint === "string" ? endpoint : String(endpoint.id ?? "");
+}
+
+function endpointNode(endpoint: string | SimNode): SimNode | null {
+  return typeof endpoint === "object" && endpoint !== null ? endpoint : null;
+}
+
+function isAggregateLink(edge: SimLink): boolean {
+  return endpointId(edge.source).startsWith("aggregate:") || endpointId(edge.target).startsWith("aggregate:");
 }
 
 function fmtRelative(value: number | string | null | undefined, nowMs: number): string {
@@ -280,14 +323,27 @@ export default function WorkNexus() {
       }
     }
     const projectNodes = nextNodes.filter((node) => node.kind === "project");
-    const anchorRadius = Math.max(120, Math.min(280, projectNodes.length * 38));
+    const anchorRadius = Math.max(118, Math.min(230, projectNodes.length * 24));
+    const projectByBoard = new Map<string, SimNode>();
     projectNodes.forEach((node, idx) => {
-      if (typeof node.fx === "number" && typeof node.fy === "number") return;
       const angle = (idx / Math.max(1, projectNodes.length)) * Math.PI * 2 - Math.PI / 2;
       node.fx = Math.cos(angle) * anchorRadius;
       node.fy = Math.sin(angle) * anchorRadius;
       node.x = node.x ?? node.fx;
       node.y = node.y ?? node.fy;
+      if (typeof node.board === "string") projectByBoard.set(node.board, node);
+    });
+    nextNodes.forEach((node) => {
+      if (node.kind === "project") return;
+      const board = typeof node.board === "string" ? node.board : "";
+      const project = projectByBoard.get(board);
+      if (!project || typeof project.fx !== "number" || typeof project.fy !== "number") return;
+      if (typeof node.x === "number" && typeof node.y === "number") return;
+      const hash = stableHash(node.id);
+      const angle = ((hash % 360) / 360) * Math.PI * 2;
+      const orbit = node.aggregate === true ? 70 : 28 + ((hash >>> 8) % 46);
+      node.x = project.fx + Math.cos(angle) * orbit;
+      node.y = project.fy + Math.sin(angle) * orbit;
     });
     nodeMapRef.current = nextMap;
     setSelected((prev) => (prev && nextMap.has(prev.id) ? nextMap.get(prev.id) ?? prev : null));
@@ -343,13 +399,29 @@ export default function WorkNexus() {
   useEffect(() => {
     const fg = fgRef.current;
     if (!fg || graph.nodes.length === 0) return;
-    type ForceTuner = { strength?: (v: number) => unknown; distance?: (fn: (link: SimLink) => number) => unknown };
+    type ForceTuner = {
+      strength?: (v: number | ((link: SimLink) => number)) => unknown;
+      distance?: (fn: (link: SimLink) => number) => unknown;
+      iterations?: (v: number) => unknown;
+    };
     const charge = fg.d3Force("charge") as unknown as ForceTuner | undefined;
-    if (charge?.strength) charge.strength(-120);
+    if (charge?.strength) charge.strength(-34);
     const link = fg.d3Force("link") as unknown as ForceTuner | undefined;
     if (link?.distance) {
-      link.distance((edge: SimLink) => (edge.kind === "contains" ? 46 : edge.kind === "blocks" ? 84 : 64));
+      link.distance((edge: SimLink) => {
+        if (edge.kind === "contains") return isAggregateLink(edge) ? 58 : 38;
+        if (edge.kind === "blocks") return 48;
+        return 42;
+      });
     }
+    if (link?.strength) {
+      link.strength((edge: SimLink) => {
+        if (edge.kind === "contains") return isAggregateLink(edge) ? 0.42 : 0.54;
+        if (edge.kind === "blocks") return 0.48;
+        return 0.36;
+      });
+    }
+    if (link?.iterations) link.iterations(3);
     if (reducedMotionRef.current) {
       fg.pauseAnimation();
     } else {
@@ -368,7 +440,7 @@ export default function WorkNexus() {
       const fg = fgRef.current;
       if (!fg) return;
       try {
-        fg.zoomToFit(600, 56);
+        fg.zoomToFit(600, 86);
         zoomedRef.current = true;
       } catch {
         // Optional in test/mocked renderers.
@@ -385,33 +457,60 @@ export default function WorkNexus() {
       const age = performance.now() - bornAt;
       const grow = reducedMotionRef.current ? 1 : easeOutCubic(Math.max(0.15, Math.min(1, age / 1100)));
       const r = nodeRadius(node) * grow;
+      const importance = nodeImportance(node);
+      const activeWork = isActiveWorkNode(node);
+      const completed = isCompletedNode(node);
       ctx.save();
-      ctx.globalCompositeOperation = "lighter";
-      const halo = node.kind === "project" ? 38 : node.kind === "pr" ? 26 : node.completed ? 24 : 16;
+      if (node.kind === "project" || node.aggregate === true || node.kind === "pr" || activeWork) {
+        ctx.globalCompositeOperation = "lighter";
+        const halo = node.kind === "project" ? 24 : node.aggregate === true ? 18 : node.kind === "pr" ? 16 : 14;
+        ctx.shadowColor = color;
+        ctx.shadowBlur = halo;
+        ctx.globalAlpha = node.kind === "project" ? 0.28 : 0.16 + importance * 0.12;
+        ctx.fillStyle = color;
+        ctx.beginPath();
+        ctx.arc(node.x, node.y, r * (node.kind === "project" ? 1.42 : 1.34), 0, 2 * Math.PI);
+        ctx.fill();
+        ctx.globalAlpha = node.kind === "project" ? 0.58 : 0.42;
+        ctx.shadowBlur = halo * 0.62;
+        ctx.beginPath();
+        ctx.arc(node.x, node.y, r * 1.08, 0, 2 * Math.PI);
+        ctx.fill();
+      }
+      ctx.globalAlpha = 1;
+      ctx.globalCompositeOperation = "source-over";
       ctx.shadowColor = color;
-      ctx.shadowBlur = halo;
+      ctx.shadowBlur = completed ? 0 : activeWork ? 5 : node.kind === "project" ? 7 : 3;
       ctx.fillStyle = color;
       ctx.beginPath();
       ctx.arc(node.x, node.y, r, 0, 2 * Math.PI);
       ctx.fill();
-      ctx.shadowBlur = halo * 0.5;
+      ctx.shadowBlur = completed ? 0 : 2;
       ctx.beginPath();
-      ctx.arc(node.x, node.y, r * 0.82, 0, 2 * Math.PI);
-      ctx.fill();
-      ctx.shadowBlur = 6;
-      ctx.beginPath();
-      ctx.arc(node.x, node.y, Math.max(2, r * 0.52), 0, 2 * Math.PI);
-      ctx.fillStyle = node.kind === "project" ? palette.white : color;
+      ctx.arc(node.x, node.y, Math.max(2.8, r * 0.44), 0, 2 * Math.PI);
+      ctx.fillStyle = completed ? hexWithAlpha(palette.white, 0.48) : node.kind === "project" ? palette.white : hexWithAlpha(palette.white, 0.78);
       ctx.fill();
       ctx.globalCompositeOperation = "source-over";
-      const label = node.kind === "project" ? `${node.icon ? `${node.icon} ` : ""}${node.label}` : node.label;
+      ctx.globalAlpha = 1;
+      ctx.lineWidth = node.kind === "project" ? 1.4 : 0.9;
+      ctx.strokeStyle = hexWithAlpha(palette.white, node.kind === "project" ? 0.9 : 0.58);
+      ctx.beginPath();
+      ctx.arc(node.x, node.y, r * 1.18, 0, 2 * Math.PI);
+      ctx.stroke();
+      const label = node.kind === "project" || node.aggregate === true
+        ? `${node.kind === "project" && node.icon ? `${node.icon} ` : ""}${node.label}`
+        : nodeImportance(node) >= 0.72
+          ? node.label
+          : "";
       if (label) {
-        ctx.shadowBlur = 0;
-        ctx.fillStyle = node.kind === "project" ? "rgba(248,253,255,0.92)" : "rgba(229,229,229,0.74)";
-        ctx.font = `${node.kind === "project" ? 12 : 10}px ui-monospace, "JetBrains Mono", monospace`;
+        const projectLabel = node.kind === "project";
+        ctx.shadowColor = "rgba(0,0,0,0.92)";
+        ctx.shadowBlur = projectLabel ? 5 : 4;
+        ctx.fillStyle = projectLabel ? "rgba(248,253,255,0.98)" : "rgba(238,246,255,0.9)";
+        ctx.font = `${projectLabel ? 14 : node.aggregate === true ? 12 : 11}px ui-monospace, "JetBrains Mono", monospace`;
         ctx.textAlign = "center";
         ctx.textBaseline = "top";
-        ctx.fillText(label.slice(0, node.kind === "project" ? 28 : 22), node.x, node.y + r + 5);
+        ctx.fillText(label.slice(0, projectLabel ? 30 : 24), node.x, node.y + r + 7);
       }
       ctx.restore();
     },
@@ -421,14 +520,127 @@ export default function WorkNexus() {
   const linkColor = useCallback(
     (edge: SimLink) => {
       if (edge.kind === "blocks") return hexWithAlpha(palette.blocked, 0.58);
-      if (edge.kind === "delivered_by") return hexWithAlpha(palette.pr, 0.58);
-      return hexWithAlpha(palette.completed, 0.24);
+      if (edge.kind === "delivered_by") return hexWithAlpha(palette.pr, 0.5);
+      if (isAggregateLink(edge)) return hexWithAlpha(palette.aggregate, 0.42);
+      return hexWithAlpha(palette.completed, 0.34);
     },
     [palette],
   );
 
-  const linkWidth = useCallback((edge: SimLink) => (edge.kind === "contains" ? 0.8 : 1.35), []);
-  const linkLineDash = useCallback((edge: SimLink) => (edge.kind === "blocks" ? [5, 4] : null), []);
+  const linkWidth = useCallback((edge: SimLink) => {
+    if (edge.kind === "blocks") return 1.55;
+    if (edge.kind === "delivered_by") return 1.35;
+    return isAggregateLink(edge) ? 1.2 : 0.92;
+  }, []);
+  const linkLineDash = useCallback((edge: SimLink) => (edge.kind === "blocks" ? [6, 4] : null), []);
+  const linkCurvature = useCallback((edge: SimLink) => {
+    if (edge.kind === "contains") return isAggregateLink(edge) ? 0.22 : 0.14;
+    return edge.kind === "blocks" ? 0.24 : 0.18;
+  }, []);
+
+  const linkCanvasObject = useCallback(
+    (edge: SimLink, ctx: CanvasRenderingContext2D) => {
+      const source = endpointNode(edge.source);
+      const target = endpointNode(edge.target);
+      if (!source || !target) return;
+      if (typeof source.x !== "number" || typeof source.y !== "number") return;
+      if (typeof target.x !== "number" || typeof target.y !== "number") return;
+      const color = linkColor(edge);
+      const width = linkWidth(edge);
+      ctx.save();
+      ctx.globalCompositeOperation = "lighter";
+      ctx.strokeStyle = color;
+      ctx.lineCap = "round";
+      ctx.shadowColor = color;
+      ctx.shadowBlur = edge.kind === "contains" ? 7 : 10;
+      if (edge.kind === "blocks") ctx.setLineDash([6, 4]);
+      const dx = target.x - source.x;
+      const dy = target.y - source.y;
+      const curve = linkCurvature(edge);
+      const cx = (source.x + target.x) / 2 - dy * curve;
+      const cy = (source.y + target.y) / 2 + dx * curve;
+      ctx.globalAlpha = edge.kind === "contains" ? 0.12 : 0.16;
+      ctx.lineWidth = width * 2.6;
+      ctx.beginPath();
+      ctx.moveTo(source.x, source.y);
+      ctx.quadraticCurveTo(cx, cy, target.x, target.y);
+      ctx.stroke();
+      ctx.globalAlpha = edge.kind === "contains" ? 0.62 : 0.74;
+      ctx.lineWidth = width;
+      ctx.beginPath();
+      ctx.moveTo(source.x, source.y);
+      ctx.quadraticCurveTo(cx, cy, target.x, target.y);
+      ctx.stroke();
+      ctx.restore();
+    },
+    [linkColor, linkCurvature, linkWidth],
+  );
+
+  const drawNexusBackdrop = useCallback(
+    (ctx: CanvasRenderingContext2D, globalScale: number) => {
+      const projectNodes = graph.nodes.filter(
+        (node) => node.kind === "project" && typeof node.x === "number" && typeof node.y === "number",
+      );
+      if (projectNodes.length < 2) return;
+      const scale = Math.max(globalScale || 1, 0.25);
+      const hairline = 1 / scale;
+      const sorted = [...projectNodes].sort((a, b) => Math.atan2(a.y ?? 0, a.x ?? 0) - Math.atan2(b.y ?? 0, b.x ?? 0));
+      ctx.save();
+      ctx.globalCompositeOperation = "lighter";
+      ctx.lineCap = "round";
+      ctx.shadowColor = hexWithAlpha(palette.completed, 0.38);
+      ctx.shadowBlur = 6 * hairline;
+      ctx.strokeStyle = hexWithAlpha(palette.completed, 0.14);
+      ctx.lineWidth = 0.8 * hairline;
+      sorted.forEach((node) => {
+        if (typeof node.x !== "number" || typeof node.y !== "number") return;
+        ctx.beginPath();
+        ctx.moveTo(0, 0);
+        ctx.lineTo(node.x, node.y);
+        ctx.stroke();
+      });
+      ctx.strokeStyle = hexWithAlpha(palette.pr, 0.16);
+      ctx.lineWidth = 0.9 * hairline;
+      sorted.forEach((node, idx) => {
+        const next = sorted[(idx + 1) % sorted.length];
+        if (typeof node.x !== "number" || typeof node.y !== "number") return;
+        if (typeof next.x !== "number" || typeof next.y !== "number") return;
+        const cx = ((node.x + next.x) / 2) * 1.24;
+        const cy = ((node.y + next.y) / 2) * 1.24;
+        ctx.beginPath();
+        ctx.moveTo(node.x, node.y);
+        ctx.quadraticCurveTo(cx, cy, next.x, next.y);
+        ctx.stroke();
+      });
+      ctx.strokeStyle = hexWithAlpha(palette.aggregate, 0.14);
+      ctx.lineWidth = 0.72 * hairline;
+      sorted.forEach((node, idx) => {
+        const next = sorted[(idx + 2) % sorted.length];
+        if (!next || typeof node.x !== "number" || typeof node.y !== "number") return;
+        if (typeof next.x !== "number" || typeof next.y !== "number") return;
+        ctx.beginPath();
+        ctx.moveTo(node.x * 0.58, node.y * 0.58);
+        ctx.quadraticCurveTo(0, 0, next.x * 0.58, next.y * 0.58);
+        ctx.stroke();
+      });
+      const yValues = sorted.map((node) => node.y ?? 0);
+      ctx.shadowColor = palette.completed;
+      ctx.shadowBlur = 7 * hairline;
+      ctx.strokeStyle = hexWithAlpha(palette.completed, 0.2);
+      ctx.lineWidth = 1.05 * hairline;
+      ctx.beginPath();
+      ctx.moveTo(0, Math.min(...yValues) - 34);
+      ctx.lineTo(0, Math.max(...yValues) + 34);
+      ctx.stroke();
+      ctx.fillStyle = hexWithAlpha(palette.white, 0.44);
+      ctx.shadowBlur = 6 * hairline;
+      ctx.beginPath();
+      ctx.arc(0, 0, 5.5 * hairline, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+    },
+    [graph.nodes, palette],
+  );
 
   const onNodeHover = useCallback((node: SimNode | null) => {
     if (!node) {
@@ -470,7 +682,7 @@ export default function WorkNexus() {
       {isEmpty && (
         <div className="pulse-constellation__overlay">
           <div className="pulse-constellation__overlay-text pulse-constellation__overlay-text--dim">
-            No kanban work found — ship something and the web grows here.
+            No work graph data is available. Kanban is retired.
           </div>
         </div>
       )}
@@ -498,12 +710,17 @@ export default function WorkNexus() {
           linkColor={linkColor}
           linkWidth={linkWidth}
           linkLineDash={linkLineDash}
-          linkDirectionalParticles={(edge) => (edge.kind === "delivered_by" ? 1 : 0)}
-          linkDirectionalParticleWidth={1.8}
-          d3AlphaDecay={reducedMotionRef.current ? 1 : 0.022}
-          d3VelocityDecay={0.31}
-          warmupTicks={reducedMotionRef.current ? 0 : 80}
-          cooldownTicks={reducedMotionRef.current ? 0 : 320}
+          linkCurvature={linkCurvature}
+          linkCanvasObjectMode={() => "replace"}
+          linkCanvasObject={linkCanvasObject}
+          linkDirectionalParticles={(edge) => (edge.kind === "delivered_by" ? 2 : edge.kind === "blocks" ? 1 : 0)}
+          linkDirectionalParticleWidth={(edge) => (edge.kind === "delivered_by" ? 2.4 : 1.8)}
+          linkDirectionalParticleColor={linkColor}
+          onRenderFramePre={drawNexusBackdrop}
+          d3AlphaDecay={reducedMotionRef.current ? 1 : 0.026}
+          d3VelocityDecay={0.24}
+          warmupTicks={reducedMotionRef.current ? 0 : 100}
+          cooldownTicks={reducedMotionRef.current ? 0 : 260}
           onEngineStop={handleEngineStop}
           onNodeHover={onNodeHover}
           onNodeClick={onNodeClick}
@@ -533,7 +750,13 @@ export default function WorkNexus() {
       <DetailPanel node={selected} onClose={() => setSelected(null)} />
       <ul className="pulse-constellation__sr-list" aria-hidden="true" hidden>
         {graph.nodes.map((n) => (
-          <li key={n.id} data-testid="work-nexus-node-marker" data-node-id={n.id}>
+          <li
+            key={n.id}
+            data-testid="work-nexus-node-marker"
+            data-node-id={n.id}
+            data-node-active-work={isActiveWorkNode(n) ? "true" : "false"}
+            data-node-completed={isCompletedNode(n) ? "true" : "false"}
+          >
             {n.label}
           </li>
         ))}

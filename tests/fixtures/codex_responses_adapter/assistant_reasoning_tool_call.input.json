@@ -1,0 +1,35 @@
+[
+  {
+    "content": "https://discord.gg/ZQEaHHGeQ",
+    "role": "user"
+  },
+  {
+    "codex_reasoning_items": [
+      {
+        "encrypted_content": "gAAAAA...xA==",
+        "id": "rs_0e091c6876e7638d016a13d680ce90819790343a099cea08d5",
+        "summary": [],
+        "type": "reasoning"
+      }
+    ],
+    "content": "",
+    "role": "assistant",
+    "tool_calls": [
+      {
+        "call_id": "call_8gTW3wAqn5KGfdbxhiJ0EXNd",
+        "function": {
+          "arguments": "{\"name\":\"discord-gateway-provider\"}",
+          "name": "skill_view"
+        },
+        "id": "call_8gTW3wAqn5KGfdbxhiJ0EXNd",
+        "response_item_id": "fc_0e091c6876e7638d016a13d68a4dc08197a7db82048d285123",
+        "type": "function"
+      }
+    ]
+  },
+  {
+    "content": "{\"success\": true, \"name\": \"discord-gateway-provider\"}",
+    "role": "tool",
+    "tool_call_id": "call_8gTW3wAqn5KGfdbxhiJ0EXNd|fc_0e091c6876e7638d016a13d68a4dc08197a7db82048d285123"
+  }
+]

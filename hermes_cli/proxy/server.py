@@ -12,7 +12,6 @@ or rewrite request/response bodies. It's a credential-attaching forwarder.
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import signal
 from typing import Optional
@@ -26,7 +25,7 @@ except ImportError:
     web = None  # type: ignore[assignment]
     AIOHTTP_AVAILABLE = False
 
-from hermes_cli.proxy.adapters.base import UpstreamAdapter
+from hermes_cli.proxy.adapters.base import UpstreamAdapter, UpstreamCredential
 
 logger = logging.getLogger(__name__)
 
@@ -51,6 +50,10 @@ _HOP_BY_HOP_HEADERS = frozenset(
 
 DEFAULT_PORT = 8645
 DEFAULT_HOST = "127.0.0.1"
+# Body cap for forwarded requests. Chat-completion payloads with long agent
+# conversations can be large; mirror api_server's MAX_REQUEST_BYTES (10 MB).
+# client_max_size bounds every read path, including chunked bodies.
+MAX_REQUEST_BYTES = 10_000_000
 
 
 def _json_error(status: int, message: str, code: str = "proxy_error") -> "web.Response":
@@ -76,7 +79,7 @@ def _filter_response_headers(headers) -> dict:
         if key.lower() in _HOP_BY_HOP_HEADERS:
             continue
         # aiohttp recomputes Content-Encoding/Content-Length on stream — let it.
-        if key.lower() in ("content-encoding", "content-length"):
+        if key.lower() in {"content-encoding", "content-length"}:
             continue
         out[key] = value
     return out
@@ -86,11 +89,10 @@ def create_app(adapter: UpstreamAdapter) -> "web.Application":
     """Build the aiohttp application bound to a specific upstream adapter."""
     if not AIOHTTP_AVAILABLE:
         raise RuntimeError(
-            "aiohttp is required for `hermes proxy`. Install with: "
-            "pip install 'hermes-agent[messaging]' or `pip install aiohttp`."
+            "aiohttp is required for `hermes proxy`. Run `hermes setup` to install it."
         )
 
-    app = web.Application()
+    app = web.Application(client_max_size=MAX_REQUEST_BYTES)
     # AppKey ensures forward-compat with future aiohttp versions that strip
     # bare-string keys.
     _adapter_key = web.AppKey("adapter", UpstreamAdapter)
@@ -102,17 +104,6 @@ def create_app(adapter: UpstreamAdapter) -> "web.Application":
                 "status": "ok",
                 "upstream": adapter.display_name,
                 "authenticated": adapter.is_authenticated(),
-            }
-        )
-
-    async def handle_models_fallback(request: "web.Request") -> "web.Response":
-        # Most clients hit /v1/models on startup. If the upstream doesn't
-        # serve /models, synthesize a minimal response so clients don't
-        # crash. The actual forwarding path handles /models when allowed.
-        return web.json_response(
-            {
-                "object": "list",
-                "data": [],
             }
         )
 
@@ -136,50 +127,93 @@ def create_app(adapter: UpstreamAdapter) -> "web.Application":
             logger.warning("proxy: credential resolution failed: %s", exc)
             return _json_error(401, str(exc), code="upstream_auth_failed")
 
-        upstream_url = f"{cred.base_url.rstrip('/')}{rel_path}"
-        # Preserve query string verbatim.
-        if request.query_string:
-            upstream_url = f"{upstream_url}?{request.query_string}"
-
         # Forward body verbatim. Read into memory once — request bodies for
         # chat/completions/embeddings are small (<1MB typically). If we ever
         # need to forward large multipart uploads we'll switch to streaming
         # the request body too.
         body = await request.read()
 
-        fwd_headers = _filter_request_headers(request.headers)
-        fwd_headers["Authorization"] = f"{cred.token_type} {cred.bearer}"
-
-        logger.debug(
-            "proxy: forwarding %s %s -> %s (body=%d bytes)",
-            request.method, rel_path, upstream_url, len(body),
-        )
-
-        # Use a per-request session so connection state doesn't leak between
-        # clients. Could be optimized to a shared session later.
         timeout = aiohttp.ClientTimeout(total=None, sock_connect=15, sock_read=300)
-        try:
-            session = aiohttp.ClientSession(timeout=timeout)
-        except Exception as exc:  # pragma: no cover - aiohttp setup issue
-            return _json_error(500, f"proxy session init failed: {exc}")
 
-        try:
-            upstream_resp = await session.request(
-                request.method,
-                upstream_url,
-                data=body if body else None,
-                headers=fwd_headers,
-                allow_redirects=False,
+        async def _send_upstream(active_cred: UpstreamCredential):
+            upstream_url = f"{active_cred.base_url.rstrip('/')}{rel_path}"
+            # Preserve query string verbatim.
+            if request.query_string:
+                upstream_url = f"{upstream_url}?{request.query_string}"
+
+            fwd_headers = _filter_request_headers(request.headers)
+            fwd_headers["Authorization"] = f"{active_cred.token_type} {active_cred.bearer}"
+
+            logger.debug(
+                "proxy: forwarding %s %s -> %s (body=%d bytes)",
+                request.method, rel_path, upstream_url, len(body),
             )
-        except aiohttp.ClientError as exc:
-            await session.close()
-            logger.warning("proxy: upstream connection failed: %s", exc)
-            return _json_error(502, f"upstream connection failed: {exc}",
-                               code="upstream_unreachable")
-        except asyncio.TimeoutError:
-            await session.close()
-            return _json_error(504, "upstream request timed out",
-                               code="upstream_timeout")
+
+            try:
+                session = aiohttp.ClientSession(timeout=timeout)
+            except Exception as exc:  # pragma: no cover - aiohttp setup issue
+                raise RuntimeError(f"proxy session init failed: {exc}") from exc
+
+            try:
+                upstream_resp = await session.request(
+                    request.method,
+                    upstream_url,
+                    data=body if body else None,
+                    headers=fwd_headers,
+                    allow_redirects=False,
+                )
+            except Exception:
+                await session.close()
+                raise
+            return session, upstream_resp
+
+        async def _open_upstream(active_cred: UpstreamCredential):
+            try:
+                return await _send_upstream(active_cred)
+            except RuntimeError as exc:
+                return _json_error(500, str(exc)), None
+            except aiohttp.ClientError as exc:
+                logger.warning("proxy: upstream connection failed: %s", exc)
+                return (
+                    _json_error(
+                        502,
+                        f"upstream connection failed: {exc}",
+                        code="upstream_unreachable",
+                    ),
+                    None,
+                )
+            except asyncio.TimeoutError:
+                return (
+                    _json_error(
+                        504,
+                        "upstream request timed out",
+                        code="upstream_timeout",
+                    ),
+                    None,
+                )
+
+        session_or_response, upstream_resp = await _open_upstream(cred)
+        if upstream_resp is None:
+            return session_or_response
+        session = session_or_response
+
+        if upstream_resp.status in {401, 429}:
+            try:
+                retry_cred = adapter.get_retry_credential(
+                    failed_credential=cred,
+                    status_code=upstream_resp.status,
+                )
+            except Exception as exc:
+                logger.warning("proxy: retry credential resolution failed: %s", exc)
+                retry_cred = None
+
+            if retry_cred is not None:
+                upstream_resp.release()
+                await session.close()
+                session_or_response, upstream_resp = await _open_upstream(retry_cred)
+                if upstream_resp is None:
+                    return session_or_response
+                session = session_or_response
 
         # Stream response back. Headers first, then chunked body.
         resp = web.StreamResponse(
@@ -221,8 +255,7 @@ async def run_server(
     """
     if not AIOHTTP_AVAILABLE:
         raise RuntimeError(
-            "aiohttp is required for `hermes proxy`. Install with: "
-            "pip install 'hermes-agent[messaging]' or `pip install aiohttp`."
+            "aiohttp is required for `hermes proxy`. Run `hermes setup` to install it."
         )
 
     app = create_app(adapter)

@@ -26,8 +26,8 @@ __all__ = [
     "BasePlatformAdapter",
     "MessageEvent",
     "SendResult",
-    "QQAdapter",
-    "YuanbaoAdapter",
+    "QQAdapter",  # noqa: F822 - lazy PEP 562 export via __getattr__
+    "YuanbaoAdapter",  # noqa: F822 - lazy PEP 562 export via __getattr__
 ]
 
 

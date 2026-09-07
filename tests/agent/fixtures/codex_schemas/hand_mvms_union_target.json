@@ -1,0 +1,58 @@
+{
+  "description": "Create a typed MVMS link between two artifacts",
+  "properties": {
+    "metadata": {
+      "anyOf": [
+        {
+          "type": "null"
+        },
+        {
+          "properties": {
+            "confidence": {
+              "type": [
+                "number",
+                "null"
+              ]
+            }
+          },
+          "type": "object"
+        }
+      ],
+      "description": "Optional link metadata object"
+    },
+    "source_id": {
+      "description": "Existing MVMS source observation id",
+      "type": "string"
+    },
+    "target": {
+      "description": "MVMS link target union description",
+      "oneOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "string"
+        },
+        {
+          "description": "Observation UUID branch description",
+          "properties": {
+            "observation_id": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          "required": [
+            "observation_id"
+          ],
+          "type": "object"
+        }
+      ],
+      "title": "MVMS target union"
+    }
+  },
+  "required": [
+    "source_id",
+    "target"
+  ],
+  "type": "object"
+}

@@ -75,7 +75,7 @@ def _collect_gateways() -> list[dict]:
     """Read gateway state from ~/.hermes/gateway_state.json."""
     path = Path.home() / ".hermes" / "gateway_state.json"
     try:
-        data = json.loads(path.read_text())
+        data = json.loads(path.read_text(encoding="utf-8"))
         gw = {
             "id": "default",
             "name": "default",
@@ -202,7 +202,7 @@ def _collect_cron() -> list[dict]:
     if hermes_cron_dir.is_dir():
         for f in hermes_cron_dir.iterdir():
             try:
-                data = json.loads(f.read_text())
+                data = json.loads(f.read_text(encoding="utf-8"))
                 jobs.append({
                     "id": re.sub(r"\W+", "_", data.get("name", f.stem)),
                     "name": data.get("name", f.stem),

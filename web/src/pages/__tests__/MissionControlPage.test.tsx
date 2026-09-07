@@ -1,10 +1,10 @@
 import { describe, it, vi } from "vitest";
 import { render } from "@testing-library/react";
-import { MemoryRouter } from "react-router-dom";
+import { MemoryRouter } from "react-router";
 import MissionControlPage from "../MissionControlPage";
 
 vi.mock("../../contexts/usePageHeader", () => ({
-  usePageHeader: () => ({ setPageTitle: vi.fn() }),
+  usePageHeader: () => ({ setTitle: vi.fn() }),
 }));
 
 describe("MissionControlPage", () => {

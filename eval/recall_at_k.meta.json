@@ -1,0 +1,9 @@
+{
+  "lane": "recall_at_k",
+  "k": 10,
+  "recall_at_k_floor": 0.80,
+  "regression_pt": 0.05,
+  "neg_control_gap": 0.20,
+  "gate_split": "holdout",
+  "notes": "Gate config for hermes_cli.eval_runner. recall_at_k_floor mirrors the observability_slo recall_hit_rate SLO target (0.80) and is surfaced for context; the HARD gate is the per-row must-pass assertions (target_in_topk@10, no_distractor_above_target) on RESOLVED holdout rows plus a >regression_pt drop vs the previous run. neg_control_gap is the minimum in-domain vs off-domain top-1 cosine separation when --neg-control is passed."
+}

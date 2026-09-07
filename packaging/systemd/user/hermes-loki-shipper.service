@@ -1,0 +1,9 @@
+[Unit]
+Description=Hermes Loki shipper (gateway journald + lane logs)
+OnFailure=hermes-onfailure@%n.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/.local/share/hermes-agent
+Environment=PYTHONPATH=%h/.local/share/hermes-agent
+ExecStart=%h/.local/share/hermes-agent/venv/bin/python %h/.local/share/hermes-agent/scripts/observability/loki_shipper.py --loki-url http://127.0.0.1:3100 --limit 300
