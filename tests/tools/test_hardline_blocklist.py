@@ -10,6 +10,7 @@ Inspired by Mercury Agent's permission-hardened blocklist.
 import pytest
 
 from tools.approval import (
+    _mask_quoted_newlines,
     HARDLINE_PATTERNS,
     check_all_command_guards,
     check_dangerous_command,
@@ -302,6 +303,70 @@ def test_real_newline_separated_threats_still_blocked(command):
     is_hl, desc = detect_hardline_command(command)
     assert is_hl, f"real threat leaked through hardline floor: {command!r}"
     assert desc
+
+
+# A $(...) / backtick substitution INSIDE double quotes is executable, not data:
+# a newline inside its body separates commands exactly as an unquoted newline
+# does. The masker used to flatten that newline to a space (it only tracked the
+# enclosing quote), so `echo "$(printf a\nreboot)"` reached the command-start
+# pass as `... printf a reboot)` — an operand — and the unconditional floor
+# never saw the reboot. Ported from upstream 98bf8b2073 (2026-09-05); RED on
+# fork main d2957462fe / serving v0.21.0 (5 of 8 hardline classes ran silently).
+_QUOTED_SUBSTITUTION_NEWLINE_THREATS_BLOCK = [
+    'echo "$(printf a\nshutdown -h now)"',
+    'echo "$(grep -P \'safe\' /dev/null\nreboot)"',
+    'echo "$(true &&\nsystemctl poweroff)"',
+    'echo "$(cat /dev/null |\nreboot)"',
+    'echo "`printf a\nreboot`"',
+    # nested: substitution inside a double-quoted substitution body
+    'echo "$(echo "$(printf a\nreboot)")"',
+    # the newline sits after a double-quoted word INSIDE the body
+    'echo "$(printf "a"\nreboot)"',
+    'hermes send -t telegram "$(printf a\nmkfs.ext4 /dev/sda1)"',
+]
+
+# ...while a newline that is quoted INSIDE the substitution body stays data.
+_QUOTED_SUBSTITUTION_NEWLINE_DATA_ALLOW = [
+    'echo "$(printf \'a\nsudo reboot\')"',
+    'echo "$(printf "a\nshutdown -h now")"',
+    'echo "`printf \'x\nreboot\'`"',
+]
+
+
+@pytest.mark.parametrize("command", _QUOTED_SUBSTITUTION_NEWLINE_THREATS_BLOCK)
+def test_hardline_inside_quoted_substitution_blocks_as_itself(command):
+    """A newline inside a double-quoted $(...)/backtick body is a command
+    boundary; the hardline command after it must block AS ITSELF."""
+    is_hl, desc = detect_hardline_command(command)
+    assert is_hl, f"hardline hidden in a quoted substitution leaked: {command!r}"
+    assert desc
+
+
+def test_quoted_substitution_newline_is_a_boundary_not_the_malformed_floor():
+    """The masker must keep the body newline (the boundary), so the floor
+    reports the REAL verdict — not the 'malformed payload' catch-all that was
+    the only thing blocking the grep-shaped witness before."""
+    assert _mask_quoted_newlines('echo "$(printf a\nreboot)"') == 'echo "$(printf a\nreboot)"'
+    assert _mask_quoted_newlines('echo "a\nb"') == 'echo "a b"'
+    # quoted newline INSIDE the body is still data
+    assert _mask_quoted_newlines('echo "$(printf "a\nb")"') == 'echo "$(printf "a b")"'
+    is_hl, desc = detect_hardline_command('echo "$(printf a\nshutdown -h now)"')
+    assert (is_hl, desc) == (True, "system shutdown/reboot")
+
+
+@pytest.mark.parametrize("command", _QUOTED_SUBSTITUTION_NEWLINE_DATA_ALLOW)
+def test_quoted_newline_inside_substitution_body_stays_data(command):
+    is_hl, desc = detect_hardline_command(command)
+    assert not is_hl, f"quoted data inside a substitution false-positived: {command!r} ({desc})"
+
+
+def test_hardline_inside_quoted_substitution_blocked_by_full_guard_chain(clean_session, monkeypatch):
+    """End-to-end in gateway context: the public guard must block with NO
+    approval prompt (hardline, not 'ask'). RED on serving v0.21.0: approved=True."""
+    monkeypatch.setenv("HERMES_GATEWAY_SESSION", "1")
+    result = check_dangerous_command('echo "$(printf a\nshutdown -h now)"', "local")
+    assert result["approved"] is False, f"quoted-substitution hardline ran silently: {result}"
+    assert result.get("hardline") is True, f"downgraded from hardline to ask: {result}"
 
 
 def test_quoted_newline_data_not_blocked_by_full_guard_chain(clean_session):

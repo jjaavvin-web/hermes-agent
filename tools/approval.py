@@ -2859,6 +2859,30 @@ def _mask_quoted_newlines(command: str) -> str:
                 out.append(command[i:i + 2])
                 i += 2
                 continue
+            if quote == '"' and (command.startswith("$(", i) or ch == "`"):
+                # A $(...) / backtick substitution inside double quotes is
+                # EXECUTABLE, not data: a newline in its body separates
+                # commands exactly as an unquoted one does. Re-scan the body
+                # with a fresh quote state so that boundary survives (masking
+                # it turned `"$(printf a\nreboot)"` into `... a reboot)`, an
+                # operand no later stage could tell from data — upstream
+                # 98bf8b2073). An unterminated body runs to the end of the
+                # command and is treated the same way (fail toward detection).
+                if ch == "`":
+                    end = _scan_backtick_end(command, i)
+                    open_len = 1
+                else:
+                    end = _scan_dollar_paren_end(command, i)
+                    open_len = 2
+                if end is None:
+                    out.append(command[i:i + open_len])
+                    out.append(_mask_quoted_newlines(command[i + open_len:]))
+                    return "".join(out)
+                out.append(command[i:i + open_len])
+                out.append(_mask_quoted_newlines(command[i + open_len:end - 1]))
+                out.append(command[end - 1:end])
+                i = end
+                continue
             if ch == quote:
                 quote = None
             out.append(" " if ch == "\n" else ch)
