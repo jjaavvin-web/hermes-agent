@@ -174,14 +174,26 @@ def _prepare_smart_approval_observer(
 
 
 def _observe_smart_approval_verdict(payload: dict | None, verdict: str) -> None:
-    """Emit a smart verdict after the auxiliary LLM decision, if safe."""
-    if payload is None or verdict not in {"approve", "deny"}:
+    """Emit a smart verdict after the auxiliary LLM decision, if safe.
+
+    ``cached_approve`` is an exact-command cache hit, not a fresh guardian
+    verdict — observers must not treat it as ``aux_llm``.
+    """
+    if payload is None:
+        return
+    if verdict in {"approve", "deny"}:
+        choice = f"smart_{verdict}"
+        decided_by = "aux_llm"
+    elif verdict == "cached_approve":
+        choice = "smart_cached_approve"
+        decided_by = "exact_command_cache"
+    else:
         return
     _fire_approval_hook(
         "post_approval_response",
         **payload,
-        choice=f"smart_{verdict}",
-        decided_by="aux_llm",
+        choice=choice,
+        decided_by=decided_by,
     )
 
 
@@ -3162,6 +3174,12 @@ _pending: dict[str, dict] = {}
 _session_approved: dict[str, set] = {}
 _session_yolo: set[str] = set()
 _permanent_approved: set = set()
+# Smart APPROVE is per-command on purpose (pattern allowlisting would let one
+# benign `python -c` suppress later siblings). Identical Discord heredocs still
+# re-taxed the guardian LLM every turn. Cache exact command fingerprints only.
+_session_smart_exact: dict[str, set[str]] = {}
+_SMART_EXACT_MAX_SESSIONS = 256
+_SMART_EXACT_MAX_PER_SESSION = 64
 
 # DISP-5: the unconditional git push/PR/workflow floor. A KNOWN autonomous
 # dispatch (loki/relay/codex-worktree worker) fails CLOSED on these even when no
@@ -3670,6 +3688,71 @@ def approve_session(session_key: str, pattern_key: str):
         _session_approved.setdefault(session_key, set()).add(pattern_key)
 
 
+def _smart_command_fingerprint(
+    command: str,
+    warning_identity: str = "",
+    smart_policy: str = "",
+) -> str:
+    """Hash the decision inputs, not world state.
+
+    Command bytes plus current warning identity and operator smart_policy.
+    Does not include cwd, env, or referenced file contents — identical text
+    is not proof those are unchanged, so callers must miss when those inputs
+    change or are unknown.
+    """
+    material = "\0".join((command, warning_identity, smart_policy))
+    return hashlib.sha256(material.encode("utf-8", errors="surrogateescape")).hexdigest()
+
+
+def _warning_identity(warnings: list) -> str:
+    """Stable identity of the current approval-relevant findings."""
+    parts = []
+    for item in warnings:
+        pattern_key, description, is_tirith = item[0], item[1], item[2]
+        parts.append(f"{int(bool(is_tirith))}\t{pattern_key}\t{description}")
+    return "\n".join(parts)
+
+
+def _has_real_session_identity(session_key: str) -> bool:
+    """Refuse the empty and synthetic ``default`` fallback buckets."""
+    return bool(session_key) and session_key != "default"
+
+
+def _smart_exact_cached(
+    session_key: str,
+    command: str,
+    warning_identity: str = "",
+    smart_policy: str = "",
+) -> bool:
+    """True when this session already smart-APPROVED the same decision inputs."""
+    if not _has_real_session_identity(session_key):
+        return False
+    fp = _smart_command_fingerprint(command, warning_identity, smart_policy)
+    with _lock:
+        return fp in _session_smart_exact.get(session_key, ())
+
+
+def _remember_smart_exact(
+    session_key: str,
+    command: str,
+    warning_identity: str = "",
+    smart_policy: str = "",
+) -> None:
+    """Record a smart-APPROVED exact decision. Caps sessions and fingerprints."""
+    if not _has_real_session_identity(session_key):
+        return
+    fp = _smart_command_fingerprint(command, warning_identity, smart_policy)
+    with _lock:
+        cached = _session_smart_exact.get(session_key)
+        if cached is None:
+            if len(_session_smart_exact) >= _SMART_EXACT_MAX_SESSIONS:
+                _session_smart_exact.pop(next(iter(_session_smart_exact)))
+            cached = _session_smart_exact.setdefault(session_key, set())
+        if len(cached) >= _SMART_EXACT_MAX_PER_SESSION:
+            return
+        cached.add(fp)
+
+
 def _release_permission_mode_dependents(session_key: str) -> None:
     """Drop resources whose immutable mode is derived from Hermes YOLO.
 
@@ -3788,6 +3871,7 @@ def clear_session(session_key: str) -> None:
         _session_yolo.discard(session_key)
         _session_deny_patterns.pop(session_key, None)
         _session_credential_taint.discard(session_key)
+        _session_smart_exact.pop(session_key, None)
         _pending.pop(session_key, None)
         entries = _gateway_queues.pop(session_key, [])
     for entry in entries:
@@ -5963,6 +6047,30 @@ def check_all_command_guards(command: str, env_type: str,
     smart_denied_for_owner = False
     if approval_mode == "smart":
         combined_desc_for_llm = "; ".join(desc for _, desc, _ in warnings)
+        warning_identity = _warning_identity(warnings)
+        smart_policy = _get_smart_policy()
+        if _smart_exact_cached(
+            session_key, command, warning_identity, smart_policy,
+        ):
+            # Same session + command + current findings + operator policy.
+            # Not a claim that cwd/env/files are unchanged.
+            observer_payload = _prepare_smart_approval_observer(
+                command=command,
+                description=combined_desc_for_llm,
+                pattern_key=warnings[0][0],
+                pattern_keys=[key for key, _, _ in warnings],
+                session_key=session_key,
+            )
+            _observe_smart_approval_verdict(observer_payload, "cached_approve")
+            _reset_denials(session_key)
+            logger.debug(
+                "Smart approval: exact-command cache hit '%s' (%s)",
+                command[:60], combined_desc_for_llm,
+            )
+            return {"approved": True, "message": None,
+                    "smart_approved": True,
+                    "smart_cached": True,
+                    "description": combined_desc_for_llm}
         observer_payload = _prepare_smart_approval_observer(
             command=command,
             description=combined_desc_for_llm,
@@ -5976,6 +6084,9 @@ def check_all_command_guards(command: str, env_type: str,
             # Approve this command only. Pattern-level persistence would let one
             # benign command suppress review of later commands that happen to
             # match the same broad detector category.
+            _remember_smart_exact(
+                session_key, command, warning_identity, smart_policy,
+            )
             _reset_denials(session_key)
             logger.debug("Smart approval: auto-approved '%s' (%s)",
                          command[:60], combined_desc_for_llm)
