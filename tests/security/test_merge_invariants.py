@@ -560,6 +560,38 @@ def test_hermes_state_and_install_dirs_are_hardline_protected():
 
 
 
+def test_user_deny_projection_survives_merge(monkeypatch):
+    """approvals.deny must match the denied executable behind a wrapper
+    (nice/nohup/timeout/...), a path, or a GNU ``env -S`` split, and must
+    honour comment boundaries and non-executing options. Fork-local
+    (2026-09-08, GROKDADDY packets 2+3 porting upstream 58faa10134 +
+    6178e9f4ee + 50617d1c75): upstream keeps this projection in
+    tools/approval_detection.py, a file the fork does not have, so an
+    upstream merge that takes tools/approval.py wholesale silently drops the
+    fork's _deny_* stack and the _match_user_deny_rule rewire. Every
+    must-block shape below was approved on fork main 36a033b5bf.
+    """
+    import sys as _sys
+
+    if str(REPO) not in _sys.path:
+        _sys.path.insert(0, str(REPO))
+    from tools import approval as ap
+
+    monkeypatch.setattr(ap, "_get_approval_config",
+                        lambda: {"mode": "manual", "deny": ["sudo *"]})
+    for cmd in ("nice -n 5 /usr/bin/sudo -n id -u",
+                "nohup sudo -n id -u",
+                "timeout 5 sudo -n id -u",
+                "/usr/bin/sudo -n id -u",
+                "env -S '/usr/bin/sudo -n id -u'",
+                "echo ok # ignored\n bash -c '/usr/bin/sudo -n id -u'"):
+        assert ap._match_user_deny_rule(cmd), f"user deny rule no longer projects: {cmd!r}"
+    for cmd in ("command -v sudo",
+                "env -a sudo printf ok",
+                "echo ok # ; sudo -n id -u"):
+        assert ap._match_user_deny_rule(cmd) is None, f"user deny rule over-broad: {cmd!r}"
+
+
 def test_hardline_inside_quoted_substitution_survives_merge():
     """A hardline command after a newline, `;`, or a paren decoy inside a
     double-quoted $(...) body must stay HARDLINE. Fork-local (2026-09-08):

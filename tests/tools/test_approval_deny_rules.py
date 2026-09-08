@@ -57,6 +57,106 @@ class TestMatchUserDenyRule:
         assert mod._match_user_deny_rule('git pu""sh --force origin main') is not None
 
 
+class TestDenyExecutableProjection:
+    """Upstream 58faa10134: deny the executable behind prefixes/paths.
+
+    env -S / --split-string payload reparse is PACKET 3 and is not asserted
+    as must-block here.
+    """
+
+    MUST_BLOCK_SUDO = [
+        "sudo -n id -u",
+        "/usr/bin/sudo -n id -u",
+        "./sudo -n id -u",
+        "nohup /usr/bin/sudo -n id -u",
+        "nice -n 5 /usr/bin/sudo -n id -u",
+        "timeout 5 /usr/bin/sudo -n id -u",
+        "setsid -f /usr/bin/sudo -n id -u",
+        "time -p /usr/bin/sudo -n id -u",
+        "stdbuf --output L /usr/bin/sudo -n id -u",
+        "ionice --class 2 /usr/bin/sudo -n id -u",
+        "chrt --fifo 20 /usr/bin/sudo -n id -u",
+        "taskset --cpu-list 0 /usr/bin/sudo -n id -u",
+        "chroot --userspec root:root /srv /usr/bin/sudo -n id -u",
+        "command -p /usr/bin/sudo -n id -u",
+        "exec -a label /usr/bin/sudo -n id -u",
+        "true && /usr/bin/sudo -n id -u; echo ok",
+        "echo ok | /usr/bin/sudo -n id -u",
+        "(/usr/bin/sudo -n id -u)",
+        'echo "$(/usr/bin/sudo -n id -u)"',
+        "bash -lc '/usr/bin/sudo -n id -u'",
+        "if true; then /usr/bin/sudo -n id -u; fi",
+        "2>/tmp/log FOO=bar /usr/bin/sudo -n id -u",
+        "FOO=bar /usr/bin/sudo -n id -u",
+        "env sudo -n id -u",
+    ]
+    MUST_NOT_MATCH = [
+        "command -v sudo",
+        "command -V sudo",
+        "command -pv sudo",
+        "env -u sudo printf ok",
+        "exec -a sudo printf ok",
+        "ionice --pid sudo",
+        "chrt --pid sudo",
+        "taskset --pid 1 sudo",
+        'echo "sudo -n id -u"',
+        "printf 'ok && sudo -n id -u'",
+        "git log --grep='git status'",
+        "echo 'first\\nsudo -n id -u'",
+        "echo ok # ; sudo -n id -u",
+    ]
+
+    def test_sudo_star_blocks_prefix_and_path_forms(self, deny_config):
+        deny_config(["sudo *"])
+        for command in self.MUST_BLOCK_SUDO:
+            assert mod._match_user_deny_rule(command) is not None, command
+
+    def test_sudo_star_does_not_overblock_queries_or_quoted_text(self, deny_config):
+        deny_config(["sudo *"])
+        for command in self.MUST_NOT_MATCH:
+            assert mod._match_user_deny_rule(command) is None, command
+
+    def test_env_split_and_comment_newline_follow_executable(self, deny_config):
+        deny_config(["sudo *"])
+        for command in (
+            "env -S '/usr/bin/sudo -n id -u'",
+            "env -S /usr/bin/sudo -n id -u",
+            "env --split-string=/usr/bin/sudo -n id -u",
+            "env -S \"bash -c '/usr/bin/sudo -n id -u'\"",
+            "echo ok # ignored\n bash -c '/usr/bin/sudo -n id -u'",
+        ):
+            assert mod._match_user_deny_rule(command) is not None, command
+
+    def test_env_split_git_and_printf_rules(self, deny_config):
+        deny_config(["git status"])
+        for command in (
+            "env -S git status",
+            "env -S 'git' status",
+            "env -Sgit status",
+            "env --split-string=git status",
+        ):
+            assert mod._match_user_deny_rule(command) is not None, command
+        deny_config(["printf SAFE"])
+        for command in (
+            "env -S printf SAFE",
+            "env -Sprintf SAFE",
+            "env --split-string=printf SAFE",
+            "env -S 'printf' SAFE",
+        ):
+            assert mod._match_user_deny_rule(command) is not None, command
+
+    def test_env_argv0_and_split_data_stay_unmatched(self, deny_config):
+        deny_config(["sudo *"])
+        for command in (
+            "env -a sudo printf ok",
+            "env --argv0 sudo printf ok",
+            "env -S 'printf %s; sudo -n id'",
+            "env -S 'printf %s' 'sudo -n id'",
+            "echo ok # ; bash -c '/usr/bin/sudo -n id'",
+        ):
+            assert mod._match_user_deny_rule(command) is None, command
+
+
 class TestDenyBeatsYolo:
     def test_deny_blocks_under_yolo_env(self, deny_config, clean_env, monkeypatch):
         deny_config(["git push --force*"])
