@@ -2509,14 +2509,27 @@ def _skip_shell_whitespace(command: str, pos: int) -> int:
 
 
 def _scan_dollar_paren_end(command: str, start: int) -> int | None:
-    """Return the offset after a balanced ``$(...)`` command substitution."""
+    """Return the offset after a balanced ``$(...)`` command substitution.
+
+    Every unquoted ``(`` inside the body nests -- a subshell group, ``$((...))``
+    arithmetic, a function definition -- not only a nested ``$(``. Counting
+    only ``$(`` made ``"$( (true)\nreboot)"`` close at the subshell's own
+    ``)``, which handed the ``reboot`` back to the enclosing double quote as
+    data and past every command-start pass. A ``case`` pattern's bare ``)``
+    is not a close either: ``)`` at the ``case``'s own depth is skipped until
+    its ``esac``, and a ``case`` that never reaches ``esac`` leaves the body
+    unterminated (``None``), which every caller treats as running to the end
+    of the command -- fail toward detection.
+    """
     depth = 1
+    case_depths: list[int] = []
     quote: str | None = None
     i = start + 2
-    while i < len(command):
+    n = len(command)
+    while i < n:
         ch = command[i]
         if quote:
-            if ch == "\\" and quote == '"' and i + 1 < len(command):
+            if ch == "\\" and quote == '"' and i + 1 < n:
                 i += 2
                 continue
             if ch == quote:
@@ -2527,21 +2540,48 @@ def _scan_dollar_paren_end(command: str, start: int) -> int | None:
             quote = ch
             i += 1
             continue
-        if ch == "\\" and i + 1 < len(command):
+        if ch == "\\" and i + 1 < n:
             i += 2
             continue
-        if command.startswith("$(", i):
+        if ch == "(":
             depth += 1
-            i += 2
+            i += 1
             continue
         if ch == ")":
+            if case_depths and case_depths[-1] == depth:
+                # ``pattern)`` inside case ... esac, not a close.
+                i += 1
+                continue
             depth -= 1
             i += 1
             if depth == 0:
                 return i
             continue
+        if ch.isalpha() and _at_shell_command_start(command, i, start + 2):
+            word_end = i
+            while word_end < n and (command[word_end].isalnum() or command[word_end] == "_"):
+                word_end += 1
+            word = command[i:word_end]
+            if word == "case":
+                case_depths.append(depth)
+            elif word == "esac" and case_depths and case_depths[-1] == depth:
+                case_depths.pop()
+            i = word_end
+            continue
         i += 1
     return None
+
+
+def _at_shell_command_start(command: str, pos: int, floor: int) -> bool:
+    """True when ``pos`` is where a shell command word may begin: the body
+    start, or after an unquoted separator / group opener (only whitespace in
+    between). Keeps ``echo case`` from being read as the ``case`` keyword."""
+    j = pos - 1
+    while j >= floor and command[j] in " \t":
+        j -= 1
+    if j < floor:
+        return True
+    return command[j] in ";\n&|({"
 
 
 def _scan_backtick_end(command: str, start: int) -> int | None:
@@ -2778,7 +2818,9 @@ def _iter_shell_command_starts(command: str):
                 scan(i + 1, nested_end - 1 if nested_end is not None else end)
                 i = nested_end if nested_end is not None else end
                 continue
-            if ch in ("(", "{"):
+            if ch in ("(", "{", ")"):
+                # ``)`` too: a ``case`` pattern (``x) reboot;;``) puts a
+                # command right after it with no separator in between.
                 starts.append(i + 1)
             elif ch in ";\n":
                 starts.append(i + 1)
