@@ -560,6 +560,33 @@ def test_hermes_state_and_install_dirs_are_hardline_protected():
 
 
 
+def test_hardline_inside_quoted_substitution_survives_merge():
+    """A hardline command after a newline, `;`, or a paren decoy inside a
+    double-quoted $(...) body must stay HARDLINE. Fork-local (2026-09-08):
+    upstream 98bf8b2073 ported the newline boundary, but the bare-paren /
+    case-pattern nesting in _scan_dollar_paren_end and the `)` command-start
+    in _iter_shell_command_starts are fork fixes upstream does not carry --
+    an upstream merge that takes their tools/approval.py wholesale silently
+    re-opens every shape below (all approved=True on fork main d2957462fe).
+    """
+    import sys as _sys
+
+    if str(REPO) not in _sys.path:
+        _sys.path.insert(0, str(REPO))
+    from tools.approval import detect_hardline_command as hl
+
+    for cmd in ('echo "$(printf a\nshutdown -h now)"',
+                'echo "$( (true)\nshutdown -h now)"',
+                'echo "$( (true); shutdown -h now)"',
+                'echo "$(case x in x) shutdown -h now;; esac)"',
+                'case x in x) shutdown -h now;; esac'):
+        assert hl(cmd)[0], f"quoted-substitution hardline no longer blocks: {cmd!r}"
+    for cmd in ('echo "line one $(date)\nline two"',
+                'echo "$( (date) )\nline two"',
+                'echo "$(printf \'a\nsudo reboot\')"'):
+        assert not hl(cmd)[0], f"quoted-substitution rail over-broad (blocks data): {cmd!r}"
+
+
 def test_sec1_exfil_rail_sink_tokens_and_read_targets_survive_merge():
     """SEC-1 commit 16755aca5: exfil rail must survive upstream merges.
 

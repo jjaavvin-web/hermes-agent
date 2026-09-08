@@ -10,6 +10,8 @@ Inspired by Mercury Agent's permission-hardened blocklist.
 import pytest
 
 from tools.approval import (
+    _mask_quoted_newlines,
+    _scan_dollar_paren_end,
     HARDLINE_PATTERNS,
     check_all_command_guards,
     check_dangerous_command,
@@ -302,6 +304,147 @@ def test_real_newline_separated_threats_still_blocked(command):
     is_hl, desc = detect_hardline_command(command)
     assert is_hl, f"real threat leaked through hardline floor: {command!r}"
     assert desc
+
+
+# A $(...) / backtick substitution INSIDE double quotes is executable, not data:
+# a newline inside its body separates commands exactly as an unquoted newline
+# does. The masker used to flatten that newline to a space (it only tracked the
+# enclosing quote), so `echo "$(printf a\nreboot)"` reached the command-start
+# pass as `... printf a reboot)` — an operand — and the unconditional floor
+# never saw the reboot. Ported from upstream 98bf8b2073 (2026-09-05); RED on
+# fork main d2957462fe / serving v0.21.0 (5 of 8 hardline classes ran silently).
+_QUOTED_SUBSTITUTION_NEWLINE_THREATS_BLOCK = [
+    'echo "$(printf a\nshutdown -h now)"',
+    'echo "$(grep -P \'safe\' /dev/null\nreboot)"',
+    'echo "$(true &&\nsystemctl poweroff)"',
+    'echo "$(cat /dev/null |\nreboot)"',
+    'echo "`printf a\nreboot`"',
+    # nested: substitution inside a double-quoted substitution body
+    'echo "$(echo "$(printf a\nreboot)")"',
+    # the newline sits after a double-quoted word INSIDE the body
+    'echo "$(printf "a"\nreboot)"',
+    'hermes send -t telegram "$(printf a\nmkfs.ext4 /dev/sda1)"',
+]
+
+# ...while a newline that is quoted INSIDE the substitution body stays data.
+_QUOTED_SUBSTITUTION_NEWLINE_DATA_ALLOW = [
+    'echo "$(printf \'a\nsudo reboot\')"',
+    'echo "$(printf "a\nshutdown -h now")"',
+    'echo "`printf \'x\nreboot\'`"',
+]
+
+
+@pytest.mark.parametrize("command", _QUOTED_SUBSTITUTION_NEWLINE_THREATS_BLOCK)
+def test_hardline_inside_quoted_substitution_blocks_as_itself(command):
+    """A newline inside a double-quoted $(...)/backtick body is a command
+    boundary; the hardline command after it must block AS ITSELF."""
+    is_hl, desc = detect_hardline_command(command)
+    assert is_hl, f"hardline hidden in a quoted substitution leaked: {command!r}"
+    assert desc
+
+
+def test_quoted_substitution_newline_is_a_boundary_not_the_malformed_floor():
+    """The masker must keep the body newline (the boundary), so the floor
+    reports the REAL verdict — not the 'malformed payload' catch-all that was
+    the only thing blocking the grep-shaped witness before."""
+    assert _mask_quoted_newlines('echo "$(printf a\nreboot)"') == 'echo "$(printf a\nreboot)"'
+    assert _mask_quoted_newlines('echo "a\nb"') == 'echo "a b"'
+    # quoted newline INSIDE the body is still data
+    assert _mask_quoted_newlines('echo "$(printf "a\nb")"') == 'echo "$(printf "a b")"'
+    is_hl, desc = detect_hardline_command('echo "$(printf a\nshutdown -h now)"')
+    assert (is_hl, desc) == (True, "system shutdown/reboot")
+
+
+@pytest.mark.parametrize("command", _QUOTED_SUBSTITUTION_NEWLINE_DATA_ALLOW)
+def test_quoted_newline_inside_substitution_body_stays_data(command):
+    is_hl, desc = detect_hardline_command(command)
+    assert not is_hl, f"quoted data inside a substitution false-positived: {command!r} ({desc})"
+
+
+def test_hardline_inside_quoted_substitution_blocked_by_full_guard_chain(clean_session, monkeypatch):
+    """End-to-end in gateway context: the public guard must block with NO
+    approval prompt (hardline, not 'ask'). RED on serving v0.21.0: approved=True."""
+    monkeypatch.setenv("HERMES_GATEWAY_SESSION", "1")
+    result = check_dangerous_command('echo "$(printf a\nshutdown -h now)"', "local")
+    assert result["approved"] is False, f"quoted-substitution hardline ran silently: {result}"
+    assert result.get("hardline") is True, f"downgraded from hardline to ask: {result}"
+
+
+# The $(...) scanner only nested on a literal `$(`, never on a bare `(`. So a
+# body that opened with a subshell group / $((...)) / function definition was
+# "closed" at that inner `)`, and everything after it -- the real separator and
+# the hardline command -- was handed back to the enclosing double quote as
+# data (masked newline, or plain `;` inside "..."). Found by the security-rail
+# review of the quoted-substitution port; every shape below is approved=True
+# on fork main d2957462fe and runs in real bash.
+_SUBSTITUTION_DECOY_THREATS_BLOCK = [
+    'echo "$( (true)\nshutdown -h now)"',
+    'echo "$( (true); shutdown -h now)"',
+    'echo "$( $((1+1))\nshutdown -h now)"',
+    'echo "$( $((1+1)); shutdown -h now)"',
+    'echo "$((true)\nshutdown -h now)"',
+    'echo "$( (true) (true)\nshutdown -h now)"',
+    'echo "$(f() { :; }\nshutdown -h now)"',
+    'hermes send -t telegram "$( (true)\nmkfs.ext4 /dev/sda1)"',
+    # a case pattern's bare `)` is not a close, and a command follows it
+    # with no separator at all -- quoted, unquoted, and bare
+    'echo "$(case x in x) shutdown -h now;; esac)"',
+    'echo "$(case x in x)\nshutdown -h now;; esac)"',
+    'echo "$(case x in x) (case y in y) :;; esac);; esac\nshutdown -h now)"',
+    'echo $(case x in x) shutdown -h now;; esac)',
+    'case x in x) shutdown -h now;; esac',
+]
+
+_SUBSTITUTION_DECOY_DATA_ALLOW = [
+    'echo "$( (date) )\nline two"',
+    'echo "$( (date) ) and more"',
+    'echo "$(( 1 + 2 ))\nline two"',
+    'echo "$(case $x in a) echo 1;; esac)\nline two"',
+    'case $x in a) echo 1;; b) echo 2;; esac',
+    # `case` as an argument word is not the keyword
+    'echo "$(echo case)\nline two"',
+]
+
+
+@pytest.mark.parametrize("command", _SUBSTITUTION_DECOY_THREATS_BLOCK)
+def test_hardline_behind_substitution_decoy_blocks_as_itself(command):
+    is_hl, desc = detect_hardline_command(command)
+    assert is_hl, f"hardline hidden behind a paren decoy leaked: {command!r}"
+    assert desc
+
+
+@pytest.mark.parametrize("command", _SUBSTITUTION_DECOY_THREATS_BLOCK)
+def test_hardline_behind_substitution_decoy_blocked_by_full_guard_chain(
+    command, clean_session, monkeypatch
+):
+    monkeypatch.setenv("HERMES_GATEWAY_SESSION", "1")
+    result = check_dangerous_command(command, "local")
+    assert result["approved"] is False, f"decoy-hidden hardline ran silently: {result}"
+    assert result.get("hardline") is True, f"downgraded from hardline to ask: {result}"
+
+
+@pytest.mark.parametrize("command", _SUBSTITUTION_DECOY_DATA_ALLOW)
+def test_substitution_decoy_shapes_stay_data(command, clean_session):
+    is_hl, desc = detect_hardline_command(command)
+    assert not is_hl, f"legit paren shape false-positived: {command!r} ({desc})"
+    assert check_dangerous_command(command, "local")["approved"] is True
+
+
+def test_scan_dollar_paren_end_nests_bare_parens_and_case_patterns():
+    """The scanner must return the offset one past the REAL closing paren."""
+    def end_of(command):
+        start = command.index("$(")
+        return _scan_dollar_paren_end(command, start)
+
+    assert end_of('echo "$( (true)\nreboot)"') == len('echo "$( (true)\nreboot)')
+    assert end_of('echo "$( $((1+1)); reboot)"') == len('echo "$( $((1+1)); reboot)')
+    assert end_of('echo "$(case x in x) reboot;; esac)"') == len('echo "$(case x in x) reboot;; esac)')
+    assert end_of('echo "$(echo case)"') == len('echo "$(echo case)')
+    # a case that never reaches esac is unterminated -> None (fail toward detection)
+    assert end_of('echo "$(case x in x) reboot)"') is None
+    # quoted / escaped parens are still data
+    assert end_of("echo \"$(echo ')')\"") == len("echo \"$(echo ')')")
+    assert end_of('echo "$(echo \\))"') == len('echo "$(echo \\))')
 
 
 def test_quoted_newline_data_not_blocked_by_full_guard_chain(clean_session):
