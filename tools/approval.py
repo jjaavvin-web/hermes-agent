@@ -1206,7 +1206,7 @@ def _match_user_deny_rule(command: str) -> str | None:
              if isinstance(p, str) and p.strip()]
     if not globs:
         return None
-    for command_variant in _command_detection_variants(command):
+    for command_variant in _deny_command_variants(command):
         candidate = command_variant.lower().strip()
         for pattern in globs:
             if fnmatch.fnmatchcase(candidate, pattern.lower()):
@@ -2981,6 +2981,453 @@ def _iter_shell_command_word_spans(command: str):
                 pos = word_end
                 continue
             break
+
+
+# Deny-rule executable projection (upstream 58faa10134). Deny-only.
+# env -S / --split-string payload reparse is PACKET 3.
+_DENY_WRAPPER_WORDS = _COMMAND_WRAPPER_WORDS | {
+    "nice", "timeout", "stdbuf", "ionice", "chrt", "taskset", "chroot",
+}
+_DENY_WRAPPER_OPTIONS_WITH_ARG = {
+    "chroot": {"--groups", "--userspec"},
+    "sudo": _SUDO_OPTIONS_WITH_ARG,
+    "env": {"-a", "--argv0", "-C", "--chdir", "-S", "--split-string", "-u", "--unset"},
+    "exec": {"-a"},
+    "nice": {"-n", "--adjustment"},
+    "time": {"-f", "--format", "-o", "--output"},
+    "timeout": {"-k", "--kill-after", "-s", "--signal"},
+    "stdbuf": {"-e", "--error", "-i", "--input", "-o", "--output"},
+    "ionice": {"-c", "--class", "-n", "--classdata"},
+}
+_DENY_WRAPPER_NON_EXECUTING_OPTIONS = {
+    "command": {"-v", "-V"},
+    "chrt": {"-p", "--pid"},
+    "ionice": {"-p", "--pid", "--pgid", "--uid"},
+    "taskset": {"-p", "--pid"},
+}
+_DENY_WRAPPER_POSITIONAL_ARGS = {"chroot": 1, "chrt": 1, "taskset": 1, "timeout": 1}
+_DENY_SHELL_TRANSITIONS = {"if", "then", "else", "elif", "do", "while", "until", "!"}
+_DENY_REDIRECT_RE = re.compile(r"(?:[0-9]+)?(?:>>|<<|<>|>&|<&|>\||[<>])")
+
+
+def _deny_is_comment_start(command: str, index: int) -> bool:
+    if index >= len(command) or command[index] != "#":
+        return False
+    return index == 0 or command[index - 1].isspace() or command[index - 1] in ";&|()<>"
+
+
+def _deny_read_shell_word(command: str, pos: int) -> tuple[int, int, str]:
+    """Like ``_read_shell_word`` but also stops on redirect/subshell punctuation."""
+    start = _skip_shell_whitespace(command, pos)
+    i = start
+    quote: str | None = None
+    while i < len(command):
+        ch = command[i]
+        if quote:
+            if ch == "\\" and quote == '"' and i + 1 < len(command):
+                i += 2
+                continue
+            if ch == quote:
+                quote = None
+            i += 1
+            continue
+        if ch in ("'", '"'):
+            quote = ch
+            i += 1
+            continue
+        if ch == "\\" and i + 1 < len(command):
+            i += 2
+            continue
+        if command.startswith("$(", i):
+            end = _scan_dollar_paren_end(command, i)
+            i = i + 2 if end is None else end
+            continue
+        if command.startswith("${", i):
+            end = command.find("}", i + 2)
+            i = i + 2 if end == -1 else end + 1
+            continue
+        if ch == "`":
+            end = _scan_backtick_end(command, i)
+            i = i + 1 if end is None else end
+            continue
+        if ch.isspace() or ch in ";&|<>()":
+            break
+        i += 1
+    return (start, i, command[start:i])
+
+
+def _deny_position_in_comment(command: str, index: int) -> bool:
+    """True when index sits in an unquoted ``#`` comment."""
+    quote: str | None = None
+    i = 0
+    in_comment = False
+    while i < index:
+        ch = command[i]
+        if in_comment:
+            if ch == "\n":
+                in_comment = False
+            i += 1
+            continue
+        if quote:
+            if ch == "\\" and quote == '"' and i + 1 < index:
+                i += 2
+                continue
+            if ch == quote:
+                quote = None
+            i += 1
+            continue
+        if ch in ("'", '"'):
+            quote = ch
+            i += 1
+            continue
+        if ch == "\\" and i + 1 < len(command):
+            i += 2
+            continue
+        if _deny_is_comment_start(command, i):
+            in_comment = True
+            i += 1
+            continue
+        i += 1
+    return in_comment
+
+
+def _deny_iter_command_starts(command: str):
+    """Command starts for deny projection, skipping comments and shell keywords."""
+    starts = list(_iter_shell_command_starts(command))
+    seen: set[int] = set()
+    i = 0
+    while i < len(starts):
+        start = _skip_shell_whitespace(command, starts[i])
+        i += 1
+        if (
+            start >= len(command)
+            or start in seen
+            or _deny_is_comment_start(command, start)
+            or _deny_position_in_comment(command, start)
+        ):
+            continue
+        seen.add(start)
+        yield start
+        _, end, word = _deny_read_shell_word(command, start)
+        name = os.path.basename(_deobfuscate_shell_word_for_detection(word)).lower()
+        if name in _DENY_SHELL_TRANSITIONS:
+            starts.append(end)
+
+
+def _deny_iter_word_spans(command: str):
+    """Yield command-position words, walking wrappers (deny-only)."""
+    for pos in _deny_iter_command_starts(command):
+        wrapper, positionals = None, 0
+        options, skip_arg = True, False
+        while pos < len(command):
+            redirect = _DENY_REDIRECT_RE.match(
+                command, _skip_shell_whitespace(command, pos)
+            )
+            if redirect:
+                _, pos, _ = _deny_read_shell_word(command, redirect.end())
+                continue
+            word_start, word_end, word = _deny_read_shell_word(command, pos)
+            if word_start == word_end:
+                break
+            pos = word_end
+            deobfuscated = _deobfuscate_shell_word_for_detection(word)
+            name = os.path.basename(deobfuscated).lower()
+            if skip_arg:
+                skip_arg = False
+                continue
+            if wrapper and options and deobfuscated == "--":
+                options = False
+                continue
+            if wrapper and options and deobfuscated.startswith("-"):
+                option = deobfuscated.split("=", 1)[0]
+                if wrapper == "env" and (
+                    option == "--split-string" or deobfuscated.startswith("-S")
+                ):
+                    # -S payload + remaining argv are one command, via
+                    # _env_split_payload — not extra executables.
+                    break
+                queries = _DENY_WRAPPER_NON_EXECUTING_OPTIONS.get(wrapper, set())
+                if option in queries or (
+                    wrapper == "command"
+                    and not option.startswith("--")
+                    and set(option[1:]) & {"v", "V"}
+                ):
+                    break
+                skip_arg = (
+                    "=" not in deobfuscated
+                    and option in _DENY_WRAPPER_OPTIONS_WITH_ARG.get(wrapper, set())
+                )
+                continue
+            if positionals:
+                positionals -= 1
+                continue
+            if _ENV_ASSIGNMENT_RE.fullmatch(word):
+                continue
+            yield (word_start, word_end, word)
+            if name not in _DENY_WRAPPER_WORDS:
+                break
+            wrapper, options = name, True
+            positionals = _DENY_WRAPPER_POSITIONAL_ARGS.get(name, 0)
+
+
+def _deny_shell_command_segment(command: str, start: int) -> str:
+    """Bound a candidate to its command, preserving quoted argument bytes."""
+    i = start
+    quote: str | None = None
+    while i < len(command):
+        ch = command[i]
+        if quote:
+            if ch == "\\" and quote == '"' and i + 1 < len(command):
+                i += 2
+                continue
+            if ch == quote:
+                quote = None
+            i += 1
+            continue
+        if _deny_is_comment_start(command, i):
+            break
+        if ch in ("'", '"'):
+            quote = ch
+            i += 1
+            continue
+        if ch == "\\" and i + 1 < len(command):
+            i += 2
+            continue
+        if ch in ";&|\n)`":
+            break
+        i += 1
+    return command[start:i].strip()
+
+
+def _deny_collapse_unquoted_ws(tail: str) -> str:
+    parts: list[str] = []
+    quote: str | None = None
+    i = 0
+    while i < len(tail):
+        ch = tail[i]
+        if quote:
+            if ch == "\\" and quote == '"' and i + 1 < len(tail):
+                parts.append(tail[i:i + 2])
+                i += 2
+                continue
+            if ch == quote:
+                quote = None
+            parts.append(ch)
+            i += 1
+            continue
+        if ch in ("'", '"'):
+            quote = ch
+            parts.append(ch)
+            i += 1
+            continue
+        if ch == "\\" and i + 1 < len(tail):
+            parts.append(tail[i:i + 2])
+            i += 2
+            continue
+        if ch.isspace():
+            if not parts or parts[-1] != " ":
+                parts.append(" ")
+            i += 1
+            continue
+        parts.append(ch)
+        i += 1
+    return "".join(parts)
+
+
+def _deny_strip_unquoted_comments(command: str) -> str:
+    """Drop unquoted ``#`` comments; keep the newline so the next line is inspected."""
+    out: list[str] = []
+    quote: str | None = None
+    i = 0
+    in_comment = False
+    while i < len(command):
+        ch = command[i]
+        if in_comment:
+            if ch == "\n":
+                in_comment = False
+                out.append(ch)
+            i += 1
+            continue
+        if quote:
+            if ch == "\\" and quote == '"' and i + 1 < len(command):
+                out.append(command[i:i + 2])
+                i += 2
+                continue
+            if ch == quote:
+                quote = None
+            out.append(ch)
+            i += 1
+            continue
+        if ch in ("'", '"'):
+            quote = ch
+            out.append(ch)
+            i += 1
+            continue
+        if ch == "\\" and i + 1 < len(command):
+            out.append(command[i:i + 2])
+            i += 2
+            continue
+        if _deny_is_comment_start(command, i):
+            in_comment = True
+            i += 1
+            continue
+        out.append(ch)
+        i += 1
+    return "".join(out)
+
+
+def _split_env_string(payload: str) -> list[str] | None:
+    r"""Project GNU env -S literal argv, not POSIX shell words.
+
+    Dynamic ${NAME} expansion is not evaluated.
+    """
+    escapes = {
+        "f": "\f", "n": "\n", "r": "\r", "t": "\t", "v": "\v",
+        "#": "#", "$": "$", '"': '"', "'": "'", "\\": "\\",
+    }
+    args, word = [], []
+    quote, started, index = None, False, 0
+    while index < len(payload):
+        char = payload[index]
+        index += 1
+        if char == "\\":
+            if index == len(payload):
+                return None
+            escaped = payload[index]
+            if quote == "'" and escaped not in ("'", "\\"):
+                word.append(char)
+                started = True
+                continue
+            index += 1
+            if escaped == "c":
+                if quote:
+                    return None
+                break
+            if escaped == "_" and quote is None:
+                if started:
+                    args.append("".join(word))
+                word, started = [], False
+                continue
+            if escaped not in escapes and escaped != "_":
+                return None
+            word.append(" " if escaped == "_" else escapes[escaped])
+            started = True
+            continue
+        if char in ("'", '"') and (quote is None or char == quote):
+            quote = char if quote is None else None
+            started = True
+            continue
+        if quote is None and char in " \t\n\r\v\f":
+            if started:
+                args.append("".join(word))
+            word, started = [], False
+            continue
+        if quote is None and char == "#" and not started:
+            break
+        if char == "$" and quote != "'":
+            return None
+        word.append(char)
+        started = True
+    if quote:
+        return None
+    if started:
+        args.append("".join(word))
+    return args
+
+
+def _deny_outer_unquote(word: str) -> str:
+    """Strip one matching outer quote pair; keep inner quoting for env -S."""
+    if len(word) >= 2 and word[0] == word[-1] and word[0] in "'\"":
+        return word[1:-1]
+    return word
+
+
+def _env_split_payload(tokens: list[str]) -> str | None:
+    """Return the reconstructed command from GNU env -S / --split-string.
+
+    ``tokens`` are raw shell words. Option names are deobfuscated; the -S
+    payload keeps inner quotes (only one outer pair is stripped).
+    """
+    index = 1
+    env_opts = _DENY_WRAPPER_OPTIONS_WITH_ARG["env"]
+    while index < len(tokens):
+        token = tokens[index]
+        deob = _deobfuscate_shell_word_for_detection(token)
+        if deob == "--":
+            return None
+        if not deob.startswith("-"):
+            return None
+        option, equals, value = deob.partition("=")
+        raw_option, raw_eq, raw_value = token.partition("=")
+        if option == "--split-string" or deob.startswith("-S"):
+            attached = bool(equals) if option == "--split-string" else len(deob) > 2
+            if not attached:
+                index += 1
+                raw_payload = tokens[index] if index < len(tokens) else ""
+                payload = _deny_outer_unquote(raw_payload)
+            elif option == "--split-string":
+                payload = raw_value
+            else:
+                payload = token[2:] if token.startswith("-S") else deob[2:]
+            args = _split_env_string(payload)
+            if args is None:
+                return None
+            rest = [
+                _deobfuscate_shell_word_for_detection(t) for t in tokens[index + 1 :]
+            ]
+            return shlex.join(args + rest)
+        index += 2 if not raw_eq and option in env_opts else 1
+    return None
+
+
+def _deny_env_split_payloads(command: str):
+    for start in _deny_iter_command_starts(command):
+        words: list[str] = []
+        pos = start
+        segment = _deny_shell_command_segment(command, start)
+        bound = start + len(segment)
+        while pos < bound:
+            word_start, word_end, word = _deny_read_shell_word(command, pos)
+            if word_start == word_end or word_start >= bound:
+                break
+            words.append(word)
+            pos = word_end
+        if not words:
+            continue
+        if os.path.basename(_deobfuscate_shell_word_for_detection(words[0])).lower() != "env":
+            continue
+        payload = _env_split_payload(words)
+        if payload:
+            yield payload
+
+
+def _deny_command_variants(command: str):
+    """Whole-command variants plus executable-basename projections.
+
+    Comment tails are stripped so ``# ; bash -c sudo`` is data, while a
+    newline after ``#`` still starts the next line. GNU env -S payloads
+    are projected as argv, not POSIX shell.
+    """
+    stripped = _deny_strip_unquoted_comments(command)
+    yield from _command_detection_variants(stripped)
+    pending, seen = [stripped], set()
+    while pending:
+        source = pending.pop()
+        if source in seen:
+            continue
+        seen.add(source)
+        for start, end, word in _deny_iter_word_spans(source):
+            segment = _deny_shell_command_segment(source, start)
+            executable = _deobfuscate_shell_word_for_detection(word)
+            tail = _deny_collapse_unquoted_ws(segment[end - start :])
+            for name in dict.fromkeys((executable, os.path.basename(executable))):
+                candidate = name + tail
+                yield candidate
+                yield _normalize_command_for_detection(candidate)
+        for _, payload in _execution_flag_findings(source):
+            if payload:
+                pending.append(payload)
+        pending.extend(_deny_env_split_payloads(source))
 
 
 def _command_detection_variants(command: str):
