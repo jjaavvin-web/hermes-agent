@@ -498,6 +498,23 @@ def _resolve_codex_usage_credentials(
     # resolve time, but a pool entry is usable now). Pool credentials have no
     # account_id concept, so the ChatGPT-Account-Id header is intentionally
     # omitted here.
+    #
+    # A Codex meter belongs to the LOGIN SESSION that produced it, so handing
+    # back a pool entry here is only safe while it is the SAME entry the
+    # machine's real Codex traffic uses. Assessed 2026-09-09 and deliberately
+    # left as-is: tier 2 IS the runtime resolver (chat path included), whose own
+    # pool fallback takes the first usable entry in stored order, and this tier
+    # runs select() under STRATEGY_FILL_FIRST (openai-codex sets no
+    # credential_pool_strategies override), which also returns available[0]
+    # without rotating or mutating the pool. Both therefore land on the same
+    # session, and on a pool-only machine that entry is the ONLY credential
+    # there is - refusing it would blank a card that is perfectly truthful.
+    # Residual, accepted: configure a rotating strategy (random / round_robin /
+    # least_used) for openai-codex, or let the first entry enter cooldown
+    # between the traffic call and this read, and the card can show a different
+    # session's percentage. Same account either way (every local Codex
+    # credential shares chatgpt_account_id) - a wrong number, never another
+    # person's data. It shows up as the card disagreeing with `codex /usage`.
     from agent.credential_pool import load_pool
 
     pool = load_pool("openai-codex")
@@ -534,8 +551,18 @@ def _resolve_codex_usage_credentials(
 # he cannot act on), not "expired" (false - the JWT is unexpired) and not
 # "revoked" (true, but it reads as "you were hacked" to a non-coder and sends
 # him down the wrong road). It must also read correctly after BOTH prefixes it
-# can appear behind: "Unavailable: " on the CLI (render_account_usage_lines)
-# and "live meter could not be read - " on the dashboard card.
+# can appear behind:
+#   1. "Unavailable: " on the CLI - render_account_usage_lines(), pinned by
+#      tests/test_account_usage_serving_hotfix.py.
+#   2. "live meter could not be read — " on the dashboard card. That hop is
+#      OUT OF THIS REPO and was UNREACHABLE when this constant shipped: the
+#      usage-tracker plugin mapped only ``snapshot.windows`` and hardcoded
+#      ``"error": None``, so a rejected sign-in rendered the literal "no window
+#      data" instead. Closed 2026-09-09 in
+#      ~/.hermes/plugins/usage-tracker/dashboard/plugin_api.py::_fetch_codex_primary,
+#      which now passes ``unavailable_reason`` through as the card's ``error``;
+#      that plugin's own suite (tests/test_plugin_api.py, section b4) pins both
+#      the pass-through and the bundle branch that prints it.
 _CODEX_SIGNIN_REJECTED_REASON = (
     "This machine's Codex sign-in is no longer accepted. "
     "Run `hermes auth` to sign in again."

@@ -226,7 +226,18 @@ def test_rejected_signin_never_reads_the_credential_pool(monkeypatch, offline_cr
     assert snapshot.unavailable_reason is usage._CODEX_SIGNIN_REJECTED_REASON
 
 
-def test_unavailable_reason_is_one_constant_both_renderers_can_show(monkeypatch, offline_credentials):
+def test_unavailable_reason_is_one_constant_the_cli_renderer_shows(monkeypatch, offline_credentials):
+    """The CLI half of the two-renderer contract, plus the wording rules.
+
+    Renamed 2026-09-09: the old name claimed BOTH renderers, while every
+    assertion below is render_account_usage_lines() — the CLI. The dashboard
+    half cannot be reached from this repo (the card is rendered by the
+    out-of-git usage-tracker plugin) and is pinned there instead, in
+    ~/.hermes/plugins/usage-tracker/dashboard/tests/test_plugin_api.py
+    section b4: _fetch_codex_primary passes this constant through as the
+    card's ``error``, and dist/index.js prints it after
+    "live meter could not be read — ".
+    """
     _http(monkeypatch, _error(401))
     snapshot = usage._fetch_codex_account_usage()
     reason = usage._CODEX_SIGNIN_REJECTED_REASON
