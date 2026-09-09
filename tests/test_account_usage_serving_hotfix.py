@@ -102,26 +102,6 @@ def _assert_snapshot(snapshot):
 
 
 @pytest.mark.parametrize("status", [401, 403])
-def test_retries_are_bounded_newest_first_and_preserve_original_error(monkeypatch, offline_credentials, status):
-    original = _error(status)
-    _, _, pool = offline_credentials
-    newest, second, forbidden_third = _token("newest"), _token("second"), _token("third")
-    pool.return_value = [
-        _entry(forbidden_third, "2026-09-01T00:00:00Z"),
-        _entry(second, "2026-09-02T00:00:00Z"),
-        _entry(newest, "2026-09-03T00:00:00Z"),
-    ]
-    calls, timeouts = _http(monkeypatch, original, _error(403), _error(500), PAYLOAD)
-    with pytest.raises(httpx.HTTPStatusError) as caught:
-        usage._fetch_codex_account_usage()
-    assert caught.value is original
-    assert usage._CODEX_USAGE_POOL_RETRY_LIMIT == 2
-    assert [h["Authorization"] for h in calls] == [f"Bearer {t}" for t in (PRIMARY, newest, second)]
-    assert timeouts == [15.0, 15.0, 15.0]
-    pool.assert_called_once_with("openai-codex")
-
-
-@pytest.mark.parametrize("status", [401, 403])
 def test_explicit_key_never_falls_back_to_pool(monkeypatch, offline_credentials, status):
     reader, resolver, pool = offline_credentials
     original = _error(status)
@@ -148,40 +128,6 @@ def test_non_auth_status_never_enters_diagnostic_pool(monkeypatch, offline_crede
     offline_credentials[2].assert_not_called()
 
 
-@pytest.mark.parametrize("status", [401, 403])
-def test_retry_success_uses_each_tokens_own_account_and_preserves_snapshot(monkeypatch, offline_credentials, status):
-    retry1, retry2 = _token("retry-one-account"), _token("retry-two-account")
-    offline_credentials[2].return_value = [
-        _entry(retry1, "2026-09-03T00:00:00Z"),
-        _entry(retry2, "2026-09-02T00:00:00Z"),
-        _entry(_token("unused-account")),
-    ]
-    calls, _ = _http(monkeypatch, _error(status), _error(401), PAYLOAD)
-    snapshot = usage._fetch_codex_account_usage()
-    _assert_snapshot(snapshot)
-    assert [h["ChatGPT-Account-Id"] for h in calls] == [
-        "primary-account", "retry-one-account", "retry-two-account",
-    ]
-    assert [h["Authorization"] for h in calls] == [f"Bearer {t}" for t in (PRIMARY, retry1, retry2)]
-    assert all(h["Accept"] == "application/json" and h["User-Agent"] == "codex-cli" for h in calls)
-
-
-def test_success_stops_after_first_usable_retry(monkeypatch, offline_credentials):
-    offline_credentials[2].return_value = [_entry(_token("retry")), _entry(_token("unused"))]
-    calls, _ = _http(monkeypatch, _error(401), PAYLOAD)
-    _assert_snapshot(usage._fetch_codex_account_usage())
-    assert len(calls) == 2
-
-
-@pytest.mark.parametrize("retry", ["opaque-synthetic-token", _token(None)])
-def test_retry_without_account_claim_never_borrows_singleton_id(monkeypatch, offline_credentials, retry):
-    offline_credentials[2].return_value = [_entry(retry)]
-    calls, _ = _http(monkeypatch, _error(401), PAYLOAD)
-    _assert_snapshot(usage._fetch_codex_account_usage())
-    assert calls[0]["ChatGPT-Account-Id"] == "primary-account"
-    assert "ChatGPT-Account-Id" not in calls[1]
-
-
 def test_primary_success_prefers_token_local_id_without_pool(monkeypatch, offline_credentials):
     calls, _ = _http(monkeypatch, PAYLOAD)
     _assert_snapshot(usage._fetch_codex_account_usage())
@@ -199,50 +145,111 @@ def test_primary_opaque_token_retains_resolver_account_fallback(monkeypatch, off
     offline_credentials[2].assert_not_called()
 
 
-def test_unusable_entries_do_not_consume_retry_slots(monkeypatch, offline_credentials):
-    good = _token("usable-account")
-    offline_credentials[2].return_value = [
-        None, "not-an-entry", {}, {"access_token": None}, {"access_token": 42},
-        {"access_token": ""}, {"access_token": "   "}, _entry(PRIMARY),
-        _entry(_token("dead"), last_status="DeAd"),
-        _entry(_token("exhausted"), last_status="EXHAUSTED"),
-        _entry(good, refresh="not-a-date"),
-    ]
-    calls, _ = _http(monkeypatch, _error(403), PAYLOAD)
-    _assert_snapshot(usage._fetch_codex_account_usage())
-    assert [h["Authorization"] for h in calls] == [f"Bearer {PRIMARY}", f"Bearer {good}"]
-    assert calls[1]["ChatGPT-Account-Id"] == "usable-account"
+# Same synthetic account claim as PRIMARY, different login session. That is the
+# real on-disk shape: every local Codex credential shares chatgpt_account_id and
+# differs only in the session / jti claims - and each login session reports its
+# OWN meter. Built off _token so the account claim is provably identical; still
+# unsigned and synthetic.
+OTHER_SESSION = _token("primary-account").rsplit(".", 1)[0] + ".other-session-signature"
+
+# What the other login session was answering 200 with while the real account sat
+# near a quarter used: a fully-spent meter that would render as "0% left".
+OTHER_SESSION_PAYLOAD = {
+    "plan_type": "pro",
+    "rate_limit": {
+        "primary_window": {"used_percent": 100.0, "reset_at": 1_789_225_391},
+        "secondary_window": {"used_percent": 100.0},
+    },
+}
+
+
+@pytest.mark.parametrize("status", [401, 403])
+def test_rejected_signin_never_serves_another_login_sessions_meter(
+    monkeypatch, offline_credentials, status
+):
+    # The pool entry carries the SAME chatgpt_account_id as PRIMARY, because
+    # that is what is actually on disk. An account-id comparison would let it
+    # through and render its 100%-used meter as this account's. The only safe
+    # rule is that no substitute credential is contacted at all.
+    _, _, pool = offline_credentials
+    pool.return_value = [_entry(OTHER_SESSION, "2026-09-09T00:00:00Z")]
+    assert usage._codex_account_id_from_token(OTHER_SESSION) == usage._codex_account_id_from_token(PRIMARY)
+    calls, _ = _http(monkeypatch, _error(status), OTHER_SESSION_PAYLOAD)
+
+    snapshot = usage._fetch_codex_account_usage()
+
+    # Exactly one outbound call: the pool entry is never contacted, so no quota
+    # is burned on it and it cannot be marked exhausted by this read.
+    assert len(calls) == 1
+    assert calls[0]["Authorization"] == f"Bearer {PRIMARY}"
+    assert snapshot.provider == "openai-codex"
+    assert snapshot.source == "usage_api"
+    assert snapshot.windows == ()
+    assert snapshot.details == ()
+    assert snapshot.plan is None
+    assert snapshot.unavailable_reason is usage._CODEX_SIGNIN_REJECTED_REASON
+    assert snapshot.available is False
+
+
+def test_public_fetch_returns_unavailable_snapshot_instead_of_none(
+    monkeypatch, offline_credentials, caplog
+):
+    # Our half of a handshake with an out-of-git consumer this repo's CI cannot
+    # see: the usage-tracker plugin short-circuits on a non-None snapshot BEFORE
+    # running its rollout-file fallback. Returning None here is the door into
+    # that fallback, and the rollout records carry no account or session id at
+    # all, so it cannot tell one login session's meter from another's.
+    _http(monkeypatch, _error(401))
+    with caplog.at_level(logging.WARNING, logger="agent.account_usage"):
+        snapshot = usage.fetch_account_usage("openai-codex")
+    assert snapshot is not None
+    assert snapshot.available is False
+    assert snapshot.unavailable_reason is usage._CODEX_SIGNIN_REJECTED_REASON
+    rejections = [r for r in caplog.records if "sign-in rejected" in r.getMessage()]
+    assert len(rejections) == 1
+    assert "401" in rejections[0].getMessage()
+    assert not [r for r in caplog.records if "account usage fetch failed" in r.getMessage()]
+
+
+@pytest.mark.parametrize("status", [401, 403])
+def test_rejected_signin_never_reads_the_credential_pool(monkeypatch, offline_credentials, status):
+    # Structural guarantee, independent of any identity rule: if anyone re-adds
+    # a cross-credential retry loop, this fails whatever it guards on.
+    _, _, pool = offline_credentials
+    pool.side_effect = AssertionError("the credential pool must never be read on a rejected sign-in")
+    calls, _ = _http(monkeypatch, _error(status))
+
+    snapshot = usage._fetch_codex_account_usage()
+
+    assert pool.call_count == 0
+    assert len(calls) == 1
+    assert snapshot.unavailable_reason is usage._CODEX_SIGNIN_REJECTED_REASON
+
+
+def test_unavailable_reason_is_one_constant_both_renderers_can_show(monkeypatch, offline_credentials):
+    _http(monkeypatch, _error(401))
+    snapshot = usage._fetch_codex_account_usage()
+    reason = usage._CODEX_SIGNIN_REJECTED_REASON
+    assert f"Unavailable: {reason}" in usage.render_account_usage_lines(snapshot)
+    assert "hermes auth" in reason
+    for banned in ("401", "token", "oauth", "credential pool", "expired", "revoked"):
+        assert banned not in reason.lower()
 
 
 @pytest.mark.parametrize("pool_value", [[], None, [{"access_token": "", "last_status": "dead"}]])
-def test_empty_or_unusable_pool_preserves_original_error(monkeypatch, offline_credentials, pool_value):
+def test_rejected_signin_fails_closed_whatever_the_pool_holds(
+    monkeypatch, offline_credentials, pool_value
+):
+    # Kept parametrized on purpose: the outcome no longer branches on pool
+    # contents at all, because the pool is never read. Returning the original
+    # 401 to the caller is what used to hand control to the rollout fallback.
     offline_credentials[2].return_value = pool_value
-    original = _error(401)
-    calls, _ = _http(monkeypatch, original)
-    with pytest.raises(httpx.HTTPStatusError) as caught:
-        usage._fetch_codex_account_usage()
-    assert caught.value is original
+    calls, _ = _http(monkeypatch, _error(401))
+
+    snapshot = usage._fetch_codex_account_usage()
+
     assert len(calls) == 1
-    offline_credentials[2].assert_called_once_with("openai-codex")
-
-
-def test_pool_read_failure_does_not_replace_original_auth_error(monkeypatch, offline_credentials):
-    offline_credentials[2].side_effect = OSError("synthetic pool unavailable")
-    original = _error(403)
-    calls, _ = _http(monkeypatch, original)
-    with pytest.raises(httpx.HTTPStatusError) as caught:
-        usage._fetch_codex_account_usage()
-    assert caught.value is original
-    assert len(calls) == 1
-    offline_credentials[2].assert_called_once_with("openai-codex")
-
-
-def test_public_fail_open_logs_original_error(monkeypatch, offline_credentials, caplog):
-    original = _error(401)
-    _http(monkeypatch, original)
-    with caplog.at_level(logging.WARNING, logger="agent.account_usage"):
-        assert usage.fetch_account_usage("openai-codex") is None
-    failures = [r for r in caplog.records if "account usage fetch failed for openai-codex" in r.message]
-    assert len(failures) == 1
-    assert failures[0].exc_info[1] is original
-    offline_credentials[2].assert_called_once_with("openai-codex")
+    assert snapshot.windows == ()
+    assert snapshot.details == ()
+    assert snapshot.unavailable_reason is usage._CODEX_SIGNIN_REJECTED_REASON
+    offline_credentials[2].assert_not_called()
