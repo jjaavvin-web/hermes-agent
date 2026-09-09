@@ -502,19 +502,32 @@ def _resolve_codex_usage_credentials(
     # A Codex meter belongs to the LOGIN SESSION that produced it, so handing
     # back a pool entry here is only safe while it is the SAME entry the
     # machine's real Codex traffic uses. Assessed 2026-09-09 and deliberately
-    # left as-is: tier 2 IS the runtime resolver (chat path included), whose own
-    # pool fallback takes the first usable entry in stored order, and this tier
-    # runs select() under STRATEGY_FILL_FIRST (openai-codex sets no
-    # credential_pool_strategies override), which also returns available[0]
-    # without rotating or mutating the pool. Both therefore land on the same
-    # session, and on a pool-only machine that entry is the ONLY credential
-    # there is - refusing it would blank a card that is perfectly truthful.
-    # Residual, accepted: configure a rotating strategy (random / round_robin /
-    # least_used) for openai-codex, or let the first entry enter cooldown
-    # between the traffic call and this read, and the card can show a different
-    # session's percentage. Same account either way (every local Codex
-    # credential shares chatgpt_account_id) - a wrong number, never another
-    # person's data. It shows up as the card disagreeing with `codex /usage`.
+    # left as-is, because on a pool-only machine that entry is the ONLY
+    # credential there is - refusing it would blank a card that is perfectly
+    # truthful. Neither tier reorders the pool: tier 2 IS the runtime resolver
+    # (chat path included) and takes the first usable entry in stored order,
+    # and this tier runs select() under STRATEGY_FILL_FIRST (openai-codex sets
+    # no credential_pool_strategies override), which returns available[0].
+    #
+    # But do NOT read that as a guarantee they agree. Two things this comment
+    # previously claimed and that are FALSE:
+    #   - select() is not side-effect-free: _available_entries(clear_expired=
+    #     True, refresh=True) can prune entries and persist, and fill_first
+    #     sets _current_id. It does not ROTATE, which is all the ordering
+    #     argument above needs - but it does mutate.
+    #   - "both tiers land on the same session" does not hold in general: their
+    #     usability predicates differ (tier 2's _pool_codex_access_token skips
+    #     entries in an exhaustion cooldown; tier 3's pool.select() judges on
+    #     last_error_reason plus a deferred-refresh re-select), so tier 3 can
+    #     return an entry tier 2 would have skipped - which is exactly why
+    #     tier 3 is reached at all.
+    # Residual, accepted: the card can show a different login session's
+    # percentage than the one serving traffic - a wrong number, surfacing as
+    # the card disagreeing with `codex /usage`. Every openai-codex credential
+    # on THIS machine shares one chatgpt_account_id (verified 2026-09-09), so
+    # today that is only ever josep's own data; nothing ENFORCES that, and if a
+    # second account's credential ever entered this pool the door left open
+    # here would serve its meter. Re-check that assumption before relying on it.
     from agent.credential_pool import load_pool
 
     pool = load_pool("openai-codex")
@@ -677,7 +690,8 @@ def _fetch_codex_account_usage(
         logger.warning(
             "codex - /usage: sign-in rejected (%s); refusing to substitute another "
             "credential - a Codex meter belongs to the login session that produced "
-            "it, so no other credential can stand in. Card will be blank.",
+            "it, so no other credential can stand in. Card will show the sign-in "
+            "reason instead of a meter.",
             status,
         )
         return AccountUsageSnapshot(
