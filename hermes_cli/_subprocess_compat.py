@@ -47,6 +47,8 @@ __all__ = [
     "bounded_git_probe",
     "bounded_probe_run",
     "noninteractive_git_env",
+    "harden_git_argv",
+    "NO_DRIVER_DIFF_FLAGS",
     "pid_is_hermes",
 ]
 
@@ -381,7 +383,75 @@ def noninteractive_git_env(
     env = dict(base if base is not None else os.environ)
     env["GIT_TERMINAL_PROMPT"] = "0"
     env["GCM_INTERACTIVE"] = "Never"
+
+    # Do not inherit caller-supplied config injection.
+    for key in list(env):
+        if (
+            key == "GIT_CONFIG_PARAMETERS"
+            or key.startswith("GIT_CONFIG_KEY_")
+            or key.startswith("GIT_CONFIG_VALUE_")
+        ):
+            env.pop(key, None)
+    env.pop("GIT_CONFIG_COUNT", None)
+
+    devnull = os.devnull
+    env["GIT_CONFIG_GLOBAL"] = devnull
+    env["GIT_CONFIG_SYSTEM"] = devnull
+    env["GIT_CONFIG_NOSYSTEM"] = "1"
+    env["GIT_PAGER"] = "cat"
+    env["PAGER"] = "cat"
+    env["GIT_EDITOR"] = "true"
+
+    config_overrides = {
+        "credential.helper": "",
+        "core.askPass": "",
+        "core.fsmonitor": "false",
+        "core.untrackedCache": "false",
+        "core.hooksPath": devnull,
+        "core.pager": "cat",
+        "core.editor": "true",
+        "sequence.editor": "true",
+        "diff.external": "",
+    }
+    env["GIT_CONFIG_COUNT"] = str(len(config_overrides))
+    for idx, (key, value) in enumerate(config_overrides.items()):
+        env[f"GIT_CONFIG_KEY_{idx}"] = key
+        env[f"GIT_CONFIG_VALUE_{idx}"] = value
     return env
+
+
+NO_DRIVER_DIFF_FLAGS = ("--no-ext-diff", "--no-textconv")
+
+_DIFF_RENDERING_SUBCOMMANDS = frozenset({"diff", "show", "log", "blame"})
+
+# Global options that take a separate value argument, so the scanner below
+# must skip both tokens rather than mistaking the value for the subcommand
+# (``-C diff`` is a path; ``-c diff=x`` is a config pair — neither names the
+# diff subcommand).
+_GIT_GLOBAL_VALUE_OPTS = frozenset({"-C", "-c", "--git-dir", "--work-tree", "--namespace", "--exec-path"})
+
+
+def harden_git_argv(args: "Sequence[str]") -> list[str]:
+    """Insert NO_DRIVER_DIFF_FLAGS right after a diff-rendering subcommand
+    (diff/show/log/blame), leaving every other subcommand (status, worktree,
+    rev-parse, ...) untouched — some of them reject the flags outright
+    (status errors with "unknown option")."""
+    out = list(args)
+    i = 0
+    if out and out[0] == "git":
+        i = 1
+    while i < len(out):
+        tok = out[i]
+        if tok in _GIT_GLOBAL_VALUE_OPTS:
+            i += 2
+            continue
+        if tok.startswith("-"):
+            i += 1
+            continue
+        if tok in _DIFF_RENDERING_SUBCOMMANDS:
+            return out[: i + 1] + list(NO_DRIVER_DIFF_FLAGS) + out[i + 1 :]
+        return out
+    return out
 
 
 # -----------------------------------------------------------------------------
@@ -569,6 +639,7 @@ def bounded_probe_run(
     *,
     timeout: float,
     errors: str = "replace",
+    env: "Mapping[str, str] | None" = None,
 ) -> "subprocess.CompletedProcess[str] | None":
     """Deadlock-safe ``subprocess.run(argv, capture_output=True, timeout=...)``
     for fail-open probe call sites. Returns a ``CompletedProcess`` when the
@@ -606,6 +677,7 @@ def bounded_probe_run(
             text=True,
             encoding="utf-8",
             errors=errors,
+            env=dict(env) if env is not None else None,
             **_popen_kwargs,
         )
     except Exception:
@@ -657,7 +729,9 @@ def bounded_git_probe(argv: Sequence[str], *, timeout: float) -> str:
     openai/codex#36793). ``process_group`` only changes which group the child
     belongs to; it does not detach the terminal or alter the fast path.
     """
-    result = bounded_probe_run(argv, timeout=timeout)
+    result = bounded_probe_run(
+        harden_git_argv(argv), timeout=timeout, env=noninteractive_git_env()
+    )
     if result is None or result.returncode != 0:
         return ""
     return (result.stdout or "").strip()
