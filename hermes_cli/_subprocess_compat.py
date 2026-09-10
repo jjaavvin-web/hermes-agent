@@ -445,12 +445,17 @@ def hardened_probe_git_env(
     Those env pairs have *command-line* precedence (identical to ``git -c``),
     which is what makes them beat the attacker's repo-local ``.git/config``.
     The operator's own global/system config is deliberately left readable:
-    ``user.name``/``user.email``, ``safe.directory``, ``credential.helper``
-    and ``core.excludesFile`` all live there, none of them is the threat (the
-    threat is repo-LOCAL), and redirecting ``GIT_CONFIG_GLOBAL`` to
-    ``os.devnull`` was measured to add exactly nothing over the pins while
-    breaking dashboard commits, foreign-owned-repo access and stored
-    credentials.
+    ``user.name``/``user.email``, ``safe.directory`` and ``core.excludesFile``
+    all live there, none of them is the threat (the threat is repo-LOCAL),
+    and redirecting ``GIT_CONFIG_GLOBAL`` to ``os.devnull`` was measured to
+    add exactly nothing over the pins while breaking dashboard commits,
+    foreign-owned-repo access and stored credentials.
+
+    ``credential.helper`` is the exception: it is left READABLE by
+    :func:`noninteractive_git_env` (the mutation paths need it) but is PINNED
+    to ``""`` here, because a helper is spelled ``!cmd`` and a pre-trust probe
+    must never run one. A probe that needs credentials is a probe in the wrong
+    function.
 
     Use this ONLY for automatic probes. Mutation / network paths (dashboard
     commit & push, plugin and MCP clones, profile distribution) must keep
@@ -477,6 +482,16 @@ def hardened_probe_git_env(
     return env
 
 
+# Cost of ``--no-textconv``, disclosed deliberately: it also suppresses a
+# LEGITIMATE ``diff.<driver>.textconv``, so a readable rendering of a binary
+# document degrades to raw bytes or to "Binary files ... differ" in the diff a
+# probe collects. That is accepted, not overlooked: the driver name is
+# attacker-chosen, so no fixed ``GIT_CONFIG_KEY_N`` pin list can neutralize it
+# and the flag is the only lever. Measured blast radius on this fork today is
+# zero (no ``diff.*`` entry in global config, no ``diff=`` driver declared in
+# .gitattributes). The ``filter.<name>.clean/.smudge`` family has no analogous
+# flag and stays OPEN -- see the strict xfail pins in
+# tests/security/test_gitspawn_config_injection.py.
 NO_DRIVER_DIFF_FLAGS = ("--no-ext-diff", "--no-textconv")
 
 _DIFF_RENDERING_SUBCOMMANDS = frozenset({"diff", "show", "log", "blame"})
