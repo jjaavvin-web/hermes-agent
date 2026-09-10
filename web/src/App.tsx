@@ -221,7 +221,11 @@ function ChatRouteSink() {
 
 const BUILTIN_NAV_REST: NavItem[] = [
   { path: "/life", label: "Life", icon: LayoutDashboard },
-  { path: "/get-some", labelKey: "get_some", label: "Get Some", icon: Sparkles },
+  // Get Some tab retired 2026-09-10 (josep GO) — the roster and work-nexus
+  // graph both read the RETIRED Kanban board, so /api/dashboard/projects
+  // returns [] and /api/dashboard/work-nexus returns degraded_mode
+  // ["kanban_retired"]. MVMS Projects is the canonical source of project
+  // state. Route stays reachable directly, same as the 2026-07-11 retirements.
   { path: "/reflect-promote", labelKey: "reflect_promote", label: "Reflect Promote", icon: Sparkles },
   {
     path: "/sessions",
