@@ -498,6 +498,36 @@ def _resolve_codex_usage_credentials(
     # resolve time, but a pool entry is usable now). Pool credentials have no
     # account_id concept, so the ChatGPT-Account-Id header is intentionally
     # omitted here.
+    #
+    # A Codex meter belongs to the LOGIN SESSION that produced it, so handing
+    # back a pool entry here is only safe while it is the SAME entry the
+    # machine's real Codex traffic uses. Assessed 2026-09-09 and deliberately
+    # left as-is, because on a pool-only machine that entry is the ONLY
+    # credential there is - refusing it would blank a card that is perfectly
+    # truthful. Neither tier reorders the pool: tier 2 IS the runtime resolver
+    # (chat path included) and takes the first usable entry in stored order,
+    # and this tier runs select() under STRATEGY_FILL_FIRST (openai-codex sets
+    # no credential_pool_strategies override), which returns available[0].
+    #
+    # But do NOT read that as a guarantee they agree. Two things this comment
+    # previously claimed and that are FALSE:
+    #   - select() is not side-effect-free: _available_entries(clear_expired=
+    #     True, refresh=True) can prune entries and persist, and fill_first
+    #     sets _current_id. It does not ROTATE, which is all the ordering
+    #     argument above needs - but it does mutate.
+    #   - "both tiers land on the same session" does not hold in general: their
+    #     usability predicates differ (tier 2's _pool_codex_access_token skips
+    #     entries in an exhaustion cooldown; tier 3's pool.select() judges on
+    #     last_error_reason plus a deferred-refresh re-select), so tier 3 can
+    #     return an entry tier 2 would have skipped - which is exactly why
+    #     tier 3 is reached at all.
+    # Residual, accepted: the card can show a different login session's
+    # percentage than the one serving traffic - a wrong number, surfacing as
+    # the card disagreeing with `codex /usage`. Every openai-codex credential
+    # on THIS machine shares one chatgpt_account_id (verified 2026-09-09), so
+    # today that is only ever josep's own data; nothing ENFORCES that, and if a
+    # second account's credential ever entered this pool the door left open
+    # here would serve its meter. Re-check that assumption before relying on it.
     from agent.credential_pool import load_pool
 
     pool = load_pool("openai-codex")
@@ -510,34 +540,59 @@ def _resolve_codex_usage_credentials(
 # A Codex access token can be structurally valid (unexpired JWT) and STILL be
 # server-side revoked: OpenAI rotates single-use refresh tokens, so a login
 # elsewhere - e.g. the Windows Codex app - silently invalidates this machine's
-# token without touching its exp claim. _resolve_codex_usage_credentials only
-# reaches its tier-3 pool select when tier 2 RAISES; a tier-2 token that is
-# merely DEAD returns successfully and wins. Verified 2026-09-04: the singleton
-# and pool[0] both 401 while pool[1] returned 200, and the usage card silently
-# fell back to a rollout tail and rendered an untouched per-model allowance as
-# the plan meter ("100% left" against a real 77% used). Only a live 401 can
-# detect this, so retry the OTHER pool entries on 401/403 - bounded, because
-# repeatedly hammering a provider auth endpoint with known-bad tokens is a real
-# risk to the account, not just wasted latency.
-_CODEX_USAGE_POOL_RETRY_LIMIT = 2
-
-# Deliberately STRICTER than credential_pool's own routing rule, which treats
-# EXHAUSTED as temporary. Here we are spending one of two bounded retry slots
-# on a diagnostic read, not routing live traffic: the cost of skipping a usable
-# entry is a blank usage card, the cost of not skipping is another 15s
-# auth-failing round trip.
-_CODEX_USAGE_UNUSABLE_STATUSES = frozenset({"dead", "exhausted"})
+# token without touching its exp claim.
+#
+# The 2026-09-04 response to that was to retry the OTHER credential-pool
+# entries on 401/403 and serve whichever answered 200. That was wrong and is
+# removed. Verified 2026-09-09 by decoding every openai-codex credential in
+# ~/.hermes/auth.json: all of them carry the SAME chatgpt_account_id,
+# chatgpt_user_id, sub and poid, and differ only in session_id / jti /
+# pwd_auth_time. They are separate LOGIN SESSIONS of one account - and they
+# report DIFFERENT meters. One pool entry answered 200 with 100.0% used while
+# the real account was at 23%, and the dashboard rendered "0% left" with
+# source="live" and error=null. The same split is visible on disk: that day's
+# rollout files carry two simultaneously-live resets_at epochs under one
+# limit_id "codex" (one at 100.0% used, one at 20-24%).
+#
+# So an account-id comparison CANNOT filter this - every token passes it. The
+# unit of a Codex usage meter is the login session, not the account. Do not
+# re-add a cross-credential retry here: a meter that did not come from the
+# credential this request resolved is not this card's number.
+#
+# Wording rules for the reason below, which is what josep actually reads. It
+# names no mechanism: not "401", "token", "OAuth" or "credential pool" (jargon
+# he cannot act on), not "expired" (false - the JWT is unexpired) and not
+# "revoked" (true, but it reads as "you were hacked" to a non-coder and sends
+# him down the wrong road). It must also read correctly after BOTH prefixes it
+# can appear behind:
+#   1. "Unavailable: " on the CLI - render_account_usage_lines(), pinned by
+#      tests/test_account_usage_serving_hotfix.py.
+#   2. "live meter could not be read — " on the dashboard card. That hop is
+#      OUT OF THIS REPO and was UNREACHABLE when this constant shipped: the
+#      usage-tracker plugin mapped only ``snapshot.windows`` and hardcoded
+#      ``"error": None``, so a rejected sign-in rendered the literal "no window
+#      data" instead. Closed 2026-09-09 in
+#      ~/.hermes/plugins/usage-tracker/dashboard/plugin_api.py::_fetch_codex_primary,
+#      which now passes ``unavailable_reason`` through as the card's ``error``;
+#      that plugin's own suite (tests/test_plugin_api.py, section b4) pins both
+#      the pass-through and the bundle branch that prints it.
+_CODEX_SIGNIN_REJECTED_REASON = (
+    "This machine's Codex sign-in is no longer accepted. "
+    "Run `hermes auth` to sign in again."
+)
 
 
 def _codex_account_id_from_token(access_token: str) -> Optional[str]:
     """The ChatGPT account id bound to THIS token's own JWT claim.
 
     Delegates to the canonical extraction already used for live Codex traffic
-    rather than a second copy of the base64/JWT parsing. Per-token derivation
-    matters on the retry path: a borrowed credential-pool token can belong to a
-    different ChatGPT account, and pairing one account's id with another
-    account's bearer either wastes the retry on a spurious 403 or renders
-    someone else's meter as this account's.
+    rather than a second copy of the base64/JWT parsing. This claim identifies
+    the ACCOUNT, and is used for exactly one thing: populating the outbound
+    ChatGPT-Account-Id header for the credential we actually hold. It CANNOT
+    distinguish two login sessions of one account, which is the real hazard -
+    verified 2026-09-09, every local Codex credential shares this claim while
+    reporting a different meter. Never use it to decide that one credential may
+    stand in for another.
 
     Imported lazily - this module must not drag the auxiliary client in at
     import time on a serving tree.
@@ -621,48 +676,30 @@ def _fetch_codex_account_usage(
         status = exc.response.status_code if exc.response is not None else None
         if status not in (401, 403) or str(api_key or "").strip():
             raise
-        # A failure READING the pool must not become the exception that
-        # propagates: the outer guard logs whatever comes out of here, and
-        # swapping the 401 for an OSError would misreport a revoked credential
-        # as a disk problem.
-        try:
-            from hermes_cli.auth import read_credential_pool
-
-            pool_raw = read_credential_pool("openai-codex") or []
-        except Exception:
-            logger.warning("codex - /usage credential-pool read failed", exc_info=True)
-            raise exc from None
-        pool_entries = [
-            entry
-            for entry in pool_raw
-            if isinstance(entry, dict)
-            and isinstance(entry.get("access_token"), str)
-            and entry["access_token"].strip()
-            and entry["access_token"] != token
-            and str(entry.get("last_status") or "").lower()
-            not in _CODEX_USAGE_UNUSABLE_STATUSES
-        ]
-        pool_entries.sort(
-            key=lambda entry: _parse_dt(entry.get("last_refresh"))
-            or datetime.min.replace(tzinfo=timezone.utc),
-            reverse=True,
+        # No substitute credential is acceptable. See the note above
+        # _CODEX_SIGNIN_REJECTED_REASON: every local Codex credential carries
+        # the same chatgpt_account_id but a different login session, and
+        # different login sessions report different meters.
+        #
+        # Returning a windowless snapshot instead of raising is LOAD-BEARING
+        # for a reason outside this repo: the usage-tracker plugin's
+        # codex_usage() short-circuits on a non-None snapshot BEFORE running
+        # its rollout-file fallback, and that fallback cannot tell josep's
+        # meter from the other login session's (the rollout records carry no
+        # account or session id at all). Raising here would hand it control.
+        logger.warning(
+            "codex - /usage: sign-in rejected (%s); refusing to substitute another "
+            "credential - a Codex meter belongs to the login session that produced "
+            "it, so no other credential can stand in. Card will show the sign-in "
+            "reason instead of a meter.",
+            status,
         )
-        for entry in pool_entries[:_CODEX_USAGE_POOL_RETRY_LIMIT]:
-            try:
-                with httpx.Client(timeout=15.0) as client:
-                    response = client.get(url, headers=_headers(entry["access_token"]))
-                    response.raise_for_status()
-            except httpx.HTTPStatusError:
-                continue
-            logger.warning(
-                "codex - /usage primary credential rejected (%s); served from pool entry %s",
-                status,
-                entry.get("id") or entry.get("label") or "?",
-            )
-            return _codex_usage_snapshot_from_payload(response.json() or {})
-        # Nothing worked - re-raise the ORIGINAL 401/403 so the outer fail-open
-        # guard reports the real cause instead of a silent None.
-        raise
+        return AccountUsageSnapshot(
+            provider="openai-codex",
+            source="usage_api",
+            fetched_at=_utc_now(),
+            unavailable_reason=_CODEX_SIGNIN_REJECTED_REASON,
+        )
     return _codex_usage_snapshot_from_payload(response.json() or {})
 
 
