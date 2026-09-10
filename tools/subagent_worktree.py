@@ -60,7 +60,7 @@ def _run_git(args, cwd: str, timeout: int = _GIT_TIMEOUT):
     ``except Exception``, so that fails closed the same way any other git
     error does.
     """
-    from hermes_cli._subprocess_compat import harden_git_argv, noninteractive_git_env
+    from hermes_cli._subprocess_compat import harden_git_argv, hardened_probe_git_env
     from agent.codex_session_context import resolve_confined_cwd
     return subprocess.run(
         ["git", *harden_git_argv(args)],
@@ -71,7 +71,7 @@ def _run_git(args, cwd: str, timeout: int = _GIT_TIMEOUT):
         errors="replace",
         timeout=timeout,
         stdin=subprocess.DEVNULL,
-        env=noninteractive_git_env(),
+        env=hardened_probe_git_env(),
     )
 
 

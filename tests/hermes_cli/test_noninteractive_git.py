@@ -14,6 +14,15 @@ Two layers of coverage:
    waiting for a username.
 3. Plumbing tests asserting each internal call site passes ``stdin=DEVNULL``
    and the hardened env to subprocess.
+
+``noninteractive_git_env`` is deliberately *config-transparent*: it sets the two
+prompt kill-switches and touches nothing else, so the operator's global
+``user.name``/``user.email``, ``safe.directory``, ``core.excludesFile`` and
+stored ``credential.helper`` all still apply on the mutation and network paths
+that share it. The repo-local git-config execution sinks (GHSA-7x36-8jrh-v4pw)
+are neutralized in :func:`hermes_cli._subprocess_compat.hardened_probe_git_env`
+instead, which only the automatic pre-trust probes use — see
+``tests/security/test_gitspawn_config_injection.py``.
 """
 
 from __future__ import annotations
@@ -55,6 +64,19 @@ class TestNoninteractiveGitEnv:
     def test_overrides_explicit_prompt_enable(self):
         env = noninteractive_git_env({"GIT_TERMINAL_PROMPT": "1"})
         assert env["GIT_TERMINAL_PROMPT"] == "0"
+
+    def test_injects_no_git_config_overrides(self):
+        """The comment in the E2E below promises a working askpass/credential
+        helper still authenticates. That promise is only true while this helper
+        injects no ``GIT_CONFIG_*`` overrides — a ``credential.helper=`` or
+        ``GIT_CONFIG_GLOBAL=/dev/null`` here silently breaks the dashboard
+        commit button and every stored-credential fetch/push."""
+        env = noninteractive_git_env({"HOME": "/home/x"})
+        assert env == {
+            "HOME": "/home/x",
+            "GIT_TERMINAL_PROMPT": "0",
+            "GCM_INTERACTIVE": "Never",
+        }
 
 
 # ---------------------------------------------------------------------------

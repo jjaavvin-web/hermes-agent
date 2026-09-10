@@ -1837,7 +1837,7 @@ def _setup_worktree(repo_root: str = None, sync_base: bool = True,
     pruner ages them on its slower named-tree schedule.
     """
     import subprocess
-    from hermes_cli._subprocess_compat import harden_git_argv, noninteractive_git_env
+    from hermes_cli._subprocess_compat import harden_git_argv, hardened_probe_git_env
 
     repo_root = repo_root or _git_repo_root()
     if not repo_root:
@@ -1913,7 +1913,7 @@ def _setup_worktree(repo_root: str = None, sync_base: bool = True,
             ["git", *harden_git_argv([*_wt_add_cfg, "worktree", "add", str(wt_path), "-b", branch_name, base_ref])],
             capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=120, cwd=repo_root,
             stdin=subprocess.DEVNULL,
-            env=noninteractive_git_env(),
+            env=hardened_probe_git_env(),
         )
         if result.returncode != 0:
             # If branching from the resolved remote ref failed for any reason
@@ -1930,7 +1930,7 @@ def _setup_worktree(repo_root: str = None, sync_base: bool = True,
                     ["git", *harden_git_argv(["worktree", "add", str(wt_path), "-b", branch_name, base_ref])],
                     capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=120, cwd=repo_root,
                     stdin=subprocess.DEVNULL,
-                    env=noninteractive_git_env(),
+                    env=hardened_probe_git_env(),
                 )
             if result.returncode != 0:
                 _cleanup_failed_worktree_add(repo_root, wt_path, branch_name)

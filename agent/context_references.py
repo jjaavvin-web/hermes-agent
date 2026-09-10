@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Awaitable, Callable
 
 from agent.model_metadata import estimate_tokens_rough
-from hermes_cli._subprocess_compat import IS_WINDOWS, harden_git_argv, noninteractive_git_env, windows_hide_flags
+from hermes_cli._subprocess_compat import IS_WINDOWS, harden_git_argv, hardened_probe_git_env, windows_hide_flags
 from hermes_cli.sizefmt import format_bytes
 
 from abc import ABC, abstractmethod
@@ -431,7 +431,7 @@ def _expand_git_reference(
             text=True, encoding='utf-8', errors='replace',
             timeout=30,
             stdin=subprocess.DEVNULL,
-            env=noninteractive_git_env(),
+            env=hardened_probe_git_env(),
             **_popen_kwargs,
         )
     except subprocess.TimeoutExpired:
