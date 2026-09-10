@@ -47,6 +47,9 @@ __all__ = [
     "bounded_git_probe",
     "bounded_probe_run",
     "noninteractive_git_env",
+    "hardened_probe_git_env",
+    "harden_git_argv",
+    "NO_DRIVER_DIFF_FLAGS",
     "pid_is_hermes",
 ]
 
@@ -377,11 +380,150 @@ def noninteractive_git_env(
     This is for internal plumbing calls only — the agent-facing terminal tool
     has its own policy layer and user-visible PTY, where prompting can be
     legitimate.
+
+    It deliberately does NOT neutralize repo-local git config execution sinks:
+    the call sites that need that are the automatic pre-trust probes, and they
+    use :func:`hardened_probe_git_env` instead. Doing it here would strip the
+    operator's identity, credential helper and repo hooks from the mutation
+    and network paths (dashboard commit/push, plugin & MCP clones) that share
+    this helper.
     """
     env = dict(base if base is not None else os.environ)
     env["GIT_TERMINAL_PROMPT"] = "0"
     env["GCM_INTERACTIVE"] = "Never"
     return env
+
+
+# Repo-local ``.git/config`` settings that name a command git will execute.
+# Pinned to inert values through ``GIT_CONFIG_KEY_N``/``GIT_CONFIG_VALUE_N``,
+# which git treats as *command-line* scope — the same precedence as ``git -c``
+# — so they override whatever the repository's own config says. Deliberately
+# NOT here: ``core.excludesFile`` (not an execution sink; clearing it would let
+# globally-ignored file content into a model-facing diff, i.e. widen egress)
+# and ``core.untrackedCache`` (a correctness-preserving cache, not a sink).
+_PROBE_CONFIG_PINS = {
+    # Credential / askpass exfiltration helpers ("!cmd" runs a shell).
+    "credential.helper": "",
+    "core.askPass": "",
+    # Arbitrary command run on every index refresh.
+    "core.fsmonitor": "false",
+    # Hook directory: post-checkout/post-index-change/pre-rebase scripts.
+    "core.hooksPath": os.devnull,
+    # Command-valued settings that are only reachable from interactive or
+    # tty-attached git; pinned because a probe never wants either.
+    "core.pager": "cat",
+    "core.editor": "true",
+    "sequence.editor": "true",
+    # Unscoped external diff driver (``--no-ext-diff`` only covers the
+    # diff-rendering subcommands ``harden_git_argv`` knows about).
+    "diff.external": "",
+}
+
+
+def hardened_probe_git_env(
+    base: "Mapping[str, str] | None" = None,
+) -> dict[str, str]:
+    """Environment for the *automatic, pre-trust* git probes only.
+
+    GHSA-7x36-8jrh-v4pw: Hermes gathers workspace context by running git
+    against a session's working directory automatically, before any prompt,
+    approval, or trust gate. A repository delivered as files (zip, sync
+    folder, USB, subagent worktree) whose ``.git/config`` names a command in
+    an execution-sink setting would get that command run on the host as the
+    user, with no user action required.
+
+    This starts from :func:`noninteractive_git_env` and adds two things:
+
+    * the config-INJECTION variables an inherited environment may carry
+      (``GIT_CONFIG_PARAMETERS`` and any ``GIT_CONFIG_COUNT``/``_KEY_N``/
+      ``_VALUE_N`` set) are dropped, so config cannot ride in through the env
+      — ``GIT_CONFIG_GLOBAL``/``GIT_CONFIG_SYSTEM`` are left as the operator
+      set them, because those only select the operator's OWN config files; and
+    * the sinks in :data:`_PROBE_CONFIG_PINS` are pinned via
+      ``GIT_CONFIG_COUNT``/``GIT_CONFIG_KEY_N``/``GIT_CONFIG_VALUE_N``.
+
+    Those env pairs have *command-line* precedence (identical to ``git -c``),
+    which is what makes them beat the attacker's repo-local ``.git/config``.
+    The operator's own global/system config is deliberately left readable:
+    ``user.name``/``user.email``, ``safe.directory`` and ``core.excludesFile``
+    all live there, none of them is the threat (the threat is repo-LOCAL),
+    and redirecting ``GIT_CONFIG_GLOBAL`` to ``os.devnull`` was measured to
+    add exactly nothing over the pins while breaking dashboard commits,
+    foreign-owned-repo access and stored credentials.
+
+    ``credential.helper`` is the exception: it is left READABLE by
+    :func:`noninteractive_git_env` (the mutation paths need it) but is PINNED
+    to ``""`` here, because a helper is spelled ``!cmd`` and a pre-trust probe
+    must never run one. A probe that needs credentials is a probe in the wrong
+    function.
+
+    Use this ONLY for automatic probes. Mutation / network paths (dashboard
+    commit & push, plugin and MCP clones, profile distribution) must keep
+    plain :func:`noninteractive_git_env`: they legitimately need the
+    operator's identity, credential helper and repo hooks.
+    """
+    env = noninteractive_git_env(base)
+    # Drop only the config-INJECTION variables. ``GIT_CONFIG_GLOBAL`` /
+    # ``GIT_CONFIG_SYSTEM`` are deliberately left as the operator set them:
+    # they select which of the operator's own config files git reads, and
+    # blanking them is what broke identity, safe.directory and credentials.
+    for key in list(env):
+        if (
+            key == "GIT_CONFIG_PARAMETERS"
+            or key == "GIT_CONFIG_COUNT"
+            or key.startswith("GIT_CONFIG_KEY_")
+            or key.startswith("GIT_CONFIG_VALUE_")
+        ):
+            env.pop(key, None)
+    env["GIT_CONFIG_COUNT"] = str(len(_PROBE_CONFIG_PINS))
+    for idx, (key, value) in enumerate(_PROBE_CONFIG_PINS.items()):
+        env[f"GIT_CONFIG_KEY_{idx}"] = key
+        env[f"GIT_CONFIG_VALUE_{idx}"] = value
+    return env
+
+
+# Cost of ``--no-textconv``, disclosed deliberately: it also suppresses a
+# LEGITIMATE ``diff.<driver>.textconv``, so a readable rendering of a binary
+# document degrades to raw bytes or to "Binary files ... differ" in the diff a
+# probe collects. That is accepted, not overlooked: the driver name is
+# attacker-chosen, so no fixed ``GIT_CONFIG_KEY_N`` pin list can neutralize it
+# and the flag is the only lever. Measured blast radius on this fork today is
+# zero (no ``diff.*`` entry in global config, no ``diff=`` driver declared in
+# .gitattributes). The ``filter.<name>.clean/.smudge`` family has no analogous
+# flag and stays OPEN -- see the strict xfail pins in
+# tests/security/test_gitspawn_config_injection.py.
+NO_DRIVER_DIFF_FLAGS = ("--no-ext-diff", "--no-textconv")
+
+_DIFF_RENDERING_SUBCOMMANDS = frozenset({"diff", "show", "log", "blame"})
+
+# Global options that take a separate value argument, so the scanner below
+# must skip both tokens rather than mistaking the value for the subcommand
+# (``-C diff`` is a path; ``-c diff=x`` is a config pair — neither names the
+# diff subcommand).
+_GIT_GLOBAL_VALUE_OPTS = frozenset({"-C", "-c", "--git-dir", "--work-tree", "--namespace", "--exec-path"})
+
+
+def harden_git_argv(args: "Sequence[str]") -> list[str]:
+    """Insert NO_DRIVER_DIFF_FLAGS right after a diff-rendering subcommand
+    (diff/show/log/blame), leaving every other subcommand (status, worktree,
+    rev-parse, ...) untouched — some of them reject the flags outright
+    (status errors with "unknown option")."""
+    out = list(args)
+    i = 0
+    if out and out[0] == "git":
+        i = 1
+    while i < len(out):
+        tok = out[i]
+        if tok in _GIT_GLOBAL_VALUE_OPTS:
+            i += 2
+            continue
+        if tok.startswith("-"):
+            i += 1
+            continue
+        if tok in _DIFF_RENDERING_SUBCOMMANDS:
+            return out[: i + 1] + list(NO_DRIVER_DIFF_FLAGS) + out[i + 1 :]
+        return out
+    return out
 
 
 # -----------------------------------------------------------------------------
@@ -569,6 +711,7 @@ def bounded_probe_run(
     *,
     timeout: float,
     errors: str = "replace",
+    env: "Mapping[str, str] | None" = None,
 ) -> "subprocess.CompletedProcess[str] | None":
     """Deadlock-safe ``subprocess.run(argv, capture_output=True, timeout=...)``
     for fail-open probe call sites. Returns a ``CompletedProcess`` when the
@@ -606,6 +749,7 @@ def bounded_probe_run(
             text=True,
             encoding="utf-8",
             errors=errors,
+            env=dict(env) if env is not None else None,
             **_popen_kwargs,
         )
     except Exception:
@@ -657,7 +801,9 @@ def bounded_git_probe(argv: Sequence[str], *, timeout: float) -> str:
     openai/codex#36793). ``process_group`` only changes which group the child
     belongs to; it does not detach the terminal or alter the fast path.
     """
-    result = bounded_probe_run(argv, timeout=timeout)
+    result = bounded_probe_run(
+        harden_git_argv(argv), timeout=timeout, env=hardened_probe_git_env()
+    )
     if result is None or result.returncode != 0:
         return ""
     return (result.stdout or "").strip()

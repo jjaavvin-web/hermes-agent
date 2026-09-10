@@ -24,6 +24,8 @@ import shutil
 import subprocess
 from typing import Dict, List
 
+from hermes_cli._subprocess_compat import harden_git_argv, hardened_probe_git_env
+
 _GIT_TIMEOUT = 15
 _MAX_UNTRACKED_FILES = 50  # sanity cap so a node_modules explosion can't hang us
 
@@ -40,9 +42,11 @@ def _run(args: List[str], cwd: str, timeout: int = _GIT_TIMEOUT):
         # is required for this turn and `cwd` is outside the bound worktree.
         return 1, ""
     proc = subprocess.run(
-        ["git", "-c", "core.quotePath=false", *args],
+        ["git", *harden_git_argv(["-c", "core.quotePath=false", *args])],
         cwd=confined_cwd, capture_output=True, text=True, timeout=timeout,
         encoding="utf-8", errors="replace",
+        stdin=subprocess.DEVNULL,
+        env=hardened_probe_git_env(),
     )
     return proc.returncode, proc.stdout
 

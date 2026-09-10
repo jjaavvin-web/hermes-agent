@@ -38,6 +38,7 @@ import re
 import subprocess
 import threading
 import time
+from hermes_cli._subprocess_compat import hardened_probe_git_env
 from dataclasses import dataclass, field, asdict
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
@@ -483,6 +484,8 @@ def workspace_fingerprint(cwd: Optional[str] = None) -> str:
             ["git", "rev-parse", "HEAD"],
             capture_output=True, text=True, encoding="utf-8", errors="replace",
             timeout=10, cwd=workdir,
+            stdin=subprocess.DEVNULL,
+            env=hardened_probe_git_env(),
         )
         if head.returncode != 0:
             return ""
@@ -490,6 +493,8 @@ def workspace_fingerprint(cwd: Optional[str] = None) -> str:
             ["git", "status", "--porcelain"],
             capture_output=True, text=True, encoding="utf-8", errors="replace",
             timeout=30, cwd=workdir,
+            stdin=subprocess.DEVNULL,
+            env=hardened_probe_git_env(),
         )
         if status.returncode != 0:
             return ""
