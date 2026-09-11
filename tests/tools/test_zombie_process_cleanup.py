@@ -460,15 +460,15 @@ class TestDelegationCleanup:
         # begin_turn() lazily resolves session-segmentation config on first
         # use per process via a late `from gateway.run import
         # _load_gateway_config` — gateway/run.py is a huge module (30k+
-        # lines) whose cold import alone can take multiple seconds. That
-        # cost is unrelated to what this test verifies (relay session/turn
-        # lifecycle across a delegate timeout) but lands squarely inside the
-        # artificially tight 0.1s child timeout below, so whether this test
-        # passes ends up depending on whether some earlier test in the same
-        # process already warmed that import — see
+        # lines) whose cold import alone can take multiple seconds. Stub it
+        # directly so the child's path to child_started.set() stays short
+        # and hermetic regardless of import order — see
         # tests/agent/test_relay_session_segments.py's `_default_config`
-        # fixture for the same hazard. Stub it directly so the test is
-        # hermetic regardless of import order.
+        # fixture for the same hazard. NOTE: this alone does not make the
+        # test deterministic — the child still runs on its own thread, and
+        # a busy scheduler (CI's 8-xdist-worker slices) can delay that
+        # thread's start arbitrarily regardless of how little work it has
+        # to do. The executor gate below is what actually closes that race.
         monkeypatch.setattr(
             relay_runtime,
             "_segments_config",
@@ -490,6 +490,51 @@ class TestDelegationCleanup:
         relay_host = MagicMock()
         monkeypatch.setattr(relay_runtime, "get_runtime", lambda **_kwargs: relay_host)
         monkeypatch.setattr("tools.delegate_tool._get_child_timeout", lambda: 0.1)
+
+        # _run_single_child races two threads: the parent's hard-timeout wait
+        # (0.1s, patched above) and the child's worker thread reaching
+        # child_started.set() after acquire_conversation() + begin_turn().
+        # Under CI's xdist contention the worker may not even be scheduled
+        # before result(timeout=0.1) fires, so the mid-turn timeout this test
+        # checks never happens (CI: "Subagent N timed out after 0.2s" with
+        # child_started never set; a 0.5s delay in acquire_conversation
+        # reproduces it). Gate the pool so the parent's 0.1s window
+        # opens only once the child has begun its turn.
+        #
+        # Gate only the FIRST submit(), the parent's own
+        # `_timeout_executor.submit(...)`: DaemonThreadPoolExecutor also backs
+        # relay_runtime's `_scope_op_executor()`, which acquire_conversation()
+        # uses on the child's own thread before child_started is set, and
+        # gating that future would make the child wait on itself. The gate is
+        # claimed BEFORE super().submit(): the child's worker thread, and any
+        # nested submit() it makes, cannot exist until super().submit() runs,
+        # so the parent's call is always the one gated regardless of
+        # scheduling.
+        import tools.daemon_pool as daemon_pool
+
+        _gate_claimed = threading.Event()
+
+        class _ChildTurnGatedExecutor(daemon_pool.DaemonThreadPoolExecutor):
+            def submit(self, fn, /, *args, **kwargs):
+                gate_this = not _gate_claimed.is_set()
+                _gate_claimed.set()
+                future = super().submit(fn, *args, **kwargs)
+                if not gate_this:
+                    return future
+                real_result = future.result
+
+                def _gated_result(timeout=None):
+                    assert child_started.wait(timeout=10), (
+                        "child never began its relay turn"
+                    )
+                    return real_result(timeout=timeout)
+
+                future.result = _gated_result
+                return future
+
+        monkeypatch.setattr(
+            daemon_pool, "DaemonThreadPoolExecutor", _ChildTurnGatedExecutor
+        )
 
         def run_conversation(**kwargs):
             lease = relay_runtime.SESSION_COORDINATOR.acquire_conversation(
