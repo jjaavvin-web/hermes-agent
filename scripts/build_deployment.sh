@@ -215,8 +215,26 @@ step "stamped .install_method=immutable-deployment"
 
 # --- 4. python venv — LOCK-ENFORCED (see [venv] lock_enforced above) ------
 cd "$DEST"
-uv sync --frozen "${EXTRA_ARGS[@]}"
+# state.db safety pin — DO NOT remove without re-reading CLAUDE.local.md.
+# uv's current managed 3.11 (3.11.15) bundles SQLite 3.50.4, the walresetbug
+# build behind state.db corruption #6, which corrupts even for read-only
+# openers. The gateway is the primary live writer of ~/.hermes/state.db, so a
+# deployment built on that interpreter must never become `current`.
+# Safe set per CLAUDE.local.md: 3.51.3+ / 3.50.7 / 3.44.6.
+HERMES_BUILD_PYTHON="${HERMES_BUILD_PYTHON:-/home/josep/.local/share/hermes-agent-deployments/.python-runtimes/cpython-3.11.16-pbs20260814-x86_64-gnu/bin/python3.11}"
+if [ ! -x "$HERMES_BUILD_PYTHON" ]; then
+  echo "ABORT: pinned build interpreter missing: $HERMES_BUILD_PYTHON" >&2
+  exit 1
+fi
+uv sync --frozen --python "$HERMES_BUILD_PYTHON" "${EXTRA_ARGS[@]}"
 step "uv sync --frozen done (extras: ${MANIFEST_EXTRAS[*]})"
+
+# Gate: refuse to ship a deployment whose interpreter carries a corrupting SQLite.
+BUILT_SQLITE="$(./.venv/bin/python -c 'import sqlite3;print(sqlite3.sqlite_version)')"
+case " 3.53.1 3.51.3 3.50.7 3.44.6 " in
+  *" $BUILT_SQLITE "*) step "sqlite gate OK: $BUILT_SQLITE" ;;
+  *) echo "ABORT: built venv has unsafe SQLite $BUILT_SQLITE (state.db corruption risk)" >&2; exit 1 ;;
+esac
 
 # --- 5. out-of-band installs (fork-operational, not a pyproject extra) ----
 if [ "${#MANIFEST_OOB_PACKAGES[@]}" -gt 0 ]; then
