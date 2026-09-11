@@ -82,6 +82,57 @@ class TestSmartApproval:
         assert result["smart_approved"] is True
         assert is_approved(session_key, pattern_key) is False
 
+    def test_smart_approval_caches_exact_command_not_pattern(self, monkeypatch):
+        """Identical follow-up must skip the guardian LLM; a same-pattern
+        sibling must not. Pattern allowlist stays empty (babysitting loop on
+        Discord heredocs without over-approving python -c)."""
+        session_key = "test-smart-exact-command-cache"
+        command = "python -c \"print('hello')\""
+        sibling = "python -c \"print('other')\""
+        dangerous, pattern_key, _ = detect_dangerous_command(command)
+        assert dangerous is True
+        assert detect_dangerous_command(sibling)[1] == pattern_key
+
+        monkeypatch.setenv("HERMES_SESSION_KEY", session_key)
+        monkeypatch.setenv("HERMES_EXEC_ASK", "1")
+        monkeypatch.delenv("HERMES_CRON_SESSION", raising=False)
+        monkeypatch.setattr(
+            approval_module,
+            "_get_approval_config",
+            lambda: {"mode": "smart"},
+        )
+        monkeypatch.setattr(approval_module, "_YOLO_MODE_FROZEN", False)
+        calls = {"n": 0}
+
+        def _count_approve(_command, _description):
+            calls["n"] += 1
+            return "approve"
+
+        monkeypatch.setattr(approval_module, "_smart_approve", _count_approve)
+        monkeypatch.setattr(
+            "tools.tirith_security.check_command_security",
+            lambda _command: {"action": "allow", "findings": [], "summary": ""},
+        )
+        approval_module.clear_session(session_key)
+        approval_module._permanent_approved.clear()
+
+        first = approval_module.check_all_command_guards(command, "local")
+        second = approval_module.check_all_command_guards(command, "local")
+        other = approval_module.check_all_command_guards(sibling, "local")
+
+        assert first["approved"] is True and first.get("smart_approved") is True
+        assert second["approved"] is True and second.get("smart_approved") is True
+        assert other["approved"] is True and other.get("smart_approved") is True
+        assert calls["n"] == 2, (
+            f"identical command re-hit the guardian LLM "
+            f"({calls['n']} calls; want 2: first + sibling)"
+        )
+        assert is_approved(session_key, pattern_key) is False
+
+        hard = approval_module.check_all_command_guards("shutdown -h now", "local")
+        assert hard["approved"] is False
+        assert hard.get("hardline") is True
+
 
 class TestDetectDangerousRm:
     def test_rm_flags_after_operands_detected(self):
