@@ -34068,9 +34068,15 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
     # the sentinel for this life. Placed after the PID-file/lock claim so
     # only the authoritative gateway for this HERMES_HOME touches the
     # sentinel — a --replace loser exiting above must not clobber it.
+    # The state.db integrity scan itself is deferred here (2026-09-11): on a
+    # multi-GB store with a cold page cache it can run for minutes, and its
+    # verdict never gates startup — it is forensics only. Started as a
+    # background thread below, once the gateway is actually up, so a cold
+    # WSL boot no longer sits inside this call past TimeoutStartSec.
+    _lifecycle_unclean = None
     try:
         from gateway.lifecycle_ledger import record_startup as _lifecycle_record_startup
-        _lifecycle_record_startup()
+        _lifecycle_unclean = _lifecycle_record_startup(defer_integrity_check=True)
     except Exception as _lc_exc:
         logger.debug("Lifecycle ledger startup record failed: %s", _lc_exc)
 
@@ -34105,6 +34111,15 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
     if not success:
         _shutdown_gateway_health_export(runner)
         return False
+    # Now that the gateway is up, run the deferred state.db integrity scan
+    # in the background (NS-608 / 2026-09-11): it reads the whole store and
+    # its verdict never gated startup, so running it here keeps all of its
+    # forensic value while taking the scan off the path to READY.
+    try:
+        from gateway.lifecycle_ledger import start_state_db_integrity_check
+        start_state_db_integrity_check(_lifecycle_unclean)
+    except Exception as _lc_exc:
+        logger.debug("Failed to start background state.db integrity check: %s", _lc_exc)
     # Recover any pending messages flushed during a previous shutdown (#72680).
     try:
         from gateway.shutdown_flush import recover_pending_to_db
