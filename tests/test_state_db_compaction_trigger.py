@@ -37,12 +37,16 @@ def _make_high_freelist(db: SessionDB) -> None:
     free pages that the old ``pruned > 0`` gate would never reclaim.
     """
     db.create_session(session_id="fresh", source="cli")  # recent, active
-    for i in range(2000):
-        db.append_message(
-            session_id="fresh",
-            role="user",
-            content=("payload " * 60) + str(i),
-        )
+    # One write transaction for the whole seed: per-row append_message pays
+    # a commit (and, off WAL — e.g. the WAL-reset-bug fallback to
+    # journal_mode=DELETE on an unpatched SQLite — a journal fsync) per
+    # message, which at n=2000 measured ~40s of pure seeding here, enough to
+    # blow the per-test timeout before the compaction trigger under test
+    # even ran (mirrors the TestGetMessagesPagination._seed fix).
+    db.append_messages_batch(
+        "fresh",
+        [{"role": "user", "content": ("payload " * 60) + str(i)} for i in range(2000)],
+    )
     with db._lock:
         db._conn.execute("DELETE FROM messages")
         db._conn.commit()
