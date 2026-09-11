@@ -457,6 +457,23 @@ class TestDelegationCleanup:
         from tools.delegate_tool import _run_single_child
 
         relay_runtime._reset_for_tests()
+        # begin_turn() lazily resolves session-segmentation config on first
+        # use per process via a late `from gateway.run import
+        # _load_gateway_config` — gateway/run.py is a huge module (30k+
+        # lines) whose cold import alone can take multiple seconds. That
+        # cost is unrelated to what this test verifies (relay session/turn
+        # lifecycle across a delegate timeout) but lands squarely inside the
+        # artificially tight 0.1s child timeout below, so whether this test
+        # passes ends up depending on whether some earlier test in the same
+        # process already warmed that import — see
+        # tests/agent/test_relay_session_segments.py's `_default_config`
+        # fixture for the same hazard. Stub it directly so the test is
+        # hermetic regardless of import order.
+        monkeypatch.setattr(
+            relay_runtime,
+            "_segments_config",
+            lambda: {"on_compaction": False, "max_turns": 0},
+        )
         profile_home = tmp_path / "profile-timeout"
         profile_token = set_hermes_home_override(profile_home)
         child_started = threading.Event()
