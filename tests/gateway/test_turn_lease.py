@@ -201,8 +201,22 @@ async def test_full_dispatch_rejects_lease_timeout_without_running_goal_hook(
         "sess-dedup", owner_key="holder-key", generation=1, timeout=1
     )
     assert holder is not None
-    monkeypatch.setenv("HERMES_AGENT_TIMEOUT", "5")
+    monkeypatch.setenv("HERMES_AGENT_TIMEOUT", "60")
     monkeypatch.setenv("HERMES_TURN_LEASE_TIMEOUT", "0.02")
+
+    # This test exercises the full ``_handle_message`` entry point (unlike
+    # the sibling test above, which starts at ``_handle_message_with_agent``
+    # and never reaches this code), so it also runs the real in-flight
+    # crash-marker write — real disk I/O, fsync included, queued on the
+    # module-level single-worker executor shared by the whole test process.
+    # That write is unrelated to the lease timeout this test asserts on, but
+    # under CI's parallel load it can queue behind other tests' marker I/O
+    # and blow the outer watchdog well before the (mocked-fast, 0.02s)
+    # lease acquire even runs — an intermittent false red with no lease/
+    # dispatch ordering bug behind it. Stub it out so the asserted behavior
+    # (prompt rejection, no transcript load, no goal-hook run) isn't gated on
+    # unrelated filesystem timing.
+    monkeypatch.setattr(runner, "_write_inflight_crash_marker", lambda *a, **kw: None)
 
     runner.session_store.load_transcript.side_effect = AssertionError(
         "transcript must not load after a turn-lease timeout"
@@ -213,8 +227,21 @@ async def test_full_dispatch_rejects_lease_timeout_without_running_goal_hook(
     runner._run_agent = pytest.fail
     runner._post_turn_goal_continuation = AsyncMock()
 
+    # 15s matches the outer watchdog other full-``_handle_message`` dispatch
+    # tests use (see tests/gateway/test_session_hygiene.py) rather than a
+    # value invented for this test — it is a hang guard, not the property
+    # under test. HERMES_AGENT_TIMEOUT is set to 60s, well past that 15s
+    # guard, so it also keeps the property honest: if a regression ever made
+    # the lease wait fall back to the agent clock instead of
+    # HERMES_TURN_LEASE_TIMEOUT (0.02s), this would hang into the watchdog
+    # and fail instead of quietly passing on a lease wait that merely
+    # happened to be short. A 1s watchdog was observed to fail intermittently
+    # (~10% of runs, no CI load added) once ambient scheduling noise on a
+    # normal dev box pushed real, unrelated pre-lease work (in-flight
+    # crash-marker I/O, asyncio.to_thread hops in session resolution) past
+    # 1s; none of that work is the lease/dispatch behavior this test guards.
     try:
-        response = await asyncio.wait_for(runner._handle_message(_event()), timeout=1)
+        response = await asyncio.wait_for(runner._handle_message(_event()), timeout=15)
     finally:
         assert runner._turn_leases.release(holder) is True
 
