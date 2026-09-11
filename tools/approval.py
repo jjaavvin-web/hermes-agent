@@ -1997,6 +1997,10 @@ def _rewrite_resolved_hermes_home(command: str) -> str:
 
 _PARAM_REPLACEMENT_RE = re.compile(r"\$\{[^}/\s]+/[^}/]*/(?P<replacement>[^}]*)\}")
 _PARAM_DEFAULT_RE = re.compile(r"\$\{[^}:}\s]+:-(?P<default>[^}]*)\}")
+# Bare ${NAME} / ${NAME:-} with an empty default. Fail toward detection: the
+# detector cannot know whether NAME is set, so treat it as a possible empty
+# splice. ${NAME:-default} and ${NAME/x/y} stay on the regexes above.
+_BARE_EMPTY_PARAM_RE = re.compile(r"\$\{[A-Za-z_][A-Za-z0-9_]*(:?-)?\}")
 _SIMPLE_SHELL_LITERAL_RE = re.compile(r"^[A-Za-z0-9_./:@%+=,-]+$")
 _ENV_ASSIGNMENT_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*=.*")
 _COMMAND_WRAPPER_WORDS = {
@@ -2656,24 +2660,36 @@ def _is_simple_shell_literal(value: str) -> bool:
 
 
 def _literal_command_substitution_output(script: str) -> str | None:
-    """Resolve tiny literal command substitutions without executing a shell."""
+    """Resolve tiny literal command substitutions without executing a shell.
+
+    Returning ``\"\"`` means the substitution is *provably empty* (bash strips
+    trailing newlines, so bare ``echo`` / ``true`` / ``:`` / empty ``$()``
+    all yield the empty string). Returning ``None`` means "unknown" — never
+    treat an unresolvable body such as ``date`` as empty.
+    """
     try:
         tokens = shlex.split(script, posix=True)
     except ValueError:
         return None
     if not tokens:
-        return None
+        return ""
 
     command = tokens[0].lower()
     args = tokens[1:]
+    if command in {":", "true"} and not args:
+        return ""
     if command == "echo":
         while args and re.fullmatch(r"-[nEe]+", args[0]):
             args = args[1:]
+        if not args:
+            return ""
         if len(args) == 1 and _is_simple_shell_literal(args[0]):
             return args[0]
         return None
 
     if command == "printf":
+        if len(args) == 1 and args[0] == "":
+            return ""
         if len(args) == 1 and _is_simple_shell_literal(args[0]):
             return args[0]
         if (
@@ -2713,7 +2729,88 @@ def _replace_simple_command_substitutions(word: str) -> str:
 def _replace_simple_shell_expansions(word: str) -> str:
     word = _replace_simple_command_substitutions(word)
     word = _PARAM_REPLACEMENT_RE.sub(lambda match: match.group("replacement"), word)
-    return _PARAM_DEFAULT_RE.sub(lambda match: match.group("default"), word)
+    word = _PARAM_DEFAULT_RE.sub(lambda match: match.group("default"), word)
+    return _BARE_EMPTY_PARAM_RE.sub("", word)
+
+
+def _try_skip_provably_empty_expansion(text: str, i: int) -> int | None:
+    """Return the index after a provably-empty expansion at *i*, else None.
+
+    ``None`` from the literal resolver means unknown, never empty: ``$(date)``
+    and ``$(echo hi)`` stay intact. Empty/whitespace ``$()``, zero-output
+    forms (bare ``echo`` / ``true`` / ``:`` / ``printf ''``), and bare
+    ``${NAME}`` / ``${NAME:-}`` are deleted.
+    """
+    if text.startswith("$(", i):
+        end = _scan_dollar_paren_end(text, i)
+        if end is not None and _literal_command_substitution_output(text[i + 2:end - 1]) == "":
+            return end
+        return None
+    if i < len(text) and text[i] == "`":
+        end = _scan_backtick_end(text, i)
+        if end is not None and _literal_command_substitution_output(text[i + 1:end - 1]) == "":
+            return end
+        return None
+    if text.startswith("${", i):
+        match = _BARE_EMPTY_PARAM_RE.match(text, i)
+        if match:
+            return match.end()
+    return None
+
+
+def _delete_provably_empty_expansions(text: str) -> str:
+    """Delete provably-empty ``$()`` / backtick / bare ``${NAME}`` splices.
+
+    Quote-aware: single-quoted regions are never touched (bash does not
+    expand them). Double-quoted regions still expand, matching real bash.
+    Additive detection reading only — callers must keep the original text.
+    """
+    chars: list[str] = []
+    quote: str | None = None
+    i = 0
+    while i < len(text):
+        ch = text[i]
+        if quote == "'":
+            chars.append(ch)
+            if ch == "'":
+                quote = None
+            i += 1
+            continue
+        if quote == '"':
+            if ch == "\\" and i + 1 < len(text):
+                chars.append(ch)
+                chars.append(text[i + 1])
+                i += 2
+                continue
+            if ch == '"':
+                quote = None
+                chars.append(ch)
+                i += 1
+                continue
+            skipped = _try_skip_provably_empty_expansion(text, i)
+            if skipped is not None:
+                i = skipped
+                continue
+            chars.append(ch)
+            i += 1
+            continue
+        if ch in ("'", '"'):
+            quote = ch
+            chars.append(ch)
+            i += 1
+            continue
+        if ch == "\\" and i + 1 < len(text):
+            chars.append(ch)
+            chars.append(text[i + 1])
+            i += 2
+            continue
+        skipped = _try_skip_provably_empty_expansion(text, i)
+        if skipped is not None:
+            i = skipped
+            continue
+        chars.append(ch)
+        i += 1
+    return "".join(chars)
 
 
 def _strip_shell_word_syntax(word: str) -> str:
@@ -2759,6 +2856,9 @@ def _deobfuscate_shell_word_for_detection(word: str) -> str:
         previous = deobfuscated
         deobfuscated = _replace_simple_shell_expansions(deobfuscated)
         deobfuscated = _strip_shell_word_syntax(deobfuscated)
+        emptied = _delete_provably_empty_expansions(deobfuscated)
+        if emptied != deobfuscated:
+            deobfuscated = emptied
         if deobfuscated == previous:
             break
     return deobfuscated
@@ -3420,6 +3520,12 @@ def _deny_command_variants(command: str):
             segment = _deny_shell_command_segment(source, start)
             executable = _deobfuscate_shell_word_for_detection(word)
             tail = _deny_collapse_unquoted_ws(segment[end - start :])
+            # `$()` inside a word is a command-start `)` for the packet-1
+            # scanner, so `_deny_shell_command_segment` can end at `su$(`
+            # and drop the real argv tail. When deobfuscation collapsed an
+            # empty splice, keep the bytes after the original word.
+            if not tail and executable != word:
+                tail = _deny_collapse_unquoted_ws(source[end:])
             for name in dict.fromkeys((executable, os.path.basename(executable))):
                 candidate = name + tail
                 yield candidate
@@ -3492,6 +3598,18 @@ def _command_detection_variants(command: str):
     if marked != grep_safe and marked not in seen:
         seen.add(marked)
         yield marked
+    # Provably-empty expansions ($() / backtick / bare ${NAME}) can splice
+    # a hardline verb or path in pieces. Yield ONE extra whole-command
+    # reading with those splices deleted; never replace the original.
+    # Quote-aware: single-quoted text is left intact.
+    emptied = _delete_provably_empty_expansions(grep_safe)
+    if emptied != grep_safe and emptied not in seen:
+        seen.add(emptied)
+        yield emptied
+        marked_emptied = _mark_command_starts(emptied)
+        if marked_emptied != emptied and marked_emptied not in seen:
+            seen.add(marked_emptied)
+            yield marked_emptied
     # Shell quoting/escaping can spell a dangerous executable name in pieces
     # (for example r\m or r''m). Keep that deobfuscation scoped to command
     # words so similarly shaped arguments do not become false positives.

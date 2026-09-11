@@ -950,3 +950,88 @@ def test_sudo_stdin_guard_container_bypass(clean_session):
         for cmd in _SUDO_STDIN_BLOCK:
             result = check_all_command_guards(cmd, env)
             assert result["approved"] is True, f"container {env} should bypass sudo guard on {cmd!r}"
+
+# GROKDADDY night 2 packet 6 (2026-09-08): an expansion that yields the empty
+# string ($()/backtick/bare ${NAME}) spliced INSIDE a command word or a
+# hardline path argument still spells the verb in real bash (trailing
+# newlines are stripped from command-substitution output, so bare
+# `echo`/`true`/an unset ${NAME} all resolve to ""), but the deobfuscation
+# pass had no empty-output reading. Measured leaking on fork main ffb1d333ed.
+_WORD_SPLICE_EMPTY_EXPANSION_MUST_BLOCK = [
+    "shut$()down -h now",
+    "reb$()oot",
+    "sh${UNSET}utdown -h now",
+    "mk`echo`fs.ext4 /dev/sda1",
+    "rm -rf ~/.her$()mes",
+    "shut$( )down -h now",
+    "s$()h$()utdown -h now",
+]
+
+# These two ALSO carry an empty-yielding splice but already return
+# (True, ...) on ffb1d333ed: the verb spelling stays one contiguous run of
+# characters (the splice sits before/after it, not inside it), and the
+# _CMDPOS \b boundary is satisfied by the non-word splice characters either
+# side. Regression control, not a fix target -- do not let your change
+# regress these, but do not count them toward the RED total either.
+_WORD_SPLICE_ALREADY_BLOCKED_CONTROL = [
+    "shutdown$() -h now",
+    "`echo`shutdown -h now",
+]
+
+_WORD_SPLICE_MUST_STAY_ALLOWED = [
+    'echo "$(date) shutdown"',
+    "echo shutdown is a word",
+    "printf '%s' 'shut$()down'",
+    'echo "$(echo hi)"',
+    'git st""atus',
+    "echo ${HOME}",
+    'hermes send -t telegram "$(date)"',
+    "echo 'reboot'",
+]
+
+
+@pytest.mark.parametrize("command", _WORD_SPLICE_EMPTY_EXPANSION_MUST_BLOCK)
+def test_word_splice_empty_expansion_blocks_as_hardline(command):
+    is_hl, desc = detect_hardline_command(command)
+    assert is_hl, f"empty-splice word obfuscation leaked past hardline: {command!r}"
+    assert desc
+
+
+@pytest.mark.parametrize("command", _WORD_SPLICE_EMPTY_EXPANSION_MUST_BLOCK)
+def test_word_splice_empty_expansion_blocked_by_full_guard_chain(
+    command, clean_session, monkeypatch
+):
+    """Below yolo AND in a gateway session: the hardline floor must never
+    flip to approved=True. Fable-verified: HERMES_GATEWAY_SESSION=1 ALONE
+    already shows approved=True (fully silent) for 6 of these 7; the
+    seventh (rm/~/.hermes) is only caught by the softer DANGEROUS
+    recursive-delete rule without it, giving approved=False but
+    hardline=None -- the hardline=True assertion below is what actually
+    proves the floor there, not the approved flag alone. HERMES_YOLO_MODE=1
+    is set here for parity with this file's other below-yolo tests, not
+    because it changes the outcome: _YOLO_MODE_FROZEN latches from the env
+    var at module import time, so monkeypatch.setenv on it after import is a
+    no-op for _YOLO_MODE_FROZEN (session-scoped real yolo is
+    enable_session_yolo(), used elsewhere in this file) -- it does not
+    invalidate this test, since the hardline floor must block before any
+    yolo bypass is ever consulted, real or not."""
+    monkeypatch.setenv("HERMES_GATEWAY_SESSION", "1")
+    monkeypatch.setenv("HERMES_YOLO_MODE", "1")
+    result = check_dangerous_command(command, "local")
+    assert result["approved"] is False, f"empty-splice hardline ran silently under yolo: {command!r}"
+    assert result.get("hardline") is True, f"downgraded from hardline to a yolo-passable ask: {command!r}"
+
+
+@pytest.mark.parametrize("command", _WORD_SPLICE_ALREADY_BLOCKED_CONTROL)
+def test_word_splice_edge_adjacent_stays_blocked(command):
+    is_hl, desc = detect_hardline_command(command)
+    assert is_hl, f"already-correct block regressed: {command!r}"
+    assert desc
+
+
+@pytest.mark.parametrize("command", _WORD_SPLICE_MUST_STAY_ALLOWED)
+def test_word_splice_fix_does_not_overblock(command, clean_session):
+    is_hl, desc = detect_hardline_command(command)
+    assert not is_hl, f"word-splice fix over-blocked legitimate command: {command!r} ({desc})"
+    result = check_dangerous_command(command, "local")
+    assert result["approved"] is True, f"word-splice fix regressed a legitimate command to an ask: {command!r}"
