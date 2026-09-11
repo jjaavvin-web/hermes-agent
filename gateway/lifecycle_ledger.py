@@ -38,10 +38,12 @@ gateway lifecycle it is observing.
 
 from __future__ import annotations
 
+import atexit
 import json
 import logging
 import os
 import sqlite3
+import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -223,7 +225,9 @@ def detect_unclean_exit(home: Optional[Path] = None) -> Optional[Dict[str, Any]]
     return evidence
 
 
-def check_state_db_integrity(home: Optional[Path] = None) -> str:
+def check_state_db_integrity(
+    home: Optional[Path] = None, *, _track_connection: bool = False
+) -> str:
     """Return ``"ok"``, ``"absent"``, or the first ``quick_check`` complaint.
 
     Called only after an unclean death, because that is when the store may
@@ -232,16 +236,26 @@ def check_state_db_integrity(home: Optional[Path] = None) -> str:
     ``_enforce_macos_synchronous_full`` in :mod:`hermes_state` — macOS
     ``fsync`` guarantees neither data-on-platter nor write ordering).
 
-    ``quick_check(1)`` stops at the first problem, so this costs ~2s on a
-    healthy 500MB store and less on a damaged one — cheap enough for a path
-    that runs at most once per unclean boot, far too expensive for every
-    boot. Corruption used to sit undetected for days (2026-08-26 → 08-30)
-    because nothing ever looked.
+    The ``(1)`` in ``quick_check(1)`` caps how many corruption reports come
+    back, not how much of the file is read: a *healthy* store is scanned in
+    full regardless, so the cost scales with store size — cheap on a small
+    store, minutes on a multi-GB one with a cold page cache. That is why the
+    gateway runs this off the startup critical path (see
+    :func:`start_state_db_integrity_check`) rather than inline. Corruption
+    used to sit undetected for days (2026-08-26 → 08-30) because nothing
+    ever looked.
 
     The connection is opened normally, not read-only: a WAL store needs its
     -shm sidecar for a read-only open. The PRAGMA itself writes nothing.
     Never raises — this is forensics, not lifecycle.
+
+    ``_track_connection`` is private: when true, the live connection is
+    registered with the module's background-worker registry for the
+    duration of the query so :func:`interrupt_state_db_integrity_check` can
+    reach it from another thread. Existing callers never pass it, and the
+    default behaviour is unchanged.
     """
+    global _integrity_connection
     base = home if home is not None else _process_hermes_home()
     path = base.joinpath(*_STATE_DB_RELATIVE)
     if not path.exists():
@@ -250,24 +264,191 @@ def check_state_db_integrity(home: Optional[Path] = None) -> str:
         # A WAL store cannot be opened read-only without its -shm sidecar, so
         # open normally; quick_check itself writes nothing.
         conn = sqlite3.connect(str(path))
+        if _track_connection:
+            with _integrity_lock:
+                _integrity_connection = conn
         try:
             row = conn.execute("PRAGMA quick_check(1)").fetchone()
         finally:
+            if _track_connection:
+                with _integrity_lock:
+                    _integrity_connection = None
             conn.close()
     except Exception as exc:  # sqlite3.Error, OSError, anything
-        return f"check-failed: {exc}"
+        return _format_check_failure(exc)
     if not row or row[0] is None:
         return "check-failed: no result"
     return str(row[0])
 
 
-def record_startup(home: Optional[Path] = None) -> Optional[Dict[str, Any]]:
+def _format_check_failure(exc: BaseException) -> str:
+    """The exact verdict string :func:`check_state_db_integrity` returns for
+    a given exception. Shared so a caller can recognise one *specific*
+    failure — SQLite's own ``interrupted`` — without a loose substring
+    search of arbitrary corruption text (see
+    :func:`_is_sqlite_interrupt_verdict`)."""
+    return f"check-failed: {exc}"
+
+
+def _is_sqlite_interrupt_verdict(verdict: str) -> bool:
+    """True only when ``verdict`` is exactly what
+    :func:`check_state_db_integrity` produces for its own
+    ``sqlite3.OperationalError("interrupted")`` — i.e. the failure is
+    ``connection.interrupt()`` breaking its own query, never a genuine
+    corruption verdict that merely happens to be returned around the same
+    time an interrupt was requested. Deliberately an exact comparison
+    against the same formatting ``check_state_db_integrity`` uses, not a
+    substring search, so real corruption text can never be swallowed."""
+    return verdict == _format_check_failure(sqlite3.OperationalError("interrupted"))
+
+
+# ── background integrity-check registry (shutdown safety) ──────────────────
+#
+# The gateway now runs check_state_db_integrity() on a daemon thread after
+# startup (see start_state_db_integrity_check below) instead of inline, so a
+# multi-minute scan of a multi-GB store never blocks TimeoutStartSec. That
+# scan must not become a shutdown problem instead: sqlite3.Connection.interrupt()
+# is documented safe to call from a different thread, so this tiny registry
+# lets an atexit callback (armed once, the first time a worker starts) reach
+# the live connection and stop it cleanly rather than leaving it to whatever
+# the interpreter does with an abandoned daemon thread mid-syscall.
+
+_integrity_lock = threading.Lock()
+_integrity_connection: Optional[sqlite3.Connection] = None
+_integrity_thread: Optional[threading.Thread] = None
+_integrity_interrupt_event: Optional[threading.Event] = None
+_integrity_atexit_registered = False
+
+
+def interrupt_state_db_integrity_check(timeout: float = 2.0) -> None:
+    """Stop a pending background integrity check and wait for it to finish.
+
+    Safe to call with none pending (no-op) and safe to call more than once.
+    Sets the registered interrupt event (so the worker labels its own
+    verdict "interrupted" instead of a genuine failure), calls
+    ``connection.interrupt()`` on the registered live connection if any,
+    then joins the worker thread up to ``timeout`` seconds. Never raises.
+    """
+    with _integrity_lock:
+        connection = _integrity_connection
+        thread = _integrity_thread
+        event = _integrity_interrupt_event
+    if event is not None:
+        event.set()
+    if connection is not None:
+        try:
+            connection.interrupt()
+        except Exception:
+            logger.debug("state.db integrity check interrupt() failed", exc_info=True)
+    if thread is not None and thread.is_alive():
+        thread.join(timeout=timeout)
+
+
+def start_state_db_integrity_check(
+    evidence: Optional[Dict[str, Any]], home: Optional[Path] = None
+) -> Optional[threading.Thread]:
+    """Run :func:`check_state_db_integrity` off the startup critical path.
+
+    Call this only after the gateway has reported ready. ``evidence`` is
+    the dict :func:`record_startup` returned (``None`` means the previous
+    life exited cleanly, so there is nothing to check — this returns
+    ``None`` without starting anything).
+
+    Starts exactly one daemon thread (never ``asyncio.to_thread`` and never
+    the default executor: executor threads are joined at interpreter exit,
+    which would turn this startup-time optimization into a shutdown hang —
+    a plain daemon thread is simply abandoned). The thread measures its own
+    elapsed time, runs the real check with its connection tracked for
+    interruption, appends one ``gateway.state_db_integrity_check`` exit-diag
+    record, and logs ERROR only for a genuine failure (never for one this
+    process itself interrupted, e.g. via
+    :func:`interrupt_state_db_integrity_check` at shutdown). It never
+    touches the lifecycle sentinel — that stays exclusively synchronous
+    bookkeeping in :func:`record_startup` / :func:`mark_exited` so a late
+    worker can never clobber a replacement gateway's claim on it.
+    """
+    global _integrity_thread, _integrity_interrupt_event, _integrity_atexit_registered
+    if evidence is None:
+        return None
+
+    interrupt_event = threading.Event()
+
+    def _worker() -> None:
+        global _integrity_connection, _integrity_thread, _integrity_interrupt_event
+        start = time.monotonic()
+        try:
+            verdict = check_state_db_integrity(home=home, _track_connection=True)
+        except Exception as exc:  # check_state_db_integrity never raises; belt & suspenders
+            verdict = f"check-failed: {exc}"
+        elapsed = time.monotonic() - start
+        # Relabel only when the failure IS the interrupt — a genuine
+        # corruption verdict that happens to land around the same moment a
+        # shutdown requested an interrupt must keep its real text (and its
+        # ERROR log below), never be swallowed as "interrupted".
+        if interrupt_event.is_set() and _is_sqlite_interrupt_verdict(verdict):
+            verdict = "interrupted"
+        try:
+            record = {
+                "ts": datetime.now(timezone.utc).isoformat(),
+                "tag": "gateway.state_db_integrity_check",
+                "pid": os.getpid(),
+                "prior_pid": evidence.get("prior_pid"),
+                "prior_started_at": evidence.get("prior_started_at"),
+                "state_db_integrity": verdict,
+                "elapsed_s": round(elapsed, 1),
+            }
+            _append_exit_diag(record, home)
+            if verdict not in ("ok", "absent", "interrupted"):
+                logger.error(
+                    "state.db FAILED integrity check after an unclean gateway "
+                    "exit: %s — sessions may read as missing until it is "
+                    "repaired. Run `hermes doctor`.",
+                    verdict,
+                )
+            else:
+                logger.info(
+                    "Background state.db integrity check finished: %s (%.1fs)",
+                    verdict,
+                    elapsed,
+                )
+        except Exception:
+            logger.debug("Background integrity-check bookkeeping failed", exc_info=True)
+        finally:
+            with _integrity_lock:
+                _integrity_connection = None
+                _integrity_thread = None
+                _integrity_interrupt_event = None
+
+    thread = threading.Thread(
+        target=_worker, daemon=True, name="state-db-integrity-check"
+    )
+    with _integrity_lock:
+        _integrity_thread = thread
+        _integrity_interrupt_event = interrupt_event
+        if not _integrity_atexit_registered:
+            atexit.register(interrupt_state_db_integrity_check)
+            _integrity_atexit_registered = True
+    thread.start()
+    return thread
+
+
+def record_startup(
+    home: Optional[Path] = None, *, defer_integrity_check: bool = False
+) -> Optional[Dict[str, Any]]:
     """Boot-time entry point: report any unclean previous exit, then claim
     the sentinel for the current life.
 
     Returns the unclean-exit evidence dict (also persisted to
     ``gateway-exit-diag.log`` and logged at WARNING) or ``None``.  Never
     raises.
+
+    ``defer_integrity_check`` (default ``False``, unchanged behaviour): when
+    ``True``, the state.db scan is skipped here — ``evidence["state_db_
+    integrity"]`` is set to ``"deferred"`` instead of a real verdict, and
+    the caller is expected to run it separately via
+    :func:`start_state_db_integrity_check`. Unclean-exit detection, the
+    exit-diag record, the WARNING log and the sentinel claim below are all
+    synchronous either way; only the (potentially minutes-long) scan moves.
     """
     evidence: Optional[Dict[str, Any]] = None
     try:
@@ -276,9 +457,12 @@ def record_startup(home: Optional[Path] = None) -> Optional[Dict[str, Any]]:
             # The death may have torn the store. This is the only moment
             # we know to look, and looking is what turns a 3.5-day silent
             # corruption into a startup warning.
-            verdict = check_state_db_integrity(home=home)
+            if defer_integrity_check:
+                verdict = "deferred"
+            else:
+                verdict = check_state_db_integrity(home=home)
             evidence["state_db_integrity"] = verdict
-            if verdict not in ("ok", "absent"):
+            if verdict not in ("ok", "absent", "deferred"):
                 logger.error(
                     "state.db FAILED integrity check after an unclean gateway "
                     "exit: %s — sessions may read as missing until it is "
