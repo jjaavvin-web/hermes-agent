@@ -552,7 +552,8 @@ def test_hermes_state_and_install_dirs_are_hardline_protected():
     from tools.approval import detect_hardline_command as hl
 
     for cmd in ("rm -rf ~/.hermes", "rm -rf ~/.hermes/", "rm -rf ~/.hermes/*",
-                "rm -rf ~/.local/share/hermes-agent", "rm -rf /home/u/.hermes"):
+                "rm -rf ~/.local/share/hermes-agent", "rm -rf /home/u/.hermes",
+                "rm -rf ~/.her$()mes"):
         assert hl(cmd)[0], f"critical dir no longer HARDLINE-protected: {cmd!r}"
     for cmd in ("rm -rf ~/.hermes/cron/output/tmp", "rm -rf /tmp/scratch",
                 "rm -rf ~/.hermes-backup"):
@@ -584,7 +585,8 @@ def test_user_deny_projection_survives_merge(monkeypatch):
                 "timeout 5 sudo -n id -u",
                 "/usr/bin/sudo -n id -u",
                 "env -S '/usr/bin/sudo -n id -u'",
-                "echo ok # ignored\n bash -c '/usr/bin/sudo -n id -u'"):
+                "echo ok # ignored\n bash -c '/usr/bin/sudo -n id -u'",
+                "su$()do -n id -u"):
         assert ap._match_user_deny_rule(cmd), f"user deny rule no longer projects: {cmd!r}"
     for cmd in ("command -v sudo",
                 "env -a sudo printf ok",

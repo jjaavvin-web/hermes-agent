@@ -156,6 +156,37 @@ class TestDenyExecutableProjection:
         ):
             assert mod._match_user_deny_rule(command) is None, command
 
+    # GROKDADDY night 2 packet 6 (2026-09-08): same empty-splice gap as the
+    # hardline floor, reached through the shared _deobfuscate_shell_word_for_
+    # detection helper. Measured leaking (None) with deny ["sudo *"] on
+    # ffb1d333ed.
+    WORD_SPLICE_MUST_BLOCK = [
+        "su$()do -n id -u",
+        "sud$()o -n id -u",
+        "su${UNSET}do -n id -u",
+        "su`echo`do -n id -u",
+        "nice -n5 su$()do -n id -u",
+    ]
+
+    # The fork already collapses quote splices and a leading substitution
+    # that resolves to a literal -- these three already match on
+    # ffb1d333ed. Regression control, not a fix target.
+    WORD_SPLICE_ALREADY_MATCHES_CONTROL = [
+        'sud""o -n id -u',
+        "sud''o -n id -u",
+        "$(echo su)do -n id -u",
+    ]
+
+    @pytest.mark.parametrize("command", WORD_SPLICE_MUST_BLOCK)
+    def test_word_splice_sudo_blocks(self, deny_config, command):
+        deny_config(["sudo *"])
+        assert mod._match_user_deny_rule(command) is not None, command
+
+    @pytest.mark.parametrize("command", WORD_SPLICE_ALREADY_MATCHES_CONTROL)
+    def test_word_splice_control_already_matches(self, deny_config, command):
+        deny_config(["sudo *"])
+        assert mod._match_user_deny_rule(command) is not None, command
+
 
 class TestDenyBeatsYolo:
     def test_deny_blocks_under_yolo_env(self, deny_config, clean_env, monkeypatch):
