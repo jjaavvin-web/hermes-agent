@@ -264,3 +264,234 @@ class TestDenyOrdering:
         assert "git push --force*" in msg
         assert "retry" in msg.lower()
         assert "rephrase" in msg.lower()
+
+class TestDenyLineContinuation:
+    """A backslash-newline continuation must not hide a wrapper or executable
+    from the deny projection. See PACKET 5 WHY for the root cause and the
+    real env -S / hardline-floor checks this packet's fix must not disturb.
+    """
+
+    # None on fork main ffb1d333ed with deny ["sudo *"]; must all become "sudo *".
+    MUST_BLOCK = [
+        "\\\ntimeout 5 /usr/bin/sudo -n id -u",
+        "\\\nnohup /usr/bin/sudo -n id -u",
+        "nice -n5 \\\nnohup /usr/bin/sudo -n id -u",
+        "nice -n5 \\\nstdbuf -oL /usr/bin/sudo -n id -u",
+        "nice -n5 \\\ncommand /usr/bin/sudo -n id -u",
+        "nice -n5 timeout 5 \\\nnohup /usr/bin/sudo -n id -u",
+        "\\\nenv -S '/usr/bin/sudo -n id -u'",
+        "nice -n5 \\\ntimeout 5 sudo -n id -u",
+    ]
+
+    @pytest.mark.parametrize("command", MUST_BLOCK)
+    def test_continuation_before_intermediate_wrapper_still_matches(self, deny_config, command):
+        deny_config(["sudo *"])
+        assert mod._match_user_deny_rule(command) is not None, command
+
+    # Already "sudo *" on fork main ffb1d333ed (verified by Fable) — regression
+    # guards, not RED. The third entry is the ordering hazard from WHY: it
+    # MUST stay matched, which only holds if the continuation collapse runs
+    # AFTER comment-stripping.
+    ALREADY_BLOCKED = [
+        "nice -n5 \\\n/usr/bin/sudo -n id -u",
+        "/usr/bin/\\\nsudo -n id -u",
+        "echo hi # comment \\\nsudo -n id -u",
+        "nice -n5 \\\r\ntimeout 5 /usr/bin/sudo -n id -u",
+    ]
+
+    def test_already_matched_continuation_shapes_stay_matched(self, deny_config):
+        deny_config(["sudo *"])
+        for command in self.ALREADY_BLOCKED:
+            assert mod._match_user_deny_rule(command) is not None, command
+
+    # None on fork main ffb1d333ed; must STAY None after the fix.
+    MUST_NOT = [
+        "echo 'a\\\nb'",              # backslash+newline inside single quotes is data
+        "echo foo \\\nbar",           # plain continuation, no sudo anywhere
+        "echo \"safe\\\ntext\"",      # trailing backslash inside a double-quoted string
+        "nice -n5 \\\ntimeout 5 \\\necho still_not_sudo",  # same wrapper-chain shape as MUST_BLOCK, benign target
+    ]
+
+    def test_continuation_data_and_benign_wrapped_commands_stay_unmatched(self, deny_config):
+        deny_config(["sudo *"])
+        for command in self.MUST_NOT:
+            assert mod._match_user_deny_rule(command) is None, command
+
+    def test_collapse_is_unconditional_but_does_not_overblock_quoted_data(self, deny_config):
+        """_deny_collapse_line_continuations collapses INSIDE single quotes
+        too (a real shell would not — see its docstring for why that bias
+        is deliberate and safe for a deny projection). This is the control
+        the docstring points to: a benign command carrying a literal
+        backslash-newline inside single quotes must stay unmatched even
+        though the collapse still runs over it unconditionally.
+        """
+        deny_config(["sudo *"])
+        assert mod._match_user_deny_rule(
+            "nice -n5 \\\ntimeout 5 echo 'not\\\nsudo'"
+        ) is None
+
+    # P0 regression: an EVEN run of backslashes before the newline is
+    # already fully paired off, so the newline is NOT escaped -- it is a
+    # REAL command separator, exactly like ';'. A prior blind
+    # `re.sub(r"\\\r?\n", "", command)` still matched mid-run and fused
+    # both commands into one glued word, hiding the second command's real
+    # executable from the deny scanner. None on the pre-fix code (commit
+    # 9451712fa7..6aad7065c0); must all become "sudo *" after the fix.
+    # Confirmed bypassing a real deny rule through the actual
+    # terminal_tool() guarded path with independent marker-file ground
+    # truth in audits/20260912T0420Z-rail-shapes/p0-repair/RED-run1.txt
+    # (pre-fix) and closed in GREEN-run1.txt (post-fix).
+    MUST_BLOCK_EVEN_BACKSLASH_REAL_SEPARATOR = [
+        # 2 backslashes: one literal-backslash argv token on line 1, then
+        # a real second command on line 2.
+        "echo \\\\\nsudo -n id -u",
+        # 4 backslashes: two literal-backslash argv tokens on line 1 (the
+        # old regex still matched the LAST backslash + newline, leaving 3
+        # dangling backslashes fused onto the next line's first word).
+        "echo \\\\\\\\\nsudo -n id -u",
+        # Composed shape: the fusion sits directly in front of the
+        # attached env -S wrapper-walk this same packet's earlier commits
+        # (f4fed79dcb / 6aad7065c0) added -- proves the parity fix does
+        # not just cover the plain wrapper walk.
+        "echo\\\\\nenv -S'sudo -n id -u'",
+    ]
+
+    @pytest.mark.parametrize("command", MUST_BLOCK_EVEN_BACKSLASH_REAL_SEPARATOR)
+    def test_even_backslash_count_is_a_real_separator_not_a_continuation(
+        self, deny_config, command
+    ):
+        deny_config(["sudo *"])
+        assert mod._match_user_deny_rule(command) is not None, command
+
+
+class TestDenyEnvSplitAttachedForm:
+    """GNU env -S / --split-string ATTACHED (no-space) option forms with a
+    shell-quoted payload -- rail-shapes packet 20260912T0420Z, finding B6
+    (audits/20260912T0420Z-rail-shapes/verify/NEAR-MISS.md).
+
+    The DETACHED form (``env -S 'cmd'``) already strips the shell's own
+    outer quote via ``_deny_outer_unquote`` before handing the payload to
+    ``_split_env_string``. The ATTACHED form (``env -S'cmd'``,
+    ``env --split-string='cmd'``) did not: the leftover shell quote
+    character made ``_split_env_string`` treat it as its OWN GNU
+    env-level quoting and swallow the internal space as one argv word, so
+    the reconstructed single-word candidate's basename picked the
+    trailing argument's path segment instead of the real executable
+    (needs a ``/`` in the trailing argument to reproduce -- a flag-only
+    payload like ``sudo -n id -u`` accidentally still basenames to
+    ``sudo ...`` even with the space preserved, since there is no LATER
+    slash to steal the cut point) and an anchored deny rule never
+    matched. Confirmed bypassing a real deny rule through the actual
+    ``terminal_tool()`` guarded path with independent marker-file ground
+    truth in ``audits/20260912T0420Z-rail-shapes/attached-form/RED-run1.txt``
+    (pre-fix) and closed in ``GREEN-run2.txt`` (post-fix); confirmed at
+    this unit level too (verified failing on the pre-fix code before
+    writing the fix).
+    """
+
+    MUST_BLOCK = [
+        "env -S'/usr/bin/sudo -n /etc/passwd'",
+        'env -S"/usr/bin/sudo -n /etc/passwd"',
+        "env --split-string='/usr/bin/sudo -n /etc/passwd'",
+        'env --split-string="/usr/bin/sudo -n /etc/passwd"',
+        "nice -n 5 env -S'/usr/bin/sudo -n /etc/passwd'",
+        'timeout 5 env -S"/usr/bin/sudo -n /etc/passwd"',
+        "timeout 5 env --split-string='/usr/bin/sudo -n /etc/passwd'",
+        'nice -n 5 env --split-string="/usr/bin/sudo -n /etc/passwd"',
+    ]
+
+    @pytest.mark.parametrize("command", MUST_BLOCK)
+    def test_attached_form_still_matches(self, deny_config, command):
+        deny_config(["sudo *"])
+        assert mod._match_user_deny_rule(command) is not None, command
+
+    # Unquoted attached forms never carried this bug (no shell quote char
+    # for _split_env_string to mis-parse) -- regression guard, not RED.
+    ALREADY_MATCHED = [
+        "env -Ssudo -n id -u",
+        "env --split-string=sudo -n id -u",
+    ]
+
+    def test_unquoted_attached_form_stays_matched(self, deny_config):
+        deny_config(["sudo *"])
+        for command in self.ALREADY_MATCHED:
+            assert mod._match_user_deny_rule(command) is not None, command
+
+    # Legitimate env -S / --split-string usage against an unrelated binary,
+    # attached and detached, wrapped and unwrapped, plus ordinary `env
+    # VAR=1 cmd` usage -- none of these should trip an unrelated deny rule.
+    MUST_NOT_OVERBLOCK = [
+        "env -S'/usr/bin/printf ok'",
+        'env --split-string="/usr/bin/printf ok"',
+        "nice -n 5 env -S '/usr/bin/printf ok'",
+        "env FOO=1 /usr/bin/printf ok",
+    ]
+
+    def test_attached_form_fix_does_not_overblock(self, deny_config):
+        deny_config(["sudo *"])
+        for command in self.MUST_NOT_OVERBLOCK:
+            assert mod._match_user_deny_rule(command) is None, command
+
+
+class TestDenyEnvSplitWrapperWalk:
+    """GNU env -S / --split-string reparse at every WRAPPER-WALKED command
+    position, not just argv0 -- rail-shapes packet 20260912T0420Z, the
+    position-axis matrix that actually proved commit f4fed79dcb
+    (``_deny_env_split_payloads`` walks ``_deny_iter_word_spans`` --
+    every wrapper-walked word -- instead of ``_deny_iter_command_starts``,
+    top-level command starts only). Before that fix, an ``env -S``/
+    ``--split-string`` payload was only reparsed when ``env`` itself sat
+    at a top-level command start; behind a wrapper (nice/timeout/
+    stdbuf/...), behind a leading bare assignment, or nested inside
+    another ``env``, the payload was never reparsed and an anchored deny
+    rule missed a command that genuinely executes. Before this class, the
+    ONLY committed coverage for this specific position-axis widening was
+    three pinned strings in
+    tests/security/test_merge_invariants.py::test_user_deny_projection_survives_merge
+    -- this class ports the full near-miss matrix that drove the fix
+    (audits/20260912T0420Z-rail-shapes/verify/NEAR-MISS.md, tags B0-B5 and
+    B7-B12; B6 there is a DIFFERENT, orthogonal quoting bug already
+    covered by TestDenyEnvSplitAttachedForm above -- fixed by 6aad7065c0,
+    not f4fed79dcb, and deliberately excluded here). Each case below is
+    tagged with its near-miss tag in a trailing comment. Verified failing
+    (returns None) against tools/approval.py checked out from commit
+    9451712fa7 (the commit immediately before f4fed79dcb, so the
+    unrelated line-continuation fix stays in place and only the
+    wrapper-walk widening is isolated) before this class was written --
+    see audits/20260912T0420Z-rail-shapes/p0-repair/COVERAGE.md.
+    """
+
+    MUST_BLOCK = [
+        "nice -n 5 env -S '/usr/bin/sudo -n id -u'",                       # B0 single wrapper (baseline)
+        "timeout 5 nice -n 5 env -S '/usr/bin/sudo -n id -u'",             # B1 two-level wrapper stack
+        "env -i env -S '/usr/bin/sudo -n id -u'",                         # B2 nested env -i env
+        "stdbuf -oL env -S '/usr/bin/sudo -n id -u'",                     # B3 different single wrapper
+        "FOO=1 env -S '/usr/bin/sudo -n id -u'",                          # B4 bare leading assignment, no wrapper
+        "FOO=1 nice -n 5 env -S '/usr/bin/sudo -n id -u'",                # B5 assignment + wrapper together
+        'nice -n 5 env -S "/usr/bin/sudo -n id -u"',                      # B7 double-quoted -S payload, wrapped
+        "nice -n 5 env --split-string '/usr/bin/sudo -n id -u'",          # B8 detached --split-string (space), wrapped
+        "nice --adjustment=5 env -S '/usr/bin/sudo -n id -u'",            # B9 wrapper's own long option with =
+        "timeout 5 nice -n 5 stdbuf -oL env -S '/usr/bin/sudo -n id -u'", # B10 three wrappers stacked
+        "nice\t-n\t5\tenv\t-S\t'/usr/bin/sudo\t-n\tid\t-u'",              # B11 tabs, command-level and inside the payload
+        "nice -n5 \\\ntimeout 5 env -S '/usr/bin/sudo -n id -u'",         # B12 composed with the line-continuation shape
+    ]
+
+    @pytest.mark.parametrize("command", MUST_BLOCK)
+    def test_wrapper_walked_env_split_position_still_matches(self, deny_config, command):
+        deny_config(["sudo *"])
+        assert mod._match_user_deny_rule(command) is not None, command
+
+    # Same position axis, benign target -- the wrapper-walk widening must
+    # not start matching an unrelated deny rule just because env -S now
+    # gets reparsed behind a wrapper, an assignment, or nesting.
+    MUST_NOT_OVERBLOCK = [
+        "FOO=1 env -S '/usr/bin/printf ok'",
+        "env -i env -S '/usr/bin/printf ok'",
+        "stdbuf -oL env -S '/usr/bin/printf ok'",
+        "timeout 5 nice -n 5 env -S '/usr/bin/printf ok'",
+    ]
+
+    def test_wrapper_walked_env_split_does_not_overblock(self, deny_config):
+        deny_config(["sudo *"])
+        for command in self.MUST_NOT_OVERBLOCK:
+            assert mod._match_user_deny_rule(command) is None, command

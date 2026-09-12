@@ -3376,6 +3376,82 @@ def _deny_strip_unquoted_comments(command: str) -> str:
     return "".join(out)
 
 
+def _deny_collapse_line_continuations(command: str) -> str:
+    r"""Collapse backslash-newline shell line continuations, escape-PARITY aware.
+
+    A wrapper name split across a real continuation (``nice -n5 \\`` +
+    newline + ``nohup ...``) must resolve to the same executable-basename
+    projection as the one-line form: the low-level deny scanners
+    (_deny_read_shell_word, _strip_shell_word_syntax) keep the newline as a
+    literal character glued to the next word, which survives
+    _DENY_WRAPPER_WORDS' exact-string membership check and stops the
+    wrapper walk one word early. Applied AFTER comment-stripping so a
+    ``#`` comment's own trailing backslash cannot fuse the comment with
+    the following real command.
+
+    Only an ODD run of backslashes immediately before the newline is a
+    real continuation (the last backslash escapes the newline; POSIX
+    shell semantics). An EVEN run is already fully paired off (each pair
+    resolves to one literal backslash) and the newline is NOT escaped —
+    it is a real command separator, exactly as if it were a ``;``. A
+    prior version of this function collapsed with a blind
+    ``re.sub(r"\\\r?\n", "", command)``, unconditionally, regardless of
+    how many backslashes preceded the newline. That is a P0 regression,
+    not a safe over-match: for an even-backslash run
+    (e.g. ``echo\\<LF>bash marker.sh ...``, two backslashes), real bash
+    parses this as TWO top-level commands, and the second one's
+    executable (``bash``) is a live command an anchored deny rule
+    (``bash *``) must catch. The old blind regex still stripped one
+    backslash + the newline (matching mid-run), FUSING both commands into
+    one word (``echo\bash ...`` -> deobfuscated to a single glued
+    executable name) and hiding the second command's real executable from
+    _deny_iter_command_starts / _deny_iter_word_spans, so the anchored
+    deny rule stopped matching a command that genuinely runs. Confirmed
+    through the real terminal_tool() guarded path with independent
+    marker-file ground truth: audits/20260912T0420Z-rail-shapes/p0-repair/
+    RED-run1.txt (bypass, pre-fix) and GREEN-run1.txt (blocked, post-fix).
+
+    This means the docstring claim this function used to make — that
+    collapsing unconditionally "can only ever make a pattern match a
+    candidate it would have matched anyway, never turn a denied command
+    into an allowed one" — was FALSE for this exact shape: the blind
+    collapse could turn a genuinely-denied second command into part of an
+    allowed fused word. What IS still true, and preserved by the
+    parity-aware fix below: for an odd-count (real continuation) run, the
+    collapse remains unconditional regardless of quoting — it also
+    collapses a backslash-newline sitting inside single quotes, where a
+    real shell keeps both characters literal (a continuation only fires
+    outside quotes). That bias is deliberate and unaffected by this fix:
+    this is a DENY-rule projection, not an execution parser, and the safe
+    direction for an odd (continuation) run is to bias toward MORE
+    matching. See tests/tools/test_approval_deny_rules.py for controls
+    proving this neither falsely blocks a benign command carrying a
+    literal odd-backslash-newline inside single quotes, nor blind-fuses a
+    benign even-backslash-newline real separator into one word.
+
+    NOTE (residual, out of scope for this fix): _normalize_command_for_detection
+    (tools/approval.py ~1853, the hardline floor's shared normalizer) has
+    the IDENTICAL parity-unaware blind-collapse bug on this same shape. It
+    is a different rail (hardline, not user deny rules) and is not
+    repaired here — see the P0 repair report for its own reproduction.
+    """
+    def _collapse(match: "re.Match[str]") -> str:
+        backslashes, newline = match.group(1), match.group(2)
+        if len(backslashes) % 2 == 1:
+            # Odd run: the final backslash escapes the newline -- a real
+            # continuation. Drop both; the even-length prefix that
+            # remains is left for the word-level readers' own escape
+            # handling (unrelated to this newline).
+            return backslashes[:-1]
+        # Even run: every backslash is already paired off, so the
+        # newline itself is NOT escaped -- it is a real command
+        # separator and must survive so the wrapper walk still sees two
+        # commands, exactly like a real shell would.
+        return backslashes + newline
+
+    return re.sub(r"(?<!\\)(\\+)(\r?\n)", _collapse, command)
+
+
 def _split_env_string(payload: str) -> list[str] | None:
     r"""Project GNU env -S literal argv, not POSIX shell words.
 
@@ -3446,7 +3522,13 @@ def _env_split_payload(tokens: list[str]) -> str | None:
     """Return the reconstructed command from GNU env -S / --split-string.
 
     ``tokens`` are raw shell words. Option names are deobfuscated; the -S
-    payload keeps inner quotes (only one outer pair is stripped).
+    payload keeps inner quotes (only one outer pair is stripped) whether
+    the option is DETACHED (``-S 'cmd'``) or ATTACHED with no space
+    (``-S'cmd'``, ``--split-string='cmd'``). The shell strips its own
+    quote pair before GNU env ever sees the payload, so leaving that
+    quote character in place would make ``_split_env_string`` mistake it
+    for env's OWN quoting and swallow an internal space as one argv word
+    instead of splitting on it (#rail-shapes attached-form finding).
     """
     index = 1
     env_opts = _DENY_WRAPPER_OPTIONS_WITH_ARG["env"]
@@ -3466,9 +3548,13 @@ def _env_split_payload(tokens: list[str]) -> str | None:
                 raw_payload = tokens[index] if index < len(tokens) else ""
                 payload = _deny_outer_unquote(raw_payload)
             elif option == "--split-string":
-                payload = raw_value
+                payload = _deny_outer_unquote(raw_value)
             else:
-                payload = token[2:] if token.startswith("-S") else deob[2:]
+                payload = (
+                    _deny_outer_unquote(token[2:])
+                    if token.startswith("-S")
+                    else deob[2:]
+                )
             args = _split_env_string(payload)
             if args is None:
                 return None
@@ -3481,20 +3567,22 @@ def _env_split_payload(tokens: list[str]) -> str | None:
 
 
 def _deny_env_split_payloads(command: str):
-    for start in _deny_iter_command_starts(command):
-        words: list[str] = []
-        pos = start
-        segment = _deny_shell_command_segment(command, start)
-        bound = start + len(segment)
-        while pos < bound:
-            word_start, word_end, word = _deny_read_shell_word(command, pos)
-            if word_start == word_end or word_start >= bound:
-                break
-            words.append(word)
-            pos = word_end
-        if not words:
+    """Yield GNU env -S payloads at every wrapper-walked env word, not only argv0."""
+    for word_start, _word_end, word in _deny_iter_word_spans(command):
+        executable = _deobfuscate_shell_word_for_detection(word)
+        if os.path.basename(executable).lower() != "env":
             continue
-        if os.path.basename(_deobfuscate_shell_word_for_detection(words[0])).lower() != "env":
+        words: list[str] = []
+        pos = word_start
+        segment = _deny_shell_command_segment(command, word_start)
+        bound = word_start + len(segment)
+        while pos < bound:
+            next_start, next_end, next_word = _deny_read_shell_word(command, pos)
+            if next_start == next_end or next_start >= bound:
+                break
+            words.append(next_word)
+            pos = next_end
+        if not words:
             continue
         payload = _env_split_payload(words)
         if payload:
@@ -3509,6 +3597,7 @@ def _deny_command_variants(command: str):
     are projected as argv, not POSIX shell.
     """
     stripped = _deny_strip_unquoted_comments(command)
+    stripped = _deny_collapse_line_continuations(stripped)
     yield from _command_detection_variants(stripped)
     pending, seen = [stripped], set()
     while pending:
