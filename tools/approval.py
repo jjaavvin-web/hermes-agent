@@ -3377,37 +3377,79 @@ def _deny_strip_unquoted_comments(command: str) -> str:
 
 
 def _deny_collapse_line_continuations(command: str) -> str:
-    """Collapse backslash-newline shell line continuations, UNCONDITIONALLY.
+    r"""Collapse backslash-newline shell line continuations, escape-PARITY aware.
 
-    Mirrors _normalize_command_for_detection's line-continuation collapse
-    (line 1853, same unconditional regex): the shell deletes BOTH
-    characters and joins the tokens, so a wrapper name split across a
-    continuation (``nice -n5 \\`` + newline + ``nohup ...``) must resolve
-    to the same executable-basename projection as the one-line form. The
-    low-level deny scanners (_deny_read_shell_word, _strip_shell_word_syntax)
-    instead keep the newline as a literal character glued to the next word,
-    which survives _DENY_WRAPPER_WORDS' exact-string membership check and
-    stops the wrapper walk one word early. Applied AFTER comment-stripping
-    so a ``#`` comment's own trailing backslash cannot fuse the comment
-    with the following real command.
+    A wrapper name split across a real continuation (``nice -n5 \\`` +
+    newline + ``nohup ...``) must resolve to the same executable-basename
+    projection as the one-line form: the low-level deny scanners
+    (_deny_read_shell_word, _strip_shell_word_syntax) keep the newline as a
+    literal character glued to the next word, which survives
+    _DENY_WRAPPER_WORDS' exact-string membership check and stops the
+    wrapper walk one word early. Applied AFTER comment-stripping so a
+    ``#`` comment's own trailing backslash cannot fuse the comment with
+    the following real command.
 
-    This regex is NOT quote-aware — it also collapses a backslash-newline
-    that sits inside single quotes, where the real shell would keep both
-    characters literal instead of deleting them (a shell line continuation
-    only fires outside quotes). That is deliberate, not an oversight: this
-    is a DENY-rule projection, not an execution parser, and the safe
-    direction for a projection that feeds a "should this be blocked?"
-    decision is to bias toward MORE matching, never less. Skipping the
-    collapse inside quotes could only ever widen a gap (a quoted payload
-    that still contains an unresolved backslash-newline sequence the deny
-    scanner then fails to fold into the same candidate as the one-line
-    form); collapsing unconditionally can only ever make a deny/hardline
-    pattern match a candidate it would have matched anyway, never turn a
-    denied command into an allowed one. See tests/tools/test_approval_deny_rules.py
-    for a control proving this does not falsely block a benign command that
-    legitimately contains a literal backslash-newline inside single quotes.
+    Only an ODD run of backslashes immediately before the newline is a
+    real continuation (the last backslash escapes the newline; POSIX
+    shell semantics). An EVEN run is already fully paired off (each pair
+    resolves to one literal backslash) and the newline is NOT escaped —
+    it is a real command separator, exactly as if it were a ``;``. A
+    prior version of this function collapsed with a blind
+    ``re.sub(r"\\\r?\n", "", command)``, unconditionally, regardless of
+    how many backslashes preceded the newline. That is a P0 regression,
+    not a safe over-match: for an even-backslash run
+    (e.g. ``echo\\<LF>bash marker.sh ...``, two backslashes), real bash
+    parses this as TWO top-level commands, and the second one's
+    executable (``bash``) is a live command an anchored deny rule
+    (``bash *``) must catch. The old blind regex still stripped one
+    backslash + the newline (matching mid-run), FUSING both commands into
+    one word (``echo\bash ...`` -> deobfuscated to a single glued
+    executable name) and hiding the second command's real executable from
+    _deny_iter_command_starts / _deny_iter_word_spans, so the anchored
+    deny rule stopped matching a command that genuinely runs. Confirmed
+    through the real terminal_tool() guarded path with independent
+    marker-file ground truth: audits/20260912T0420Z-rail-shapes/p0-repair/
+    RED-run1.txt (bypass, pre-fix) and GREEN-run1.txt (blocked, post-fix).
+
+    This means the docstring claim this function used to make — that
+    collapsing unconditionally "can only ever make a pattern match a
+    candidate it would have matched anyway, never turn a denied command
+    into an allowed one" — was FALSE for this exact shape: the blind
+    collapse could turn a genuinely-denied second command into part of an
+    allowed fused word. What IS still true, and preserved by the
+    parity-aware fix below: for an odd-count (real continuation) run, the
+    collapse remains unconditional regardless of quoting — it also
+    collapses a backslash-newline sitting inside single quotes, where a
+    real shell keeps both characters literal (a continuation only fires
+    outside quotes). That bias is deliberate and unaffected by this fix:
+    this is a DENY-rule projection, not an execution parser, and the safe
+    direction for an odd (continuation) run is to bias toward MORE
+    matching. See tests/tools/test_approval_deny_rules.py for controls
+    proving this neither falsely blocks a benign command carrying a
+    literal odd-backslash-newline inside single quotes, nor blind-fuses a
+    benign even-backslash-newline real separator into one word.
+
+    NOTE (residual, out of scope for this fix): _normalize_command_for_detection
+    (tools/approval.py ~1853, the hardline floor's shared normalizer) has
+    the IDENTICAL parity-unaware blind-collapse bug on this same shape. It
+    is a different rail (hardline, not user deny rules) and is not
+    repaired here — see the P0 repair report for its own reproduction.
     """
-    return re.sub(r"\\\r?\n", "", command)
+    def _collapse(match: "re.Match[str]") -> str:
+        backslashes, newline = match.group(1), match.group(2)
+        if len(backslashes) % 2 == 1:
+            # Odd run: the final backslash escapes the newline -- a real
+            # continuation. Drop both; the even-length prefix that
+            # remains is left for the word-level readers' own escape
+            # handling (unrelated to this newline).
+            return backslashes[:-1]
+        # Even run: every backslash is already paired off, so the
+        # newline itself is NOT escaped -- it is a real command
+        # separator and must survive so the wrapper walk still sees two
+        # commands, exactly like a real shell would.
+        return backslashes + newline
+
+    return re.sub(r"(?<!\\)(\\+)(\r?\n)", _collapse, command)
 
 
 def _split_env_string(payload: str) -> list[str] | None:

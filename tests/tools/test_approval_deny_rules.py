@@ -330,6 +330,39 @@ class TestDenyLineContinuation:
             "nice -n5 \\\ntimeout 5 echo 'not\\\nsudo'"
         ) is None
 
+    # P0 regression: an EVEN run of backslashes before the newline is
+    # already fully paired off, so the newline is NOT escaped -- it is a
+    # REAL command separator, exactly like ';'. A prior blind
+    # `re.sub(r"\\\r?\n", "", command)` still matched mid-run and fused
+    # both commands into one glued word, hiding the second command's real
+    # executable from the deny scanner. None on the pre-fix code (commit
+    # 9451712fa7..6aad7065c0); must all become "sudo *" after the fix.
+    # Confirmed bypassing a real deny rule through the actual
+    # terminal_tool() guarded path with independent marker-file ground
+    # truth in audits/20260912T0420Z-rail-shapes/p0-repair/RED-run1.txt
+    # (pre-fix) and closed in GREEN-run1.txt (post-fix).
+    MUST_BLOCK_EVEN_BACKSLASH_REAL_SEPARATOR = [
+        # 2 backslashes: one literal-backslash argv token on line 1, then
+        # a real second command on line 2.
+        "echo \\\\\nsudo -n id -u",
+        # 4 backslashes: two literal-backslash argv tokens on line 1 (the
+        # old regex still matched the LAST backslash + newline, leaving 3
+        # dangling backslashes fused onto the next line's first word).
+        "echo \\\\\\\\\nsudo -n id -u",
+        # Composed shape: the fusion sits directly in front of the
+        # attached env -S wrapper-walk this same packet's earlier commits
+        # (f4fed79dcb / 6aad7065c0) added -- proves the parity fix does
+        # not just cover the plain wrapper walk.
+        "echo\\\\\nenv -S'sudo -n id -u'",
+    ]
+
+    @pytest.mark.parametrize("command", MUST_BLOCK_EVEN_BACKSLASH_REAL_SEPARATOR)
+    def test_even_backslash_count_is_a_real_separator_not_a_continuation(
+        self, deny_config, command
+    ):
+        deny_config(["sudo *"])
+        assert mod._match_user_deny_rule(command) is not None, command
+
 
 class TestDenyEnvSplitAttachedForm:
     """GNU env -S / --split-string ATTACHED (no-space) option forms with a
