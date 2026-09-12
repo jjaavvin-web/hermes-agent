@@ -3498,20 +3498,22 @@ def _env_split_payload(tokens: list[str]) -> str | None:
 
 
 def _deny_env_split_payloads(command: str):
-    for start in _deny_iter_command_starts(command):
-        words: list[str] = []
-        pos = start
-        segment = _deny_shell_command_segment(command, start)
-        bound = start + len(segment)
-        while pos < bound:
-            word_start, word_end, word = _deny_read_shell_word(command, pos)
-            if word_start == word_end or word_start >= bound:
-                break
-            words.append(word)
-            pos = word_end
-        if not words:
+    """Yield GNU env -S payloads at every wrapper-walked env word, not only argv0."""
+    for word_start, _word_end, word in _deny_iter_word_spans(command):
+        executable = _deobfuscate_shell_word_for_detection(word)
+        if os.path.basename(executable).lower() != "env":
             continue
-        if os.path.basename(_deobfuscate_shell_word_for_detection(words[0])).lower() != "env":
+        words: list[str] = []
+        pos = word_start
+        segment = _deny_shell_command_segment(command, word_start)
+        bound = word_start + len(segment)
+        while pos < bound:
+            next_start, next_end, next_word = _deny_read_shell_word(command, pos)
+            if next_start == next_end or next_start >= bound:
+                break
+            words.append(next_word)
+            pos = next_end
+        if not words:
             continue
         payload = _env_split_payload(words)
         if payload:

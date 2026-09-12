@@ -571,6 +571,7 @@ def test_user_deny_projection_survives_merge(monkeypatch):
     upstream merge that takes tools/approval.py wholesale silently drops the
     fork's _deny_* stack and the _match_user_deny_rule rewire. Every
     must-block shape below was approved on fork main 36a033b5bf.
+    The two wrapper + env -S shapes (nice / nohup in front of env -S) were added 2026-09-08 night 2 (packet 2) on top of fork main ffb1d333ed, where they did NOT yet match; they need the wrapper-walked env -S re-parse.
     """
     import sys as _sys
 
@@ -585,6 +586,8 @@ def test_user_deny_projection_survives_merge(monkeypatch):
                 "timeout 5 sudo -n id -u",
                 "/usr/bin/sudo -n id -u",
                 "env -S '/usr/bin/sudo -n id -u'",
+                "nice -n 5 env -S '/usr/bin/sudo -n id -u'",
+                "nohup env --split-string=/usr/bin/sudo -n id -u",
                 "echo ok # ignored\n bash -c '/usr/bin/sudo -n id -u'",
                 "su$()do -n id -u"):
         assert ap._match_user_deny_rule(cmd), f"user deny rule no longer projects: {cmd!r}"
