@@ -3376,6 +3376,23 @@ def _deny_strip_unquoted_comments(command: str) -> str:
     return "".join(out)
 
 
+def _deny_collapse_line_continuations(command: str) -> str:
+    """Collapse unquoted backslash-newline shell line continuations.
+
+    Mirrors _normalize_command_for_detection's line-continuation collapse
+    (line 1853): the shell deletes BOTH characters and joins the tokens, so
+    a wrapper name split across a continuation (``nice -n5 \\`` + newline +
+    ``nohup ...``) must resolve to the same executable-basename projection
+    as the one-line form. The low-level deny scanners (_deny_read_shell_word,
+    _strip_shell_word_syntax) instead keep the newline as a literal character
+    glued to the next word, which survives _DENY_WRAPPER_WORDS' exact-string
+    membership check and stops the wrapper walk one word early. Applied
+    AFTER comment-stripping so a ``#`` comment's own trailing backslash
+    cannot fuse the comment with the following real command.
+    """
+    return re.sub(r"\\\r?\n", "", command)
+
+
 def _split_env_string(payload: str) -> list[str] | None:
     r"""Project GNU env -S literal argv, not POSIX shell words.
 
@@ -3509,6 +3526,7 @@ def _deny_command_variants(command: str):
     are projected as argv, not POSIX shell.
     """
     stripped = _deny_strip_unquoted_comments(command)
+    stripped = _deny_collapse_line_continuations(stripped)
     yield from _command_detection_variants(stripped)
     pending, seen = [stripped], set()
     while pending:

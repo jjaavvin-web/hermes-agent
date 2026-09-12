@@ -264,3 +264,55 @@ class TestDenyOrdering:
         assert "git push --force*" in msg
         assert "retry" in msg.lower()
         assert "rephrase" in msg.lower()
+
+class TestDenyLineContinuation:
+    """A backslash-newline continuation must not hide a wrapper or executable
+    from the deny projection. See PACKET 5 WHY for the root cause and the
+    real env -S / hardline-floor checks this packet's fix must not disturb.
+    """
+
+    # None on fork main ffb1d333ed with deny ["sudo *"]; must all become "sudo *".
+    MUST_BLOCK = [
+        "\\\ntimeout 5 /usr/bin/sudo -n id -u",
+        "\\\nnohup /usr/bin/sudo -n id -u",
+        "nice -n5 \\\nnohup /usr/bin/sudo -n id -u",
+        "nice -n5 \\\nstdbuf -oL /usr/bin/sudo -n id -u",
+        "nice -n5 \\\ncommand /usr/bin/sudo -n id -u",
+        "nice -n5 timeout 5 \\\nnohup /usr/bin/sudo -n id -u",
+        "\\\nenv -S '/usr/bin/sudo -n id -u'",
+        "nice -n5 \\\ntimeout 5 sudo -n id -u",
+    ]
+
+    @pytest.mark.parametrize("command", MUST_BLOCK)
+    def test_continuation_before_intermediate_wrapper_still_matches(self, deny_config, command):
+        deny_config(["sudo *"])
+        assert mod._match_user_deny_rule(command) is not None, command
+
+    # Already "sudo *" on fork main ffb1d333ed (verified by Fable) — regression
+    # guards, not RED. The third entry is the ordering hazard from WHY: it
+    # MUST stay matched, which only holds if the continuation collapse runs
+    # AFTER comment-stripping.
+    ALREADY_BLOCKED = [
+        "nice -n5 \\\n/usr/bin/sudo -n id -u",
+        "/usr/bin/\\\nsudo -n id -u",
+        "echo hi # comment \\\nsudo -n id -u",
+        "nice -n5 \\\r\ntimeout 5 /usr/bin/sudo -n id -u",
+    ]
+
+    def test_already_matched_continuation_shapes_stay_matched(self, deny_config):
+        deny_config(["sudo *"])
+        for command in self.ALREADY_BLOCKED:
+            assert mod._match_user_deny_rule(command) is not None, command
+
+    # None on fork main ffb1d333ed; must STAY None after the fix.
+    MUST_NOT = [
+        "echo 'a\\\nb'",              # backslash+newline inside single quotes is data
+        "echo foo \\\nbar",           # plain continuation, no sudo anywhere
+        "echo \"safe\\\ntext\"",      # trailing backslash inside a double-quoted string
+        "nice -n5 \\\ntimeout 5 \\\necho still_not_sudo",  # same wrapper-chain shape as MUST_BLOCK, benign target
+    ]
+
+    def test_continuation_data_and_benign_wrapped_commands_stay_unmatched(self, deny_config):
+        deny_config(["sudo *"])
+        for command in self.MUST_NOT:
+            assert mod._match_user_deny_rule(command) is None, command
