@@ -3377,18 +3377,35 @@ def _deny_strip_unquoted_comments(command: str) -> str:
 
 
 def _deny_collapse_line_continuations(command: str) -> str:
-    """Collapse unquoted backslash-newline shell line continuations.
+    """Collapse backslash-newline shell line continuations, UNCONDITIONALLY.
 
     Mirrors _normalize_command_for_detection's line-continuation collapse
-    (line 1853): the shell deletes BOTH characters and joins the tokens, so
-    a wrapper name split across a continuation (``nice -n5 \\`` + newline +
-    ``nohup ...``) must resolve to the same executable-basename projection
-    as the one-line form. The low-level deny scanners (_deny_read_shell_word,
-    _strip_shell_word_syntax) instead keep the newline as a literal character
-    glued to the next word, which survives _DENY_WRAPPER_WORDS' exact-string
-    membership check and stops the wrapper walk one word early. Applied
-    AFTER comment-stripping so a ``#`` comment's own trailing backslash
-    cannot fuse the comment with the following real command.
+    (line 1853, same unconditional regex): the shell deletes BOTH
+    characters and joins the tokens, so a wrapper name split across a
+    continuation (``nice -n5 \\`` + newline + ``nohup ...``) must resolve
+    to the same executable-basename projection as the one-line form. The
+    low-level deny scanners (_deny_read_shell_word, _strip_shell_word_syntax)
+    instead keep the newline as a literal character glued to the next word,
+    which survives _DENY_WRAPPER_WORDS' exact-string membership check and
+    stops the wrapper walk one word early. Applied AFTER comment-stripping
+    so a ``#`` comment's own trailing backslash cannot fuse the comment
+    with the following real command.
+
+    This regex is NOT quote-aware — it also collapses a backslash-newline
+    that sits inside single quotes, where the real shell would keep both
+    characters literal instead of deleting them (a shell line continuation
+    only fires outside quotes). That is deliberate, not an oversight: this
+    is a DENY-rule projection, not an execution parser, and the safe
+    direction for a projection that feeds a "should this be blocked?"
+    decision is to bias toward MORE matching, never less. Skipping the
+    collapse inside quotes could only ever widen a gap (a quoted payload
+    that still contains an unresolved backslash-newline sequence the deny
+    scanner then fails to fold into the same candidate as the one-line
+    form); collapsing unconditionally can only ever make a deny/hardline
+    pattern match a candidate it would have matched anyway, never turn a
+    denied command into an allowed one. See tests/tools/test_approval_deny_rules.py
+    for a control proving this does not falsely block a benign command that
+    legitimately contains a literal backslash-newline inside single quotes.
     """
     return re.sub(r"\\\r?\n", "", command)
 
@@ -3463,7 +3480,13 @@ def _env_split_payload(tokens: list[str]) -> str | None:
     """Return the reconstructed command from GNU env -S / --split-string.
 
     ``tokens`` are raw shell words. Option names are deobfuscated; the -S
-    payload keeps inner quotes (only one outer pair is stripped).
+    payload keeps inner quotes (only one outer pair is stripped) whether
+    the option is DETACHED (``-S 'cmd'``) or ATTACHED with no space
+    (``-S'cmd'``, ``--split-string='cmd'``). The shell strips its own
+    quote pair before GNU env ever sees the payload, so leaving that
+    quote character in place would make ``_split_env_string`` mistake it
+    for env's OWN quoting and swallow an internal space as one argv word
+    instead of splitting on it (#rail-shapes attached-form finding).
     """
     index = 1
     env_opts = _DENY_WRAPPER_OPTIONS_WITH_ARG["env"]
@@ -3483,9 +3506,13 @@ def _env_split_payload(tokens: list[str]) -> str | None:
                 raw_payload = tokens[index] if index < len(tokens) else ""
                 payload = _deny_outer_unquote(raw_payload)
             elif option == "--split-string":
-                payload = raw_value
+                payload = _deny_outer_unquote(raw_value)
             else:
-                payload = token[2:] if token.startswith("-S") else deob[2:]
+                payload = (
+                    _deny_outer_unquote(token[2:])
+                    if token.startswith("-S")
+                    else deob[2:]
+                )
             args = _split_env_string(payload)
             if args is None:
                 return None

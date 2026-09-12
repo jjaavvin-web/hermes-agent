@@ -316,3 +316,85 @@ class TestDenyLineContinuation:
         deny_config(["sudo *"])
         for command in self.MUST_NOT:
             assert mod._match_user_deny_rule(command) is None, command
+
+    def test_collapse_is_unconditional_but_does_not_overblock_quoted_data(self, deny_config):
+        """_deny_collapse_line_continuations collapses INSIDE single quotes
+        too (a real shell would not — see its docstring for why that bias
+        is deliberate and safe for a deny projection). This is the control
+        the docstring points to: a benign command carrying a literal
+        backslash-newline inside single quotes must stay unmatched even
+        though the collapse still runs over it unconditionally.
+        """
+        deny_config(["sudo *"])
+        assert mod._match_user_deny_rule(
+            "nice -n5 \\\ntimeout 5 echo 'not\\\nsudo'"
+        ) is None
+
+
+class TestDenyEnvSplitAttachedForm:
+    """GNU env -S / --split-string ATTACHED (no-space) option forms with a
+    shell-quoted payload -- rail-shapes packet 20260912T0420Z, finding B6
+    (audits/20260912T0420Z-rail-shapes/verify/NEAR-MISS.md).
+
+    The DETACHED form (``env -S 'cmd'``) already strips the shell's own
+    outer quote via ``_deny_outer_unquote`` before handing the payload to
+    ``_split_env_string``. The ATTACHED form (``env -S'cmd'``,
+    ``env --split-string='cmd'``) did not: the leftover shell quote
+    character made ``_split_env_string`` treat it as its OWN GNU
+    env-level quoting and swallow the internal space as one argv word, so
+    the reconstructed single-word candidate's basename picked the
+    trailing argument's path segment instead of the real executable
+    (needs a ``/`` in the trailing argument to reproduce -- a flag-only
+    payload like ``sudo -n id -u`` accidentally still basenames to
+    ``sudo ...`` even with the space preserved, since there is no LATER
+    slash to steal the cut point) and an anchored deny rule never
+    matched. Confirmed bypassing a real deny rule through the actual
+    ``terminal_tool()`` guarded path with independent marker-file ground
+    truth in ``audits/20260912T0420Z-rail-shapes/attached-form/RED-run1.txt``
+    (pre-fix) and closed in ``GREEN-run2.txt`` (post-fix); confirmed at
+    this unit level too (verified failing on the pre-fix code before
+    writing the fix).
+    """
+
+    MUST_BLOCK = [
+        "env -S'/usr/bin/sudo -n /etc/passwd'",
+        'env -S"/usr/bin/sudo -n /etc/passwd"',
+        "env --split-string='/usr/bin/sudo -n /etc/passwd'",
+        'env --split-string="/usr/bin/sudo -n /etc/passwd"',
+        "nice -n 5 env -S'/usr/bin/sudo -n /etc/passwd'",
+        'timeout 5 env -S"/usr/bin/sudo -n /etc/passwd"',
+        "timeout 5 env --split-string='/usr/bin/sudo -n /etc/passwd'",
+        'nice -n 5 env --split-string="/usr/bin/sudo -n /etc/passwd"',
+    ]
+
+    @pytest.mark.parametrize("command", MUST_BLOCK)
+    def test_attached_form_still_matches(self, deny_config, command):
+        deny_config(["sudo *"])
+        assert mod._match_user_deny_rule(command) is not None, command
+
+    # Unquoted attached forms never carried this bug (no shell quote char
+    # for _split_env_string to mis-parse) -- regression guard, not RED.
+    ALREADY_MATCHED = [
+        "env -Ssudo -n id -u",
+        "env --split-string=sudo -n id -u",
+    ]
+
+    def test_unquoted_attached_form_stays_matched(self, deny_config):
+        deny_config(["sudo *"])
+        for command in self.ALREADY_MATCHED:
+            assert mod._match_user_deny_rule(command) is not None, command
+
+    # Legitimate env -S / --split-string usage against an unrelated binary,
+    # attached and detached, wrapped and unwrapped, plus ordinary `env
+    # VAR=1 cmd` usage -- none of these should trip an unrelated deny rule.
+    MUST_NOT_OVERBLOCK = [
+        "env -S'/usr/bin/printf ok'",
+        'env --split-string="/usr/bin/printf ok"',
+        "nice -n 5 env -S '/usr/bin/printf ok'",
+        "env FOO=1 /usr/bin/printf ok",
+    ]
+
+    def test_attached_form_fix_does_not_overblock(self, deny_config):
+        deny_config(["sudo *"])
+        for command in self.MUST_NOT_OVERBLOCK:
+            assert mod._match_user_deny_rule(command) is None, command
