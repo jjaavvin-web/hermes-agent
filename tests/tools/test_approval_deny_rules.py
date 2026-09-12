@@ -431,3 +431,67 @@ class TestDenyEnvSplitAttachedForm:
         deny_config(["sudo *"])
         for command in self.MUST_NOT_OVERBLOCK:
             assert mod._match_user_deny_rule(command) is None, command
+
+
+class TestDenyEnvSplitWrapperWalk:
+    """GNU env -S / --split-string reparse at every WRAPPER-WALKED command
+    position, not just argv0 -- rail-shapes packet 20260912T0420Z, the
+    position-axis matrix that actually proved commit f4fed79dcb
+    (``_deny_env_split_payloads`` walks ``_deny_iter_word_spans`` --
+    every wrapper-walked word -- instead of ``_deny_iter_command_starts``,
+    top-level command starts only). Before that fix, an ``env -S``/
+    ``--split-string`` payload was only reparsed when ``env`` itself sat
+    at a top-level command start; behind a wrapper (nice/timeout/
+    stdbuf/...), behind a leading bare assignment, or nested inside
+    another ``env``, the payload was never reparsed and an anchored deny
+    rule missed a command that genuinely executes. Before this class, the
+    ONLY committed coverage for this specific position-axis widening was
+    three pinned strings in
+    tests/security/test_merge_invariants.py::test_user_deny_projection_survives_merge
+    -- this class ports the full near-miss matrix that drove the fix
+    (audits/20260912T0420Z-rail-shapes/verify/NEAR-MISS.md, tags B0-B5 and
+    B7-B12; B6 there is a DIFFERENT, orthogonal quoting bug already
+    covered by TestDenyEnvSplitAttachedForm above -- fixed by 6aad7065c0,
+    not f4fed79dcb, and deliberately excluded here). Each case below is
+    tagged with its near-miss tag in a trailing comment. Verified failing
+    (returns None) against tools/approval.py checked out from commit
+    9451712fa7 (the commit immediately before f4fed79dcb, so the
+    unrelated line-continuation fix stays in place and only the
+    wrapper-walk widening is isolated) before this class was written --
+    see audits/20260912T0420Z-rail-shapes/p0-repair/COVERAGE.md.
+    """
+
+    MUST_BLOCK = [
+        "nice -n 5 env -S '/usr/bin/sudo -n id -u'",                       # B0 single wrapper (baseline)
+        "timeout 5 nice -n 5 env -S '/usr/bin/sudo -n id -u'",             # B1 two-level wrapper stack
+        "env -i env -S '/usr/bin/sudo -n id -u'",                         # B2 nested env -i env
+        "stdbuf -oL env -S '/usr/bin/sudo -n id -u'",                     # B3 different single wrapper
+        "FOO=1 env -S '/usr/bin/sudo -n id -u'",                          # B4 bare leading assignment, no wrapper
+        "FOO=1 nice -n 5 env -S '/usr/bin/sudo -n id -u'",                # B5 assignment + wrapper together
+        'nice -n 5 env -S "/usr/bin/sudo -n id -u"',                      # B7 double-quoted -S payload, wrapped
+        "nice -n 5 env --split-string '/usr/bin/sudo -n id -u'",          # B8 detached --split-string (space), wrapped
+        "nice --adjustment=5 env -S '/usr/bin/sudo -n id -u'",            # B9 wrapper's own long option with =
+        "timeout 5 nice -n 5 stdbuf -oL env -S '/usr/bin/sudo -n id -u'", # B10 three wrappers stacked
+        "nice\t-n\t5\tenv\t-S\t'/usr/bin/sudo\t-n\tid\t-u'",              # B11 tabs, command-level and inside the payload
+        "nice -n5 \\\ntimeout 5 env -S '/usr/bin/sudo -n id -u'",         # B12 composed with the line-continuation shape
+    ]
+
+    @pytest.mark.parametrize("command", MUST_BLOCK)
+    def test_wrapper_walked_env_split_position_still_matches(self, deny_config, command):
+        deny_config(["sudo *"])
+        assert mod._match_user_deny_rule(command) is not None, command
+
+    # Same position axis, benign target -- the wrapper-walk widening must
+    # not start matching an unrelated deny rule just because env -S now
+    # gets reparsed behind a wrapper, an assignment, or nesting.
+    MUST_NOT_OVERBLOCK = [
+        "FOO=1 env -S '/usr/bin/printf ok'",
+        "env -i env -S '/usr/bin/printf ok'",
+        "stdbuf -oL env -S '/usr/bin/printf ok'",
+        "timeout 5 nice -n 5 env -S '/usr/bin/printf ok'",
+    ]
+
+    def test_wrapper_walked_env_split_does_not_overblock(self, deny_config):
+        deny_config(["sudo *"])
+        for command in self.MUST_NOT_OVERBLOCK:
+            assert mod._match_user_deny_rule(command) is None, command

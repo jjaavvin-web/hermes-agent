@@ -572,6 +572,28 @@ def test_user_deny_projection_survives_merge(monkeypatch):
     fork's _deny_* stack and the _match_user_deny_rule rewire. Every
     must-block shape below was approved on fork main 36a033b5bf.
     The two wrapper + env -S shapes (nice / nohup in front of env -S) were added 2026-09-08 night 2 (packet 2) on top of fork main ffb1d333ed, where they did NOT yet match; they need the wrapper-walked env -S re-parse.
+
+    rail-shapes packet 20260912T0420Z (P2 coverage-asymmetry close-out):
+    three more representative shapes ported in below, one per fix commit,
+    because this projection list has already silently lost entries once in
+    a merge collision (that incident is why this test exists at all) and
+    each of these three otherwise lives ONLY as pinned strings in
+    dedicated classes in tests/tools/test_approval_deny_rules.py:
+    - a backslash-newline continuation before an intermediate wrapper word
+      (fix 9451712fa7; full coverage: TestDenyLineContinuation),
+    - the attached ``env -S``/``--split-string=`` quoted-payload form
+      (fix 6aad7065c0; full coverage: TestDenyEnvSplitAttachedForm),
+    - an EVEN-count backslash run before a newline, which is a REAL
+      command separator, not a continuation (P0 repair, fix 76e04cd62f;
+      full coverage:
+      TestDenyLineContinuation.MUST_BLOCK_EVEN_BACKSLASH_REAL_SEPARATOR).
+    Each of the three was verified failing (returns None) against
+    tools/approval.py checked out from the commit immediately BEFORE its
+    own fix (9451712fa7^, f4fed79dcb^, 6aad7065c0^ respectively -- NOT a
+    single shared baseline, since the even-backslash shape is itself a
+    regression 9451712fa7 introduced and 76e04cd62f repaired, so the
+    original pre-9451712fa7 base already matched it) before being added
+    here -- see audits/20260912T0420Z-rail-shapes/p0-repair/COVERAGE.md.
     """
     import sys as _sys
 
@@ -589,7 +611,17 @@ def test_user_deny_projection_survives_merge(monkeypatch):
                 "nice -n 5 env -S '/usr/bin/sudo -n id -u'",
                 "nohup env --split-string=/usr/bin/sudo -n id -u",
                 "echo ok # ignored\n bash -c '/usr/bin/sudo -n id -u'",
-                "su$()do -n id -u"):
+                "su$()do -n id -u",
+                # line-continuation before an intermediate wrapper word
+                # (TestDenyLineContinuation.MUST_BLOCK)
+                "nice -n5 \\\nnohup /usr/bin/sudo -n id -u",
+                # attached env -S / --split-string quoted payload
+                # (TestDenyEnvSplitAttachedForm.MUST_BLOCK)
+                "env -S'/usr/bin/sudo -n /etc/passwd'",
+                # even-backslash run before a newline is a REAL separator,
+                # not a continuation (P0 repair,
+                # MUST_BLOCK_EVEN_BACKSLASH_REAL_SEPARATOR)
+                "echo \\\\\nsudo -n id -u"):
         assert ap._match_user_deny_rule(cmd), f"user deny rule no longer projects: {cmd!r}"
     for cmd in ("command -v sudo",
                 "env -a sudo printf ok",
