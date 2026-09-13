@@ -677,6 +677,80 @@ def test_hardline_blocks_line_continuation(command, desc_substr):
 
 
 # -------------------------------------------------------------------------
+# Even-backslash run before a newline is a REAL separator, not a continuation
+# -------------------------------------------------------------------------
+#
+# POSIX: only an ODD run of backslashes escapes the newline. An EVEN run is
+# already paired into literal backslashes, so the newline is a real command
+# separator and the next line is a live top-level command. The normalizer
+# used to collapse `\<newline>` blindly, matching the tail of an even run and
+# fusing both lines into one glued word (`echo\\<LF>rm -rf ~/.hermes` ->
+# `echorm -rf ~/.hermes`), so the unconditional hardline floor never saw an
+# `rm` at command position while bash ran `echo\` (not found) and then the
+# real `rm`. Proven through the real terminal_tool() guarded path with a
+# throwaway canary directory as ground truth:
+# audits/20260913T1723Z-hardline-normalizer-parity/{RED,GREEN}-run1.txt.
+# The deny-rule projection had the same bug first (PR #99, 6ae4bfd829); the
+# collapse is now one shared parity-aware helper, _collapse_line_continuations.
+
+# (command, description_substring) — the second line is a hardline target.
+_HARDLINE_EVEN_BACKSLASH_REAL_SEPARATOR = [
+    ("echo\\\\\nrm -rf ~/.hermes", "hermes"),        # attached, 2 backslashes
+    ("echo \\\\\nrm -rf ~/.hermes", "hermes"),       # spaced, 2 backslashes
+    ("echo\\\\\\\\\nrm -rf ~/.hermes", "hermes"),    # 4 backslashes
+    ("echo\\\\\r\nrm -rf ~/.hermes", "hermes"),      # CRLF line ending
+    ("echo\\\\\nrm -rf /", "root"),                  # root wipe on line 2
+    ("true\necho\\\\\nrm -rf /\ntrue", "root"),       # mid-script
+    ("\\\\\nrm -rf /", "root"),                      # bare even run first
+]
+
+
+@pytest.mark.parametrize("command,desc_substr", _HARDLINE_EVEN_BACKSLASH_REAL_SEPARATOR)
+def test_hardline_blocks_even_backslash_real_separator(command, desc_substr):
+    is_hl, desc = detect_hardline_command(command)
+    assert is_hl, f"even-backslash real separator fused past the hardline floor: {command!r}"
+    assert desc and desc_substr in desc.lower(), (
+        f"unexpected description {desc!r} for {command!r}"
+    )
+
+
+# Benign shapes around the same syntax must stay off the hardline floor:
+# an even run before a harmless second line, an odd run that is a genuine
+# continuation of a harmless command, and quoted literal backslash-newlines.
+_EVEN_BACKSLASH_BENIGN = [
+    "echo\\\\\nls -la",
+    "echo \\\\\ntouch /tmp/x",
+    "touch \\\n/tmp/x",
+    "printf '%s' 'a\\\\\nb'",
+    'printf \'%s\' "a\\\\\nb"',
+    "echo hi | \\\ncat",
+]
+
+
+@pytest.mark.parametrize("command", _EVEN_BACKSLASH_BENIGN)
+def test_even_backslash_benign_shapes_not_hardline(command):
+    is_hl, desc = detect_hardline_command(command)
+    assert not is_hl, f"benign backslash-newline shape hit the hardline floor: {command!r} ({desc})"
+
+
+def test_collapse_line_continuations_parity():
+    """The shared helper drops exactly odd-run continuations and keeps even runs."""
+    from tools.approval import _collapse_line_continuations as collapse
+    from tools.approval import _deny_collapse_line_continuations as deny_collapse
+
+    assert collapse("a\\\nb") == "ab"                # 1: continuation
+    assert collapse("a\\\\\nb") == "a\\\\\nb"       # 2: real separator, untouched
+    assert collapse("a\\\\\\\nb") == "a\\\\b"        # 3: pair kept, newline gone
+    assert collapse("a\\\\\\\\\nb") == "a\\\\\\\\\nb"  # 4: untouched
+    assert collapse("a\\\r\nb") == "ab"             # CRLF continuation
+    assert collapse("a\\\\\r\nb") == "a\\\\\r\nb"   # CRLF real separator
+    assert collapse("a\nb") == "a\nb"                 # no backslash: untouched
+    # The deny-rule projection is the same mechanism, not a second copy.
+    for sample in ("a\\\nb", "a\\\\\nb", "a\\\\\\\nb"):
+        assert deny_collapse(sample) == collapse(sample)
+
+
+# -------------------------------------------------------------------------
 # Integration with the approval flow
 # -------------------------------------------------------------------------
 
@@ -812,6 +886,24 @@ def test_line_continuation_root_wipe_cannot_bypass_hardline(clean_session, monke
     assert result["approved"] is False, "yolo leaked a line-continuation root wipe"
     assert result.get("hardline") is True
     assert "BLOCKED (hardline)" in result["message"]
+
+
+def test_even_backslash_real_separator_cannot_bypass_hardline(clean_session, monkeypatch):
+    """An even backslash run before a newline is a real separator; the
+    hardline target on the next line must stay blocked even under yolo.
+
+    `echo\\\\<newline>rm -rf ~/.hermes` runs `echo\\` (not found) and then
+    the real `rm -rf ~/.hermes`. Yolo bypasses the dangerous layer, so the
+    hardline floor is the only thing left — it must see the second command.
+    """
+    monkeypatch.setenv("HERMES_YOLO_MODE", "1")
+
+    for command in ("echo\\\\\nrm -rf ~/.hermes", "echo \\\\\nrm -rf /",
+                    "echo\\\\\r\nrm -rf ~/.local/share/hermes-agent"):
+        result = check_all_command_guards(command, "local")
+        assert result["approved"] is False, f"yolo leaked an even-backslash real separator: {command!r}"
+        assert result.get("hardline") is True
+        assert "BLOCKED (hardline)" in result["message"]
 
 
 def test_session_yolo_cannot_bypass_hardline(clean_session):
