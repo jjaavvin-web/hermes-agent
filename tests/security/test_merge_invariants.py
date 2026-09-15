@@ -608,7 +608,8 @@ def test_hardline_wrapper_chain_survives_merge():
 
     for cmd in ("nice -n5 rm -rf ~/.hermes", "timeout 5 rm -rf ~/.hermes",
                 "stdbuf -o0 rm -rf ~/.hermes", "nice -n5 nohup rm -rf /",
-                "command -- rm -rf ~/.hermes", "exec -a evilname rm -rf ~/.hermes",
+                "command -- rm -rf ~/.hermes", "command -pp -- rm -rf ~/.hermes",
+                "exec -a evilname rm -rf ~/.hermes",
                 "sudo -u root rm -rf /"):
         assert hl(cmd)[0], f"wrapper-chained hardline target no longer blocked: {cmd!r}"
     for cmd in ("nice -n5 rm -rf /tmp/build", "timeout 5 ls -la"):

@@ -791,6 +791,9 @@ _HARDLINE_WRAPPER_CHAIN = [
     # options, and flag VALUES on the older wrappers (exec -a was open on base).
     ("command -- rm -rf ~/.hermes", "hermes"),
     ("command -p -- rm -rf ~/.hermes", "hermes"),
+    ("command -p -p -- rm -rf ~/.hermes", "hermes"),         # bash accepts repeated -p (re-verification 2026-09-14)
+    ("command -pp -- rm -rf ~/.hermes", "hermes"),           # bundled
+    ("command -p -p rm -rf ~/.hermes", "hermes"),
     ("nice -- rm -rf ~/.hermes", "hermes"),
     ("timeout -- 5 rm -rf ~/.hermes", "hermes"),
     ("exec -a evilname rm -rf ~/.hermes", "hermes"),
@@ -832,6 +835,7 @@ _WRAPPER_CHAIN_BENIGN = [
     "nice ls rm -rf ~/.hermes",          # `ls` is the command; nice takes no positional
     "sudo -u root ls -la",
     "command -v -- rm",
+    "command -p -v rm",                  # -v does not execute
 ]
 
 
@@ -1006,7 +1010,8 @@ def test_wrapper_prefix_is_linear_time():
     """
     import time as _time
 
-    for prefix in ("nice -n5 ", "nice -n 5 ", "timeout -s KILL 5 ", "sudo -u root ", "exec -a x "):
+    for prefix in ("nice -n5 ", "nice -n 5 ", "timeout -s KILL 5 ", "sudo -u root ", "exec -a x ",
+                   "env A=1 ", "env -i A=1 B=2 ", "command -p "):
         for reps in (400, 1600):
             command = prefix * reps + "ls"
             started = _time.perf_counter()
@@ -1029,6 +1034,7 @@ def test_wrapper_chained_target_cannot_bypass_hardline(clean_session, monkeypatc
                     "stdbuf -o0 rm -rf ~/.local/share/hermes-agent",
                     "nice -n5 nohup rm -rf ~/.hermes",
                     "command -- rm -rf ~/.hermes", "command -p -- rm -rf ~/.hermes",
+                    "command -p -p -- rm -rf ~/.hermes", "command -pp -- rm -rf ~/.hermes",
                     "exec -a evilname rm -rf ~/.hermes"):
         result = check_all_command_guards(command, "local")
         assert result["approved"] is False, f"yolo leaked a wrapper-chained hardline target: {command!r}"

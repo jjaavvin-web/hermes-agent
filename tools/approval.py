@@ -814,7 +814,8 @@ _CMDPOS = (
     # and wrapper-chain-fix/RAIL-REVIEW.md). The deny rail already walked this
     # wrapper class (_DENY_WRAPPER_WORDS); the floor now recognises the same
     # words, each with flags, flag values (`sudo -u root`, `exec -a name`,
-    # `timeout -s KILL`), `--`, and -- for chrt/taskset/timeout/chroot only,
+    # `timeout -s KILL`), `--` (and for `command`: any run of -p/-pp, as bash
+    # accepts them; -v/-V do not execute), and -- for chrt/taskset/timeout/chroot only,
     # mirroring _DENY_WRAPPER_POSITIONAL_ARGS -- one positional argument
     # (`timeout 5`, `taskset 0x1`, `chroot /jail`). The regex backtracks, so a
     # command word is never swallowed as a value. Quoted data is still data:
@@ -825,7 +826,7 @@ _CMDPOS = (
     r'sudo\s+' + _CMDPOS_FLAGS                                    # sudo [flags [value]]
     + r'|env\s+' + _CMDPOS_FLAGS + r'(?:\w+=\S*\s+)*'             # env [flags] [VAR=VAL ...]
     + r'|(?:exec|nohup|setsid|time)\s+' + _CMDPOS_FLAGS           # exec [-a name] / nohup / setsid / time [flags]
-    + r'|command\s+(?:-p\s+)?(?:--\s+)?'                          # command [-p] [--]  (-v/-V do not execute)
+    + r'|command\s+(?:-p+\s+)*(?:--\s+)?'                         # command [-p|-pp ...] [--]  (-v/-V do not execute)
     + r'|(?:nice|ionice|stdbuf)\s+' + _CMDPOS_FLAGS               # scheduler/buffer wrappers, no positional
     + r'|(?:chrt|taskset|timeout|chroot)\s+' + _CMDPOS_FLAGS + r'(?:' + _CMDPOS_ARG + r')?'  # + one positional
     + r')*'
