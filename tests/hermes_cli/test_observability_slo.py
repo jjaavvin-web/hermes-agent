@@ -332,7 +332,9 @@ def test_alert_synthetic_breach_renders():
     text = slo_alert_check.render_alert(snap, rows)
     assert rows
     assert "Hermes SLO breach" in text
-    # watchdog_restart_count=3 (>critical 1) is a paging breach
-    assert "watchdog_restart_count" in text
+    # watchdog_restart_count=3 (>critical 1) is a paging breach; the alert renders
+    # the metric's human label (slo_alert_check.LABELS), not the raw metric key.
+    assert slo_alert_check.LABELS["watchdog_restart_count"] in text
+    assert "watchdog_restart_count" not in text
     # p95 is page=False (informational, mixed lane/interactive turns) — never paged
     assert "gateway_turn_p95_latency_ms" not in text
