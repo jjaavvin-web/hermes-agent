@@ -781,40 +781,54 @@ CREDENTIAL_EXFIL_DENY_PATTERNS = [
 # Matches: start of string, after command separators (; && || | newline),
 # after subshell openers ( `$(` or backtick ), optionally consuming
 # leading wrapper commands (sudo, env VAR=VAL, exec, nohup, setsid).
+# Transparent wrapper words: the shell runs the WRAPPED program, so the wrapped
+# program is the command. A value or positional slot below may never hold one
+# of these words (negative lookahead), which keeps the prefix grammar
+# unambiguous: every wrapper word starts exactly one wrapper, so the regex
+# engine never has to explore quadratic splits of long wrapper chains
+# (rail review 2026-09-14 measured O(n^2) on the first cut of this prefix).
+_CMDPOS_WRAPPER_WORDS = (
+    r'(?:sudo|env|exec|nohup|setsid|time|command|nice|ionice|stdbuf|chrt|taskset|timeout|chroot)'
+)
+# One non-flag, non-wrapper token (a flag value or a positional argument).
+_CMDPOS_ARG = r'(?!' + _CMDPOS_WRAPPER_WORDS + r'\s)[^\s-]\S*\s+'
+# Any number of flags, each with an optional value; `--` (end of options) is a flag.
+_CMDPOS_FLAGS = r'(?:-\S+\s+(?:' + _CMDPOS_ARG + r')?)*'
+
 _CMDPOS = (
     # Real ;/&/| separators are converted to newlines by the quote-aware
     # _mark_command_starts pass. Keeping them in this flat regex mistakes
     # quoted regex/data (for example grep '(safe|rm -rf /)') for commands.
     #
     # Everything between the start position and the command word is a run of
-    # transparent WRAPPERS, in any order and any number: the shell still runs
-    # the wrapped program, so the wrapped program IS the command. Until
-    # 2026-09-14 this alternation knew sudo/env/exec/nohup/setsid/time only;
-    # `nice -n5 rm -rf ~/.hermes`, `timeout 5 rm -rf ~/.hermes` and
-    # `stdbuf -o0 rm -rf ~/.hermes` were therefore never seen as an `rm` at
-    # command position by the UNCONDITIONAL hardline floor, and under yolo /
-    # approvals.mode=off / cron approve-mode (where the dangerous layer is
-    # bypassed by design) the delete really ran -- proven with a canary
-    # directory through the real terminal_tool() path, fork packet
-    # audits/20260913T1723Z-hardline-normalizer-parity/RESIDUAL-wrapper-chain.md.
-    # The deny rail already walked this wrapper class (_DENY_WRAPPER_WORDS);
-    # the floor now recognises the same words. Wrapper flags are skipped; the
-    # scheduler/timeout/chroot wrappers may also carry ONE positional argument
-    # (`timeout 5`, `nice -n 5`, `taskset 0x1`, `chroot /jail`) and a flag may
-    # carry its own value (`timeout -s KILL 5`). The regex backtracks, so a
-    # command word is never swallowed as a positional. Quoted data is still
-    # data: `echo 'nice rm -rf ~/.hermes'` has no wrapper at command position.
+    # transparent WRAPPERS, in any order and any number. Until 2026-09-14 this
+    # alternation knew sudo/env/exec/nohup/setsid/time only, and only bare
+    # flags: `nice -n5 rm -rf ~/.hermes`, `timeout 5 rm -rf ~/.hermes`,
+    # `stdbuf -o0 rm -rf ~/.hermes`, `command -- rm -rf ~/.hermes` and
+    # `exec -a name rm -rf ~/.hermes` were never seen as an `rm` at command
+    # position by the UNCONDITIONAL hardline floor, and under yolo /
+    # approvals.mode=off / cron approve-mode (dangerous layer bypassed by
+    # design) the delete really ran -- proven with a canary directory through
+    # the real terminal_tool() path (fork packet
+    # audits/20260913T1723Z-hardline-normalizer-parity/, RESIDUAL-wrapper-chain.md
+    # and wrapper-chain-fix/RAIL-REVIEW.md). The deny rail already walked this
+    # wrapper class (_DENY_WRAPPER_WORDS); the floor now recognises the same
+    # words, each with flags, flag values (`sudo -u root`, `exec -a name`,
+    # `timeout -s KILL`), `--`, and -- for chrt/taskset/timeout/chroot only,
+    # mirroring _DENY_WRAPPER_POSITIONAL_ARGS -- one positional argument
+    # (`timeout 5`, `taskset 0x1`, `chroot /jail`). The regex backtracks, so a
+    # command word is never swallowed as a value. Quoted data is still data:
+    # `echo 'nice rm -rf ~/.hermes'` has no wrapper at command position.
     r'(?:^|[\n`]|\$\()'            # start position
     r'\s*'                          # optional whitespace
     r'(?:'                           # any run of transparent wrappers:
-    r'sudo\s+(?:-[^\s]+\s+)*'                     #   sudo [flags]
-    r'|env\s+(?:-[^\s]+\s+)*(?:\w+=\S*\s+)*'     #   env [flags] [VAR=VAL ...]
-    r'|(?:exec|nohup|setsid|time)\s+(?:-[^\s]+\s+)*'  # exec/nohup/setsid/time [flags]
-    r'|command\s+(?:-p\s+)?'                       #   command [-p]  (-v/-V do not execute)
-    r'|(?:nice|ionice|stdbuf|chrt|taskset|timeout|chroot)\s+'  # scheduler/timeout/chroot wrappers
-    r'(?:-[^\s]+\s+(?:[^\s-]\S*\s+)?)*'          #     [flags, each with an optional value]
-    r'(?:[^\s-]\S*\s+)?'                          #     [one positional argument]
-    r')*'
+    r'sudo\s+' + _CMDPOS_FLAGS                                    # sudo [flags [value]]
+    + r'|env\s+' + _CMDPOS_FLAGS + r'(?:\w+=\S*\s+)*'             # env [flags] [VAR=VAL ...]
+    + r'|(?:exec|nohup|setsid|time)\s+' + _CMDPOS_FLAGS           # exec [-a name] / nohup / setsid / time [flags]
+    + r'|command\s+(?:-p\s+)?(?:--\s+)?'                          # command [-p] [--]  (-v/-V do not execute)
+    + r'|(?:nice|ionice|stdbuf)\s+' + _CMDPOS_FLAGS               # scheduler/buffer wrappers, no positional
+    + r'|(?:chrt|taskset|timeout|chroot)\s+' + _CMDPOS_FLAGS + r'(?:' + _CMDPOS_ARG + r')?'  # + one positional
+    + r')*'
     r'\s*'
 )
 

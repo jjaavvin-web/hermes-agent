@@ -607,7 +607,9 @@ def test_hardline_wrapper_chain_survives_merge():
     from tools.approval import detect_hardline_command as hl
 
     for cmd in ("nice -n5 rm -rf ~/.hermes", "timeout 5 rm -rf ~/.hermes",
-                "stdbuf -o0 rm -rf ~/.hermes", "nice -n5 nohup rm -rf /"):
+                "stdbuf -o0 rm -rf ~/.hermes", "nice -n5 nohup rm -rf /",
+                "command -- rm -rf ~/.hermes", "exec -a evilname rm -rf ~/.hermes",
+                "sudo -u root rm -rf /"):
         assert hl(cmd)[0], f"wrapper-chained hardline target no longer blocked: {cmd!r}"
     for cmd in ("nice -n5 rm -rf /tmp/build", "timeout 5 ls -la"):
         assert not hl(cmd)[0], f"benign wrapper shape hardline-blocked: {cmd!r}"

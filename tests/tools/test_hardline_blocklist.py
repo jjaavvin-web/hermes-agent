@@ -787,6 +787,18 @@ _HARDLINE_WRAPPER_CHAIN = [
     ("echo hi && timeout 5 rm -rf ~/.hermes", "hermes"),
     ("$(timeout 5 rm -rf ~/.hermes)", "hermes"),             # inside a substitution
     ("`nice rm -rf ~/.hermes`", "hermes"),
+    # Rail review 2026-09-14 (wrapper-chain-fix/RAIL-REVIEW.md): `--` end of
+    # options, and flag VALUES on the older wrappers (exec -a was open on base).
+    ("command -- rm -rf ~/.hermes", "hermes"),
+    ("command -p -- rm -rf ~/.hermes", "hermes"),
+    ("nice -- rm -rf ~/.hermes", "hermes"),
+    ("timeout -- 5 rm -rf ~/.hermes", "hermes"),
+    ("exec -a evilname rm -rf ~/.hermes", "hermes"),
+    ("sudo -u root rm -rf /", "root"),
+    ("sudo -u root -g root rm -rf /etc", "system"),
+    ("env -i rm -rf ~/.hermes", "hermes"),
+    ("env -i PATH=/bin rm -rf ~/.hermes", "hermes"),
+    ("timeout -s KILL -k 2 5 rm -rf ~/.hermes", "hermes"),
     ("timeout 5 mkfs.ext4 /dev/sda1", "mkfs"),               # other _CMDPOS floor rules
     ("nice -n5 shutdown -h now", "shutdown"),
 ]
@@ -816,6 +828,10 @@ _WRAPPER_CHAIN_BENIGN = [
     "echo 'nice rm -rf ~/.hermes'",
     'printf "%s" "timeout 5 rm -rf /"',
     "git commit -m 'timeout 5 rm -rf ~/.hermes was blocked'",
+    "exec -a name ls",
+    "nice ls rm -rf ~/.hermes",          # `ls` is the command; nice takes no positional
+    "sudo -u root ls -la",
+    "command -v -- rm",
 ]
 
 
@@ -981,6 +997,27 @@ def test_even_backslash_real_separator_cannot_bypass_hardline(clean_session, mon
         assert "BLOCKED (hardline)" in result["message"]
 
 
+def test_wrapper_prefix_is_linear_time():
+    """The wrapper prefix grammar must not backtrack quadratically on long
+    wrapper chains (rail review 2026-09-14 measured 10.8 s for 400 repeats
+    and 40.9 s for 800 on the first cut; attacker-controlled command text
+    reaches this check before any privilege). Every value/positional slot
+    excludes wrapper words, so parsing is deterministic and linear.
+    """
+    import time as _time
+
+    for prefix in ("nice -n5 ", "nice -n 5 ", "timeout -s KILL 5 ", "sudo -u root ", "exec -a x "):
+        for reps in (400, 1600):
+            command = prefix * reps + "ls"
+            started = _time.perf_counter()
+            detect_hardline_command(command)
+            elapsed = _time.perf_counter() - started
+            # Only the cost is asserted: past the existing length guard the
+            # floor fails closed on very long commands, which is a verdict
+            # this test does not own.
+            assert elapsed < 1.0, f"{prefix!r} x{reps}: {elapsed:.2f}s (expected linear, well under 1 s)"
+
+
 def test_wrapper_chained_target_cannot_bypass_hardline(clean_session, monkeypatch):
     """`nice -n5 rm -rf ~/.hermes` runs the real rm. Yolo bypasses the
     dangerous layer, so the floor is the only thing left; it must see the
@@ -990,7 +1027,9 @@ def test_wrapper_chained_target_cannot_bypass_hardline(clean_session, monkeypatc
 
     for command in ("nice -n5 rm -rf ~/.hermes", "timeout 5 rm -rf /",
                     "stdbuf -o0 rm -rf ~/.local/share/hermes-agent",
-                    "nice -n5 nohup rm -rf ~/.hermes"):
+                    "nice -n5 nohup rm -rf ~/.hermes",
+                    "command -- rm -rf ~/.hermes", "command -p -- rm -rf ~/.hermes",
+                    "exec -a evilname rm -rf ~/.hermes"):
         result = check_all_command_guards(command, "local")
         assert result["approved"] is False, f"yolo leaked a wrapper-chained hardline target: {command!r}"
         assert result.get("hardline") is True
