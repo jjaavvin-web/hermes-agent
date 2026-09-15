@@ -751,6 +751,81 @@ def test_collapse_line_continuations_parity():
 
 
 # -------------------------------------------------------------------------
+# Wrapper-chained command position: nice / timeout / stdbuf / ionice / chrt /
+# taskset / chroot / command in front of a hardline target
+# -------------------------------------------------------------------------
+#
+# The shell runs the WRAPPED program, so the wrapped program is the command.
+# _CMDPOS used to know sudo/env/exec/nohup/setsid/time only, so
+# `nice -n5 rm -rf ~/.hermes` was never an `rm` at command position for the
+# unconditional floor; under yolo (dangerous layer bypassed by design) the
+# delete really ran. Proven with a throwaway canary directory through the
+# real terminal_tool() path: audits/20260913T1723Z-hardline-normalizer-parity/
+# RESIDUAL-wrapper-chain-run-{BASE,FIX}.txt (base = deployed e2eaa91c07).
+
+# (command, description_substring)
+_HARDLINE_WRAPPER_CHAIN = [
+    ("nice -n5 rm -rf ~/.hermes", "hermes"),
+    ("nice -n 5 rm -rf ~/.hermes", "hermes"),               # flag value as its own token
+    ("nice --adjustment=5 rm -rf ~/.hermes", "hermes"),
+    ("timeout 5 rm -rf ~/.hermes", "hermes"),                # positional duration
+    ("timeout -s KILL 5 rm -rf /", "root"),                  # flag with value, then positional
+    ("timeout --kill-after=2 5s rm -rf ~/.hermes", "hermes"),
+    ("stdbuf -o0 rm -rf ~/.hermes", "hermes"),
+    ("stdbuf -o 0 -e 0 rm -rf ~/.hermes", "hermes"),
+    ("ionice -c 3 rm -rf ~/.local/share/hermes-agent", "hermes"),
+    ("chrt -f 10 rm -rf ~/.hermes", "hermes"),
+    ("taskset 0x1 rm -rf ~/.hermes", "hermes"),
+    ("chroot /jail rm -rf /etc", "system"),
+    ("command rm -rf ~/.hermes", "hermes"),
+    ("command -p rm -rf ~/.hermes", "hermes"),
+    ("nice -n5 nohup rm -rf ~/.hermes", "hermes"),           # chained wrappers
+    ("sudo nice -n5 rm -rf /", "root"),                      # sudo first
+    ("timeout 5 sudo rm -rf /home", "system"),               # sudo second
+    ("nohup timeout 5 nice -n 5 stdbuf -o0 rm -rf ~/.hermes", "hermes"),
+    ("true; nice -n5 rm -rf ~/.hermes", "hermes"),           # after a separator
+    ("echo hi && timeout 5 rm -rf ~/.hermes", "hermes"),
+    ("$(timeout 5 rm -rf ~/.hermes)", "hermes"),             # inside a substitution
+    ("`nice rm -rf ~/.hermes`", "hermes"),
+    ("timeout 5 mkfs.ext4 /dev/sda1", "mkfs"),               # other _CMDPOS floor rules
+    ("nice -n5 shutdown -h now", "shutdown"),
+]
+
+
+@pytest.mark.parametrize("command,desc_substr", _HARDLINE_WRAPPER_CHAIN)
+def test_hardline_blocks_wrapper_chained_targets(command, desc_substr):
+    is_hl, desc = detect_hardline_command(command)
+    assert is_hl, f"wrapper-chained hardline target slipped past the floor: {command!r}"
+    assert desc and desc_substr in desc.lower(), (
+        f"unexpected description {desc!r} for {command!r}"
+    )
+
+
+# The same wrappers in front of NON-hardline work, and the wrapper words as
+# quoted data, must stay off the floor (the dangerous layer may still ask).
+_WRAPPER_CHAIN_BENIGN = [
+    "nice -n5 rm -rf /tmp/build",
+    "timeout 30 rm -rf ./node_modules",
+    "stdbuf -o0 grep 'rm -rf /' access.log",
+    "nice -n 10 make -j4",
+    "timeout 5 ls -la ~/.hermes",
+    "ionice -c 3 tar czf backup.tgz ~/.hermes",
+    "chrt -f 10 ./bench",
+    "taskset 0x1 python3 worker.py",
+    "command -v rm",
+    "echo 'nice rm -rf ~/.hermes'",
+    'printf "%s" "timeout 5 rm -rf /"',
+    "git commit -m 'timeout 5 rm -rf ~/.hermes was blocked'",
+]
+
+
+@pytest.mark.parametrize("command", _WRAPPER_CHAIN_BENIGN)
+def test_wrapper_chain_benign_shapes_not_hardline(command):
+    is_hl, desc = detect_hardline_command(command)
+    assert not is_hl, f"benign wrapper shape hit the hardline floor: {command!r} ({desc})"
+
+
+# -------------------------------------------------------------------------
 # Integration with the approval flow
 # -------------------------------------------------------------------------
 
@@ -902,6 +977,22 @@ def test_even_backslash_real_separator_cannot_bypass_hardline(clean_session, mon
                     "echo\\\\\r\nrm -rf ~/.local/share/hermes-agent"):
         result = check_all_command_guards(command, "local")
         assert result["approved"] is False, f"yolo leaked an even-backslash real separator: {command!r}"
+        assert result.get("hardline") is True
+        assert "BLOCKED (hardline)" in result["message"]
+
+
+def test_wrapper_chained_target_cannot_bypass_hardline(clean_session, monkeypatch):
+    """`nice -n5 rm -rf ~/.hermes` runs the real rm. Yolo bypasses the
+    dangerous layer, so the floor is the only thing left; it must see the
+    wrapped command word.
+    """
+    monkeypatch.setenv("HERMES_YOLO_MODE", "1")
+
+    for command in ("nice -n5 rm -rf ~/.hermes", "timeout 5 rm -rf /",
+                    "stdbuf -o0 rm -rf ~/.local/share/hermes-agent",
+                    "nice -n5 nohup rm -rf ~/.hermes"):
+        result = check_all_command_guards(command, "local")
+        assert result["approved"] is False, f"yolo leaked a wrapper-chained hardline target: {command!r}"
         assert result.get("hardline") is True
         assert "BLOCKED (hardline)" in result["message"]
 

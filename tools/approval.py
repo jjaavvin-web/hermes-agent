@@ -785,11 +785,36 @@ _CMDPOS = (
     # Real ;/&/| separators are converted to newlines by the quote-aware
     # _mark_command_starts pass. Keeping them in this flat regex mistakes
     # quoted regex/data (for example grep '(safe|rm -rf /)') for commands.
+    #
+    # Everything between the start position and the command word is a run of
+    # transparent WRAPPERS, in any order and any number: the shell still runs
+    # the wrapped program, so the wrapped program IS the command. Until
+    # 2026-09-14 this alternation knew sudo/env/exec/nohup/setsid/time only;
+    # `nice -n5 rm -rf ~/.hermes`, `timeout 5 rm -rf ~/.hermes` and
+    # `stdbuf -o0 rm -rf ~/.hermes` were therefore never seen as an `rm` at
+    # command position by the UNCONDITIONAL hardline floor, and under yolo /
+    # approvals.mode=off / cron approve-mode (where the dangerous layer is
+    # bypassed by design) the delete really ran -- proven with a canary
+    # directory through the real terminal_tool() path, fork packet
+    # audits/20260913T1723Z-hardline-normalizer-parity/RESIDUAL-wrapper-chain.md.
+    # The deny rail already walked this wrapper class (_DENY_WRAPPER_WORDS);
+    # the floor now recognises the same words. Wrapper flags are skipped; the
+    # scheduler/timeout/chroot wrappers may also carry ONE positional argument
+    # (`timeout 5`, `nice -n 5`, `taskset 0x1`, `chroot /jail`) and a flag may
+    # carry its own value (`timeout -s KILL 5`). The regex backtracks, so a
+    # command word is never swallowed as a positional. Quoted data is still
+    # data: `echo 'nice rm -rf ~/.hermes'` has no wrapper at command position.
     r'(?:^|[\n`]|\$\()'            # start position
     r'\s*'                          # optional whitespace
-    r'(?:sudo\s+(?:-[^\s]+\s+)*)?'  # optional sudo with flags
-    r'(?:env\s+(?:\w+=\S*\s+)*)?'   # optional env with VAR=VAL pairs
-    r'(?:(?:exec|nohup|setsid|time)\s+)*'  # optional wrapper commands
+    r'(?:'                           # any run of transparent wrappers:
+    r'sudo\s+(?:-[^\s]+\s+)*'                     #   sudo [flags]
+    r'|env\s+(?:-[^\s]+\s+)*(?:\w+=\S*\s+)*'     #   env [flags] [VAR=VAL ...]
+    r'|(?:exec|nohup|setsid|time)\s+(?:-[^\s]+\s+)*'  # exec/nohup/setsid/time [flags]
+    r'|command\s+(?:-p\s+)?'                       #   command [-p]  (-v/-V do not execute)
+    r'|(?:nice|ionice|stdbuf|chrt|taskset|timeout|chroot)\s+'  # scheduler/timeout/chroot wrappers
+    r'(?:-[^\s]+\s+(?:[^\s-]\S*\s+)?)*'          #     [flags, each with an optional value]
+    r'(?:[^\s-]\S*\s+)?'                          #     [one positional argument]
+    r')*'
     r'\s*'
 )
 

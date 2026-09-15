@@ -590,6 +590,29 @@ def test_hardline_even_backslash_real_separator_survives_merge():
 
 
 
+def test_hardline_wrapper_chain_survives_merge():
+    """A transparent wrapper (nice/timeout/stdbuf/ionice/chrt/taskset/chroot/
+    command) in front of a hardline target must keep the target at command
+    position for the unconditional floor. Fixed 2026-09-14 on the fork by
+    widening _CMDPOS (audits/20260913T1723Z-hardline-normalizer-parity/
+    RESIDUAL-wrapper-chain.md: the delete REALLY RAN under yolo on the
+    deployed e2eaa91c07). Upstream's normalizer lives in a file the fork does
+    not have, so an upstream merge that takes tools/approval.py wholesale
+    silently re-opens this shape.
+    """
+    import sys as _sys
+
+    if str(REPO) not in _sys.path:
+        _sys.path.insert(0, str(REPO))
+    from tools.approval import detect_hardline_command as hl
+
+    for cmd in ("nice -n5 rm -rf ~/.hermes", "timeout 5 rm -rf ~/.hermes",
+                "stdbuf -o0 rm -rf ~/.hermes", "nice -n5 nohup rm -rf /"):
+        assert hl(cmd)[0], f"wrapper-chained hardline target no longer blocked: {cmd!r}"
+    for cmd in ("nice -n5 rm -rf /tmp/build", "timeout 5 ls -la"):
+        assert not hl(cmd)[0], f"benign wrapper shape hardline-blocked: {cmd!r}"
+
+
 def test_user_deny_projection_survives_merge(monkeypatch):
     """approvals.deny must match the denied executable behind a wrapper
     (nice/nohup/timeout/...), a path, or a GNU ``env -S`` split, and must
