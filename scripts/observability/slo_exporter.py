@@ -9,6 +9,8 @@ counters for restart/watchdog/reconnect noise.
 """
 from __future__ import annotations
 
+import dataclasses
+import hashlib
 import json
 import re
 import time
@@ -23,7 +25,11 @@ SLO_DEFINITIONS: dict[str, dict[str, Any]] = {
     **_base.SLO_DEFINITIONS,
     "turn_error_rate": {
         **_base.SLO_DEFINITIONS["turn_error_rate"],
-        "source": "explicit failed-turn journal markers divided by turn_usage turns; process exits, reconnect churn, and watchdog kills are split into diagnostic counters",
+        "source": "failed-event estimate per recorded turn (not a turn-ID join); paired console/logger errors count once; process exits/reconnect/watchdog remain diagnostic",
+    },
+    "fallback_trigger_rate": {
+        **_base.SLO_DEFINITIONS["fallback_trigger_rate"],
+        "source": "confirmed INFO Fallback activated logger records per recorded turn; advice, attempts, recovery chatter and duplicate UI records excluded",
     },
     "gateway_restart_count": {
         "target": "diagnostic",
@@ -197,6 +203,69 @@ def _event_time(line: str, fallback_index: int) -> float:
     return epoch if epoch is not None else float(fallback_index)
 
 
+# Count confirmed activation logger records, not advice, attempts, UI echoes or
+# the second "activated after empty responses" log emitted by the same switch.
+_ACTIVATED_FALLBACK_RE = re.compile(
+    r"\bINFO\s+[\w.]+:\s*(?:\[[^\]]+\]\s*)?Fallback activated: .+ (?:→|->) .+ \(.+\)"
+)
+_CONSOLE_CLIENT_ERROR_RE = re.compile(r"❌ Non-retryable client error \(HTTP [^)]*\)\. Aborting\.")
+_LOGGER_CLIENT_ERROR_RE = re.compile(r"\bERROR\s+agent\.conversation_loop:\s*(?:\[[^\]]+\]\s*)?Non-retryable client error:")
+_PID_RE = re.compile(r"\b(?:python[\w.-]*|hermes)\[(\d+)\]:")
+
+
+def _paired_error_identity(line: str) -> tuple[str, str] | None:
+    pid = _PID_RE.search(line)
+    if not pid:
+        return None  # no identity = no speculative time-only collapsing
+    body = line[pid.end():].strip()
+    body = re.sub(r"^(?:\d{4}-\d\d-\d\d \S+ )?ERROR agent\.conversation_loop:\s*", "", body)
+    prefix = re.match(r"\[([^]]+)\]", body)
+    return pid[1], prefix[1] if prefix else ""
+
+
+def _event_indexes(lines: Sequence[str]) -> tuple[set[int], set[int]]:
+    """Remove only proven console/logger duplicate pairs, not adjacent failures.
+
+    Legacy records lack turn IDs: this remains a failed-event/recorded-turn
+    estimate, NOT an exact join to unique turns. One-to-one pairing conserves
+    two same-process failures in the same second. Unpaired lines stay counted.
+    """
+    errors = {i for i, line in enumerate(lines) if _is_failed_turn_marker(line)}
+    logger_rows = [i for i in errors if _LOGGER_CLIENT_ERROR_RE.search(lines[i])]
+    unused = set(logger_rows)
+    for i in sorted(errors):
+        if _LOGGER_CLIENT_ERROR_RE.search(lines[i]) or not _CONSOLE_CLIENT_ERROR_RE.search(lines[i]):
+            continue
+        identity, ts = _paired_error_identity(lines[i]), _line_epoch(lines[i])
+        if identity is None or ts is None:
+            continue
+        for j in sorted(unused):
+            other_ts = _line_epoch(lines[j])
+            if (j > i and other_ts is not None and 0 <= other_ts - ts <= 2
+                    and identity == _paired_error_identity(lines[j])):
+                errors.remove(i)
+                unused.remove(j)
+                break
+    fallbacks = {i for i, line in enumerate(lines) if _ACTIVATED_FALLBACK_RE.search(line)}
+    return errors, fallbacks
+
+
+def event_evidence(lines: Sequence[str]) -> dict[str, list[str]]:
+    """Stable, content-free IDs; retain repeated equal logger records separately."""
+    errors, fallbacks = _event_indexes(lines)
+    result = {}
+    for name, indexes in (("turn_error_rate", errors), ("fallback_trigger_rate", fallbacks)):
+        seen: dict[str, int] = {}
+        ids = []
+        for i in sorted(indexes):
+            line = lines[i].strip()
+            occurrence = seen.get(line, 0)
+            seen[line] = occurrence + 1
+            ids.append(hashlib.sha256(f"{name}\n{line}\n{occurrence}".encode()).hexdigest())
+        result[name] = ids
+    return result
+
+
 def parse_journal_counts(gateway_lines: Iterable[str], watchdog_lines: Iterable[str] = ()) -> CalibratedJournalCounts:
     gateway = list(gateway_lines)
     watchdog = list(watchdog_lines)
@@ -219,7 +288,9 @@ def parse_journal_counts(gateway_lines: Iterable[str], watchdog_lines: Iterable[
     discord_reconnect_lines = 0
 
     legacy_error_lines = 0
-    for idx, line in enumerate([*gateway, *watchdog]):
+    all_lines = [*gateway, *watchdog]
+    error_indexes, fallback_indexes = _event_indexes(all_lines)
+    for idx, line in enumerate(all_lines):
         if _base._is_counted_gateway_error(line):  # type: ignore[attr-defined]
             legacy_error_lines += 1
         if _base._TOOL_CONFIG_ERROR_RE.search(line):  # type: ignore[attr-defined]
@@ -230,10 +301,10 @@ def parse_journal_counts(gateway_lines: Iterable[str], watchdog_lines: Iterable[
             tool_guardrail_denials += 1
         if _base._FALLBACK_RE.search(line) and _base._AUXILIARY_FALLBACK_RE.search(line):  # type: ignore[attr-defined]
             auxiliary_fallbacks += 1
-        if _base._is_counted_fallback(line):  # type: ignore[attr-defined]
+        if idx in fallback_indexes:
             fallback_events += 1
 
-        if _is_failed_turn_marker(line):
+        if idx in error_indexes:
             turn_errors += 1
             continue
         if _is_gateway_exit_line(line):
@@ -298,17 +369,22 @@ def build_bucket_series(rows: list[dict[str, Any]], gateway_lines: Iterable[str]
         if int(row.get("retry_count") or 0) > 0:
             item["retry_turns"] += 1
         item["cost_usd"] += float(row.get("estimated_cost_usd") or 0.0)
-    for line in gateway_lines:
+    gateway_lines = list(gateway_lines)
+    error_indexes, fallback_indexes = _event_indexes(gateway_lines)
+    for idx, line in enumerate(gateway_lines):
         epoch = _line_epoch(line)
         if epoch is None:
             continue
         bucket = _base._bucket_start(epoch, bucket_seconds)  # type: ignore[attr-defined]
         buckets[bucket]["lines"].append(line)
+        buckets[bucket]["selected_errors"] = buckets[bucket].get("selected_errors", 0) + (idx in error_indexes)
+        buckets[bucket]["selected_fallbacks"] = buckets[bucket].get("selected_fallbacks", 0) + (idx in fallback_indexes)
     series = []
     for bucket in sorted(buckets):
         item = buckets[bucket]
         turn_count = item["turn_count"]
         counts = parse_journal_counts(item["lines"])
+        counts = dataclasses.replace(counts, turn_error_events=item.get("selected_errors", 0), fallback_events=item.get("selected_fallbacks", 0))
         series.append({
             "bucket_start": _base.utc_iso(bucket),
             "bucket_epoch": bucket,
@@ -383,6 +459,7 @@ def build_slo_snapshot(
         "since": _base.utc_iso(since),
         "turn_count": turn_count,
         "journal_counts": counts.__dict__,
+        "event_evidence": event_evidence([*gateway_lines, *watchdog_lines]),
         "retry_turns": retry_turns,
         "metrics": metrics,
         "recall": recall,
