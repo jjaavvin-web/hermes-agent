@@ -560,6 +560,61 @@ def test_hermes_state_and_install_dirs_are_hardline_protected():
         assert not hl(cmd)[0], f"HARDLINE pattern over-broad (blocks scoped/other delete): {cmd!r}"
 
 
+def test_hardline_even_backslash_real_separator_survives_merge():
+    """An EVEN run of backslashes before a newline is a REAL command
+    separator (POSIX: only an odd run escapes the newline). The shared
+    normalizer used to collapse `\\<newline>` blindly and fused the two
+    lines into one glued word, so `echo\\\\<LF>rm -rf ~/.hermes` slipped
+    under the unconditional hardline floor while bash ran the real `rm`.
+    Fixed 2026-09-13 (fork packet audits/20260913T1723Z-hardline-normalizer-
+    parity, RED/GREEN through the real guarded path with a canary directory)
+    by routing the normalizer through the parity-aware
+    _collapse_line_continuations helper the deny projection already used
+    (PR #99, 6ae4bfd829). Upstream keeps its normalizer in
+    tools/approval_detection.py, a file the fork does not have, so an
+    upstream merge that takes tools/approval.py wholesale silently
+    re-opens this shape. Each string below was verified failing on fork
+    main e2eaa91c07 before the fix.
+    """
+    import sys as _sys
+
+    if str(REPO) not in _sys.path:
+        _sys.path.insert(0, str(REPO))
+    from tools.approval import detect_hardline_command as hl
+
+    for cmd in ("echo\\\\\nrm -rf ~/.hermes", "echo \\\\\nrm -rf ~/.hermes",
+                "echo\\\\\r\nrm -rf /"):
+        assert hl(cmd)[0], f"even-backslash real separator no longer hardline-blocked: {cmd!r}"
+    for cmd in ("echo\\\\\nls -la", "touch \\\n/tmp/x"):
+        assert not hl(cmd)[0], f"benign backslash-newline shape hardline-blocked: {cmd!r}"
+
+
+
+def test_hardline_wrapper_chain_survives_merge():
+    """A transparent wrapper (nice/timeout/stdbuf/ionice/chrt/taskset/chroot/
+    command) in front of a hardline target must keep the target at command
+    position for the unconditional floor. Fixed 2026-09-14 on the fork by
+    widening _CMDPOS (audits/20260913T1723Z-hardline-normalizer-parity/
+    RESIDUAL-wrapper-chain.md: the delete REALLY RAN under yolo on the
+    deployed e2eaa91c07). Upstream's normalizer lives in a file the fork does
+    not have, so an upstream merge that takes tools/approval.py wholesale
+    silently re-opens this shape.
+    """
+    import sys as _sys
+
+    if str(REPO) not in _sys.path:
+        _sys.path.insert(0, str(REPO))
+    from tools.approval import detect_hardline_command as hl
+
+    for cmd in ("nice -n5 rm -rf ~/.hermes", "timeout 5 rm -rf ~/.hermes",
+                "stdbuf -o0 rm -rf ~/.hermes", "nice -n5 nohup rm -rf /",
+                "command -- rm -rf ~/.hermes", "command -pp -- rm -rf ~/.hermes",
+                "exec -a evilname rm -rf ~/.hermes",
+                "sudo -u root rm -rf /"):
+        assert hl(cmd)[0], f"wrapper-chained hardline target no longer blocked: {cmd!r}"
+    for cmd in ("nice -n5 rm -rf /tmp/build", "timeout 5 ls -la"):
+        assert not hl(cmd)[0], f"benign wrapper shape hardline-blocked: {cmd!r}"
+
 
 def test_user_deny_projection_survives_merge(monkeypatch):
     """approvals.deny must match the denied executable behind a wrapper

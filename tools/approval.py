@@ -781,15 +781,55 @@ CREDENTIAL_EXFIL_DENY_PATTERNS = [
 # Matches: start of string, after command separators (; && || | newline),
 # after subshell openers ( `$(` or backtick ), optionally consuming
 # leading wrapper commands (sudo, env VAR=VAL, exec, nohup, setsid).
+# Transparent wrapper words: the shell runs the WRAPPED program, so the wrapped
+# program is the command. A value or positional slot below may never hold one
+# of these words (negative lookahead), which keeps the prefix grammar
+# unambiguous: every wrapper word starts exactly one wrapper, so the regex
+# engine never has to explore quadratic splits of long wrapper chains
+# (rail review 2026-09-14 measured O(n^2) on the first cut of this prefix).
+_CMDPOS_WRAPPER_WORDS = (
+    r'(?:sudo|env|exec|nohup|setsid|time|command|nice|ionice|stdbuf|chrt|taskset|timeout|chroot)'
+)
+# One non-flag, non-wrapper token (a flag value or a positional argument).
+_CMDPOS_ARG = r'(?!' + _CMDPOS_WRAPPER_WORDS + r'\s)[^\s-]\S*\s+'
+# Any number of flags, each with an optional value; `--` (end of options) is a flag.
+_CMDPOS_FLAGS = r'(?:-\S+\s+(?:' + _CMDPOS_ARG + r')?)*'
+
 _CMDPOS = (
     # Real ;/&/| separators are converted to newlines by the quote-aware
     # _mark_command_starts pass. Keeping them in this flat regex mistakes
     # quoted regex/data (for example grep '(safe|rm -rf /)') for commands.
+    #
+    # Everything between the start position and the command word is a run of
+    # transparent WRAPPERS, in any order and any number. Until 2026-09-14 this
+    # alternation knew sudo/env/exec/nohup/setsid/time only, and only bare
+    # flags: `nice -n5 rm -rf ~/.hermes`, `timeout 5 rm -rf ~/.hermes`,
+    # `stdbuf -o0 rm -rf ~/.hermes`, `command -- rm -rf ~/.hermes` and
+    # `exec -a name rm -rf ~/.hermes` were never seen as an `rm` at command
+    # position by the UNCONDITIONAL hardline floor, and under yolo /
+    # approvals.mode=off / cron approve-mode (dangerous layer bypassed by
+    # design) the delete really ran -- proven with a canary directory through
+    # the real terminal_tool() path (fork packet
+    # audits/20260913T1723Z-hardline-normalizer-parity/, RESIDUAL-wrapper-chain.md
+    # and wrapper-chain-fix/RAIL-REVIEW.md). The deny rail already walked this
+    # wrapper class (_DENY_WRAPPER_WORDS); the floor now recognises the same
+    # words, each with flags, flag values (`sudo -u root`, `exec -a name`,
+    # `timeout -s KILL`), `--` (and for `command`: any run of -p/-pp, as bash
+    # accepts them; -v/-V do not execute), and -- for chrt/taskset/timeout/chroot only,
+    # mirroring _DENY_WRAPPER_POSITIONAL_ARGS -- one positional argument
+    # (`timeout 5`, `taskset 0x1`, `chroot /jail`). The regex backtracks, so a
+    # command word is never swallowed as a value. Quoted data is still data:
+    # `echo 'nice rm -rf ~/.hermes'` has no wrapper at command position.
     r'(?:^|[\n`]|\$\()'            # start position
     r'\s*'                          # optional whitespace
-    r'(?:sudo\s+(?:-[^\s]+\s+)*)?'  # optional sudo with flags
-    r'(?:env\s+(?:\w+=\S*\s+)*)?'   # optional env with VAR=VAL pairs
-    r'(?:(?:exec|nohup|setsid|time)\s+)*'  # optional wrapper commands
+    r'(?:'                           # any run of transparent wrappers:
+    r'sudo\s+' + _CMDPOS_FLAGS                                    # sudo [flags [value]]
+    + r'|env\s+' + _CMDPOS_FLAGS + r'(?:\w+=\S*\s+)*'             # env [flags] [VAR=VAL ...]
+    + r'|(?:exec|nohup|setsid|time)\s+' + _CMDPOS_FLAGS           # exec [-a name] / nohup / setsid / time [flags]
+    + r'|command\s+(?:-p+\s+)*(?:--\s+)?'                         # command [-p|-pp ...] [--]  (-v/-V do not execute)
+    + r'|(?:nice|ionice|stdbuf)\s+' + _CMDPOS_FLAGS               # scheduler/buffer wrappers, no positional
+    + r'|(?:chrt|taskset|timeout|chroot)\s+' + _CMDPOS_FLAGS + r'(?:' + _CMDPOS_ARG + r')?'  # + one positional
+    + r')*'
     r'\s*'
 )
 
@@ -1826,6 +1866,55 @@ def _approval_key_aliases(pattern_key: str) -> set[str]:
 # Detection
 # =========================================================================
 
+def _collapse_line_continuations(command: str) -> str:
+    r"""Collapse backslash-newline shell line continuations, escape-parity aware.
+
+    Shared by the hardline/dangerous normalizer
+    (_normalize_command_for_detection) and the user deny-rule projection
+    (_deny_collapse_line_continuations): both rails must agree with the
+    shell on where one command ends and the next begins, or an executable
+    or wrapper name split across a line break resolves differently from
+    its one-line form.
+
+    POSIX rule: a newline is escaped (a continuation -- both characters
+    removed and the tokens joined) only when an ODD run of backslashes
+    leads into it. An EVEN run is already fully paired into literal
+    backslashes and the newline is a REAL command separator, exactly like
+    ``;``. Branching on parity is what the shell does. A blind
+    ``re.sub(r"\\\r?\n", "", ...)`` also matched the tail of an even run
+    and fused two real top-level commands into one glued word:
+    ``echo\\<LF>rm -rf ~/.hermes`` became ``echorm -rf ~/.hermes`` once the
+    later escape strip consumed the leftover backslash, so the hardline
+    floor never saw an ``rm`` at command position while bash ran ``echo\``
+    (not found) and then the real ``rm``. Proven through the real
+    terminal_tool() guarded path with a throwaway canary directory as
+    ground truth: audits/20260913T1723Z-hardline-normalizer-parity/
+    RED-run1.txt (canary deleted, pre-fix) -> GREEN-run1.txt (intact,
+    post-fix). The deny projection had the same bug first:
+    audits/20260912T0420Z-rail-shapes/p0-repair/{RED,GREEN}-run1.txt.
+
+    Odd runs keep the prior behaviour deliberately: the collapse is NOT
+    quote-aware and also fires on a backslash-newline inside single
+    quotes, where a real shell keeps both characters literal. These are
+    detection projections, not execution parsers, and for a real
+    continuation the safe direction is to bias toward MORE matching. The
+    even-length prefix left after an odd collapse is handed to each
+    caller's own escape handling.
+    """
+    def _collapse(match: "re.Match[str]") -> str:
+        backslashes, newline = match.group(1), match.group(2)
+        if len(backslashes) % 2 == 1:
+            # Odd run: the final backslash escapes the newline -- a real
+            # continuation. Drop both; keep the paired-off prefix.
+            return backslashes[:-1]
+        # Even run: every backslash is already paired off, so the newline
+        # is NOT escaped -- it is a real command separator and must survive
+        # so the next command stays at command position, as in the shell.
+        return backslashes + newline
+
+    return re.sub(r"(?<!\\)(\\+)(\r?\n)", _collapse, command)
+
+
 def _normalize_command_for_detection(command: str) -> str:
     """Normalize a command string before dangerous-pattern matching.
 
@@ -1841,16 +1930,21 @@ def _normalize_command_for_detection(command: str) -> str:
     command = command.replace('\x00', '')
     # Normalize Unicode (fullwidth Latin, halfwidth Katakana, etc.)
     command = unicodedata.normalize('NFKC', command)
-    # Collapse shell line continuations (backslash-newline). The shell removes
-    # BOTH characters and joins the tokens, so `rm -rf \<newline>/` executes as
-    # `rm -rf /`. This must run BEFORE the generic backslash-escape strip below,
-    # whose [^\n] class deliberately skips newlines and would otherwise leave
-    # the dangling backslash wedged between tokens — defeating the structured
-    # rm/mkfs/dd patterns (notably the HARDLINE root-delete floor, which cannot
-    # be bypassed even with yolo). Handles both \n and \r\n line endings. Line
-    # continuations carry no path separator, so this is a no-op on the Windows
-    # home-prefix folds below (which match C:\Users\alice\... — no newline).
-    command = re.sub(r'\\\r?\n', '', command)
+    # Collapse shell line continuations (backslash-newline), escape-parity
+    # aware (see _collapse_line_continuations). The shell removes BOTH
+    # characters of an odd-run continuation and joins the tokens, so
+    # `rm -rf \<newline>/` executes as `rm -rf /`; an EVEN run leaves the
+    # newline as a real separator, so `echo\\<newline>rm -rf ~/.hermes` keeps
+    # its second command at command position instead of fusing into
+    # `echorm ...` and slipping under the floor. This must run BEFORE the
+    # generic backslash-escape strip below, whose [^\n] class deliberately
+    # skips newlines and would otherwise leave the dangling backslash wedged
+    # between tokens — defeating the structured rm/mkfs/dd patterns (notably
+    # the HARDLINE root-delete floor, which cannot be bypassed even with
+    # yolo). Handles both \n and \r\n line endings. Line continuations carry
+    # no path separator, so this is a no-op on the Windows home-prefix folds
+    # below (which match C:\Users\alice\... — no newline).
+    command = _collapse_line_continuations(command)
     # Fold absolute home / active-profile-home prefixes into their canonical
     # ~/ and ~/.hermes/ forms so static user-sensitive patterns catch
     # /home/alice/.bashrc and C:\Users\alice\.bashrc the same way they catch
@@ -3377,7 +3471,7 @@ def _deny_strip_unquoted_comments(command: str) -> str:
 
 
 def _deny_collapse_line_continuations(command: str) -> str:
-    r"""Collapse backslash-newline shell line continuations, escape-PARITY aware.
+    r"""Deny-rule projection entry for _collapse_line_continuations.
 
     A wrapper name split across a real continuation (``nice -n5 \\`` +
     newline + ``nohup ...``) must resolve to the same executable-basename
@@ -3389,67 +3483,17 @@ def _deny_collapse_line_continuations(command: str) -> str:
     ``#`` comment's own trailing backslash cannot fuse the comment with
     the following real command.
 
-    Only an ODD run of backslashes immediately before the newline is a
-    real continuation (the last backslash escapes the newline; POSIX
-    shell semantics). An EVEN run is already fully paired off (each pair
-    resolves to one literal backslash) and the newline is NOT escaped —
-    it is a real command separator, exactly as if it were a ``;``. A
-    prior version of this function collapsed with a blind
-    ``re.sub(r"\\\r?\n", "", command)``, unconditionally, regardless of
-    how many backslashes preceded the newline. That is a P0 regression,
-    not a safe over-match: for an even-backslash run
-    (e.g. ``echo\\<LF>bash marker.sh ...``, two backslashes), real bash
-    parses this as TWO top-level commands, and the second one's
-    executable (``bash``) is a live command an anchored deny rule
-    (``bash *``) must catch. The old blind regex still stripped one
-    backslash + the newline (matching mid-run), FUSING both commands into
-    one word (``echo\bash ...`` -> deobfuscated to a single glued
-    executable name) and hiding the second command's real executable from
-    _deny_iter_command_starts / _deny_iter_word_spans, so the anchored
-    deny rule stopped matching a command that genuinely runs. Confirmed
-    through the real terminal_tool() guarded path with independent
-    marker-file ground truth: audits/20260912T0420Z-rail-shapes/p0-repair/
-    RED-run1.txt (bypass, pre-fix) and GREEN-run1.txt (blocked, post-fix).
-
-    This means the docstring claim this function used to make — that
-    collapsing unconditionally "can only ever make a pattern match a
-    candidate it would have matched anyway, never turn a denied command
-    into an allowed one" — was FALSE for this exact shape: the blind
-    collapse could turn a genuinely-denied second command into part of an
-    allowed fused word. What IS still true, and preserved by the
-    parity-aware fix below: for an odd-count (real continuation) run, the
-    collapse remains unconditional regardless of quoting — it also
-    collapses a backslash-newline sitting inside single quotes, where a
-    real shell keeps both characters literal (a continuation only fires
-    outside quotes). That bias is deliberate and unaffected by this fix:
-    this is a DENY-rule projection, not an execution parser, and the safe
-    direction for an odd (continuation) run is to bias toward MORE
-    matching. See tests/tools/test_approval_deny_rules.py for controls
-    proving this neither falsely blocks a benign command carrying a
-    literal odd-backslash-newline inside single quotes, nor blind-fuses a
-    benign even-backslash-newline real separator into one word.
-
-    NOTE (residual, out of scope for this fix): _normalize_command_for_detection
-    (tools/approval.py ~1853, the hardline floor's shared normalizer) has
-    the IDENTICAL parity-unaware blind-collapse bug on this same shape. It
-    is a different rail (hardline, not user deny rules) and is not
-    repaired here — see the P0 repair report for its own reproduction.
+    The parity rule (odd run = continuation, even run = real separator)
+    and its rationale live on the shared helper. The deny rail's own
+    proof of the even-run fusion -- ``echo\\<LF>bash marker.sh ...`` ran
+    ``bash`` past an anchored ``bash *`` rule -- is
+    audits/20260912T0420Z-rail-shapes/p0-repair/{RED,GREEN}-run1.txt.
+    See tests/tools/test_approval_deny_rules.py for controls proving this
+    neither falsely blocks a benign command carrying a literal
+    odd-backslash-newline inside single quotes, nor blind-fuses a benign
+    even-backslash-newline real separator into one word.
     """
-    def _collapse(match: "re.Match[str]") -> str:
-        backslashes, newline = match.group(1), match.group(2)
-        if len(backslashes) % 2 == 1:
-            # Odd run: the final backslash escapes the newline -- a real
-            # continuation. Drop both; the even-length prefix that
-            # remains is left for the word-level readers' own escape
-            # handling (unrelated to this newline).
-            return backslashes[:-1]
-        # Even run: every backslash is already paired off, so the
-        # newline itself is NOT escaped -- it is a real command
-        # separator and must survive so the wrapper walk still sees two
-        # commands, exactly like a real shell would.
-        return backslashes + newline
-
-    return re.sub(r"(?<!\\)(\\+)(\r?\n)", _collapse, command)
+    return _collapse_line_continuations(command)
 
 
 def _split_env_string(payload: str) -> list[str] | None:

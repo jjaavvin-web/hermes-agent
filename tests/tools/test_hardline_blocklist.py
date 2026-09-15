@@ -677,6 +677,175 @@ def test_hardline_blocks_line_continuation(command, desc_substr):
 
 
 # -------------------------------------------------------------------------
+# Even-backslash run before a newline is a REAL separator, not a continuation
+# -------------------------------------------------------------------------
+#
+# POSIX: only an ODD run of backslashes escapes the newline. An EVEN run is
+# already paired into literal backslashes, so the newline is a real command
+# separator and the next line is a live top-level command. The normalizer
+# used to collapse `\<newline>` blindly, matching the tail of an even run and
+# fusing both lines into one glued word (`echo\\<LF>rm -rf ~/.hermes` ->
+# `echorm -rf ~/.hermes`), so the unconditional hardline floor never saw an
+# `rm` at command position while bash ran `echo\` (not found) and then the
+# real `rm`. Proven through the real terminal_tool() guarded path with a
+# throwaway canary directory as ground truth:
+# audits/20260913T1723Z-hardline-normalizer-parity/{RED,GREEN}-run1.txt.
+# The deny-rule projection had the same bug first (PR #99, 6ae4bfd829); the
+# collapse is now one shared parity-aware helper, _collapse_line_continuations.
+
+# (command, description_substring) — the second line is a hardline target.
+_HARDLINE_EVEN_BACKSLASH_REAL_SEPARATOR = [
+    ("echo\\\\\nrm -rf ~/.hermes", "hermes"),        # attached, 2 backslashes
+    ("echo \\\\\nrm -rf ~/.hermes", "hermes"),       # spaced, 2 backslashes
+    ("echo\\\\\\\\\nrm -rf ~/.hermes", "hermes"),    # 4 backslashes
+    ("echo\\\\\r\nrm -rf ~/.hermes", "hermes"),      # CRLF line ending
+    ("echo\\\\\nrm -rf /", "root"),                  # root wipe on line 2
+    ("true\necho\\\\\nrm -rf /\ntrue", "root"),       # mid-script
+    ("\\\\\nrm -rf /", "root"),                      # bare even run first
+]
+
+
+@pytest.mark.parametrize("command,desc_substr", _HARDLINE_EVEN_BACKSLASH_REAL_SEPARATOR)
+def test_hardline_blocks_even_backslash_real_separator(command, desc_substr):
+    is_hl, desc = detect_hardline_command(command)
+    assert is_hl, f"even-backslash real separator fused past the hardline floor: {command!r}"
+    assert desc and desc_substr in desc.lower(), (
+        f"unexpected description {desc!r} for {command!r}"
+    )
+
+
+# Benign shapes around the same syntax must stay off the hardline floor:
+# an even run before a harmless second line, an odd run that is a genuine
+# continuation of a harmless command, and quoted literal backslash-newlines.
+_EVEN_BACKSLASH_BENIGN = [
+    "echo\\\\\nls -la",
+    "echo \\\\\ntouch /tmp/x",
+    "touch \\\n/tmp/x",
+    "printf '%s' 'a\\\\\nb'",
+    'printf \'%s\' "a\\\\\nb"',
+    "echo hi | \\\ncat",
+]
+
+
+@pytest.mark.parametrize("command", _EVEN_BACKSLASH_BENIGN)
+def test_even_backslash_benign_shapes_not_hardline(command):
+    is_hl, desc = detect_hardline_command(command)
+    assert not is_hl, f"benign backslash-newline shape hit the hardline floor: {command!r} ({desc})"
+
+
+def test_collapse_line_continuations_parity():
+    """The shared helper drops exactly odd-run continuations and keeps even runs."""
+    from tools.approval import _collapse_line_continuations as collapse
+    from tools.approval import _deny_collapse_line_continuations as deny_collapse
+
+    assert collapse("a\\\nb") == "ab"                # 1: continuation
+    assert collapse("a\\\\\nb") == "a\\\\\nb"       # 2: real separator, untouched
+    assert collapse("a\\\\\\\nb") == "a\\\\b"        # 3: pair kept, newline gone
+    assert collapse("a\\\\\\\\\nb") == "a\\\\\\\\\nb"  # 4: untouched
+    assert collapse("a\\\r\nb") == "ab"             # CRLF continuation
+    assert collapse("a\\\\\r\nb") == "a\\\\\r\nb"   # CRLF real separator
+    assert collapse("a\nb") == "a\nb"                 # no backslash: untouched
+    # The deny-rule projection is the same mechanism, not a second copy.
+    for sample in ("a\\\nb", "a\\\\\nb", "a\\\\\\\nb"):
+        assert deny_collapse(sample) == collapse(sample)
+
+
+# -------------------------------------------------------------------------
+# Wrapper-chained command position: nice / timeout / stdbuf / ionice / chrt /
+# taskset / chroot / command in front of a hardline target
+# -------------------------------------------------------------------------
+#
+# The shell runs the WRAPPED program, so the wrapped program is the command.
+# _CMDPOS used to know sudo/env/exec/nohup/setsid/time only, so
+# `nice -n5 rm -rf ~/.hermes` was never an `rm` at command position for the
+# unconditional floor; under yolo (dangerous layer bypassed by design) the
+# delete really ran. Proven with a throwaway canary directory through the
+# real terminal_tool() path: audits/20260913T1723Z-hardline-normalizer-parity/
+# RESIDUAL-wrapper-chain-run-{BASE,FIX}.txt (base = deployed e2eaa91c07).
+
+# (command, description_substring)
+_HARDLINE_WRAPPER_CHAIN = [
+    ("nice -n5 rm -rf ~/.hermes", "hermes"),
+    ("nice -n 5 rm -rf ~/.hermes", "hermes"),               # flag value as its own token
+    ("nice --adjustment=5 rm -rf ~/.hermes", "hermes"),
+    ("timeout 5 rm -rf ~/.hermes", "hermes"),                # positional duration
+    ("timeout -s KILL 5 rm -rf /", "root"),                  # flag with value, then positional
+    ("timeout --kill-after=2 5s rm -rf ~/.hermes", "hermes"),
+    ("stdbuf -o0 rm -rf ~/.hermes", "hermes"),
+    ("stdbuf -o 0 -e 0 rm -rf ~/.hermes", "hermes"),
+    ("ionice -c 3 rm -rf ~/.local/share/hermes-agent", "hermes"),
+    ("chrt -f 10 rm -rf ~/.hermes", "hermes"),
+    ("taskset 0x1 rm -rf ~/.hermes", "hermes"),
+    ("chroot /jail rm -rf /etc", "system"),
+    ("command rm -rf ~/.hermes", "hermes"),
+    ("command -p rm -rf ~/.hermes", "hermes"),
+    ("nice -n5 nohup rm -rf ~/.hermes", "hermes"),           # chained wrappers
+    ("sudo nice -n5 rm -rf /", "root"),                      # sudo first
+    ("timeout 5 sudo rm -rf /home", "system"),               # sudo second
+    ("nohup timeout 5 nice -n 5 stdbuf -o0 rm -rf ~/.hermes", "hermes"),
+    ("true; nice -n5 rm -rf ~/.hermes", "hermes"),           # after a separator
+    ("echo hi && timeout 5 rm -rf ~/.hermes", "hermes"),
+    ("$(timeout 5 rm -rf ~/.hermes)", "hermes"),             # inside a substitution
+    ("`nice rm -rf ~/.hermes`", "hermes"),
+    # Rail review 2026-09-14 (wrapper-chain-fix/RAIL-REVIEW.md): `--` end of
+    # options, and flag VALUES on the older wrappers (exec -a was open on base).
+    ("command -- rm -rf ~/.hermes", "hermes"),
+    ("command -p -- rm -rf ~/.hermes", "hermes"),
+    ("command -p -p -- rm -rf ~/.hermes", "hermes"),         # bash accepts repeated -p (re-verification 2026-09-14)
+    ("command -pp -- rm -rf ~/.hermes", "hermes"),           # bundled
+    ("command -p -p rm -rf ~/.hermes", "hermes"),
+    ("nice -- rm -rf ~/.hermes", "hermes"),
+    ("timeout -- 5 rm -rf ~/.hermes", "hermes"),
+    ("exec -a evilname rm -rf ~/.hermes", "hermes"),
+    ("sudo -u root rm -rf /", "root"),
+    ("sudo -u root -g root rm -rf /etc", "system"),
+    ("env -i rm -rf ~/.hermes", "hermes"),
+    ("env -i PATH=/bin rm -rf ~/.hermes", "hermes"),
+    ("timeout -s KILL -k 2 5 rm -rf ~/.hermes", "hermes"),
+    ("timeout 5 mkfs.ext4 /dev/sda1", "mkfs"),               # other _CMDPOS floor rules
+    ("nice -n5 shutdown -h now", "shutdown"),
+]
+
+
+@pytest.mark.parametrize("command,desc_substr", _HARDLINE_WRAPPER_CHAIN)
+def test_hardline_blocks_wrapper_chained_targets(command, desc_substr):
+    is_hl, desc = detect_hardline_command(command)
+    assert is_hl, f"wrapper-chained hardline target slipped past the floor: {command!r}"
+    assert desc and desc_substr in desc.lower(), (
+        f"unexpected description {desc!r} for {command!r}"
+    )
+
+
+# The same wrappers in front of NON-hardline work, and the wrapper words as
+# quoted data, must stay off the floor (the dangerous layer may still ask).
+_WRAPPER_CHAIN_BENIGN = [
+    "nice -n5 rm -rf /tmp/build",
+    "timeout 30 rm -rf ./node_modules",
+    "stdbuf -o0 grep 'rm -rf /' access.log",
+    "nice -n 10 make -j4",
+    "timeout 5 ls -la ~/.hermes",
+    "ionice -c 3 tar czf backup.tgz ~/.hermes",
+    "chrt -f 10 ./bench",
+    "taskset 0x1 python3 worker.py",
+    "command -v rm",
+    "echo 'nice rm -rf ~/.hermes'",
+    'printf "%s" "timeout 5 rm -rf /"',
+    "git commit -m 'timeout 5 rm -rf ~/.hermes was blocked'",
+    "exec -a name ls",
+    "nice ls rm -rf ~/.hermes",          # `ls` is the command; nice takes no positional
+    "sudo -u root ls -la",
+    "command -v -- rm",
+    "command -p -v rm",                  # -v does not execute
+]
+
+
+@pytest.mark.parametrize("command", _WRAPPER_CHAIN_BENIGN)
+def test_wrapper_chain_benign_shapes_not_hardline(command):
+    is_hl, desc = detect_hardline_command(command)
+    assert not is_hl, f"benign wrapper shape hit the hardline floor: {command!r} ({desc})"
+
+
+# -------------------------------------------------------------------------
 # Integration with the approval flow
 # -------------------------------------------------------------------------
 
@@ -812,6 +981,65 @@ def test_line_continuation_root_wipe_cannot_bypass_hardline(clean_session, monke
     assert result["approved"] is False, "yolo leaked a line-continuation root wipe"
     assert result.get("hardline") is True
     assert "BLOCKED (hardline)" in result["message"]
+
+
+def test_even_backslash_real_separator_cannot_bypass_hardline(clean_session, monkeypatch):
+    """An even backslash run before a newline is a real separator; the
+    hardline target on the next line must stay blocked even under yolo.
+
+    `echo\\\\<newline>rm -rf ~/.hermes` runs `echo\\` (not found) and then
+    the real `rm -rf ~/.hermes`. Yolo bypasses the dangerous layer, so the
+    hardline floor is the only thing left — it must see the second command.
+    """
+    monkeypatch.setenv("HERMES_YOLO_MODE", "1")
+
+    for command in ("echo\\\\\nrm -rf ~/.hermes", "echo \\\\\nrm -rf /",
+                    "echo\\\\\r\nrm -rf ~/.local/share/hermes-agent"):
+        result = check_all_command_guards(command, "local")
+        assert result["approved"] is False, f"yolo leaked an even-backslash real separator: {command!r}"
+        assert result.get("hardline") is True
+        assert "BLOCKED (hardline)" in result["message"]
+
+
+def test_wrapper_prefix_is_linear_time():
+    """The wrapper prefix grammar must not backtrack quadratically on long
+    wrapper chains (rail review 2026-09-14 measured 10.8 s for 400 repeats
+    and 40.9 s for 800 on the first cut; attacker-controlled command text
+    reaches this check before any privilege). Every value/positional slot
+    excludes wrapper words, so parsing is deterministic and linear.
+    """
+    import time as _time
+
+    for prefix in ("nice -n5 ", "nice -n 5 ", "timeout -s KILL 5 ", "sudo -u root ", "exec -a x ",
+                   "env A=1 ", "env -i A=1 B=2 ", "command -p "):
+        for reps in (400, 1600):
+            command = prefix * reps + "ls"
+            started = _time.perf_counter()
+            detect_hardline_command(command)
+            elapsed = _time.perf_counter() - started
+            # Only the cost is asserted: past the existing length guard the
+            # floor fails closed on very long commands, which is a verdict
+            # this test does not own.
+            assert elapsed < 1.0, f"{prefix!r} x{reps}: {elapsed:.2f}s (expected linear, well under 1 s)"
+
+
+def test_wrapper_chained_target_cannot_bypass_hardline(clean_session, monkeypatch):
+    """`nice -n5 rm -rf ~/.hermes` runs the real rm. Yolo bypasses the
+    dangerous layer, so the floor is the only thing left; it must see the
+    wrapped command word.
+    """
+    monkeypatch.setenv("HERMES_YOLO_MODE", "1")
+
+    for command in ("nice -n5 rm -rf ~/.hermes", "timeout 5 rm -rf /",
+                    "stdbuf -o0 rm -rf ~/.local/share/hermes-agent",
+                    "nice -n5 nohup rm -rf ~/.hermes",
+                    "command -- rm -rf ~/.hermes", "command -p -- rm -rf ~/.hermes",
+                    "command -p -p -- rm -rf ~/.hermes", "command -pp -- rm -rf ~/.hermes",
+                    "exec -a evilname rm -rf ~/.hermes"):
+        result = check_all_command_guards(command, "local")
+        assert result["approved"] is False, f"yolo leaked a wrapper-chained hardline target: {command!r}"
+        assert result.get("hardline") is True
+        assert "BLOCKED (hardline)" in result["message"]
 
 
 def test_session_yolo_cannot_bypass_hardline(clean_session):
