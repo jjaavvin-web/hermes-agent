@@ -20,7 +20,7 @@ import concurrent.futures
 import functools
 from collections import deque
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 import hashlib
 import hmac
 import inspect
@@ -51,7 +51,7 @@ from hermes_cli._subprocess_compat import windows_detach_flags, windows_hide_fla
 from hermes_cli.install_identity import get_install_id as _shared_get_install_id
 import urllib.request
 from pathlib import Path
-from typing import Any, Dict, List, Literal, NamedTuple, Optional, Tuple
+from typing import Any, Dict, List, Literal, Optional, Tuple
 
 import yaml
 
