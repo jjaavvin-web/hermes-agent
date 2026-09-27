@@ -72,7 +72,6 @@ export const ru: Translations = {
       config: "Конфигурация",
       cron: "Cron",
       documentation: "Документация",
-      explorer: "Проводник",
       hives: "Hives",
       keys: "Ключи",
       logs: "Журналы",
@@ -609,9 +608,6 @@ export const ru: Translations = {
         "Копирование изображений в буфер обмена не поддерживается в этом браузере — используйте «Скачать».",
       tweet_text: "Just unlocked {tier_part}\"{name}\" in Hermes Agent ☤",
     },
-  },
-  explorer: {
-    title: "Проводник кода",
   },
 
   kanban: {

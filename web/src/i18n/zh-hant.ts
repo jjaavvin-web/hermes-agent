@@ -72,7 +72,6 @@ export const zhHant: Translations = {
       config: "設定",
       cron: "排程任務",
       documentation: "文件",
-      explorer: "程式碼探索",
       hives: "Hives",
       keys: "金鑰",
       logs: "日誌",
@@ -608,9 +607,6 @@ export const zhHant: Translations = {
         "此瀏覽器不支援剪貼簿圖片複製 —— 請改用「下載」。",
       tweet_text: "Just unlocked {tier_part}\"{name}\" in Hermes Agent ☤",
     },
-  },
-  explorer: {
-    title: "程式碼探索器",
   },
 
   kanban: {

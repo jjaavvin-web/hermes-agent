@@ -250,7 +250,7 @@ export default function PulseConstellation() {
   const [loaded, setLoaded] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [lastSuccess, setLastSuccess] = useState<number | null>(null);
-  const [degraded, setDegraded] = useState<string[]>([]);
+  const [, setDegraded] = useState<string[]>([]);
   const [selected, setSelected] = useState<PulseGraphNode | null>(null);
   const [tooltip, setTooltip] = useState<TooltipState | null>(null);
   const [nowMs, setNowMs] = useState<number>(() => Date.now());
@@ -539,12 +539,6 @@ export default function PulseConstellation() {
 
   return (
     <div ref={containerRef} className="pulse-constellation">
-      {degraded.includes("gitnexus_unreachable") && (
-        <div className="pulse-constellation__banner">
-          ⚠ GitNexus offline — showing hives + cards only
-        </div>
-      )}
-
       {isLoading && (
         <div className="pulse-constellation__overlay" aria-busy="true">
           <div className="pulse-constellation__pulse-dot" />

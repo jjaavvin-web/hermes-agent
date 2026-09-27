@@ -47,7 +47,6 @@ DEFAULT_STATUS_PATH = "state/dashboard-smoke-status.json"
 DEFAULT_GET_PREFIXES = ("/api",)
 MUTATING_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
 DECLARED_4XX_STATUSES = frozenset({400, 401, 403, 404, 405, 409, 422})
-DECLARED_PROXY_STATUSES = frozenset({400, 401, 403, 404, 405, 409, 422, 502, 503})
 
 # These are the dashboard tab/router modules that web_server mounts through
 # import-time try/except blocks.  Expected paths are derived from the routers at
@@ -69,17 +68,14 @@ DASHBOARD_ROUTER_MODULES: tuple[str, ...] = (
 # GET routes that are registration-covered but not body-probed by default.  The
 # harness still reports them per-route with an explicit reason.
 SKIPPED_GET_ROUTES: Mapping[str, str] = {
-    "/api/gitnexus/{path:path}": "proxy mutating/GET route: registration + handler import checked without executing side effects or sidecar/network calls",
     "/api/hermes/update/check": "network update-check route; skipped to preserve no-metered/no-network smoke",
     "/api/model/options": "provider catalog route; skipped to preserve no-metered/no-network smoke",
     "/api/model/recommended-default": "provider recommendation route; skipped to preserve no-metered/no-network smoke",
     "/api/providers/oauth": "provider OAuth discovery route; skipped to preserve no-network smoke",
     "/api/analytics/usage": "provider usage aggregation route; skipped to preserve no-network smoke",
-    "/api/life/agenda": "calendar and live-board aggregation route; skipped to preserve no-network/no-live-state smoke",
     "/api/plugins/kanban/diagnostics": "host and container diagnostics route; registration checked without external process probes",
     "/api/plugins/kanban/model-options": "models.dev catalog route; skipped to preserve no-network smoke",
     "/api/dashboard/work-nexus": "full git worktree graph route; registration checked without expensive repository probes",
-    "/api/dashboard/artifacts": "recursive audit-artifact scan route; registration checked without traversing live archives",
     "/api/dashboard/git-health": "per-worktree git readiness route; registration checked without expensive repository probes",
     "/api/dashboard/git-graph": "multi-worktree git graph route; registration checked without expensive repository probes",
     "/api/dashboard/git-river": "multi-worktree git history route; registration checked without expensive repository probes",
@@ -550,8 +546,6 @@ def _required_param_names(route: APIRoute, attr: str) -> list[str]:
 
 
 def _declared_expected_for_route(route: APIRoute) -> tuple[set[int], str | None]:
-    if route.path == "/api/gitnexus/{path:path}":
-        return set(DECLARED_PROXY_STATUSES), "declared proxy/sidecar 4xx/5xx response accepted"
     if route.path == "/api/ssh/ownership":
         return {200, 404}, "declared inactive SSH ownership response accepted"
     if route.path == "/api/hermes/update/receipt":

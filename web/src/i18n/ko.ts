@@ -72,7 +72,6 @@ export const ko: Translations = {
       config: "설정",
       cron: "Cron",
       documentation: "문서",
-      explorer: "탐색기",
       hives: "Hives",
       keys: "키",
       logs: "로그",
@@ -608,9 +607,6 @@ export const ko: Translations = {
         "이 브라우저에서는 클립보드 이미지 복사를 지원하지 않습니다 — 대신 다운로드를 이용하세요.",
       tweet_text: "Just unlocked {tier_part}\"{name}\" in Hermes Agent ☤",
     },
-  },
-  explorer: {
-    title: "코드 탐색기",
   },
 
   kanban: {

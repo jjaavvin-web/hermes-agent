@@ -72,7 +72,6 @@ export const tr: Translations = {
       config: "Yapılandırma",
       cron: "Cron",
       documentation: "Dokümantasyon",
-      explorer: "Gezgin",
       hives: "Hives",
       keys: "Anahtarlar",
       logs: "Günlükler",
@@ -609,9 +608,6 @@ export const tr: Translations = {
         "Bu tarayıcıda panoya görsel kopyalama desteklenmiyor — bunun yerine İndir'i kullanın.",
       tweet_text: "Just unlocked {tier_part}\"{name}\" in Hermes Agent ☤",
     },
-  },
-  explorer: {
-    title: "Kod Gezgini",
   },
 
   kanban: {

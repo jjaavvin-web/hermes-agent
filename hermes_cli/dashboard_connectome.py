@@ -1255,14 +1255,11 @@ def _verify_brain_lanes_bridge() -> dict[str, str] | None:
 
 
 def _verify_code_deploy_bridge(repo_dir: Path = REPO_ROOT) -> dict[str, str] | None:
-    hook = repo_dir / ".git" / "hooks" / "post-commit"
-    try:
-        text = hook.read_text(encoding="utf-8")
-    except OSError:
-        return None
-    if "gitnexus-reindex" not in text or "hermes_cli.gitnexus_repo_manager" not in text:
-        return None
-    return _prov(str(hook), "read_text(encoding='utf-8')", "gitnexus hook marker", "gitnexus-reindex + hermes_cli.gitnexus_repo_manager")
+    # The GitNexus reindex-on-commit hook this bridge verified was retired
+    # with the Explorer tab (hermes_cli.gitnexus_repo_manager no longer
+    # exists), so there is no live signal left to check. Always soft-fail,
+    # same as before when the hook file was absent.
+    return None
 
 
 def _verify_learning_brain_bridge() -> dict[str, str] | None:

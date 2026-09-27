@@ -19,31 +19,21 @@ def _empty_hives_snapshot():
     return {"hives": [], "scanned_at": "", "active_count": 0}
 
 
-def _empty_nexus_snapshot():
-    return {"agents": [], "swarms": [], "hives": [], "mcp": [],
-            "gateways": [], "cron": [], "edges": []}
-
-
 def _empty_build_snapshot():
     return {"spendToday": 0.0, "swarm": {"workerCount": 0}}
 
 
 def _patch_dashboard_helpers(monkeypatch, *,
                               hives_snapshot=None,
-                              nexus_snapshot=None,
                               build_snapshot=None,
                               active_model="test-model"):
-    """Monkeypatch the four dashboard_health helpers used by pulse_data."""
+    """Monkeypatch the three dashboard_health helpers used by pulse_data."""
     import hermes_cli.dashboard_health as dh
     if hives_snapshot is None:
         hives_snapshot = _empty_hives_snapshot()
-    if nexus_snapshot is None:
-        nexus_snapshot = _empty_nexus_snapshot()
     if build_snapshot is None:
         build_snapshot = _empty_build_snapshot()
     monkeypatch.setattr(dh, "_get_hives_snapshot", lambda: hives_snapshot)
-    monkeypatch.setattr(dh, "_get_gitnexus_runtime_snapshot",
-                        lambda: nexus_snapshot)
     monkeypatch.setattr(dh, "_build_snapshot", lambda: build_snapshot)
     monkeypatch.setattr(dh, "_get_active_model", lambda: active_model)
 
@@ -238,61 +228,6 @@ def test_build_pulse_graph_card_node_has_card_running_group(monkeypatch, tmp_pat
     result = pulse_data.build_pulse_graph(now=time.time())
     card_nodes = [n for n in result["nodes"] if n.get("kind") == "card"]
     assert card_nodes[0]["group"] == "card-running"
-
-
-# ---------------------------------------------------------------------------
-# Scenario 3: GitNexus unreachable → degraded_mode populated
-# ---------------------------------------------------------------------------
-
-def test_build_pulse_graph_gitnexus_error_dict_adds_degraded_flag(
-        monkeypatch, tmp_path):
-    _setup_kanban_home(tmp_path, monkeypatch)
-    nexus_with_error = {"_error": "wedged", "agents": [], "swarms": [],
-                        "hives": [], "mcp": [], "gateways": [], "cron": [],
-                        "edges": []}
-    _patch_dashboard_helpers(monkeypatch, nexus_snapshot=nexus_with_error)
-
-    result = pulse_data.build_pulse_graph(now=time.time())
-    assert "gitnexus_unreachable" in result["degraded_mode"]
-
-
-def test_build_pulse_graph_gitnexus_exception_adds_degraded_flag(
-        monkeypatch, tmp_path):
-    _setup_kanban_home(tmp_path, monkeypatch)
-
-    import hermes_cli.dashboard_health as dh
-    _patch_dashboard_helpers(monkeypatch)  # patch others to safe defaults
-    monkeypatch.setattr(
-        dh, "_get_gitnexus_runtime_snapshot",
-        lambda: (_ for _ in ()).throw(ConnectionRefusedError("no service"))
-    )
-
-    result = pulse_data.build_pulse_graph(now=time.time())
-    assert "gitnexus_unreachable" in result["degraded_mode"]
-
-
-def test_build_pulse_graph_gitnexus_unreachable_still_has_nodes_key(
-        monkeypatch, tmp_path):
-    _setup_kanban_home(tmp_path, monkeypatch)
-    nexus_with_error = {"_error": "wedged", "agents": [], "swarms": [],
-                        "hives": [], "mcp": [], "gateways": [], "cron": [],
-                        "edges": []}
-    _patch_dashboard_helpers(monkeypatch, nexus_snapshot=nexus_with_error)
-
-    result = pulse_data.build_pulse_graph(now=time.time())
-    assert "nodes" in result
-
-
-def test_build_pulse_graph_gitnexus_unreachable_still_has_edges_key(
-        monkeypatch, tmp_path):
-    _setup_kanban_home(tmp_path, monkeypatch)
-    nexus_with_error = {"_error": "wedged", "agents": [], "swarms": [],
-                        "hives": [], "mcp": [], "gateways": [], "cron": [],
-                        "edges": []}
-    _patch_dashboard_helpers(monkeypatch, nexus_snapshot=nexus_with_error)
-
-    result = pulse_data.build_pulse_graph(now=time.time())
-    assert "edges" in result
 
 
 # ---------------------------------------------------------------------------

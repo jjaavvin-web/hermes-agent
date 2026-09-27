@@ -1,14 +1,6 @@
 {
   "routes": [
     {
-      "path": "/_gitnexus-app/{full_path:path}",
-      "methods": [
-        "GET"
-      ],
-      "name": "_gitnexus_explorer_page",
-      "route_type": "APIRoute"
-    },
-    {
       "path": "/api/actions/{name}/status",
       "methods": [
         "GET"
@@ -362,22 +354,6 @@
         "POST"
       ],
       "name": "post_agent_plugin_update",
-      "route_type": "APIRoute"
-    },
-    {
-      "path": "/api/dashboard/artifacts",
-      "methods": [
-        "GET"
-      ],
-      "name": "list_artifacts",
-      "route_type": "APIRoute"
-    },
-    {
-      "path": "/api/dashboard/artifacts/raw",
-      "methods": [
-        "GET"
-      ],
-      "name": "serve_artifact",
       "route_type": "APIRoute"
     },
     {
@@ -1147,18 +1123,6 @@
       "route_type": "APIRoute"
     },
     {
-      "path": "/api/gitnexus/{path:path}",
-      "methods": [
-        "DELETE",
-        "GET",
-        "PATCH",
-        "POST",
-        "PUT"
-      ],
-      "name": "_gitnexus_proxy",
-      "route_type": "APIRoute"
-    },
-    {
       "path": "/api/health",
       "methods": [
         "GET"
@@ -1220,30 +1184,6 @@
         "PUT"
       ],
       "name": "update_learning_node",
-      "route_type": "APIRoute"
-    },
-    {
-      "path": "/api/life/agenda",
-      "methods": [
-        "GET"
-      ],
-      "name": "get_life_agenda",
-      "route_type": "APIRoute"
-    },
-    {
-      "path": "/api/life/state",
-      "methods": [
-        "GET"
-      ],
-      "name": "get_life_state",
-      "route_type": "APIRoute"
-    },
-    {
-      "path": "/api/life/state",
-      "methods": [
-        "PUT"
-      ],
-      "name": "put_life_state",
       "route_type": "APIRoute"
     },
     {
@@ -2494,30 +2434,6 @@
         "GET"
       ],
       "name": "api_pulse_stream",
-      "route_type": "APIRoute"
-    },
-    {
-      "path": "/api/reflect-promote/candidates",
-      "methods": [
-        "GET"
-      ],
-      "name": "get_reflect_promote_candidates",
-      "route_type": "APIRoute"
-    },
-    {
-      "path": "/api/reflect-promote/candidates/{candidate_id}/approve",
-      "methods": [
-        "POST"
-      ],
-      "name": "approve_reflect_promote_candidate",
-      "route_type": "APIRoute"
-    },
-    {
-      "path": "/api/reflect-promote/candidates/{candidate_id}/reject",
-      "methods": [
-        "POST"
-      ],
-      "name": "reject_reflect_promote_candidate",
       "route_type": "APIRoute"
     },
     {

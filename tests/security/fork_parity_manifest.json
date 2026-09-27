@@ -1,12 +1,12 @@
 {
   "schema": "hermes-fork-parity-manifest/2",
   "docket_source": "tests/security/fork_parity_docket.txt",
-  "docket_sha256": "0143c5aee90b277c9f7cb1599345d3a6da244073a1c5c1aadf5983fd747473e0",
+  "docket_sha256": "fedc20871296fe835afb62d4687064f47b44571a88f525a5e7e2043c49d8c355",
   "target_base_commit": "5424fa8002ed3eea24c220e97d166b66628c3426",
   "counts": {
-    "total": 190,
+    "total": 188,
     "RELOCATED": 9,
-    "PRESERVED_EQUIVALENT": 158,
+    "PRESERVED_EQUIVALENT": 156,
     "SUPERSEDED_LEGIT": 23
   },
   "security_suite_min_collected": 794,
@@ -564,27 +564,6 @@
       ],
       "proofs": [],
       "notes": "Nav-tab retirement preserved; routes stay directly reachable."
-    },
-    {
-      "id": "fp-021",
-      "verdict": "PRESERVED_EQUIVALENT",
-      "severity": "NONE",
-      "kind": "structural",
-      "phase": "in_repo",
-      "introduced_by": [
-        "de545ac61d56"
-      ],
-      "docket_item": "de545ac61d56 + 776d970f07 + 0a7cd3422f-era HTML-tab v3 work (Favorites default, uniform Latest grid)",
-      "docket_item_sha256_16": "7aff367966f67c67",
-      "anchors": [
-        {
-          "path": "web/src/pages/HtmlGalleryPage.tsx",
-          "mode": "contains",
-          "text": "\"favorites\""
-        }
-      ],
-      "proofs": [],
-      "notes": "HTML-tab v3: favorites default present."
     },
     {
       "id": "fp-022",
@@ -2431,8 +2410,8 @@
       "kind": "security_invariant",
       "phase": "in_repo",
       "introduced_by": [],
-      "docket_item": "hermes_cli/web_server.py: _QUERY_TOKEN_PATHS allowlist lets EventSource ?token= satisfy session-token auth for the three fork SSE/raw-artifact routes (/api/pulse/stream, /api/dashboard/stream, /api/dashboard/artifacts/raw), since EventSource cannot set the X-Hermes-Session-Token header",
-      "docket_item_sha256_16": "2a7315bb405ccf77",
+      "docket_item": "hermes_cli/web_server.py: _QUERY_TOKEN_PATHS allowlist lets EventSource ?token= satisfy session-token auth for the two fork SSE routes (/api/pulse/stream, /api/dashboard/stream), since EventSource cannot set the X-Hermes-Session-Token header",
+      "docket_item_sha256_16": "d6beb61306881d00",
       "anchors": [
         {
           "path": "hermes_cli/web_server.py",
@@ -2448,11 +2427,6 @@
           "path": "hermes_cli/dashboard_health.py",
           "mode": "contains",
           "text": "@router.get(\"/stream\", summary=\"SSE runtime health stream (1 Hz chip updates)\")"
-        },
-        {
-          "path": "hermes_cli/dashboard_artifacts.py",
-          "mode": "contains",
-          "text": "@router.get(\"/artifacts/raw\")"
         }
       ],
       "proofs": [
@@ -2475,8 +2449,8 @@
       "kind": "security_invariant",
       "phase": "in_repo",
       "introduced_by": [],
-      "docket_item": "hermes_cli/web_server.py: security_headers_middleware sets report-only CSP with per-request nonce, DENY/SAMEORIGIN frame-ancestors restricted to exactly /nexus and /_gitnexus-app/*, and X-Content-Type-Options nosniff on every response",
-      "docket_item_sha256_16": "20e5ec940e8f139f",
+      "docket_item": "hermes_cli/web_server.py: security_headers_middleware sets report-only CSP with per-request nonce, DENY/SAMEORIGIN frame-ancestors restricted to exactly /nexus, and X-Content-Type-Options nosniff on every response",
+      "docket_item_sha256_16": "d702fa84d70a4767",
       "anchors": [
         {
           "path": "hermes_cli/web_server.py",
@@ -2487,7 +2461,7 @@
         {
           "path": "hermes_cli/web_server.py",
           "mode": "contains",
-          "text": "allow_same_origin_framing = path.startswith(\"/_gitnexus-app/\") or path == \"/nexus\""
+          "text": "allow_same_origin_framing = path == \"/nexus\""
         },
         {
           "path": "hermes_cli/web_server.py",
@@ -2716,8 +2690,8 @@
       "kind": "structural",
       "phase": "in_repo",
       "introduced_by": [],
-      "docket_item": "web/src/App.tsx: fork-only dashboard page routes (OSPage /os, ExplorerPage /explorer, WelcomePage /welcome) stay registered in BUILTIN_ROUTES_CORE across the SPA router merge",
-      "docket_item_sha256_16": "34c0817d2125da71",
+      "docket_item": "web/src/App.tsx: fork-only dashboard page routes (OSPage /os, WelcomePage /welcome) stay registered in BUILTIN_ROUTES_CORE across the SPA router merge",
+      "docket_item_sha256_16": "a179335d2eee8d1b",
       "anchors": [
         {
           "path": "web/src/App.tsx",
@@ -2728,11 +2702,6 @@
           "path": "web/src/App.tsx",
           "mode": "contains",
           "text": "\"/os\": OSPage,"
-        },
-        {
-          "path": "web/src/App.tsx",
-          "mode": "contains",
-          "text": "\"/explorer\": ExplorerPage,"
         },
         {
           "path": "web/src/App.tsx",
@@ -4742,40 +4711,6 @@
       "notes": "v021 extension from custody ledger row idx 102: Row 102 (subsystem: Fork observability + extended dashboard estate; surface: Codex sessions operator surface). Distinct from fp-018: fp-018 pins only that the module file still exists post tab-retirement (absent_or_repurposed on the retired React tab + exists on the .py, proved via the dashboard route-count smoke test). fp-102 instead pins that the A"
     },
     {
-      "id": "fp-150",
-      "verdict": "PRESERVED_EQUIVALENT",
-      "severity": "NONE",
-      "kind": "security_invariant",
-      "phase": "in_repo",
-      "introduced_by": [],
-      "docket_item": "hermes_cli/dashboard_artifacts.py: fork-only Artifacts gallery (list + path-traversal-guarded raw serve of ~/.hermes report/replay HTML, capped at 500 replays) mounted at /api/dashboard/artifacts",
-      "docket_item_sha256_16": "a7a9513de5b97163",
-      "anchors": [
-        {
-          "path": "hermes_cli/dashboard_artifacts.py",
-          "mode": "contains",
-          "text": "_REPLAY_CAP = 500"
-        },
-        {
-          "path": "hermes_cli/dashboard_artifacts.py",
-          "mode": "contains",
-          "symbol": "_safe_resolve",
-          "text": "def _safe_resolve(rel: str) -> Path:"
-        },
-        {
-          "path": "hermes_cli/dashboard_artifacts.py",
-          "mode": "contains",
-          "text": "@router.get(\"/artifacts/raw\")"
-        }
-      ],
-      "proofs": [
-        {
-          "test": "tests/hermes_cli/test_dashboard_smoke.py::test_dashboard_route_manifest_fixture_matches_live_app"
-        }
-      ],
-      "notes": "v021 extension from custody ledger row idx 103: No existing fp-0NN item pins hermes_cli/dashboard_artifacts.py (grep of the 71-item manifest for dashboard_artifacts/artifacts_gallery/the route string returned no hits). Reverting this module (or its web_server.py mount) would drop /api/dashboard/artifacts and /api/dashboard/artifacts/raw from tests/fixtures/dashboard_route_manifest.json's live comp"
-    },
-    {
       "id": "fp-151",
       "verdict": "PRESERVED_EQUIVALENT",
       "severity": "NONE",
@@ -4972,14 +4907,9 @@
       "kind": "structural",
       "phase": "in_repo",
       "introduced_by": [],
-      "docket_item": "hermes_cli/web_server.py: fork registration block (GitNexus reverse proxy at _GITNEXUS_BACKEND, CSP same-origin framing exception for /nexus and /_gitnexus-app/, and the periodic dashboard selftest loop) survives, anchored immediately after the upstream _mount_plugin_api_routes() call",
-      "docket_item_sha256_16": "79b58986e930552d",
+      "docket_item": "hermes_cli/web_server.py: fork registration block (CSP same-origin framing exception for /nexus, and the periodic dashboard selftest loop) survives, anchored immediately after the upstream _mount_plugin_api_routes() call",
+      "docket_item_sha256_16": "f9cb89fa6250523c",
       "anchors": [
-        {
-          "path": "hermes_cli/web_server.py",
-          "mode": "contains",
-          "text": "_GITNEXUS_BACKEND"
-        },
         {
           "path": "hermes_cli/web_server.py",
           "mode": "contains",

@@ -72,7 +72,6 @@ export const de: Translations = {
       config: "Konfiguration",
       cron: "Cron",
       documentation: "Dokumentation",
-      explorer: "Explorer",
       hives: "Hives",
       keys: "Schlüssel",
       logs: "Protokolle",
@@ -608,9 +607,6 @@ export const de: Translations = {
         "Bildkopie über die Zwischenablage wird in diesem Browser nicht unterstützt – nutze stattdessen Herunterladen.",
       tweet_text: "Just unlocked {tier_part}\"{name}\" in Hermes Agent ☤",
     },
-  },
-  explorer: {
-    title: "Code-Explorer",
   },
 
   kanban: {
