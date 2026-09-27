@@ -72,7 +72,6 @@ export const ga: Translations = {
       config: "Cumraíocht",
       cron: "Cron",
       documentation: "Doiciméadú",
-      explorer: "Brabhsálaí",
       hives: "Hives",
       keys: "Eochracha",
       logs: "Logaí",
@@ -617,9 +616,6 @@ export const ga: Translations = {
         "Ní thacaítear le cóipeáil íomhá chuig an ngearrthaisce sa bhrabhsálaí seo — úsáid Íoslódáil ina ionad sin.",
       tweet_text: "Just unlocked {tier_part}\"{name}\" in Hermes Agent ☤",
     },
-  },
-  explorer: {
-    title: "Brabhsálaí Cóid",
   },
 
   kanban: {

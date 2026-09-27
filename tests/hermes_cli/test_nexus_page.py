@@ -282,7 +282,7 @@ def test_page_anti_wedge_both_modes(tmp_path: Path) -> None:
 
 def test_plw1514_new_hunk() -> None:
     server = SERVER.read_text(encoding="utf-8")
-    hunk = server[server.find("_NEXUS_SLICE_HTML") : server.find("# GitNexus Explorer")]
+    hunk = server[server.find("_NEXUS_SLICE_HTML") : server.find("# Mount personas routes")]
     assert ".read_text()" not in hunk
     tree = ast.parse(Path(__file__).read_text(encoding="utf-8"))
     for node in ast.walk(tree):

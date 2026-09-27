@@ -354,7 +354,6 @@ def _probe_docker_containers() -> list[dict]:
 # Curated infrastructure ports — TCP-latency probed on localhost.
 _KNOWN_PORTS: list[tuple[int, str, str]] = [
     (9119, "Dashboard API", "Hermes dashboard FastAPI server."),
-    (4747, "GitNexus API", "GitNexus knowledge-graph backend (code-graph)."),
     (54321, "Supabase API", "MVMS Supabase Kong API gateway."),
     (54323, "Supabase Studio", "MVMS Supabase Studio UI."),
     (5434, "Supabase DB", "MVMS Supabase Postgres database."),
@@ -1241,25 +1240,6 @@ def _get_snapshot() -> dict:
 # ---------------------------------------------------------------------------
 # Nexus Health graph
 # ---------------------------------------------------------------------------
-
-def _get_gitnexus_runtime_snapshot() -> dict:
-    """Read GitNexus topology from the read-only runtime collector."""
-    try:
-        from hermes_cli.gitnexus_runtime_collector import snapshot
-
-        return dict(snapshot())
-    except Exception as exc:
-        return {
-            "agents": [],
-            "swarms": [],
-            "hives": [],
-            "mcp": [],
-            "gateways": [],
-            "cron": [],
-            "edges": [],
-            "_error": str(exc),
-        }
-
 
 def _runtime_by_name(mission: dict) -> dict[str, dict]:
     return {

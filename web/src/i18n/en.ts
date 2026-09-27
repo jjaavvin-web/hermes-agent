@@ -75,7 +75,6 @@ export const en: Translations = {
       config: "Config",
       cron: "Cron",
       documentation: "Documentation",
-      explorer: "Explorer",
       hives: "Hives",
       keys: "Keys",
       logs: "Logs",
@@ -680,10 +679,6 @@ export const en: Translations = {
         "Clipboard image copy not supported in this browser — use Download instead.",
       tweet_text: "Just unlocked {tier_part}\"{name}\" in Hermes Agent ☤",
     },
-  },
-
-  explorer: {
-    title: "Code Explorer",
   },
 
   kanban: {

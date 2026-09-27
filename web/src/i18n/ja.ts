@@ -72,7 +72,6 @@ export const ja: Translations = {
       config: "設定",
       cron: "Cron",
       documentation: "ドキュメント",
-      explorer: "エクスプローラー",
       hives: "Hives",
       keys: "キー",
       logs: "ログ",
@@ -608,9 +607,6 @@ export const ja: Translations = {
         "このブラウザではクリップボードへの画像コピーがサポートされていません — 代わりに「ダウンロード」をご利用ください。",
       tweet_text: "Just unlocked {tier_part}\"{name}\" in Hermes Agent ☤",
     },
-  },
-  explorer: {
-    title: "コードエクスプローラー",
   },
 
   kanban: {

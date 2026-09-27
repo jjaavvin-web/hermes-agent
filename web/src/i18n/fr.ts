@@ -72,7 +72,6 @@ export const fr: Translations = {
       config: "Configuration",
       cron: "Cron",
       documentation: "Documentation",
-      explorer: "Explorateur",
       hives: "Hives",
       keys: "Clés",
       logs: "Journaux",
@@ -609,9 +608,6 @@ export const fr: Translations = {
         "La copie d'image dans le presse-papiers n'est pas prise en charge par ce navigateur — utilisez Télécharger à la place.",
       tweet_text: "Just unlocked {tier_part}\"{name}\" in Hermes Agent ☤",
     },
-  },
-  explorer: {
-    title: "Explorateur de code",
   },
 
   kanban: {

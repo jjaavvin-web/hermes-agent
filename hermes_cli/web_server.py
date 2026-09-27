@@ -20,7 +20,7 @@ import concurrent.futures
 import functools
 from collections import deque
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 import hashlib
 import hmac
 import inspect
@@ -51,7 +51,7 @@ from hermes_cli._subprocess_compat import windows_detach_flags, windows_hide_fla
 from hermes_cli.install_identity import get_install_id as _shared_get_install_id
 import urllib.request
 from pathlib import Path
-from typing import Any, Dict, List, Literal, NamedTuple, Optional, Tuple
+from typing import Any, Dict, List, Literal, Optional, Tuple
 
 import yaml
 
@@ -742,7 +742,6 @@ from hermes_cli.dashboard_auth.public_paths import (
 _QUERY_TOKEN_PATHS: frozenset = frozenset({
     "/api/pulse/stream",
     "/api/dashboard/stream",
-    "/api/dashboard/artifacts/raw",
 })
 
 
@@ -1205,16 +1204,15 @@ async def security_headers_middleware(request: Request, call_next):
     nonce = _new_csp_nonce()
     request.state.csp_nonce = nonce
     path = request.url.path
-    allow_same_origin_framing = path.startswith("/_gitnexus-app/") or path == "/nexus"
+    allow_same_origin_framing = path == "/nexus"
     response = await call_next(request)
     response.headers["Content-Security-Policy-Report-Only"] = _dashboard_csp_report_only(
         nonce,
         frame_ancestors="'self'" if path == "/nexus" else "'none'",
     )
-    # The Explorer tab frames the dashboard's OWN same-origin GitNexus app
-    # (served under /_gitnexus-app/); the OS tab frames the dashboard's OWN
-    # same-origin /nexus V6 truth surface. Every other path stays DENY
-    # (clickjacking guard), including /api/dashboard/nexus* API routes.
+    # The OS tab frames the dashboard's OWN same-origin /nexus V6 truth
+    # surface. Every other path stays DENY (clickjacking guard), including
+    # /api/dashboard/nexus* API routes.
     if allow_same_origin_framing:
         response.headers["X-Frame-Options"] = "SAMEORIGIN"
     else:
@@ -2264,49 +2262,6 @@ def _probe_gateway_health() -> tuple[bool, dict | None]:
         except Exception:
             continue
     return False, None
-
-
-class ReflectRejectBody(BaseModel):
-    reason: str = ""
-
-
-def _reflect_writer(candidate):
-    from agent.reflect_promote import mvms_writer
-    return mvms_writer(candidate)
-
-
-@app.get("/api/reflect-promote/candidates")
-async def get_reflect_promote_candidates():
-    from agent.reflect_promote import pending_payload
-
-    return pending_payload()
-
-
-@app.post("/api/reflect-promote/candidates/{candidate_id}/approve")
-async def approve_reflect_promote_candidate(candidate_id: str):
-    from agent.reflect_promote import approve_candidate
-
-    try:
-        candidate = approve_candidate(candidate_id, writer=_reflect_writer)
-    except KeyError:
-        raise HTTPException(status_code=404, detail="reflect candidate not found")
-    except RuntimeError as exc:
-        # Promotion (the MEM-10 / MVMS write path) is not yet wired in this
-        # runtime. Surface 501 Not Implemented rather than 503 (which implies a
-        # transient outage the client should retry).
-        raise HTTPException(status_code=501, detail=f"reflect promotion not yet wired: {exc}")
-    return {"ok": True, "candidate": candidate.to_row()}
-
-
-@app.post("/api/reflect-promote/candidates/{candidate_id}/reject")
-async def reject_reflect_promote_candidate(candidate_id: str, body: ReflectRejectBody):
-    from agent.reflect_promote import reject_candidate
-
-    try:
-        candidate = reject_candidate(candidate_id, reason=body.reason)
-    except KeyError:
-        raise HTTPException(status_code=404, detail="reflect candidate not found")
-    return {"ok": True, "candidate": candidate.to_row()}
 
 
 def _count_status_active_sessions() -> int:
@@ -19517,406 +19472,6 @@ def _mount_plugin_api_routes():
 
 
 
-
-# ---------------------------------------------------------------------------
-# Life dashboard: server-side state + live agenda
-# ---------------------------------------------------------------------------
-_LIFE_STATE_PATH = get_hermes_home() / "state" / "life-dashboard.json"
-_LIFE_DOMAIN_KEYS = {"finance", "health", "faith", "life"}
-_LIFE_DEFAULT_VALUES: dict[str, Any] = {
-    "name": "Josep",
-    "scores": {"finance": 78, "health": 82, "faith": 71, "life": 64},
-    "freeToSpend": 1240,
-    "monthBudget": 3400,
-    "netWorth": 248000,
-    "netWorthChangePct": 1.8,
-    "budgetSpentPct": 68,
-    "spendTrend": [42, 38, 51, 47, 55, 49, 58, 53, 61, 57, 66, 62],
-    "netWorthTrend": [231, 234, 233, 238, 240, 239, 243, 245, 244, 247, 246, 248],
-    "readiness": 82,
-    "sleepHours": 7.2,
-    "steps": 8400,
-    "hrv": 58,
-    "restingHr": 52,
-    "weightLb": 178,
-    "weightTrend": [182, 181, 181, 180, 180, 179, 179, 178, 178, 178],
-    "readingStreak": 12,
-    "prayerCount": 3,
-    "devotionalDone": False,
-    "readingPlan": "Psalms · Day 9 of 30",
-    "tasksDone": 3,
-    "tasksTotal": 6,
-    "habits": [
-        {"label": "Prayer", "done": True},
-        {"label": "Move", "done": True},
-        {"label": "Read", "done": True},
-        {"label": "Water", "done": False},
-        {"label": "Sleep", "done": False},
-    ],
-    "agenda": [
-        {"time": "10:30", "title": "Standup", "meta": "Work · 30m", "domain": "life"},
-        {"time": "13:00", "title": "Deep work", "meta": "Focus · 2h", "domain": "life"},
-        {"time": "17:30", "title": "Gym — push day", "meta": "Health · 1h", "domain": "health"},
-        {"time": "18:30", "title": "Evening Examen", "meta": "Faith · 10m", "domain": "faith"},
-    ],
-}
-
-
-def _merge_life_values(raw: Any) -> dict[str, Any]:
-    if not isinstance(raw, dict):
-        raise ValueError("life dashboard state must be a JSON object")
-    merged = dict(_LIFE_DEFAULT_VALUES)
-    merged.update(raw)
-    scores = raw.get("scores") if isinstance(raw.get("scores"), dict) else {}
-    merged["scores"] = {**_LIFE_DEFAULT_VALUES["scores"], **scores}
-    if set(merged["scores"].keys()) != _LIFE_DOMAIN_KEYS:
-        raise ValueError("scores must include finance, health, faith, and life")
-    if not isinstance(merged.get("habits"), list):
-        raise ValueError("habits must be a list")
-    if not isinstance(merged.get("agenda"), list):
-        raise ValueError("agenda must be a list")
-    for item in merged["agenda"]:
-        if not isinstance(item, dict):
-            raise ValueError("agenda items must be objects")
-        if item.get("domain") not in _LIFE_DOMAIN_KEYS:
-            raise ValueError("agenda item domain is invalid")
-    return merged
-
-
-def _read_life_state() -> dict[str, Any]:
-    if not _LIFE_STATE_PATH.exists():
-        return dict(_LIFE_DEFAULT_VALUES)
-    try:
-        raw = json.loads(_LIFE_STATE_PATH.read_text(encoding="utf-8"))
-        return _merge_life_values(raw)
-    except Exception as exc:
-        _log.warning("Failed to read life dashboard state from %s: %s", _LIFE_STATE_PATH, exc)
-        return dict(_LIFE_DEFAULT_VALUES)
-
-
-def _write_life_state(values: dict[str, Any]) -> dict[str, Any]:
-    merged = _merge_life_values(values)
-    _LIFE_STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp_name = tempfile.mkstemp(
-        prefix="life-dashboard-",
-        suffix=".json.tmp",
-        dir=str(_LIFE_STATE_PATH.parent),
-        text=True,
-    )
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as fh:
-            json.dump(merged, fh, ensure_ascii=False, indent=2)
-            fh.write("\n")
-        os.replace(tmp_name, _LIFE_STATE_PATH)
-    except Exception:
-        try:
-            os.unlink(tmp_name)
-        except OSError:
-            pass
-        raise
-    return merged
-
-
-def _life_domain_for_event(title: str) -> str:
-    text = title.lower()
-    if any(word in text for word in ("gym", "workout", "doctor", "health", "run", "walk")):
-        return "health"
-    if any(word in text for word in ("church", "prayer", "bible", "devotional", "mass")):
-        return "faith"
-    if any(word in text for word in ("bill", "budget", "bank", "finance", "tax")):
-        return "finance"
-    return "life"
-
-
-def _parse_google_dt(value: str) -> datetime | None:
-    if not value:
-        return None
-    try:
-        if "T" not in value:
-            return datetime.fromisoformat(value).replace(tzinfo=timezone.utc)
-        return datetime.fromisoformat(value.replace("Z", "+00:00"))
-    except ValueError:
-        return None
-
-
-def _event_duration_minutes(start: datetime | None, end: datetime | None) -> int | None:
-    if start is None or end is None:
-        return None
-    minutes = int((end - start).total_seconds() // 60)
-    return minutes if minutes > 0 else None
-
-
-def _format_life_event_meta(event: dict[str, Any], start: datetime | None, end: datetime | None) -> str:
-    bits: list[str] = []
-    location = str(event.get("location") or "").strip()
-    if location:
-        bits.append(location[:40])
-    minutes = _event_duration_minutes(start, end)
-    if minutes is not None:
-        bits.append(f"{minutes // 60}h" if minutes % 60 == 0 else f"{minutes}m")
-    bits.append("Google Calendar")
-    return " · ".join(bits)
-
-
-def _read_google_calendar_agenda() -> list[dict[str, Any]]:
-    token_path = get_hermes_home() / "google_token.json"
-    if not token_path.exists():
-        _log.info("Life agenda: Google token not found at %s", token_path)
-        return []
-    try:
-        from google.auth.transport.requests import Request as GoogleAuthRequest
-        from google.oauth2.credentials import Credentials
-        from googleapiclient.discovery import build
-
-        token_data = json.loads(token_path.read_text(encoding="utf-8"))
-        scopes = token_data.get("scopes") if isinstance(token_data.get("scopes"), list) else None
-        creds = Credentials.from_authorized_user_file(str(token_path), scopes=scopes)
-        if creds.expired and creds.refresh_token:
-            creds.refresh(GoogleAuthRequest())
-            refreshed = json.loads(creds.to_json())
-            refreshed.setdefault("type", "authorized_user")
-            if token_data.get("account"):
-                refreshed["account"] = token_data["account"]
-            token_path.write_text(json.dumps(refreshed, indent=2) + "\n", encoding="utf-8")
-        if not creds.valid:
-            _log.warning("Life agenda: Google token is invalid")
-            return []
-
-        now = datetime.now().astimezone()
-        start = now.replace(hour=0, minute=0, second=0, microsecond=0)
-        end = start + timedelta(days=1)
-        service = build("calendar", "v3", credentials=creds, cache_discovery=False)
-        calendars: list[str] = ["primary"]
-        try:
-            calendar_result = service.calendarList().list(maxResults=50).execute()
-            calendars = [
-                str(item.get("id") or "")
-                for item in calendar_result.get("items", [])
-                if item.get("id") and not item.get("deleted")
-            ] or calendars
-        except Exception as exc:
-            _log.warning("Life agenda: Calendar list read failed, falling back to primary: %s", exc)
-        events: list[dict[str, Any]] = []
-        for calendar_id in calendars:
-            try:
-                result = service.events().list(
-                    calendarId=calendar_id,
-                    timeMin=start.isoformat(),
-                    timeMax=end.isoformat(),
-                    maxResults=12,
-                    singleEvents=True,
-                    orderBy="startTime",
-                ).execute()
-                events.extend(result.get("items", []))
-            except Exception as exc:
-                _log.warning("Life agenda: Calendar read failed for %s: %s", calendar_id, exc)
-    except Exception as exc:
-        _log.warning("Life agenda: Google Calendar read failed: %s", exc)
-        return []
-
-    agenda: list[dict[str, Any]] = []
-    for event in events:
-        if event.get("status") == "cancelled":
-            continue
-        start_raw = (event.get("start") or {}).get("dateTime") or (event.get("start") or {}).get("date") or ""
-        end_raw = (event.get("end") or {}).get("dateTime") or (event.get("end") or {}).get("date") or ""
-        start_dt = _parse_google_dt(start_raw)
-        end_dt = _parse_google_dt(end_raw)
-        time_label = "All day" if "T" not in start_raw else (start_dt.astimezone().strftime("%H:%M") if start_dt else "--:--")
-        title = str(event.get("summary") or "(no title)")
-        agenda.append({
-            "time": time_label,
-            "title": title,
-            "meta": _format_life_event_meta(event, start_dt, end_dt),
-            "domain": _life_domain_for_event(title),
-        })
-    return sorted(agenda, key=lambda item: item["time"] if item["time"] != "All day" else "00:00")
-
-
-class _LifeTaskCounts(NamedTuple):
-    """Result of :func:`_read_life_kanban_counts` (indexable: ``counts[0]``/``[1]``)."""
-
-    done: int
-    total: int
-    source: str            # "kanban" (live board) | "life-state" (life-dashboard.json fallback)
-    board: str | None      # resolved board slug, or None when no live board could be resolved
-    error: str | None      # None on a successful board read; short reason otherwise
-
-
-# done = tasks in status 'done'; total = every task that is not 'archived'.
-# (Same semantics as the pre-2026-07-30 counter, collapsed into one query.)
-_LIFE_KANBAN_COUNTS_SQL = (
-    "SELECT COUNT(*) AS total, "
-    "COALESCE(SUM(CASE WHEN status = 'done' THEN 1 ELSE 0 END), 0) AS done "
-    "FROM tasks WHERE status != 'archived'"
-)
-
-# Once-per-reason log latch: the Life tab polls every 30 s, so a persistent
-# failure must not emit a WARNING per poll (it did, for 16 days). WARNING on
-# first failure / changed reason, DEBUG on repeats, INFO on recovery.
-_LIFE_KANBAN_LAST_ERROR: str | None = None
-
-
-def _life_kanban_note(error: str | None) -> None:
-    global _LIFE_KANBAN_LAST_ERROR
-    if error is None:
-        if _LIFE_KANBAN_LAST_ERROR is not None:
-            _log.info("Life agenda: kanban count read recovered")
-        _LIFE_KANBAN_LAST_ERROR = None
-        return
-    if error != _LIFE_KANBAN_LAST_ERROR:
-        _log.warning(
-            "Life agenda: kanban count read failed, falling back to %s: %s",
-            _LIFE_STATE_PATH,
-            error,
-        )
-        _LIFE_KANBAN_LAST_ERROR = error
-    else:
-        _log.debug("Life agenda: kanban count read still failing: %s", error)
-
-
-def _life_kanban_target() -> tuple[str | None, "Path | None", str | None]:
-    """Resolve the LIVE board for the Life tab: ``(slug, db_path, error)``.
-
-    Strict: the board is whatever ``<kanban root>/kanban/current`` names (the
-    one-line slug file ``hermes kanban boards switch`` writes). No hardcoded
-    slug (the old 'hermes' board was removed by THE RESET, 2026-07-30) and no
-    silent fall-through to the legacy ``default`` board: if the pointer is
-    missing, empty, malformed, or names a board that is not on disk, return an
-    error and let the caller fall back to the operator's own numbers.
-    """
-    from hermes_cli import kanban_db
-
-    current_file = kanban_db.current_board_path()
-    try:
-        raw = current_file.read_text(encoding="utf-8").strip()
-    except FileNotFoundError:
-        return None, None, f"no current board: {current_file} missing"
-    except (OSError, UnicodeDecodeError) as exc:  # unreadable, or not UTF-8 text
-        return None, None, f"no current board: cannot read {current_file}: {exc}"
-    if not raw:
-        return None, None, f"no current board: {current_file} is empty"
-    try:
-        if not kanban_db.board_exists(raw):
-            return None, None, f"board {raw!r} named by {current_file} does not exist on disk"
-        db_path = kanban_db.kanban_db_path(board=raw)
-    except ValueError as exc:  # malformed slug in the pointer file
-        return None, None, f"invalid board slug in {current_file}: {exc}"
-    except OSError as exc:  # board_exists() stats the board dir: EACCES etc. must fall back, never 500
-        return None, None, f"cannot resolve board {raw!r} from {current_file}: {type(exc).__name__}: {exc}"
-    return raw.lower(), db_path, None
-
-
-def _read_life_kanban_counts() -> _LifeTaskCounts:
-    """Life-tab task counter: LIVE current board first, operator's saved numbers second.
-
-    Never fabricates. A failed board read (no pointer, dead board, unreadable
-    DB, missing table, ...) falls back to the SAME values ``/api/life/state``
-    serves (``life-dashboard.json``), so the two surfaces cannot disagree on
-    failure; ``source`` / ``board`` / ``error`` say which path was taken. The
-    only remaining case (fallback file itself holds non-numeric counts) yields
-    the visibly-wrong sentinel ``(-1, -1)`` rather than a plausible ``(0, 0)``.
-    """
-    import sqlite3
-
-    slug, db_path, err = _life_kanban_target()
-    if err is None:
-        try:
-            conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=1.0)
-            try:
-                row = conn.execute(_LIFE_KANBAN_COUNTS_SQL).fetchone()
-            finally:
-                conn.close()
-            done, total = int(row[1] or 0), int(row[0] or 0)
-        except Exception as exc:  # sqlite3.Error / OSError: fall back, never (0, 0)
-            err = f"{type(exc).__name__}: {exc}"[:200]
-        else:
-            _life_kanban_note(None)
-            return _LifeTaskCounts(done, total, "kanban", slug, None)
-
-    _life_kanban_note(f"{err} (board={slug!r} db={db_path})")
-    state = _read_life_state()
-    done_raw, total_raw = state.get("tasksDone"), state.get("tasksTotal")
-    try:
-        done, total = int(done_raw), int(total_raw)
-    except (TypeError, ValueError):
-        _log.error(
-            "Life agenda: %s has non-numeric task counts (tasksDone=%r tasksTotal=%r)",
-            _LIFE_STATE_PATH,
-            done_raw,
-            total_raw,
-        )
-        return _LifeTaskCounts(-1, -1, "life-state", slug, f"{err}; life-state counts non-numeric")
-    return _LifeTaskCounts(done, total, "life-state", slug, err)
-
-
-@app.get("/api/life/state")
-async def get_life_state() -> dict[str, Any]:
-    return _read_life_state()
-
-
-@app.put("/api/life/state")
-async def put_life_state(payload: dict[str, Any]) -> dict[str, Any]:
-    try:
-        return _write_life_state(payload)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
-
-
-@app.get("/api/life/agenda")
-async def get_life_agenda() -> dict[str, Any]:
-    counts = _read_life_kanban_counts()
-    return {
-        "agenda": _read_google_calendar_agenda(),
-        "tasksDone": counts.done,
-        "tasksTotal": counts.total,
-        # Additive provenance keys (the compiled SPA ignores unknown keys):
-        "tasksSource": counts.source,
-        "tasksBoard": counts.board,
-        "tasksError": counts.error,
-    }
-
-
-# ---------------------------------------------------------------------------
-# GitNexus reverse proxy — /api/gitnexus/* → http://127.0.0.1:4747/api/*
-# Session-token auth is enforced automatically by auth_middleware above.
-# ---------------------------------------------------------------------------
-_GITNEXUS_BACKEND = "http://127.0.0.1:4747"
-
-
-async def _gitnexus_proxy(path: str, request: Request) -> Response:
-    """Forward request to the GitNexus backend and stream the response back."""
-    import httpx
-
-    url = f"{_GITNEXUS_BACKEND}/api/{path}"
-    params = dict(request.query_params)
-    body = await request.body()
-    skip_req = {"host", "content-length", "transfer-encoding"}
-    forward_headers = {k: v for k, v in request.headers.items() if k.lower() not in skip_req}
-
-    try:
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            upstream = await client.request(
-                method=request.method,
-                url=url,
-                params=params,
-                content=body,
-                headers=forward_headers,
-            )
-    except httpx.ConnectError:
-        raise HTTPException(status_code=502, detail="GitNexus backend unavailable")
-
-    skip_resp = {"transfer-encoding", "connection", "keep-alive"}
-    resp_headers = {k: v for k, v in upstream.headers.items() if k.lower() not in skip_resp}
-    return Response(content=upstream.content, status_code=upstream.status_code, headers=resp_headers)
-
-
-app.add_api_route(
-    "/api/gitnexus/{path:path}",
-    _gitnexus_proxy,
-    methods=["GET", "POST", "PUT", "DELETE", "PATCH"],
-)
-
 # Mount plugin API routes before the SPA catch-all.
 _mount_plugin_api_routes()
 
@@ -20016,12 +19571,6 @@ try:
     _log.info("Mounted Command Center dashboard API route at /api/dashboard/command-center")
 except Exception as _exc:
     _log.warning("Failed to load dashboard_command_center routes: %s", _exc)
-try:
-    from hermes_cli.dashboard_artifacts import router as _artifacts_router
-    app.include_router(_artifacts_router)
-    _log.info("Mounted Artifacts dashboard API routes at /api/dashboard/artifacts")
-except Exception as _exc:
-    _log.warning("Failed to load dashboard_artifacts routes: %s", _exc)
 # ---------------------------------------------------------------------------
 # Nexus pages — locked Wave 2 V6 truth surface plus the W2A slice demo.
 # Registered before the catch-all mount.
@@ -20076,46 +19625,6 @@ async def _nexus_page(request: Request):
     )
 
 
-# ---------------------------------------------------------------------------
-# GitNexus Explorer — serve the production web UI under /_gitnexus-app/.
-# Mounted at a non-React path so the dashboard React route `/explorer`
-# remains free to render the iframe wrapper (ExplorerPage). The iframe's
-# src points at /_gitnexus-app/ so the GitNexus shell loads inside the
-# dashboard chrome. Direct browser navigation to /explorer now reaches
-# the React SPA via the catch-all, NOT the raw GitNexus shell.
-# ---------------------------------------------------------------------------
-_GITNEXUS_DIST = Path.home() / ".local/share/gitnexus/gitnexus-web/dist"
-
-
-@app.get("/_gitnexus-app/{full_path:path}")
-async def _gitnexus_explorer_page(full_path: str, request: Request):
-    """Serve the GitNexus web UI without falling through to Hermes' SPA.
-
-    This route is intentionally registered unconditionally.  The GitNexus
-    dist directory can be built after the dashboard process starts; if the
-    route only exists when the directory is present at import time, requests
-    to ``/_gitnexus-app/`` fall through to ``mount_spa`` and iframe a second
-    copy of the Hermes dashboard inside Explorer.
-    """
-    gitnexus_dist = _GITNEXUS_DIST
-    gitnexus_index = gitnexus_dist / "index.html"
-    if not gitnexus_index.is_file():
-        return JSONResponse(
-            {
-                "error": "GitNexus frontend not built",
-                "detail": "Expected GitNexus dist at ~/.local/share/gitnexus/gitnexus-web/dist",
-            },
-            status_code=503,
-        )
-
-    file_path = gitnexus_dist / full_path
-    if (
-        full_path
-        and file_path.resolve().is_relative_to(gitnexus_dist.resolve())
-        and file_path.is_file()
-    ):
-        return FileResponse(file_path)
-    return FileResponse(gitnexus_index)
 # Mount personas routes (Hive B — Pantheon).
 try:
     from hermes_cli.personas import router as _personas_router

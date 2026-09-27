@@ -104,13 +104,9 @@ const ChatPage = lazy(() => import("@/pages/ChatPage"));
 // they keep their routes in BUILTIN_ROUTES_CORE without eager-loading.
 const CostPage = lazy(() => import("@/pages/CostPage"));
 const OSPage = lazy(() => import("@/pages/OSPage"));
-const HtmlGalleryPage = lazy(() => import("@/pages/HtmlGalleryPage"));
 const LearningPage = lazy(() => import("@/pages/LearningPage"));
-const ExplorerPage = lazy(() => import("@/pages/ExplorerPage"));
 const WelcomePage = lazy(() => import("@/pages/WelcomePage"));
-const LifePage = lazy(() => import("@/pages/LifePage"));
 const GetSomePage = lazy(() => import("@/pages/GetSomePage"));
-const ReflectPromotePage = lazy(() => import("@/pages/ReflectPromotePage"));
 import { LanguageSwitcher } from "@/components/LanguageSwitcher";
 import { ThemeSwitcher } from "@/components/ThemeSwitcher";
 import { useI18n } from "@/i18n";
@@ -182,9 +178,7 @@ const CHAT_NAV_ITEM: NavItem = {
  */
 const BUILTIN_ROUTES_CORE: Record<string, ComponentType> = {
   "/": RootRedirect,
-  "/life": LifePage,
   "/get-some": GetSomePage,
-  "/reflect-promote": ReflectPromotePage,
   "/sessions": SessionsPage,
   "/files": FilesPage,
   "/analytics": AnalyticsPage,
@@ -194,9 +188,7 @@ const BUILTIN_ROUTES_CORE: Record<string, ComponentType> = {
   "/cron": CronPage,
   "/skills": SkillsPage,
   "/plugins": PluginsPage,
-  "/explorer": ExplorerPage,
   "/os": OSPage,
-  "/html": HtmlGalleryPage,
   "/learning": LearningPage,
   "/mcp": McpPage,
   "/pairing": PairingPage,
@@ -220,13 +212,11 @@ function ChatRouteSink() {
 }
 
 const BUILTIN_NAV_REST: NavItem[] = [
-  { path: "/life", label: "Life", icon: LayoutDashboard },
   // Get Some tab retired 2026-09-10 (josep GO) — the roster and work-nexus
   // graph both read the RETIRED Kanban board, so /api/dashboard/projects
   // returns [] and /api/dashboard/work-nexus returns degraded_mode
   // ["kanban_retired"]. MVMS Projects is the canonical source of project
   // state. Route stays reachable directly, same as the 2026-07-11 retirements.
-  { path: "/reflect-promote", labelKey: "reflect_promote", label: "Reflect Promote", icon: Sparkles },
   {
     path: "/sessions",
     labelKey: "sessions",
@@ -251,10 +241,8 @@ const BUILTIN_NAV_REST: NavItem[] = [
   { path: "/logs", labelKey: "logs", label: "Logs", icon: FileText },
   { path: "/cron", labelKey: "cron", label: "Cron", icon: Clock },
   { path: "/skills", labelKey: "skills", label: "Skills", icon: Package },
-  { path: "/explorer", labelKey: "explorer", label: "Explorer", icon: Network },
   // OS tab retired 2026-07-11 (josep GO) — verdict signals live in the
   // MOTHERSHIP NEXUS plugin snapshot; route stays reachable directly.
-  { path: "/html", label: "HTML", icon: Code },
   // Learning tab retired 2026-07-11 (josep GO) — verdict signals live in the
   // MOTHERSHIP NEXUS plugin snapshot; route stays reachable directly.
   { path: "/plugins", labelKey: "plugins", label: "Plugins", icon: Puzzle },
@@ -454,7 +442,6 @@ export default function App() {
   const sidebarStatus = useSidebarStatus();
   const isDocsRoute = pathname === "/docs" || pathname === "/docs/";
   const normalizedPath = pathname.replace(/\/$/, "") || "/";
-  const isExplorerRoute = normalizedPath === "/explorer";
   const isGetSomeRoute = normalizedPath === "/get-some";
   const isChatRoute = normalizedPath === "/chat";
   const embeddedChat = isDashboardEmbeddedChatEnabled();
@@ -829,13 +816,11 @@ export default function App() {
               tabIndex={-1}
               className={cn(
                 "relative z-2 flex min-w-0 min-h-0 flex-1 flex-col",
-                !isExplorerRoute && "px-3 sm:px-6",
-                isExplorerRoute
-                  ? "p-0"
-                  : isChatRoute
-                    ? "pb-0 pt-1 sm:pt-2 lg:pt-4"
-                    : "pt-2 sm:pt-4 lg:pt-6",
-                (isDocsRoute || isExplorerRoute || isGetSomeRoute) && "min-h-0 flex-1",
+                "px-3 sm:px-6",
+                isChatRoute
+                  ? "pb-0 pt-1 sm:pt-2 lg:pt-4"
+                  : "pt-2 sm:pt-4 lg:pt-6",
+                (isDocsRoute || isGetSomeRoute) && "min-h-0 flex-1",
                 "focus:outline-none",
               )}
             >
@@ -843,9 +828,9 @@ export default function App() {
               <div
                 className={cn(
                   "w-full min-w-0",
-                  !isChatRoute && !isExplorerRoute &&
+                  !isChatRoute &&
                     "pb-[calc(2rem+env(safe-area-inset-bottom,0px))] lg:pb-8",
-                  (isDocsRoute || isChatRoute || isExplorerRoute || isGetSomeRoute) &&
+                  (isDocsRoute || isChatRoute || isGetSomeRoute) &&
                     "min-h-0 flex flex-1 flex-col",
                 )}
               >

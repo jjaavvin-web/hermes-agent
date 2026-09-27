@@ -72,7 +72,6 @@ export const hu: Translations = {
       config: "Beállítások",
       cron: "Cron",
       documentation: "Dokumentáció",
-      explorer: "Böngésző",
       hives: "Hives",
       keys: "Kulcsok",
       logs: "Naplók",
@@ -609,9 +608,6 @@ export const hu: Translations = {
         "A kép vágólapra másolása nem támogatott ebben a böngészőben — használd inkább a Letöltést.",
       tweet_text: "Just unlocked {tier_part}\"{name}\" in Hermes Agent ☤",
     },
-  },
-  explorer: {
-    title: "Kód Böngésző",
   },
 
   kanban: {

@@ -86,6 +86,3 @@ def test_nexus_exact_path_can_be_same_origin_framed_without_widening_api_or_root
         response = dashboard_client.get(path)
         assert response.headers["X-Frame-Options"] == "DENY", path
         _assert_dashboard_csp(response)
-
-    gitnexus = dashboard_client.get("/_gitnexus-app/")
-    assert gitnexus.headers["X-Frame-Options"] == "SAMEORIGIN"

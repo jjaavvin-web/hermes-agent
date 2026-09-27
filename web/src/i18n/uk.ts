@@ -72,7 +72,6 @@ export const uk: Translations = {
       config: "Конфігурація",
       cron: "Cron",
       documentation: "Документація",
-      explorer: "Провідник",
       hives: "Hives",
       keys: "Ключі",
       logs: "Журнали",
@@ -610,9 +609,6 @@ export const uk: Translations = {
         "Цей браузер не підтримує копіювання зображень у буфер обміну — використайте «Завантажити».",
       tweet_text: "Just unlocked {tier_part}\"{name}\" in Hermes Agent ☤",
     },
-  },
-  explorer: {
-    title: "Провідник коду",
   },
 
   kanban: {

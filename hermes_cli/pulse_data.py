@@ -144,14 +144,6 @@ def build_pulse_graph(*, now: float | None = None) -> dict:
         logger.warning("_get_hives_snapshot failed: %s", exc)
 
     try:
-        from hermes_cli.dashboard_health import _get_gitnexus_runtime_snapshot
-        if "_error" in _get_gitnexus_runtime_snapshot():
-            degraded_mode.append("gitnexus_unreachable")
-    except Exception as exc:
-        logger.warning("_get_gitnexus_runtime_snapshot failed: %s", exc)
-        degraded_mode.append("gitnexus_unreachable")
-
-    try:
         from hermes_cli.dashboard_health import _get_active_model
         active_model = _get_active_model() or "unknown"
     except Exception as exc:

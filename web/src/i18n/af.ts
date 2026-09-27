@@ -72,7 +72,6 @@ export const af: Translations = {
       config: "Konfigurasie",
       cron: "Cron",
       documentation: "Dokumentasie",
-      explorer: "Verkenner",
       hives: "Hives",
       keys: "Sleutels",
       logs: "Logs",
@@ -609,9 +608,6 @@ export const af: Translations = {
         "Beeldkopiëring na knipbord word nie in hierdie blaaier ondersteun nie — gebruik eerder Aflaai.",
       tweet_text: "Just unlocked {tier_part}\"{name}\" in Hermes Agent ☤",
     },
-  },
-  explorer: {
-    title: "Kode Verkenner",
   },
 
   kanban: {

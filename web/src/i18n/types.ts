@@ -93,7 +93,6 @@ export interface Translations {
       config: string;
       cron: string;
       documentation: string;
-      explorer: string;
       hives: string;
       keys: string;
       logs: string;
@@ -874,10 +873,5 @@ export interface Translations {
       confirmTitle?: string;
       confirmManyTitle?: string;
     };
-  };
-
-  // ── Explorer page ──
-  explorer: {
-    title: string;
   };
 }

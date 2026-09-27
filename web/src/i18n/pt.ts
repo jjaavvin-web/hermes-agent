@@ -72,7 +72,6 @@ export const pt: Translations = {
       config: "Configuração",
       cron: "Cron",
       documentation: "Documentação",
-      explorer: "Explorador",
       hives: "Hives",
       keys: "Chaves",
       logs: "Registos",
@@ -610,9 +609,6 @@ export const pt: Translations = {
         "A cópia de imagens para a área de transferência não é suportada neste navegador — utilize Transferir.",
       tweet_text: "Just unlocked {tier_part}\"{name}\" in Hermes Agent ☤",
     },
-  },
-  explorer: {
-    title: "Explorador de código",
   },
 
   kanban: {
